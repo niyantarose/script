@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "にゃんたろうず商品登録拡張機能",
+  "version": "0.2.0",
+  "description": "台湾 books.com.tw とアラジンの既存機能を統合した Chrome 拡張",
+  "permissions": [
+    "downloads",
+    "alarms",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.books.com.tw/*",
+    "https://im1.book.com.tw/*",
+    "https://im2.book.com.tw/*",
+    "https://addons.books.com.tw/*",
+    "https://www.aladin.co.kr/*",
+    "https://image.aladin.co.kr/*",
+    "https://cdnimage.aladin.co.kr/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*",
+    "https://api.mangaupdates.com/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.books.com.tw/products/*"
+      ],
+      "js": [
+        "content/taiwan/content.js"
+      ]
+    },
+    {
+      "matches": [
+        "https://www.aladin.co.kr/shop/wproduct.aspx*"
+      ],
+      "js": [
+        "content/aladin/content.js"
+      ]
+    }
+  ]
+}

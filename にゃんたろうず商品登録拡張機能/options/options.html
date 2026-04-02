@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>保存ルール設定</title>
+  <link rel="stylesheet" href="./options.css">
+</head>
+<body>
+  <main class="layout">
+    <header class="page-head">
+      <p class="eyebrow">Options</p>
+      <h1>保存ルール設定</h1>
+      <p>Phase 1 では Aladin / manga を中心に、保存方式と連番ポリシーを切り替えられます。</p>
+    </header>
+
+    <form id="settings-form" class="card-list">
+      <section class="card">
+        <h2>基本設定</h2>
+        <label>
+          <span>商品フォルダ名</span>
+          <select name="folderNameStrategy">
+            <option value="productTitle">商品名</option>
+            <option value="siteProductCode">サイト商品コード</option>
+            <option value="siteProductCode__productTitle">サイト商品コード + 商品名</option>
+          </select>
+        </label>
+
+        <label>
+          <span>保存モード</span>
+          <select name="saveMode">
+            <option value="manual">手動保存</option>
+            <option value="auto">自動保存</option>
+          </select>
+        </label>
+
+        <label>
+          <span>再実行ポリシー</span>
+          <select name="reRunPolicy">
+            <option value="continue">continue</option>
+            <option value="reset">reset</option>
+            <option value="overwrite">overwrite</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>データ保存</h2>
+        <label class="check-row"><input type="checkbox" name="saveRawHtml"> raw.html を保存する</label>
+        <label class="check-row"><input type="checkbox" name="saveExtractedJson"> extracted.json を保存する</label>
+        <label class="check-row"><input type="checkbox" name="forceJpegConversion"> JPEG変換を使う（Phase 1 では予約設定）</label>
+      </section>
+
+      <section class="card">
+        <h2>Bucket</h2>
+        <label class="check-row"><input type="checkbox" name="bucket-main"> main</label>
+        <label class="check-row"><input type="checkbox" name="bucket-detail"> detail</label>
+        <label class="check-row"><input type="checkbox" name="bucket-bonus"> bonus</label>
+        <label class="check-row"><input type="checkbox" name="bucket-sample"> sample</label>
+      </section>
+
+      <footer class="actions">
+        <div id="status" class="status">設定を読み込み中...</div>
+        <button type="submit">保存する</button>
+      </footer>
+    </form>
+  </main>
+
+  <script type="module" src="./options.js"></script>
+</body>
+</html>

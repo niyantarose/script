@@ -1,0 +1,123 @@
+:root {
+  --bg: #fbf8f2;
+  --ink: #2f2821;
+  --muted: #73685f;
+  --panel: #fffefc;
+  --line: #d8ccbf;
+  --accent: #b7472a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Yu Gothic UI", "Meiryo", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, #f0dcc6 0, transparent 30%),
+    linear-gradient(180deg, #f7f0e8 0%, var(--bg) 100%);
+}
+
+.layout {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 20px 48px;
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: 32px;
+}
+
+.page-head p {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.card-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.card {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: 0 12px 28px rgba(92, 64, 39, 0.08);
+}
+
+.card h2 {
+  margin: 0 0 16px;
+  font-size: 18px;
+}
+
+label {
+  display: block;
+  margin-top: 12px;
+}
+
+label span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+select,
+button {
+  font: inherit;
+}
+
+select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.check-row input {
+  width: 18px;
+  height: 18px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.status {
+  color: var(--muted);
+}
+
+button {
+  padding: 12px 18px;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--accent) 0%, #7c2412 100%);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+}

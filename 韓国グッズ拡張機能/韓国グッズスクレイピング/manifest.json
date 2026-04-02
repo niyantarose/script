@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "韓国グッズ 商品情報取得",
+  "version": "2.1",
+  "description": "韓国グッズサイト（JMEE/MOFUN/TOON/WTF/OFW/WTSHOP）の商品情報を取得してCSV出力し、画像を保存",
+  "permissions": [
+    "downloads",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://j-meeshop.com/*",
+    "https://*.j-meeshop.com/*",
+    "https://mostore.co.kr/*",
+    "https://*.mostore.co.kr/*",
+    "https://toonique.co.kr/*",
+    "https://www.toonique.co.kr/*",
+    "https://*.toonique.co.kr/*",
+    "https://webtoonfriends.marpple.shop/*",
+    "https://smartstore.naver.com/*",
+    "https://webtoonshop.com/*",
+    "https://www.webtoonshop.com/*",
+    "https://*.webtoonshop.com/*",
+    "https://cafe24img.poxo.com/*",
+    "https://*.cafe24.com/*",
+    "https://*.cafe24img.com/*",
+    "https://*.marpple.shop/*",
+    "https://naver-shopping-phinf.pstatic.net/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://j-meeshop.com/product/*",
+        "https://mostore.co.kr/product/*",
+        "https://toonique.co.kr/product/*",
+        "https://www.toonique.co.kr/product/*",
+        "https://webtoonshop.com/product/*",
+        "https://www.webtoonshop.com/product/*",
+        "https://webtoonfriends.marpple.shop/products/*",
+        "https://webtoonfriends.marpple.shop/*/products/*",
+        "https://webtoonfriends.marpple.shop/jp/products/*",
+        "https://smartstore.naver.com/official_w/products/*"
+      ],
+      "js": ["content.js"]
+    }
+  ]
+}

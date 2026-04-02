@@ -1,0 +1,106 @@
+問題を特定しました。両方の拡張機能が chrome.downloads.onDeterminingFilename リスナーを登録していますが、自分が開始していないダウンロードに対して suggest() を呼ばずに return しているため、Chromeが競合エラーを出しています。
+
+修正方針: 自分の拡張機能が開始したダウンロードでない場合、suggest() を引数なしで呼んで「ファイル名を変更しない」と明示的に伝えます。
+
+
+修正内容
+原因: 両方の拡張機能が chrome.downloads.onDeterminingFilename リスナーを登録しています。自分が開始していないダウンロードに対して suggest() を呼ばずに return していたため、Chromeが「この拡張機能もファイル名を決定しようとしている」と判断し、2つの拡張機能間で競合エラーが発生していました。
+
+修正: 両ファイルとも、byExtensionId !== chrome.runtime.id（自分が開始したダウンロードではない）場合に、suggest() を引数なしで明示的に呼ぶように変更しました。これにより「自分はファイル名を変更しない」とChromeに伝え、競合が解消されます。
+
+前回の修正では不十分でした。suggest() を引数なしで呼ぶと「空のファイル名を提案」した扱いになり、まだ競合します。
+
+根本的な解決策は onDeterminingFilename リスナーを使わず、chrome.downloads.download() に直接 filename を渡す方式に統一することです。
+
+
+Read background.js files from Aladin and Taiwan extensions
+Read background.js files from Aladin and Taiwan extensions
+
+原因がわかりました。suggest() を引数なしで呼んでも「空のファイル名を提案した」扱いになり競合します。
+
+根本修正: 両方の拡張機能から onDeterminingFilename リスナーを完全に削除し、代わりに chrome.downloads.download() に直接 filename を渡す方式に統一します（台湾側は既にそうなっているのでリスナー削除のみ）。
+
+① アラジン拡張機能 — onDeterminingFilename 削除 + filename を直接渡す
+
+Refactored pending filename queue management in background.js
+Refactored pending filename queue management in background.js
+
+② 台湾拡張機能 — onDeterminingFilename 削除（既に filename を直接渡しているのでリスナーは不要）
+
+
+修正内容まとめ
+根本原因: 2つの拡張機能が両方とも chrome.downloads.onDeterminingFilename リスナーを登録していたため、片方がダウンロードを開始するたびにもう片方のリスナーも発火し、Chromeがファイル名の競合と判断していた。
+
+修正方針: onDeterminingFilename を完全に廃止し、chrome.downloads.download() の filename パラメータで直接ファイル名を指定する方式に統一。
+
+ファイル	変更内容
+アラジン background.js	onDeterminingFilename リスナー・ハンドラ・pending追跡コードを削除。chrome.downloads.download() に filename: planned を追加
+台湾 background.js	onDeterminingFilename リスナー・ハンドラ・pending追跡コードを削除。（元から filename: planned を渡していたのでdownload部分は変更なし）
+-----------------------------------------------------------------------------
+
+他の AI にそのまま渡せる形でまとめると、こうです。
+
+ダウンロード要件
+
+保存は 手動保存 前提。自動保存はしない。
+フォルダ選択 UI は不要。showDirectoryPicker() や File System Access API は使わない。
+保存先の提案は常に Downloads/{商品コード}/{連番}.jpg
+例:
+Downloads/0011045448/1.jpg
+Downloads/0011045448/2.jpg
+中間フォルダは作らない。
+Downloads/Taiwan/...
+Downloads/博客來/...
+は不要
+画像名は必ず連番
+1.jpg
+2.jpg
+3.jpg
+商品フォルダ名はサイト商品コードを使う
+books.com.tw なら 0011045448
+N/M 系 goods なら N001895527
+保存時に他の拡張へ干渉しないこと
+画像は webp のサムネや余白つき wrapper ではなく、画像本体が大きく見えるもの を優先
+理想は 1000x1000 付近だが、余白つき 1000x1000 より、実画像が大きい 750x750 のほうを優先
+拡張子は保存名として jpg に統一したい
+実装方針
+
+chrome.downloads.download() を使う
+saveAs: true にして毎回保存ダイアログを開く
+filename は {商品コード}/{連番}.jpg を提案する
+onDeterminingFilename を使う場合は必ず
+item.byExtensionId === chrome.runtime.id
+で自分の拡張のダウンロードだけに限定する
+他拡張や通常ダウンロードには絶対に触らない
+showDirectoryPicker() は使わない
+folder-save.js のような direct save 経路は使わない
+台湾 popup からは台湾専用ダウンロード経路だけを呼ぶ
+generic の downloadImage ではなく、台湾用の保存処理を使う
+画像URLの要件
+
+getImage?... の wrapper より direct な画像URLを優先
+goods は _t_ 系 direct 画像が正しいことがある
+books は _b_ 系を優先することがある
+余白つきの wrapper 1000x1000 は避ける
+2000x2000 原寸も大きすぎるなら避ける
+目標は「画像本体が大きく表示される、1000付近の jpg」
+Chrome 側の設定
+
+毎回手動保存したいなら Chrome の
+ダウンロード前に各ファイルの保存場所を確認する
+を ON
+その状態でも、拡張は
+{商品コード}/1.jpg
+{商品コード}/2.jpg
+を候補として提案する
+やってはいけないこと
+
+showDirectoryPicker() を使う
+保存先フォルダ選択 UI を出す
+Downloads/Taiwan/... のような余計な親フォルダを作る
+onDeterminingFilename で全ダウンロードを雑にフックする
+webp のまま保存名だけ .jpg にする
+wrapper 画像を優先して余白つき画像を保存する
+他AI向けの一文
+
+「台湾ダウンロードは手動保存のみ。保存候補は常に Downloads/{商品コード}/{連番}.jpg。フォルダ選択UIは禁止。chrome.downloads.download({ saveAs: true }) を使い、必要なら onDeterminingFilename を item.byExtensionId === chrome.runtime.id で自分のDLだけに限定して filename を提案すること。画像は wrapper ではなく direct 画像URLを優先し、余白つき 1000x1000 より実画像が大きい 750x750 などを優先すること。」

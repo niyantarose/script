@@ -1,0 +1,1230 @@
+/**
+ * books.com.tw（博客來）Chrome拡張機能 用
+ * スプレッドシート追記GAS
+ *
+ * 対応:
+ * - 台湾書籍（コミック/小説/設定集）
+ * - 台湾グッズ
+ * - 台湾雑誌
+ *
+ * 雑誌まわりの強化:
+ * - 共通マスター参照
+ * - 別名1〜n による雑誌照合
+ * - 未登録雑誌の候補蓄積
+ * - 言語接頭辞付き親コード生成
+ */
+
+const SPREADSHEET_ID = '1OSoZnNTMHrH5YgU-j7zwOsyQsjS6bcwjfZxc3kzeKWM';
+const MASTER_SPREADSHEET_ID = '1ZAy5wtQCq1ixl47MMEIGnrVWeae-F_NfN34lSOUsN5M';
+
+const COMIC_BOOK_SHEET_NAME = '台湾まんが';
+const OTHER_BOOK_SHEET_NAME = '台湾書籍その他';
+const GOODS_SHEET_NAME = '台湾グッズ';
+const MAGAZINE_SHEET_NAME = '台湾雑誌';
+
+const MAGAZINE_MASTER_SHEET = '雑誌マスター（共通）';
+const MAGAZINE_MASTER_CANDIDATE_SHEET = '雑誌マスター候補（共通）';
+const MAGAZINE_EDITION_RULE_SHEET = '版種ルール（雑誌共通）';
+const MAGAZINE_TYPE_RULE_SHEET = 'タイプルール（雑誌共通）';
+
+const UNKNOWN_MAGAZINE_WRITE_MODE = 'candidate';
+const ALLOW_PROVISIONAL_MAGAZINE_CODE = true;
+const MAGAZINE_PARENT_CODE_WITH_LANGUAGE_PREFIX = true;
+
+let _masterSpreadsheetCache = null;
+
+function getMasterSpreadsheet_() {
+  if (_masterSpreadsheetCache) return _masterSpreadsheetCache;
+  _masterSpreadsheetCache = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
+  return _masterSpreadsheetCache;
+}
+
+function doGet() {
+  return jsonResponse_({
+    ok: true,
+    message: 'books.com.tw web app',
+    spreadsheetId: SPREADSHEET_ID,
+    masterSpreadsheetId: MASTER_SPREADSHEET_ID,
+    comicBookSheetName: COMIC_BOOK_SHEET_NAME,
+    otherBookSheetName: OTHER_BOOK_SHEET_NAME,
+    goodsSheetName: GOODS_SHEET_NAME,
+    magazineSheetName: MAGAZINE_SHEET_NAME,
+    magazineMasterSheet: MAGAZINE_MASTER_SHEET,
+    magazineMasterCandidateSheet: MAGAZINE_MASTER_CANDIDATE_SHEET,
+    editionRuleSheet: MAGAZINE_EDITION_RULE_SHEET,
+    typeRuleSheet: MAGAZINE_TYPE_RULE_SHEET,
+  });
+}
+
+function doPost(e) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const raw = e && e.postData ? e.postData.contents : '';
+    if (!raw) throw new Error('postData.contents is empty');
+
+    const payload = JSON.parse(raw);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    if (!items.length) throw new Error('items is empty');
+
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const results = appendItems_(ss, items);
+    const appended = results.filter(r => r && r.ok).length;
+
+    return jsonResponse_({
+      ok: true,
+      appended,
+      results,
+      source: payload.source || 'unknown',
+      spreadsheetId: SPREADSHEET_ID,
+      masterSpreadsheetId: MASTER_SPREADSHEET_ID,
+    });
+  } catch (error) {
+    return jsonResponse_({
+      ok: false,
+      error: error.message,
+      stack: error.stack || '',
+    });
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+function appendItems_(ss, items) {
+  const groupedBySheet = {};
+
+  items.forEach((item, index) => {
+    const sheetName = resolveSheetName_(item);
+    if (!groupedBySheet[sheetName]) groupedBySheet[sheetName] = [];
+    groupedBySheet[sheetName].push({ item, index });
+  });
+
+  const results = new Array(items.length);
+
+  Object.keys(groupedBySheet).forEach(sheetName => {
+    const entries = groupedBySheet[sheetName];
+    const context = buildSheetContext_(ss, sheetName, entries[0].item);
+    const duplicateKeyColumns = findDuplicateKeyColumns_(context.normalizedHeaderMap, entries[0].item);
+    const knownDuplicateKeys = collectExistingDuplicateKeys_(context.sheet, duplicateKeyColumns);
+    const appendEntries = [];
+    const rows = [];
+
+    entries.forEach(entry => {
+      const duplicateKeys = buildDuplicateKeysForRowData_(extractRowData_(entry.item), duplicateKeyColumns);
+      const duplicateHit = duplicateKeys.find(key => knownDuplicateKeys.has(key));
+      if (duplicateHit) {
+        results[entry.index] = {
+          ok: true,
+          skipped: true,
+          reason: 'duplicate',
+          index: entry.index,
+          sheetName,
+          duplicateKey: duplicateHit,
+          productCode: entry.item && entry.item.productCode ? entry.item.productCode : '',
+        };
+        return;
+      }
+
+      duplicateKeys.forEach(key => knownDuplicateKeys.add(key));
+      appendEntries.push(entry);
+      rows.push(buildRow_(context, entry.item));
+    });
+
+    if (!appendEntries.length) return;
+
+    const targetRows = resolveAppendRows_(context.sheet, context.keyColumnIndex, rows.length);
+    writeRows_(context.sheet, context.lastColumn, targetRows, rows);
+
+    appendEntries.forEach((entry, entryIndex) => {
+      const appendedRow = targetRows[entryIndex];
+
+      if (sheetName === MAGAZINE_SHEET_NAME) {
+        try {
+          mag_書込後処理_(context.sheet, appendedRow, entry.item);
+        } catch (err) {
+          Logger.log(`台湾雑誌 書込後処理エラー row ${appendedRow}: ${err.message}`);
+        }
+      }
+
+      results[entry.index] = {
+        ok: true,
+        index: entry.index,
+        sheetName,
+        productCode: entry.item && entry.item.productCode ? entry.item.productCode : '',
+        appendedRow,
+      };
+    });
+  });
+
+  return results;
+}
+
+function resolveSheetName_(item) {
+  if (item && item.sheetName) return String(item.sheetName);
+  if (item && item.itemType === 'goods') return GOODS_SHEET_NAME;
+  if (item && item.itemType === 'magazine') return MAGAZINE_SHEET_NAME;
+
+  const rowData = extractRowData_(item);
+  const category = String(rowData['カテゴリ'] || '').trim();
+  return category === 'まんが' ? COMIC_BOOK_SHEET_NAME : OTHER_BOOK_SHEET_NAME;
+}
+
+function buildSheetContext_(ss, sheetName, sampleItem) {
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const headerValues = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+  if (!headerValues.some(Boolean)) throw new Error(`Header row is empty: ${sheetName}`);
+
+  const normalizedHeaderMap = {};
+  headerValues.forEach((header, idx) => {
+    const normalized = normalizeHeader_(header);
+    if (normalized) normalizedHeaderMap[normalized] = idx;
+  });
+
+  return {
+    sheet,
+    sheetName,
+    lastColumn,
+    normalizedHeaderMap,
+    keyColumnIndex: findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, extractRowData_(sampleItem)),
+  };
+}
+
+function buildRow_(context, item) {
+  const rowData = extractRowData_(item);
+  const row = new Array(context.lastColumn).fill('');
+
+  Object.keys(rowData).forEach(key => {
+    const idx = context.normalizedHeaderMap[normalizeHeader_(key)];
+    if (typeof idx !== 'number') return;
+    row[idx] = toCellValue_(rowData[key]);
+  });
+
+  return row;
+}
+
+
+function findDuplicateKeyGroups_(item) {
+  if (item && item.itemType === 'goods') {
+    return [
+      { type: 'productCode', headers: ['博客來商品コード', 'サイト商品コード', '商品コード', 'productCode'] },
+      { type: 'duplicateKey', headers: ['重複チェックキー'] },
+      { type: 'link', headers: ['博客來URL', 'リンク', 'URL', 'pageUrl'] },
+    ];
+  }
+
+  if (item && item.itemType === 'magazine') {
+    return [
+      { type: 'productCode', headers: ['博客來商品コード', 'サイト商品コード', '商品コード', 'productCode'] },
+      { type: 'link', headers: ['博客來URL', 'リンク', 'URL', 'pageUrl'] },
+    ];
+  }
+
+  return [
+    { type: 'productCode', headers: ['サイト商品コード', '博客來商品コード', '商品コード', 'productCode'] },
+    { type: 'link', headers: ['リンク', '博客來URL', 'URL', 'pageUrl'] },
+    { type: 'isbn', headers: ['ISBN', 'isbn'] },
+    { type: 'sku', headers: ['商品コード（SKU）'] },
+  ];
+}
+
+function findDuplicateKeyColumns_(normalizedHeaderMap, item) {
+  return findDuplicateKeyGroups_(item).map(group => {
+    for (let i = 0; i < group.headers.length; i += 1) {
+      const idx = normalizedHeaderMap[normalizeHeader_(group.headers[i])];
+      if (typeof idx === 'number') {
+        return {
+          type: group.type,
+          index: idx,
+          headers: group.headers,
+        };
+      }
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+function normalizeDuplicateKeyValue_(value) {
+  return normalizeCellText_(value).toLowerCase();
+}
+
+function buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns) {
+  const keys = [];
+  duplicateKeyColumns.forEach(column => {
+    let rawValue = '';
+    for (let i = 0; i < column.headers.length; i += 1) {
+      const candidate = rowData && rowData[column.headers[i]];
+      if (candidate == null) continue;
+      const normalized = normalizeDuplicateKeyValue_(candidate);
+      if (!normalized) continue;
+      rawValue = normalized;
+      break;
+    }
+    if (!rawValue) return;
+    keys.push(`${column.type}:${rawValue}`);
+  });
+  return [...new Set(keys)];
+}
+
+function collectExistingDuplicateKeys_(sheet, duplicateKeyColumns) {
+  const seen = new Set();
+  if (!duplicateKeyColumns.length) return seen;
+
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  if (lastRow <= 1) return seen;
+
+  duplicateKeyColumns.forEach(column => {
+    const values = sheet.getRange(2, column.index + 1, lastRow - 1, 1).getDisplayValues();
+    values.forEach(row => {
+      const normalized = normalizeDuplicateKeyValue_(row[0]);
+      if (!normalized) return;
+      seen.add(`${column.type}:${normalized}`);
+    });
+  });
+
+  return seen;
+}
+
+function extractRowData_(item) {
+  return item && item.rowData && typeof item.rowData === 'object' && !Array.isArray(item.rowData)
+    ? item.rowData
+    : {};
+}
+
+function findAppendKeyColumnIndex_(normalizedHeaderMap, item, rowData) {
+  let candidates;
+
+  if (item && item.itemType === 'goods') {
+    candidates = ['博客來商品コード', 'サイト商品コード', '重複チェックキー', '博客來URL', 'リンク'];
+  } else if (item && item.itemType === 'magazine') {
+    candidates = ['博客來商品コード', '原題タイトル', '原題商品名', '博客來URL', 'リンク', '雑誌名'];
+  } else {
+    candidates = ['原題タイトル', '原題商品タイトル', 'タイトル', 'リンク', 'サイト商品コード', '商品コード（SKU）'];
+  }
+
+  Object.keys(rowData || {}).forEach(key => {
+    if (!candidates.includes(key)) candidates.push(key);
+  });
+
+  for (let i = 0; i < candidates.length; i += 1) {
+    const idx = normalizedHeaderMap[normalizeHeader_(candidates[i])];
+    if (typeof idx === 'number') return idx;
+  }
+
+  return -1;
+}
+
+function resolveAppendRows_(sheet, keyColumnIndex, count) {
+  if (count <= 0) return [];
+
+  const dataLastRow = keyColumnIndex >= 0
+    ? findLastFilledRowInColumn_(sheet, keyColumnIndex + 1)
+    : Math.max(sheet.getLastRow(), 1);
+
+  return buildSequentialRows_(Math.max(dataLastRow, 1) + 1, count);
+}
+
+function findLastFilledRowInColumn_(sheet, columnNumber) {
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  if (lastRow <= 1) return 1;
+
+  const chunkSize = 500;
+  for (let endRow = lastRow; endRow >= 2; endRow -= chunkSize) {
+    const startRow = Math.max(2, endRow - chunkSize + 1);
+    const rowCount = endRow - startRow + 1;
+    const values = sheet.getRange(startRow, columnNumber, rowCount, 1).getDisplayValues();
+
+    for (let i = values.length - 1; i >= 0; i -= 1) {
+      if (String(values[i][0] || '').trim()) return startRow + i;
+    }
+  }
+
+  return 1;
+}
+
+function buildSequentialRows_(startRow, count) {
+  return Array.from({ length: count }, (_, index) => startRow + index);
+}
+
+function writeRows_(sheet, lastColumn, targetRows, rows) {
+  if (!targetRows.length || !rows.length) return;
+
+  const maxTargetRow = Math.max.apply(null, targetRows);
+  if (maxTargetRow > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), maxTargetRow - sheet.getMaxRows());
+  }
+
+  let startIndex = 0;
+  while (startIndex < targetRows.length) {
+    let endIndex = startIndex;
+    while (endIndex + 1 < targetRows.length && targetRows[endIndex + 1] === targetRows[endIndex] + 1) {
+      endIndex += 1;
+    }
+
+    const startRow = targetRows[startIndex];
+    const segmentRows = rows.slice(startIndex, endIndex + 1);
+    const range = sheet.getRange(startRow, 1, segmentRows.length, lastColumn);
+    range.setValues(segmentRows);
+    range.setWrap(false);
+
+    startIndex = endIndex + 1;
+  }
+}
+
+function normalizeHeader_(value) {
+  return String(value || '').trim();
+}
+
+function toCellValue_(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(toCellValue_).join(' / ');
+  if (Object.prototype.toString.call(value) === '[object Date]') {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  if (typeof value === 'object') return normalizeCellText_(JSON.stringify(value));
+  return normalizeCellText_(String(value));
+}
+
+function normalizeCellText_(value) {
+  return String(value || '')
+    .replace(/\r?\n+/g, ' / ')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+function jsonResponse_(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function mag_書込後処理_(sh, rowNum, item) {
+  const rowData = extractRowData_(item);
+  const map = mag_ヘッダーMap_(sh);
+
+  let language = mag_firstNonEmpty_(
+    rowData['言語'],
+    map['言語'] ? sh.getRange(rowNum, map['言語']).getValue() : ''
+  );
+  language = mag_言語表示へ変換_(language);
+
+  const baseTitle = mag_firstNonEmpty_(
+    rowData['原題タイトル'],
+    rowData['タイトル'],
+    rowData['title']
+  );
+  const rawProductTitle = mag_firstNonEmpty_(
+    rowData['原題商品名'],
+    rowData['表紙情報'],
+    rowData['商品名'],
+    rowData['title']
+  );
+  const rawTitleForName = baseTitle || rawProductTitle;
+  const rawTitleForParse = rawProductTitle || baseTitle;
+
+  const incomingMagazineName = mag_firstNonEmpty_(
+    rowData['雑誌名'],
+    rowData['雑誌名（英字）'],
+    rowData['雑誌名英字'],
+    rowData['magazineName'],
+    rowData['titleMagazine']
+  );
+
+  let magazineName = incomingMagazineName;
+  const currentInfo = magazineName ? mag_マスターを検索_(magazineName, language) : null;
+  const canonicalCurrent = currentInfo ? (currentInfo.表示英字名 || currentInfo.英字名) : '';
+  if (canonicalCurrent && canonicalCurrent !== magazineName) {
+    magazineName = canonicalCurrent;
+  }
+
+  const inferred = mag_雑誌名を推定_(rawTitleForName || rawTitleForParse, language);
+  if (inferred && (!magazineName || magazineName !== inferred)) {
+    magazineName = inferred;
+  }
+
+  if (map['言語'] && language) {
+    sh.getRange(rowNum, map['言語']).setValue(language);
+  }
+  if (map['雑誌名'] && magazineName) {
+    sh.getRange(rowNum, map['雑誌名']).setValue(magazineName);
+  }
+  if (map['原題タイトル'] && magazineName) {
+    sh.getRange(rowNum, map['原題タイトル']).setValue(magazineName);
+  }
+
+  const workingName = magazineName || mag_雑誌名候補を整形_(rawTitleForName || rawTitleForParse);
+
+  if (
+    workingName &&
+    UNKNOWN_MAGAZINE_WRITE_MODE !== 'off' &&
+    !mag_雑誌マスター登録済み_(workingName, language)
+  ) {
+    mag_候補シートへ追加_({
+      言語: language,
+      雑誌名: workingName,
+      原題: rawTitleForParse || rawTitleForName,
+      博客來商品コード: mag_firstNonEmpty_(
+        rowData['博客來商品コード'],
+        rowData['サイト商品コード'],
+        rowData['商品コード']
+      ),
+      博客來URL: mag_firstNonEmpty_(
+        rowData['博客來URL'],
+        rowData['リンク'],
+        rowData['URL']
+      ),
+      rowNum,
+    });
+  }
+
+  mag_行を再計算_(sh, rowNum);
+}
+
+function mag_行を再計算_(sh, row) {
+  if (!sh || row < 2) return;
+
+  const map = mag_ヘッダーMap_(sh);
+  const get = name => map[name] ? sh.getRange(row, map[name]).getValue() : '';
+  const set = (name, val) => { if (map[name]) sh.getRange(row, map[name]).setValue(val); };
+
+  const languageRaw = String(get('言語') || '').trim();
+  const language = mag_言語表示へ変換_(languageRaw);
+  if (language && language !== languageRaw) set('言語', language);
+
+  const baseTitle = String(get('原題タイトル') || '').trim();
+  const rawProductTitle = String(get('原題商品名') || '').trim();
+  const coverInfo = String(get('表紙情報') || '').trim();
+  const bonusMemo = String(get('特典メモ') || '').trim();
+  const rawTitleForName = baseTitle || rawProductTitle || coverInfo;
+  const rawTitleForParse = rawProductTitle || coverInfo || baseTitle;
+
+  let magazineName = String(get('雑誌名') || '').trim();
+  const currentInfo = magazineName ? mag_マスターを検索_(magazineName, language) : null;
+  const canonicalCurrent = currentInfo ? (currentInfo.表示英字名 || currentInfo.英字名) : '';
+  if (canonicalCurrent && canonicalCurrent !== magazineName) {
+    magazineName = canonicalCurrent;
+    set('雑誌名', magazineName);
+  }
+
+  const inferred = mag_雑誌名を推定_(rawTitleForName, language);
+  if (inferred && (!magazineName || magazineName !== inferred)) {
+    magazineName = inferred;
+    set('雑誌名', magazineName);
+  }
+  if (magazineName && baseTitle !== magazineName) {
+    set('原題タイトル', magazineName);
+  }
+
+  const workingName = magazineName || mag_雑誌名候補を整形_(rawTitleForName || rawTitleForParse);
+  const parsed = mag_原題を解析_(rawTitleForParse);
+
+  let year = String(get('年') || '').trim();
+  let month = String(get('月') || '').trim();
+  let issue = String(get('号数') || '').trim();
+
+  if (!year && parsed.year) { year = parsed.year; set('年', parsed.year); }
+  if (!month && parsed.month) { month = parsed.month; set('月', parsed.month); }
+  if (!issue && parsed.issue) { issue = parsed.issue; set('号数', parsed.issue); }
+
+  if (!language || !workingName) return;
+
+  const parentCode = mag_親コードを生成_(language, workingName, year, month, issue, parsed);
+  if (parentCode && !parentCode.startsWith('ERROR')) set('親コード', parentCode);
+
+  const productName = mag_商品名を生成_(language, workingName, year, month, issue, coverInfo, bonusMemo, parsed);
+  if (productName) set('商品名（出品用）', productName);
+
+  if (!get('登録日')) set('登録日', new Date());
+}
+
+function mag_ヘッダーMap_(sh) {
+  const vals = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues()[0];
+  const map = {};
+  vals.forEach((h, i) => {
+    if (h) map[String(h).trim()] = i + 1;
+  });
+  return map;
+}
+
+function mag_マスターを検索_(magazineName, language) {
+  const master = getMasterSpreadsheet_().getSheetByName(MAGAZINE_MASTER_SHEET);
+  if (!master || master.getLastRow() < 2) return null;
+
+  const map = mag_ヘッダーMap_(master);
+  const rows = master.getRange(2, 1, master.getLastRow() - 1, master.getLastColumn()).getDisplayValues();
+  const target = mag_正規化雑誌文字列_(magazineName);
+  if (!target) return null;
+
+  let best = null;
+  let bestScore = -1;
+
+  rows.forEach(row => {
+    const info = mag_マスター行を情報化_(row, map);
+    if (!info.aliases.length) return;
+
+    info.aliases.forEach(alias => {
+      const aliasNorm = mag_正規化雑誌文字列_(alias);
+      if (!aliasNorm) return;
+
+      let score = -1;
+      if (target === aliasNorm) score = 300;
+      else if (target.startsWith(aliasNorm)) score = 220 + aliasNorm.length;
+      else if (target.includes(aliasNorm)) score = 180 + aliasNorm.length;
+
+      if (score < 0) return;
+      if (mag_言語一致_(info.languages, language)) score += 100;
+      if (score > bestScore) {
+        bestScore = score;
+        best = info;
+      }
+    });
+  });
+
+  return best;
+}
+
+function mag_ルール一覧を取得_(sheetName) {
+  const sh = getMasterSpreadsheet_().getSheetByName(sheetName);
+  if (!sh || sh.getLastRow() < 2) return [];
+
+  const map = mag_ヘッダーMap_(sh);
+  return sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getDisplayValues()
+    .map(r => ({
+      keyword: String(r[(map['判定キーワード'] || 1) - 1] || '').trim(),
+      codeSuffix: String(r[(map['コードsuffix'] || 2) - 1] || '').trim(),
+      titleDisplay: String(r[(map['タイトル表示'] || 3) - 1] || '').trim(),
+      priority: Number(r[(map['優先順位'] || 4) - 1]) || 0,
+      enabled: map['有効'] ? r[map['有効'] - 1] !== 'FALSE' : true,
+    }))
+    .filter(x => x.enabled && x.keyword)
+    .sort((a, b) => b.priority - a.priority);
+}
+
+function mag_雑誌名を推定_(rawTitle, language) {
+  const master = getMasterSpreadsheet_().getSheetByName(MAGAZINE_MASTER_SHEET);
+  if (!master || master.getLastRow() < 2) return '';
+
+  const map = mag_ヘッダーMap_(master);
+  const rows = master.getRange(2, 1, master.getLastRow() - 1, master.getLastColumn()).getDisplayValues();
+  const raw = String(rawTitle || '').trim();
+  if (!raw) return '';
+
+  let best = null;
+  let bestScore = -1;
+
+  rows.forEach(row => {
+    const info = mag_マスター行を情報化_(row, map);
+    if (!info.aliases.length) return;
+
+    info.aliases.forEach(alias => {
+      const score = mag_別名一致スコア_(raw, alias, info.languages, language);
+      if (score > bestScore) {
+        bestScore = score;
+        best = info;
+      }
+    });
+  });
+
+  return bestScore >= 120 && best ? best.表示英字名 : '';
+}function mag_雑誌マスター登録済み_(magazineName, language) {
+  return !!mag_マスターを検索_(magazineName, language);
+}
+
+function mag_マスター行を情報化_(row, map) {
+  const aliases = [];
+  const pushIf = value => {
+    const text = String(value || '').trim();
+    if (text && !aliases.includes(text)) aliases.push(text);
+  };
+
+  const englishName = String(row[(map['雑誌名（英字）'] || 2) - 1] || '').trim();
+  const katakanaName = String(row[(map['雑誌名（カタカナ）'] || 3) - 1] || '').trim();
+
+  pushIf(englishName);
+  Object.keys(map)
+    .filter(name => /^別名\d*$/.test(name))
+    .sort((a, b) => map[a] - map[b])
+    .forEach(name => pushIf(row[map[name] - 1]));
+
+  const displayEnglishName = mag_表示英字名を決定_(englishName, aliases);
+  if (displayEnglishName && !aliases.includes(displayEnglishName)) aliases.push(displayEnglishName);
+
+  return {
+    略称: String(row[(map['略称コード'] || 1) - 1] || '').trim(),
+    英字名: englishName,
+    カタカナ名: katakanaName,
+    表示英字名: displayEnglishName,
+    表示カタカナ名: mag_表示カタカナ名を決定_(katakanaName),
+    基本キー型: mag_基本キー型を正規化_(row[(map['基本キー型'] || 4) - 1]),
+    通常タイプ結合記号: map['通常タイプ結合記号'] ? String(row[map['通常タイプ結合記号'] - 1] || '').trim() : '',
+    版種ありタイプ結合記号: map['版種ありタイプ結合記号'] ? String(row[map['版種ありタイプ結合記号'] - 1] || '-').trim() : '-',
+    languages: mag_対応言語一覧_(row[(map['対応言語'] || 7) - 1]),
+    aliases,
+  };
+}
+
+function mag_表示英字名を決定_(englishName, aliases) {
+  const candidates = [];
+  const seen = new Set();
+  const pushCandidate = value => {
+    const text = mag_英字地域表記を除去_(value);
+    const key = mag_英字表示キー_(text);
+    if (!text || !key || seen.has(key)) return;
+    seen.add(key);
+    candidates.push(text);
+  };
+
+  pushCandidate(englishName);
+  (aliases || []).forEach(pushCandidate);
+
+  if (!candidates.length) return String(englishName || '').trim();
+
+  const latinCandidates = candidates.filter(text => /[A-Za-z]/.test(text));
+  const pool = latinCandidates.length ? latinCandidates : candidates;
+
+  let best = pool[0];
+  let bestScore = mag_表示英字名スコア_(best);
+
+  pool.forEach(candidate => {
+    const score = mag_表示英字名スコア_(candidate);
+    if (score > bestScore || (score === bestScore && candidate.length < best.length)) {
+      best = candidate;
+      bestScore = score;
+    }
+  });
+
+  return mag_英字表示名を整形_(best);
+}
+
+function mag_表示英字名スコア_(value) {
+  const text = String(value || '').trim();
+  if (!text) return -1;
+
+  let score = 0;
+  if (/[A-Za-z]/.test(text)) score += 100;
+  if (/[A-Z]/.test(text) && /[a-z]/.test(text)) score += 25;
+  else if (/^[A-Z0-9 '&+./-]+$/.test(text)) score += 20;
+  else if (/^[a-z0-9 '&+./-]+$/.test(text)) score += 10;
+  if (!/(?:KOREA|TAIWAN|HONG\s*KONG|HONGKONG|CHINA|THAILAND|HK|TW|CN|KR|TH)\b/i.test(text)) score += 40;
+  score += Math.max(0, 40 - text.length);
+  return score;
+}
+
+function mag_英字表示名を整形_(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+
+  const map = {
+    'MARIE CLAIRE': 'Marie Claire',
+    'VOGUE': 'VOGUE',
+    'BAZAAR': 'BAZAAR',
+    'GQ': 'GQ',
+    'ELLE': 'ELLE',
+    'ESQUIRE': 'Esquire',
+    'ALLURE': 'allure',
+    'MENS HEALTH': "Men's Health",
+    'MEN S HEALTH': "Men's Health",
+    'L OFFICIEL': "L'OFFICIEL",
+    'L OFFICIEL HOMMES': "L'OFFICIEL HOMMES",
+    'THE BIG ISSUE': 'THE BIG ISSUE',
+    'W': 'W',
+  };
+  return map[mag_英字表示キー_(text)] || text;
+}
+
+function mag_英字表示キー_(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toUpperCase()
+    .replace(/&/g, ' AND ')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function mag_英字地域表記を除去_(value) {
+  return String(value || '')
+    .replace(/\b(?:KOREA|TAIWAN|HONG\s*KONG|HONGKONG|CHINA|THAILAND)\b/gi, ' ')
+    .replace(/\b(?:HK|TW|CN|KR|TH)\b/gi, ' ')
+    .replace(/(?:韓国版|韓國版|台湾版|臺灣版|中国版|中國版|香港版|タイ版)/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function mag_表示カタカナ名を決定_(value) {
+  return mag_カタカナ地域表記を除去_(value);
+}
+
+function mag_カタカナ地域表記を除去_(value) {
+  return String(value || '')
+    .trim()
+    .replace(/(?:・|\s)*(?:台湾版|台湾|臺灣版|臺灣|コリア|韓国版|韓国|韓國版|韓國|香港版|香港|中国版|中国|中國版|中國|タイ版|タイ)$/u, '')
+    .replace(/[・\s]+$/u, '')
+    .trim();
+}
+function mag_対応言語一覧_(raw) {
+  return String(raw || '')
+    .split(',')
+    .map(v => mag_言語コードへ変換_(v))
+    .filter(Boolean);
+}
+
+function mag_言語一致_(supported, language) {
+  if (!supported || !supported.length) return true;
+  const code = mag_言語コードへ変換_(language);
+  return !code || supported.includes(code);
+}
+
+function mag_別名一致スコア_(rawTitle, alias, supportedLanguages, language) {
+  const raw = String(rawTitle || '').trim();
+  const aliasText = String(alias || '').trim();
+  if (!raw || !aliasText) return -1;
+
+  const rawNorm = mag_正規化雑誌文字列_(raw);
+  const aliasNorm = mag_正規化雑誌文字列_(aliasText);
+  if (!aliasNorm) return -1;
+
+  let score = -1;
+  if (rawNorm === aliasNorm) score = 260;
+  else if (rawNorm.startsWith(aliasNorm)) score = 210 + aliasNorm.length;
+  else if (rawNorm.includes(aliasNorm)) score = 180 + aliasNorm.length;
+  else if (aliasNorm.length <= 2 && mag_短い別名一致_(raw, aliasText)) score = 190;
+
+  if (score < 0) return -1;
+  if (mag_言語一致_(supportedLanguages, language)) score += 100;
+  return score;
+}
+
+function mag_短い別名一致_(rawTitle, alias) {
+  const escaped = String(alias || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|[^A-Z0-9])${escaped.toUpperCase()}([^A-Z0-9]|$)`);
+  return re.test(String(rawTitle || '').toUpperCase());
+}
+
+function mag_正規化雑誌文字列_(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toUpperCase()
+    .replace(/[（(].*?[)）]/g, ' ')
+    .replace(/&/g, ' AND ')
+    .replace(/\b(KOREA|TAIWAN|HONG\s*KONG|HONGKONG|CHINA|THAILAND|HK|TW|CN)\b/g, ' ')
+    .replace(/(韓国版|韓國版|台湾版|臺灣版|中国版|中國版|香港版|タイ版)/g, ' ')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function mag_基本キー型を正規化_(raw) {
+  const s = String(raw || '').trim().toUpperCase();
+  if (s === 'ISSUE' || s === 'VOL' || s === '号数型' || s === '号数') return '号数型';
+  return '年月型';
+}
+
+function mag_ルール一致_(text, ruleList) {
+  const hay = mag_比較用文字列_(text);
+  for (let i = 0; i < ruleList.length; i += 1) {
+    if (hay.includes(mag_比較用文字列_(ruleList[i].keyword))) return ruleList[i];
+  }
+  return { keyword: '', codeSuffix: '', titleDisplay: '', priority: 0, enabled: true };
+}
+
+function mag_原題から年月号数を抽出_(rawTitle) {
+  const text = String(rawTitle || '')
+    .replace(/[　]/g, ' ')
+    .replace(/[／]/g, '/')
+    .replace(/[－—–ー]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  let year = '';
+  let month = '';
+  let issue = '';
+  let issueDisplay = '';
+
+  let m = text.match(/(\d{1,2}(?:\s*[.\/\-・~～]\s*\d{1,2})?)\s*月(?:號|号)?\s*\/\s*(20\d{2})/i);
+  if (m) {
+    month = m[1].replace(/\s*/g, '');
+    year = m[2];
+  }
+
+  if (!year || !month) {
+    m = text.match(/(20\d{2})\s*(?:年|\/|\-|\.)\s*(\d{1,2}(?:\s*[.\/\-・~～]\s*\d{1,2})?)\s*月?(?:號|号)?/i);
+    if (m) {
+      year = m[1];
+      month = m[2].replace(/\s*/g, '');
+    }
+  }
+
+  if (!year) {
+    m = text.match(/\b(20\d{2})\b/);
+    if (m) year = m[1];
+  }
+  if (!month) {
+    m = text.match(/(\d{1,2}(?:\s*[.\/\-・~～]\s*\d{1,2})?)\s*月(?:號|号)?/i);
+    if (m) month = m[1].replace(/\s*/g, '');
+  }
+
+  m = text.match(/\bVOL\.?\s*([0-9]{1,5})\b/i);
+  if (m) {
+    issue = m[1];
+    issueDisplay = `Vol.${issue}`;
+  }
+
+  if (!issue) {
+    m = text.match(/第\s*([0-9]{1,5})\s*(號|号|期)/i);
+    if (m) {
+      issue = m[1];
+      issueDisplay = `第${issue}${m[2]}`;
+    }
+  }
+
+  if (!issue) {
+    const re = /([0-9]{1,5})\s*(號|号|期)/ig;
+    let mm;
+    while ((mm = re.exec(text)) !== null) {
+      const prev = text.substring(Math.max(0, mm.index - 1), mm.index);
+      if (prev === '月') continue;
+      issue = mm[1];
+      issueDisplay = `${issue}${mm[2]}`;
+      break;
+    }
+  }
+
+  return { year, month, issue, issueDisplay };
+}
+
+function mag_原題を解析_(rawTitle) {
+  const base = mag_原題から年月号数を抽出_(rawTitle);
+  return {
+    year: base.year,
+    month: base.month,
+    issue: base.issue,
+    issueDisplay: base.issueDisplay,
+    edition: mag_ルール一致_(rawTitle, mag_ルール一覧を取得_(MAGAZINE_EDITION_RULE_SHEET)),
+    type: mag_ルール一致_(rawTitle, mag_ルール一覧を取得_(MAGAZINE_TYPE_RULE_SHEET)),
+  };
+}
+
+function mag_月コードへ変換_(monthValue) {
+  const nums = String(monthValue || '').match(/\d+/g);
+  if (!nums) return '';
+  return nums.map(n => String(parseInt(n, 10)).padStart(2, '0')).join('');
+}
+
+function mag_月表示へ変換_(monthValue) {
+  const nums = String(monthValue || '').match(/\d+/g);
+  if (!nums) return '';
+  const arr = nums.map(n => String(parseInt(n, 10)));
+  return arr.length === 1 ? `${arr[0]}月号` : `${arr.join('・')}月号`;
+}
+
+function mag_親コードを生成_(language, magazineName, year, month, issue, parsed) {
+  let info = mag_マスターを検索_(magazineName, language);
+
+  if (!info && ALLOW_PROVISIONAL_MAGAZINE_CODE) {
+    info = {
+      英字名: magazineName,
+      カタカナ名: '',
+      略称: mag_雑誌略称候補_(magazineName),
+      基本キー型: parsed.issue ? '号数型' : '年月型',
+      通常タイプ結合記号: '',
+      版種ありタイプ結合記号: '-',
+      languages: [],
+      aliases: [magazineName],
+    };
+  }
+
+  if (!info || !info.略称) return 'ERROR:マスター未登録';
+
+  let codeCore = '';
+  if (info.基本キー型 === '号数型') {
+    if (!issue) return 'ERROR:号数未入力';
+    codeCore = `${info.略称}${issue}`;
+  } else {
+    if (!year || !month) return 'ERROR:年月未入力';
+    const yy = String(year).slice(-2);
+    const mmKey = mag_月コードへ変換_(month);
+    if (!mmKey) return 'ERROR:月形式不正';
+    codeCore = `${info.略称}${yy}${mmKey}`;
+  }
+
+  if (parsed.edition && parsed.edition.codeSuffix) codeCore += parsed.edition.codeSuffix;
+  if (parsed.type && parsed.type.codeSuffix) {
+    const joiner = parsed.edition && parsed.edition.codeSuffix
+      ? (info.版種ありタイプ結合記号 || '-')
+      : (info.通常タイプ結合記号 || '');
+    codeCore += `${joiner}${parsed.type.codeSuffix}`;
+  }
+
+  if (!MAGAZINE_PARENT_CODE_WITH_LANGUAGE_PREFIX) return codeCore;
+
+  const languageCode = mag_言語コードへ変換_(language);
+  if (!languageCode) return 'ERROR:言語コード未対応';
+  return `${languageCode}-${codeCore}`;
+}
+
+function mag_言語コードへ変換_(language) {
+  const normalized = String(language || '').trim().toUpperCase();
+  if (!normalized) return '';
+  if (['TW', 'CN', 'HK', 'TH', 'KR', 'JP', 'US', 'EN'].includes(normalized)) return normalized;
+
+  const map = {
+    '台湾': 'TW',
+    '臺灣': 'TW',
+    '中国': 'CN',
+    '中國': 'CN',
+    '香港': 'HK',
+    'タイ': 'TH',
+    '泰国': 'TH',
+    '泰國': 'TH',
+    '韓国': 'KR',
+    '韓國': 'KR',
+    '日本': 'JP',
+    'アメリカ': 'US',
+    '英語': 'EN',
+  };
+  return map[String(language || '').trim()] || '';
+}
+
+function mag_言語表示へ変換_(language) {
+  const code = mag_言語コードへ変換_(language);
+  const map = {
+    TW: '台湾',
+    CN: '中国',
+    HK: '香港',
+    TH: 'タイ',
+    KR: '韓国',
+    JP: '日本',
+    US: 'アメリカ',
+    EN: '英語',
+  };
+  return map[code] || String(language || '').trim();
+}
+
+function mag_商品名を生成_(language, magazineName, year, month, issue, coverInfo, bonusMemo, parsed) {
+  let info = mag_マスターを検索_(magazineName, language);
+
+  if (!info && ALLOW_PROVISIONAL_MAGAZINE_CODE) {
+    info = {
+      英字名: magazineName,
+      表示英字名: magazineName,
+      カタカナ名: '',
+      表示カタカナ名: '',
+      略称: '',
+      基本キー型: parsed.issue ? '号数型' : '年月型',
+      通常タイプ結合記号: '',
+      版種ありタイプ結合記号: '-',
+      languages: [],
+      aliases: [magazineName],
+    };
+  }
+
+  if (!info) return '';
+
+  const englishName = info.表示英字名 || info.英字名 || magazineName;
+  const katakana = info.表示カタカナ名 || info.カタカナ名 || '';
+  const baseKeyType = info.基本キー型 || '年月型';
+  const languageCode = mag_言語コードへ変換_(language);
+  const languageLabelMap = {
+    TW: '台湾版',
+    CN: '中国版',
+    HK: '香港版',
+    TH: 'タイ版',
+  };
+  const languageLabel = languageLabelMap[languageCode] || `${String(language || '').trim()}版`;
+
+  let name = `${languageLabel} 雑誌 ${englishName}`;
+  if (katakana) name += ` (${katakana})`;
+
+  if (baseKeyType === '号数型') {
+    if (!issue) return '';
+    name += ` ${parsed.issueDisplay || `Vol.${issue}`}`;
+    if (year && month) name += ` (${year}年${mag_月表示へ変換_(month)})`;
+  } else {
+    if (!year || !month) return '';
+    name += ` ${year}年${mag_月表示へ変換_(month)}`;
+    if (parsed.issueDisplay) name += ` ${parsed.issueDisplay}`;
+  }
+
+  if (parsed.edition && parsed.edition.titleDisplay) name += ` ${parsed.edition.titleDisplay}`;
+  if (coverInfo) name += ` (${coverInfo})`;
+  if (parsed.type && parsed.type.titleDisplay) name += ` ${parsed.type.titleDisplay}`;
+  if (bonusMemo) name += ` ${bonusMemo}`;
+
+  return name.replace(/\s+/g, ' ').trim();
+}function mag_候補シートへ追加_(params) {
+  const sh = mag_候補シートを確保_();
+  const 正規化キー = `${mag_言語コードへ変換_(params.言語)}|${mag_比較用文字列_(params.雑誌名)}`;
+
+  const 既存行 = mag_候補既存キーの行番号_(sh, 正規化キー);
+  if (既存行 >= 2) {
+    sh.getRange(既存行, 18).setValue(new Date());
+    return;
+  }
+
+  const 言語コード = mag_言語コードへ変換_(params.言語) || '';
+  const 基本キー型 = mag_雑誌キー型候補_(params.原題);
+  const 備考 = [
+    params.原題 ? `原題:${params.原題}` : '',
+    params.博客來URL ? `URL:${params.博客來URL}` : '',
+    params.博客來商品コード ? `コード:${params.博客來商品コード}` : '',
+  ].filter(Boolean).join(' / ');
+
+  const now = new Date();
+  const writeRow = Math.max(sh.getLastRow() + 1, 2);
+  sh.getRange(writeRow, 1, 1, 19).setValues([[
+    '未対応',
+    false,
+    mag_雑誌略称候補_(params.雑誌名),
+    params.雑誌名 || '',
+    '',
+    基本キー型,
+    '',
+    '-',
+    言語コード,
+    '', '', '',
+    備考,
+    'books.com.tw拡張機能',
+    'books_gas',
+    params.rowNum || '',
+    now,
+    now,
+    正規化キー,
+  ]]);
+
+  sh.getRange(writeRow, 2).insertCheckboxes();
+}
+
+function mag_候補既存キーの行番号_(sh, 正規化キー) {
+  if (!sh || sh.getLastRow() < 2 || !正規化キー) return -1;
+  const values = sh.getRange(2, 19, sh.getLastRow() - 1, 1).getDisplayValues().flat();
+  for (let i = 0; i < values.length; i += 1) {
+    if (String(values[i] || '').trim() === 正規化キー) return i + 2;
+  }
+  return -1;
+}
+
+function mag_候補シートを確保_() {
+  const ss = getMasterSpreadsheet_();
+  let sh = ss.getSheetByName(MAGAZINE_MASTER_CANDIDATE_SHEET);
+  if (sh) return sh;
+
+  sh = ss.insertSheet(MAGAZINE_MASTER_CANDIDATE_SHEET);
+
+  const headers = [
+    'ステータス', '反映', '略称コード候補',
+    '雑誌名（英字）', '雑誌名（カタカナ）', '基本キー型候補',
+    '通常タイプ結合記号', '版種ありタイプ結合記号', '対応言語',
+    '別名1', '別名2', '別名3', '備考',
+    '元ファイル', '元シート', '元行',
+    '初回検出日時', '最終検出日時', '正規化キー'
+  ];
+
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+  sh.getRange(1, 1, 1, 13)
+    .setBackground('#e69138').setFontColor('#ffffff')
+    .setFontWeight('bold').setHorizontalAlignment('center');
+  sh.getRange(1, 14, 1, 6)
+    .setBackground('#999999').setFontColor('#ffffff')
+    .setFontWeight('bold').setHorizontalAlignment('center');
+
+  sh.getRange(2, 1, 1000, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(['未対応', '確認中', '登録待ち', 'マスター登録済み', '無視'], true).build()
+  );
+
+  sh.getRange(2, 2, 1000, 1).insertCheckboxes();
+
+  sh.getRange(2, 6, 1000, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(['年月型', '号数型'], true).build()
+  );
+
+  const range = sh.getRange(2, 1, 1000, 13);
+  sh.setConditionalFormatRules([
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=$A2="未対応"')
+      .setBackground('#fff2cc').setRanges([range]).build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=$A2="確認中"')
+      .setBackground('#fce5cd').setRanges([range]).build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=$A2="登録待ち"')
+      .setBackground('#cfe2f3').setRanges([range]).build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=$A2="マスター登録済み"')
+      .setBackground('#d9ead3').setRanges([range]).build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=$A2="無視"')
+      .setBackground('#efefef').setFontColor('#999999').setRanges([range]).build(),
+  ]);
+
+  const 列幅 = {
+    1: 120, 2: 45, 3: 120, 4: 200, 5: 160,
+    6: 100, 7: 75, 8: 75, 9: 75,
+    10: 160, 11: 160, 12: 160, 13: 300,
+    14: 160, 15: 100, 16: 60, 17: 140, 18: 140
+  };
+  Object.entries(列幅).forEach(([col, width]) => sh.setColumnWidth(Number(col), width));
+
+  sh.hideColumns(19);
+  sh.setFrozenRows(1);
+  sh.setFrozenColumns(2);
+
+  return sh;
+}
+function mag_雑誌キー型候補_(rawTitle) {
+  const text = String(rawTitle || '');
+  if (/Vol\.?\s*\d+/i.test(text)) return '号数型';
+  if (/第\s*\d+\s*(號|号|期)/i.test(text)) return '号数型';
+  if (/\d{1,2}(?:\.\d{1,2})?\s*月(?:號|号)?\s*\/\s*20\d{2}/i.test(text)) return '年月型';
+  if (/20\d{2}\s*(年|\/|\-|\.)\s*\d{1,2}\s*月/i.test(text)) return '年月型';
+  return '年月型';
+}
+
+function mag_雑誌略称候補_(magazineName) {
+  const cleaned = mag_正規化雑誌文字列_(magazineName).replace(/\s+/g, '');
+  if (!cleaned) return '';
+  return cleaned.slice(0, 8);
+}
+
+function mag_比較用文字列_(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[　\s]+/g, ' ')
+    .toUpperCase();
+}
+
+function mag_雑誌名候補を整形_(rawTitle) {
+  let title = String(rawTitle || '').trim();
+  if (!title) return '';
+
+  const patterns = [
+    /\s+\d{1,2}(?:\s*[.\/\-・~～]\s*\d{1,2})?\s*月(?:號|号)?\s*\/\s*20\d{2}.*$/i,
+    /\s+20\d{2}\s*(?:年|\/|\-|\.)\s*\d{1,2}(?:\s*[.\/\-・~～]\s*\d{1,2})?\s*月?(?:號|号)?.*$/i,
+    /\s+VOL\.?\s*\d+.*$/i,
+    /\s+第\s*\d+\s*(?:號|号|期).*$/i,
+    /\s+\d+\s*(?:號|号|期).*$/i,
+  ];
+
+  for (let i = 0; i < patterns.length; i += 1) {
+    if (patterns[i].test(title)) {
+      title = title.replace(patterns[i], '');
+      break;
+    }
+  }
+
+  return title.replace(/\s+/g, ' ').trim();
+}
+
+function mag_firstNonEmpty_() {
+  for (let i = 0; i < arguments.length; i += 1) {
+    const value = String(arguments[i] == null ? '' : arguments[i]).trim();
+    if (value) return value;
+  }
+  return '';
+}

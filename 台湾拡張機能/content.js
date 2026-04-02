@@ -1,0 +1,980 @@
+// books.com.tw 商品情報スクレイパー
+
+async function getProductInfo() {
+  const url = window.location.href;
+  const productCode = url.match(/products\/([^?]+)/)?.[1] || '';
+
+  // 商品種別判定（書籍かグッズか）
+  // 書籍: B, E, F など / グッズ: N
+  const isBook = !/^[NM]/i.test(productCode);
+
+  const getText = el => (el?.innerText || el?.textContent || '').trim();
+  const toSingleLine = text => (text || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  const toMultiline = text => (text || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join('\n');
+  const mergeTextBlocks = blocks => {
+    const cleaned = (blocks || [])
+      .map(toMultiline)
+      .filter(Boolean);
+    const merged = [];
+    for (const block of cleaned) {
+      const duplicated = merged.some(existing => existing.includes(block) || block.includes(existing));
+      if (!duplicated) merged.push(block);
+    }
+    return merged.join('\n\n');
+  };
+  const uniq = arr => [...new Set((arr || []).filter(Boolean))];
+  const escapeRegExp = str => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const productCodeRegexSafe = escapeRegExp(productCode);
+  const TARGET_IMAGE_EDGE = 1000;
+  const upgradeBooksImageVariant = imageUrl => String(imageUrl || '')
+    .replace(/_t_(\d+)(?=\.(?:jpe?g|png|webp)(?:$|[?#]))/gi, '_b_$1')
+    .replace(/\.webp(?=($|[?#]))/i, '.jpg');
+  const cleanupLabeledValue = raw => {
+    const text = toSingleLine(raw)
+      .replace(/新功能介紹/g, '')
+      .replace(/訂閱出版社新書快訊/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    if (!text) return '';
+
+    // 1つのliに複数ラベルが混在するケースを切り分ける
+    const trailingLabel = /(?:作者|譯者|译者|翻譯者|翻訳者|繪者|绘者|插畫|插画|出版社|出版商|出版日期|出版时间|發行日期|語言|ISBN|定價|優惠價|优惠价)\s*[：:]/;
+    const idx = text.search(trailingLabel);
+    return idx > 0 ? text.slice(0, idx).trim() : text;
+  };
+
+  // getImageラッパーURLから原寸に近い元画像URLを取得（可能な場合）
+    const promoteLargeImageUrl = imageUrl => {
+    if (!imageUrl) return '';
+
+    try {
+      const parsed = new URL(String(imageUrl), window.location.href);
+      const original = parsed.searchParams.get('i');
+      if (original) {
+        let originalUrl = decodeURIComponent(original);
+        if (originalUrl.startsWith('//')) {
+          originalUrl = `${window.location.protocol}${originalUrl}`;
+        }
+        originalUrl = upgradeBooksImageVariant(originalUrl);
+        parsed.searchParams.set('i', originalUrl);
+        ['w', 'width'].forEach(key => parsed.searchParams.set(key, String(TARGET_IMAGE_EDGE)));
+        ['h', 'height'].forEach(key => parsed.searchParams.set(key, String(TARGET_IMAGE_EDGE)));
+        return parsed.href;
+      }
+
+      let href = parsed.href;
+      href = upgradeBooksImageVariant(href);
+      const sized = new URL(href, window.location.href);
+      const hasSizeParam = ['w', 'width', 'h', 'height'].some(key => sized.searchParams.has(key));
+      if (hasSizeParam) {
+        ['w', 'width'].forEach(key => sized.searchParams.set(key, String(TARGET_IMAGE_EDGE)));
+        ['h', 'height'].forEach(key => sized.searchParams.set(key, String(TARGET_IMAGE_EDGE)));
+        return sized.href;
+      }
+      return sized.href;
+    } catch {
+      return upgradeBooksImageVariant(String(imageUrl || '').trim());
+    }
+  };
+
+    const normalizeImageUrl = rawUrl => {
+    if (!rawUrl) return '';
+    let urlText = String(rawUrl).trim();
+    if (!urlText) return '';
+    if (urlText.startsWith('//')) urlText = `${window.location.protocol}${urlText}`;
+    return promoteLargeImageUrl(urlText);
+  };
+
+  const scoreEdgeDistance = edge => {
+    if (!Number.isFinite(edge) || edge <= 0) return 0;
+    return Math.max(0, 3000 - Math.abs(edge - TARGET_IMAGE_EDGE) * 4);
+  };
+
+  const extractRequestedEdge = imageUrl => {
+    try {
+      const parsed = new URL(String(imageUrl || ''), window.location.href);
+      const width = parseInt(parsed.searchParams.get('w') || parsed.searchParams.get('width') || '0', 10);
+      const height = parseInt(parsed.searchParams.get('h') || parsed.searchParams.get('height') || '0', 10);
+      return Math.max(Number.isFinite(width) ? width : 0, Number.isFinite(height) ? height : 0);
+    } catch {
+      return 0;
+    }
+  };
+  const collectImageUrlsFromNode = node => {
+    if (!node) return [];
+    const urls = [];
+    const pushUrl = raw => {
+      const normalized = normalizeImageUrl(raw);
+      if (normalized) urls.push(normalized);
+    };
+
+    Array.from(node.querySelectorAll('img')).forEach(img => {
+      pushUrl(img?.getAttribute('data-original'));
+      pushUrl(img?.getAttribute('data-src'));
+      pushUrl(img?.getAttribute('data-large'));
+      pushUrl(img?.currentSrc);
+      pushUrl(img?.src);
+
+      const srcset = img?.getAttribute('srcset') || img?.getAttribute('data-srcset') || '';
+      if (srcset) {
+        srcset.split(',').forEach(part => {
+          const candidate = part.trim().split(/\s+/)[0];
+          pushUrl(candidate);
+        });
+      }
+    });
+
+    Array.from(node.querySelectorAll('a[href]')).forEach(a => {
+      const href = a.getAttribute('href') || '';
+      if (/\.(?:jpe?g|webp|png)(?:\?|$)/i.test(href) || /getImage\.php/i.test(href)) {
+        pushUrl(href);
+      }
+    });
+
+    Array.from(node.querySelectorAll('[style*="background-image"]')).forEach(el => {
+      const style = el.getAttribute('style') || '';
+      Array.from(style.matchAll(/url\((['"]?)(.*?)\1\)/gi)).forEach(match => {
+        pushUrl(match[2]);
+      });
+    });
+
+    const html = node.innerHTML || '';
+    Array.from(
+      html.matchAll(/https?:\/\/[^"'\\s<)]+?\.(?:jpg|jpeg|webp|png)(?:\?[^"'\\s<)]*)?/gi)
+    ).forEach(match => pushUrl(match[0]));
+    Array.from(
+      html.matchAll(/https?:\/\/www\.books\.com\.tw\/fancybox\/getImage\.php\?[^"'\\s<)]*/gi)
+    ).forEach(match => pushUrl(match[0]));
+
+    return uniq(urls);
+  };
+
+  const getInfoListItems = () => {
+    const containers = Array.from(document.querySelectorAll(
+      'ul.bd-info, .bd-info ul, .prod_cont_b ul, .prod_cont ul, .type02_p002 ul, .type02_p003 ul'
+    ));
+    const scopedLis = containers.flatMap(ul => Array.from(ul.querySelectorAll('li')));
+    return scopedLis.length ? scopedLis : Array.from(document.querySelectorAll('li'));
+  };
+  const infoListItems = getInfoListItems();
+
+  const isGiftSectionPending = scope => {
+    if (!scope) return false;
+    const text = toSingleLine(getText(scope));
+    if (!text) return true;
+    if (/載入中|加载中/.test(text)) return true;
+    return !scope.querySelector('img, .item, .cont, .content, li, a[href], table');
+  };
+
+  const waitForGiftSectionContent = async () => {
+    const sectionSelector = '.mod_a, .mod_b, .mod, .prod_cont, .type01, .type02, .type02_p001, .type02_p002, .type02_p003';
+    const collectScopes = () => uniq(
+      Array.from(document.querySelectorAll(sectionSelector)).filter(scope => {
+        const heading = toSingleLine(getText(scope.querySelector('h1, h2, h3, h4, .title, .maintitle, strong, dt')));
+        const text = toSingleLine(getText(scope));
+        return /特惠贈品|特惠赠品|首刷贈品|首刷赠品|買就送|买就送|限定特典卡|書籍延伸內容|书籍延伸内容/.test(`${heading}\n${text}`) ||
+          !!scope.querySelector('[id*="getGiftInfo"]');
+      })
+    );
+
+    const initialScopes = collectScopes();
+    if (!initialScopes.length) return;
+
+    for (let i = 0; i < 12; i += 1) {
+      const scopes = collectScopes();
+      if (scopes.length && !scopes.some(isGiftSectionPending)) return;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  };
+
+  const getLabeledValue = labels => {
+    for (const li of infoListItems) {
+      const text = toSingleLine(getText(li));
+      if (!text) continue;
+
+      for (const label of labels) {
+        if (!text.includes(label)) continue;
+
+        const labelPattern = escapeRegExp(label);
+        const byLabel = text.match(new RegExp(`${labelPattern}\\s*[：:]\\s*([^\\n]+)`));
+        if (byLabel?.[1]) {
+          return cleanupLabeledValue(byLabel[1]);
+        }
+
+        const fromLinks = cleanupLabeledValue(
+          Array.from(li.querySelectorAll('a, span'))
+            .map(a => getText(a))
+            .join(' ')
+        );
+        if (fromLinks) return fromLinks;
+
+        const afterColon = cleanupLabeledValue(text.replace(/^[^：:]+[：:]/, ''));
+        if (afterColon) return afterColon;
+      }
+    }
+    return '';
+  };
+
+  const extractIsbn = raw => {
+    const text = String(raw || '');
+    if (!text) return '';
+    const match = text.match(/(?:97[89][\d\-\s]{10,17}|[\d]{9}[\dXx]|[\d][\d\-\s]{8,16}[\dXx])/);
+    if (!match) return '';
+    const normalized = match[0].replace(/[^\dXx]/g, '').toUpperCase();
+    return /^[\dX]{10,13}$/.test(normalized) ? normalized : '';
+  };
+
+  const findIsbnInObject = node => {
+    if (!node || typeof node !== 'object') return '';
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const found = findIsbnInObject(item);
+        if (found) return found;
+      }
+      return '';
+    }
+
+    if (node.isbn != null) {
+      const isbn = extractIsbn(node.isbn);
+      if (isbn) return isbn;
+    }
+
+    for (const key of Object.keys(node)) {
+      const found = findIsbnInObject(node[key]);
+      if (found) return found;
+    }
+    return '';
+  };
+
+  const getIsbn = () => {
+    const byLabel = extractIsbn(getLabeledValue(['ISBN', 'isbn']));
+    if (byLabel) return byLabel;
+
+    const metaBooksIsbn = extractIsbn(document.querySelector('meta[property="books:isbn"]')?.getAttribute('content'));
+    if (metaBooksIsbn) return metaBooksIsbn;
+
+    const metaDescription = document.querySelector('meta[name="description"]')?.getAttribute('content') || '';
+    const byDescription = extractIsbn(metaDescription);
+    if (byDescription) return byDescription;
+
+    for (const scriptEl of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
+      try {
+        const parsed = JSON.parse(scriptEl.textContent || '');
+        const fromJsonLd = findIsbnInObject(parsed);
+        if (fromJsonLd) return fromJsonLd;
+      } catch {
+        // ignore invalid JSON-LD
+      }
+    }
+
+    return '';
+  };
+
+  const getPublisher = () => {
+    for (const li of infoListItems) {
+      const text = toSingleLine(getText(li));
+      if (!/(出版社|出版商)\s*[：:]/.test(text)) continue;
+
+      const bySpan = cleanupLabeledValue(getText(li.querySelector('a span')));
+      if (bySpan) return bySpan;
+
+      const byAnchor = cleanupLabeledValue(getText(li.querySelector('a')));
+      if (byAnchor) return byAnchor;
+
+      const byLabel = cleanupLabeledValue(text.replace(/^[^：:]+[：:]/, ''));
+      if (byLabel) return byLabel;
+    }
+
+    return cleanupLabeledValue(
+      getText(document.querySelector('a[href*="sys_puballb"][href*="pubid"] span, a[href*="search=publisher"] span, a[href*="search=publisher"]'))
+    );
+  };
+
+
+  const getCategoryPath = () => {
+    const linkTexts = Array.from(document.querySelectorAll('.sort li a, .type02_p003 a, .breadcrumb a, .crumb a'))
+      .map(el => toSingleLine(getText(el)))
+      .filter(Boolean);
+    return uniq(linkTexts).join(' > ');
+  };
+  const extractOriginalTitle = rawTitle => {
+    const fallback = toSingleLine(rawTitle);
+    if (!fallback) return '';
+
+    const normalized = fallback
+      .replace(/^[台臺][湾灣]版\s*/u, '')
+      .replace(/\s*【[^】]*(?:首刷|初回|限定|特裝|特装|通常|普通)[^】]*】\s*/gu, ' ')
+      .replace(/\s*\([^)]*(?:首刷|初回|限定|特裝|特装|通常|普通)[^)]*\)\s*/gu, ' ')
+      .replace(/\s*\[[^\]]*(?:首刷|初回|限定|特裝|特装|通常|普通)[^\]]*\]\s*/gu, ' ')
+      .replace(/\s*（[^）]*(?:首刷|初回|限定|特裝|特装|通常|普通)[^）]*）\s*/gu, ' ')
+      .replace(/\s*[-/／]\s*(?:首刷|初回|限定|特裝|特装|通常|普通)[^ ]*\s*/gu, ' ')
+      .replace(/\s*第?\s*\d+\s*(?:巻|卷|冊|册|集|話|话|部)\s*$/u, '')
+      .replace(/\s+\d+\s*$/u, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return normalized || fallback;
+  };
+
+  const stripGoodsMediaTag = raw => toSingleLine(raw)
+    .replace(/\s*[（(][^）)]*(?:漫畫|漫画|コミック|小說|小说|小説|動畫|动画|アニメ|影集|ドラマ|電影|映画|劇場版)[^）)]*[)）]\s*/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const extractGoodsWorkTitle = rawTitle => {
+    const fallback = toSingleLine(rawTitle).replace(/^[台臺][湾灣]版\s*/u, '').trim();
+    if (!fallback) return '';
+
+    const normalizeCandidate = candidate => stripGoodsMediaTag(extractOriginalTitle(candidate) || candidate) || fallback;
+
+    const mediaTagged = fallback.match(/^(.+?)\s*[（(][^）)]*(?:漫畫|漫画|コミック|小說|小说|小説|動畫|动画|アニメ|影集|ドラマ|電影|映画|劇場版)[^）)]*[)）](?:\s+.*)?$/u);
+    if (mediaTagged?.[1]) {
+      return normalizeCandidate(mediaTagged[1]);
+    }
+
+    const merchTagged = fallback.match(/^(.+?)\s+(?:全棉托特袋|托特袋|帆布袋|手提袋|透明立方|壓克力(?:牌|立牌|磚|砖)?|压克力(?:牌|立牌|磚|砖)?|立牌|海報|海报|掛軸|挂轴|徽章|胸章|卡片|貼紙|贴纸|明信片|抱枕|滑鼠墊|鼠標墊|鼠标垫|桌墊|桌垫|吊飾|吊饰|鑰匙圈|钥匙圈|杯墊|杯垫|色紙|色纸|套組|套装|福袋|拼圖|拼图|公仔|玩偶|資料夾|资料夹|文件夾|文件夹|T恤|毛巾|桌曆|桌历|年曆|年历)(?:\b|\s|$)/u);
+    if (merchTagged?.[1]) {
+      return normalizeCandidate(merchTagged[1]);
+    }
+
+    return normalizeCandidate(fallback);
+  };
+  const parseSizeFromText = raw => {
+    const text = String(raw || '');
+    const sizeMatch = text.match(/(\d+(?:\.\d+)?\s*[x×＊*]\s*\d+(?:\.\d+)?(?:\s*[x×＊*]\s*\d+(?:\.\d+)?)?\s*(?:cm|mm|公分|厘米))/i);
+    if (!sizeMatch?.[1]) return '';
+    return toSingleLine(sizeMatch[1])
+      .replace(/[×＊*]/g, 'x')
+      .replace(/\s*x\s*/g, ' x ');
+  };
+
+  const getFormatInfo = () => {
+    const format = getLabeledValue(['規格', '规格']);
+    let size = parseSizeFromText(format);
+
+    if (!size) {
+      const detailBlock = Array.from(document.querySelectorAll('.mod_b')).find(mod =>
+        /詳細資料|详细资料/.test(getText(mod.querySelector('h3')))
+      );
+      size = parseSizeFromText(getText(detailBlock));
+    }
+
+    return {
+      format: toSingleLine(format),
+      size,
+    };
+  };
+
+  const getImageOrderIndex = imageUrl => {
+    const text = String(imageUrl || '');
+    const match = text.match(new RegExp(`${productCodeRegexSafe}(?:_(?:b|t)_(\\d+))?\\.(?:jpe?g|png|webp)`, 'i'));
+    if (!match) return Number.MAX_SAFE_INTEGER;
+    if (!match[1]) return 0;
+    const idx = parseInt(match[1], 10);
+    return Number.isFinite(idx) ? idx : Number.MAX_SAFE_INTEGER;
+  };
+
+    const getImageQualityScore = imageUrl => {
+    const text = String(imageUrl || '');
+    let score = 0;
+
+    if (/\/image\/getImage/i.test(text)) score += 1200;
+    if (/\/img\/N\d{2}\//i.test(text)) score += 400;
+    score += scoreEdgeDistance(extractRequestedEdge(text));
+
+    return score;
+  };
+
+  const sortProductImageUrls = (urls, maxCount = 10) => uniq(urls)
+    .sort((a, b) => {
+      const orderDiff = getImageOrderIndex(a) - getImageOrderIndex(b);
+      if (orderDiff !== 0) return orderDiff;
+      return getImageQualityScore(b) - getImageQualityScore(a);
+    })
+    .slice(0, maxCount);
+
+  const hasCurrentProductCode = text => new RegExp(productCodeRegexSafe, 'i').test(String(text || ''));
+  const isImageLikeUrl = imageUrl => /(?:\.jpe?g|\.png|\.webp)(?:[?&#]|$)|\/fancybox\/getImage\.php\?|\/image\/getImage\?/i.test(String(imageUrl || ''));
+  const isNoiseImageUrl = imageUrl => /(?:\/G\/ADbanner\/|\/G\/prod\/comingsoon|languageTest|esqsm|\/reco\/|\/banner\/|\/recommend\/|\/ad\/|_t_\d+\.(?:jpg|jpeg|png|webp)|listE\.php|listN\.php|\/activity\/|\/combo\/)/i.test(String(imageUrl || ''));
+  const isProductBonusBannerImage = imageUrl => {
+    const text = String(imageUrl || '');
+    return hasCurrentProductCode(text) && /(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/|\/banner\/)/i.test(text);
+  };
+  const isCurrentProductImageUrl = imageUrl => {
+    const text = String(imageUrl || '');
+    return isImageLikeUrl(text) && hasCurrentProductCode(text) && !isNoiseImageUrl(text);
+  };
+  const isCurrentProductDetailImage = imageUrl => {
+    const text = String(imageUrl || '');
+    return isImageLikeUrl(text) && hasCurrentProductCode(text) && (!isNoiseImageUrl(text) || isProductBonusBannerImage(text));
+  };
+  const collectGiftSectionImages = scope => {
+    if (!scope) return [];
+
+    const productSpecific = collectImageUrlsFromNode(scope).filter(isCurrentProductDetailImage);
+    if (productSpecific.length) return productSpecific;
+
+    const candidates = [];
+    const pushCandidate = (rawUrl, width = 0, height = 0) => {
+      const normalized = normalizeImageUrl(rawUrl);
+      if (!normalized || !isImageLikeUrl(normalized)) return;
+
+      const w = Number(width) || 0;
+      const h = Number(height) || 0;
+      if (Math.max(w, h) < 100 || Math.min(w, h) < 60) return;
+      if (/(?:logo|icon|spinner|loading|blank|share)/i.test(normalized)) return;
+      if (isNoiseImageUrl(normalized) && !/(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/)/i.test(normalized)) return;
+
+      candidates.push({ url: normalized, area: w * h });
+    };
+
+    Array.from(scope.querySelectorAll('img')).forEach(img => {
+      const width = parseInt(img.getAttribute('width'), 10) || img.naturalWidth || img.width || 0;
+      const height = parseInt(img.getAttribute('height'), 10) || img.naturalHeight || img.height || 0;
+      pushCandidate(img.getAttribute('data-original'), width, height);
+      pushCandidate(img.getAttribute('data-src'), width, height);
+      pushCandidate(img.getAttribute('data-large'), width, height);
+      pushCandidate(img.currentSrc, width, height);
+      pushCandidate(img.src, width, height);
+    });
+
+    return uniq(
+      candidates
+        .sort((a, b) => b.area - a.area)
+        .map(item => item.url)
+    ).slice(0, 3);
+  };
+
+  const isProductGalleryImage = imageUrl => {
+    const text = String(imageUrl || '');
+    return !isNoiseImageUrl(text) &&
+      new RegExp(`${productCodeRegexSafe}(?:_(?:b|t)_\\d+)?\\.(?:jpe?g|png|webp)(?:[?&#]|$)`, 'i').test(text);
+  };
+  const isDetailSectionImage = imageUrl => {
+    const text = String(imageUrl || '');
+    return isImageLikeUrl(text) && (!isNoiseImageUrl(text) || isProductBonusBannerImage(text));
+  };
+  const getPrice = () => {
+    // まずは構造化メタから取得（最も安定）
+    const metaPrice =
+      document.querySelector('meta[property="product:price:amount"]')?.getAttribute('content') ||
+      document.querySelector('meta[itemprop="price"]')?.getAttribute('content') ||
+      '';
+    if (metaPrice) return metaPrice.replace(/[^\d]/g, '');
+
+    // 「優惠價：85折195元」のような表示は最後の数字を採用
+    const promoText = getLabeledValue(['優惠價', '优惠价', '特價', '特价']);
+    if (promoText) {
+      const nums = promoText.match(/\d[\d,]*/g);
+      if (nums?.length) return nums[nums.length - 1].replace(/[^\d]/g, '');
+    }
+
+    // DOM候補からフォールバック（割引率85を拾わないよう最後の数字を採用）
+    const selectors = [
+      '.prod_cont_b strong.price01 b',
+      '.price_box .price01 b',
+      '.price01 b',
+      'strong.price01 b',
+      '.price01',
+      '.price em',
+      '.price',
+    ];
+
+    for (const selector of selectors) {
+      const text = getText(document.querySelector(selector));
+      if (!text) continue;
+      const nums = text.match(/\d[\d,]*/g);
+      if (nums?.length) return nums[nums.length - 1].replace(/[^\d]/g, '');
+    }
+
+    return '';
+  };
+
+  const getBookDescription = () => {
+    const headingPattern = /內容簡介|内容简介|商品簡介|商品介紹|商品介绍|內容介紹/;
+    const blocks = Array.from(document.querySelectorAll('.mod_b, .mod, .prod_cont')).filter(block => {
+      const headingText = getText(block.querySelector('h3, h2'));
+      return headingPattern.test(headingText);
+    });
+
+    const texts = blocks
+      .map(block => toMultiline(getText(
+        block.querySelector('.bd .content, .content, [itemprop="description"]')
+      )))
+      .filter(Boolean);
+    if (texts.length) return mergeTextBlocks(texts);
+
+    return toMultiline(getText(
+      document.querySelector('[itemprop="description"], #summary, .prod_summary, .bd .content')
+    ));
+  };
+
+  const cleanGoodsSectionText = raw => toMultiline(raw)
+    .replace(/^(?:產品說明|产品说明|商品簡介|商品介绍|商品介紹|商品說明|商品说明)\s*$/gmu, '')
+    .trim();
+
+  const getGoodsContentInfo = () => {
+    const sectionSelector = '.mod_a, .mod_b, .mod, .prod_cont, .type01, .type02, .type02_p001, .type02_p002, .type02_p003';
+    const headingPattern = /產品說明|产品说明|商品簡介|商品介绍|商品介紹|商品說明|商品说明/;
+    const stopPattern = /詳細資料|详细资料|規格|规格|運送|購物說明|购物说明|注意事項|注意事项/;
+    const blocks = Array.from(document.querySelectorAll(sectionSelector));
+    const sections = [];
+    let collectFollowing = false;
+
+    for (const block of blocks) {
+      const heading = toSingleLine(getText(block.querySelector('h1, h2, h3, h4, .title, .maintitle, strong, dt')));
+      const detailImages = collectImageUrlsFromNode(block).filter(isDetailSectionImage);
+
+      if (headingPattern.test(heading)) {
+        collectFollowing = true;
+        sections.push(block);
+        continue;
+      }
+
+      if (!collectFollowing) continue;
+      if (stopPattern.test(heading)) break;
+      if (detailImages.length || cleanGoodsSectionText(getText(block))) sections.push(block);
+    }
+
+    const fallbackSection =
+      blocks.find(block => /產品說明|产品说明/.test(getText(block.querySelector('h3, h2, h1')))) ||
+      blocks.find(block => /商品簡介|商品介绍|商品介紹|商品說明|商品说明/.test(getText(block.querySelector('h3, h2, h1')))) ||
+      null;
+
+    const targetSections = sections.length ? uniq(sections) : (fallbackSection ? [fallbackSection] : []);
+    const textBlocks = targetSections.map(section => {
+      const body = cleanGoodsSectionText(getText(
+        section.querySelector('.type01_content, .bd .type01_content, .bd .content, .content, .bd, .cont') || section
+      ));
+      return body;
+    }).filter(Boolean);
+
+    const sectionImages = sortProductImageUrls(
+      targetSections.flatMap(section => collectImageUrlsFromNode(section).filter(isDetailSectionImage)),
+      20
+    );
+
+    const html = document.documentElement?.innerHTML || '';
+    const htmlDetailUrls = uniq(
+      Array.from(html.matchAll(
+        new RegExp(String.raw`https?:\/\/(?:www\.books\.com\.tw\/img|im\d+\.book\.com\.tw\/image\/getImage\?i=https:\/\/www\.books\.com\.tw\/img)\/(?:N|M)\d{2}\/\d{3}\/\d{2}\/${productCodeRegexSafe}(?:_t_\d+|_b_\d+)?\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s<]*)?`, 'gi')
+      ))
+        .map(match => normalizeImageUrl(match[0]))
+        .filter(isCurrentProductDetailImage)
+    );
+
+    return {
+      text: mergeTextBlocks(textBlocks),
+      images: sortProductImageUrls([...sectionImages, ...htmlDetailUrls], 20),
+    };
+  };
+  const getExtendedContentInfo = () => {
+    const bonusTextPattern = /首刷|贈品|赠品|買就送|买就送|限定特典|書卡|书卡|特典卡/;
+    const sections = Array.from(document.querySelectorAll('.mod_b, .mod, .prod_cont')).filter(mod =>
+      /書籍延伸內容|内容延伸/.test(getText(mod.querySelector('h3, h2')))
+    );
+    if (!sections.length) return { text: '', images: [] };
+
+    const texts = [];
+    const imageUrls = [];
+
+    for (const section of sections) {
+      const sectionTitle = toSingleLine(getText(section.querySelector('h3, h2')));
+      const parts = [];
+      const items = Array.from(section.querySelectorAll('.item'));
+
+      for (const item of items) {
+        const itemTitle = toSingleLine(getText(item.querySelector('h4')));
+        const contentEl = item.querySelector('.cont') || item.querySelector('.content') || item;
+        let itemBody = toMultiline(getText(contentEl));
+
+        if (bonusTextPattern.test(`${itemTitle}\n${itemBody}`)) {
+          continue;
+        }
+
+        if (itemTitle) {
+          parts.push(itemTitle);
+          if (itemBody.startsWith(itemTitle)) {
+            itemBody = itemBody.slice(itemTitle.length).trim();
+          }
+        }
+        if (itemBody) parts.push(itemBody);
+      }
+
+      if (!parts.length) {
+        const fallback = toMultiline(getText(section.querySelector('.bd .content, .content, .cont, .bd')));
+        if (fallback && !bonusTextPattern.test(fallback)) parts.push(fallback);
+      }
+
+      if (parts.length) {
+        texts.push(mergeTextBlocks([sectionTitle, ...parts]));
+      }
+      imageUrls.push(...collectImageUrlsFromNode(section).filter(isCurrentProductDetailImage));
+    }
+
+    return {
+      text: mergeTextBlocks(texts),
+      images: uniq(imageUrls),
+    };
+  };
+
+  const getFirstEditionBonusInfo = () => {
+    const giftHeadingPattern = /特惠贈品|特惠赠品|首刷贈品|首刷赠品|書籍延伸內容|书籍延伸内容/;
+    const sectionSelector = '.mod_a, .mod_b, .mod, .prod_cont, .type01, .type02, .type02_p001, .type02_p002, .type02_p003';
+
+    const extractBuyGiftSummary = rawText => {
+      const collapsed = toSingleLine(rawText);
+      const matched = collapsed.match(/買就送\s*[（(]?\s*贈品\s*[)）]?\s*.*?限定特典卡/)?.[0] || '';
+      return matched
+        .replace(/買就送\s*[（(]\s*贈品\s*[)）]\s*/g, '買就送(贈品)')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    const extractFirstEditionDetail = rawText => {
+      const collapsed = toSingleLine(rawText);
+      return collapsed.match(/首刷限定\s*[：:].*?(?:送完為止|送完为止)(?:\s*[（(][^）)]*[)）])?/)?.[0] || '';
+    };
+
+    const headingScopes = Array.from(
+      document.querySelectorAll('h1, h2, h3, h4, .title, .maintitle, strong, dt')
+    )
+      .filter(el => giftHeadingPattern.test(toSingleLine(getText(el))))
+      .map(el => el.closest(sectionSelector) || el.parentElement)
+      .filter(Boolean);
+    const ajaxScopes = Array.from(document.querySelectorAll('[id*="getGiftInfo"]'))
+      .map(el => el.closest(sectionSelector) || el.parentElement)
+      .filter(Boolean);
+    const itemTitleScopes = Array.from(document.querySelectorAll('.item h4, .item strong, .item .title'))
+      .filter(el => /首刷贈品|首刷赠品|買就送|买就送/.test(toSingleLine(getText(el))))
+      .map(el => el.closest(sectionSelector) || el.parentElement)
+      .filter(Boolean);
+
+    const scopes = uniq([
+      ...headingScopes,
+      ...ajaxScopes,
+      ...itemTitleScopes,
+    ]);
+
+    const blocks = [];
+    const images = [];
+    for (const scope of scopes) {
+      const heading = toSingleLine(getText(scope.querySelector('h1, h2, h3, h4, .title, .maintitle, strong, dt')));
+      const scopeText = toMultiline(getText(scope));
+      const scopeSingleLine = toSingleLine(getText(scope));
+      if (!scopeText) continue;
+
+      const directBlocks = [];
+
+      const buyGiftSummary = extractBuyGiftSummary(scopeSingleLine);
+      if (buyGiftSummary) {
+        directBlocks.push(buyGiftSummary);
+      }
+
+      const firstEditionDetail = extractFirstEditionDetail(scopeSingleLine);
+      if (firstEditionDetail) {
+        const hasFirstEditionTitle = /首刷贈品|首刷赠品/.test(`${heading}\n${scopeSingleLine}`);
+        directBlocks.push(mergeTextBlocks([
+          hasFirstEditionTitle ? '首刷贈品' : '',
+          firstEditionDetail,
+        ]));
+      }
+
+      if (!directBlocks.length) continue;
+
+      const blockText = mergeTextBlocks(directBlocks);
+      if (!blockText) continue;
+
+      blocks.push(blockText);
+      images.push(...collectGiftSectionImages(scope));
+    }
+
+    return {
+      text: mergeTextBlocks(blocks),
+      images: uniq(images),
+    };
+  };
+
+  const getGalleryImageUrls = () => {
+    const MAX_GALLERY_IMAGES = 10;
+    const sortAndLimit = urls => sortProductImageUrls(urls, MAX_GALLERY_IMAGES);
+
+    const thumbImgs = Array.from(document.querySelectorAll(
+      '#thumbnail img, .cnt_prod_img001 #thumbnail img, .cnt_prod_img001 .li_box img, .cnt_prod_img001 .each_box img, .cnt_prod_img001 .items img, .prod_img #thumbnail img'
+    ));
+    const thumbUrls = uniq(
+      thumbImgs
+        .map(img => img?.getAttribute('data-original') || img?.getAttribute('data-src') || img?.currentSrc || img?.src || '')
+        .map(normalizeImageUrl)
+    ).filter(isProductGalleryImage);
+
+    const thumbScopes = Array.from(document.querySelectorAll(
+      '#thumbnail, .cnt_prod_img001 #thumbnail, .cnt_prod_img001 .li_box, .cnt_prod_img001 .each_box, .cnt_prod_img001 .items, .prod_img #thumbnail'
+    ));
+    const thumbScopeUrls = uniq(
+      thumbScopes.flatMap(scope => collectImageUrlsFromNode(scope))
+    ).filter(isProductGalleryImage);
+
+    const coverImgs = Array.from(document.querySelectorAll(
+      '.cnt_prod_img001 .cover_img .cover, .cnt_prod_img001 .cover_img img, #item-img-content img.cover, .prod_img img.cover, .cover_img img'
+    ));
+    const coverUrls = uniq(
+      coverImgs
+        .map(img => img?.getAttribute('data-original') || img?.getAttribute('data-src') || img?.currentSrc || img?.src || '')
+        .map(normalizeImageUrl)
+    ).filter(isProductGalleryImage);
+
+    const domGalleryUrls = sortAndLimit([...thumbUrls, ...thumbScopeUrls, ...coverUrls]);
+    if (domGalleryUrls.length > 1) {
+      return domGalleryUrls;
+    }
+
+    const html = document.documentElement?.innerHTML || '';
+    const rawHtmlUrls = Array.from(
+      html.matchAll(new RegExp(`https?:\\/\\/(?:www\\.books\\.com\\.tw\\/img|im\\d+\\.book\\.com\\.tw\\/image\\/getImage\\?i=https:\\/\\/www\\.books\\.com\\.tw\\/img)\\/[^"'\\s<)]*${productCodeRegexSafe}(?:_(?:b|t)_\\d+)?\\.(?:jpg|jpeg|png|webp)(?:\\?[^"'\\s<)]*)?`, 'gi'))
+    ).map(match => normalizeImageUrl(match[0]));
+    const htmlUrls = sortAndLimit(rawHtmlUrls.filter(isProductGalleryImage));
+    if (htmlUrls.length > 1) {
+      return htmlUrls;
+    }
+
+    const gallerySection = document.querySelector(
+      '.cnt_prod_img001, #item-img-content, .prod_img_box, .item_img'
+    );
+    const sectionUrls = gallerySection
+      ? collectImageUrlsFromNode(gallerySection).filter(isProductGalleryImage)
+      : [];
+
+    const sectionMerged = sortAndLimit([...domGalleryUrls, ...htmlUrls, ...sectionUrls]);
+    if (sectionMerged.length > 1) {
+      return sectionMerged;
+    }
+
+    return sectionMerged;
+  };
+  const getBookImages = () => {
+    const galleryUrls = getGalleryImageUrls();
+    const detailUrls = [];
+
+    const allJpgUrls = uniq([...galleryUrls, ...detailUrls]);
+
+    return {
+      main: galleryUrls[0] || detailUrls[0] || '',
+      gallery: galleryUrls,
+      detail: detailUrls,
+      all: allJpgUrls,
+    };
+  };
+
+  const getGoodsImages = (extraDetailUrls = []) => {
+    const galleryUrls = getGalleryImageUrls();
+    const detailUrls = sortProductImageUrls(extraDetailUrls, 20)
+      .filter(url => !galleryUrls.includes(url));
+    const main = galleryUrls[0] || detailUrls[0] || '';
+
+    return {
+      main,
+      gallery: galleryUrls,
+      detail: detailUrls,
+      all: uniq([
+        ...(main ? [main] : []),
+        ...galleryUrls.filter(url => url !== main),
+        ...detailUrls.filter(url => url !== main),
+      ]),
+    };
+  };
+
+  // ===== 共通項目 =====
+
+  // 商品名
+  const name = document.querySelector('h1.BD_NAME, h1[itemprop="name"], .book_title h1, h1')?.innerText?.trim() || '';
+
+  // 日本語タイトル（副題）— ページ上に日本語テキストがあれば取得
+  const extractPageJapaneseTitle = () => {
+    const hasJapanese = text => /[\u3040-\u309F\u30A0-\u30FF]/.test(text);
+    // h1 の直後にある副題要素を探す
+    const h1El = document.querySelector('h1.BD_NAME, h1[itemprop="name"], .book_title h1, h1');
+    if (!h1El) return '';
+    // 同じ親要素内の h1 以降のテキストノードや要素を確認
+    const parent = h1El.parentElement;
+    if (parent) {
+      for (const child of parent.children) {
+        if (child === h1El) continue;
+        const text = (child.innerText || child.textContent || '').trim();
+        if (text && hasJapanese(text) && text !== name) return text;
+      }
+    }
+    // h1 の次の兄弟要素を確認
+    let sibling = h1El.nextElementSibling;
+    while (sibling) {
+      const text = (sibling.innerText || sibling.textContent || '').trim();
+      if (text && hasJapanese(text) && text !== name) return text;
+      sibling = sibling.nextElementSibling;
+    }
+    return '';
+  };
+  const pageJapaneseTitle = extractPageJapaneseTitle();
+
+  // 価格（割引後優先）
+  const price = getPrice();
+
+  // 画像URL（メイン画像）
+  const imgEl = document.querySelector(
+    '#item-img-content img, .cnt_prod_img001 .cover_img .cover, .cnt_prod_img001 .cover_img img, .cover img, img[id*="item-img"]'
+  );
+  const fallbackImageUrl = normalizeImageUrl(
+    imgEl?.getAttribute('data-original') ||
+    imgEl?.getAttribute('data-src') ||
+    imgEl?.getAttribute('data-large') ||
+    imgEl?.closest('a[href]')?.getAttribute('href') ||
+    imgEl?.currentSrc ||
+    imgEl?.src ||
+    ''
+  );
+
+  // 発売日
+  let releaseDate = getLabeledValue(['出版日期', '出版时间', '發行日期', '発売日']);
+  const releaseMatch = releaseDate.match(/(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}|\d{4}年\d{1,2}月\d{1,2}日)/);
+  if (releaseMatch) releaseDate = releaseMatch[1];
+
+  await waitForGiftSectionContent();
+
+  let description = '';
+  let mainImageUrl = fallbackImageUrl;
+  let additionalImageUrls = [];
+  let bonusInfoText = '';
+  let formatSize = '';
+  let formatText = '';
+  let originalTitle = extractOriginalTitle(name);
+  let goodsWorkTitle = '';
+
+  if (isBook) {
+    const baseDescription = getBookDescription();
+    const extendedContent = getExtendedContentInfo();
+    const firstEditionBonus = getFirstEditionBonusInfo();
+    const formatInfo = getFormatInfo();
+    const bookImages = getBookImages();
+
+    description = baseDescription;
+    bonusInfoText = firstEditionBonus.text;
+    formatSize = formatInfo.size;
+    formatText = formatInfo.format;
+    originalTitle = extractOriginalTitle(name);
+    mainImageUrl = bookImages.main || fallbackImageUrl;
+    additionalImageUrls = uniq([
+      ...bookImages.gallery.slice(1),
+      ...bookImages.detail,
+      ...extendedContent.images,
+      ...firstEditionBonus.images,
+    ]).filter(imgUrl => imgUrl && imgUrl !== mainImageUrl);
+  } else {
+    const brand = getLabeledValue(['品牌']);
+    const goodsContent = getGoodsContentInfo();
+    const goodsImages = getGoodsImages(goodsContent.images);
+
+    goodsWorkTitle = extractGoodsWorkTitle(name);
+    originalTitle = goodsWorkTitle || extractOriginalTitle(name);
+    description = mergeTextBlocks([brand ? `品牌：${brand}` : '', goodsContent.text]);
+    mainImageUrl = goodsImages.main || goodsContent.images[0] || fallbackImageUrl;
+    additionalImageUrls = uniq([
+      ...goodsImages.gallery.filter(imgUrl => imgUrl && imgUrl !== mainImageUrl),
+      ...goodsImages.detail.filter(imgUrl => imgUrl && imgUrl !== mainImageUrl),
+      ...goodsContent.images.filter(imgUrl => imgUrl && imgUrl !== mainImageUrl),
+    ]).slice(0, 20);
+  }
+
+  const language = getLabeledValue(['語言', '语言']);
+  const categoryPath = getCategoryPath();
+  const rawPageTitle = document.title || '';
+  const pageTitle = rawPageTitle
+    .replace(/[-|｜–—]\s*博客來.*$/i, '')
+    .replace(/[-|｜–—]\s*books\.com\.tw.*$/i, '')
+    .trim() || name;
+
+  const result = {
+    商品コード: productCode,
+    商品名: name,
+    ページタイトル: pageTitle,
+    原題タイトル: originalTitle,
+    作品名原題: goodsWorkTitle,
+    価格: price,
+    画像URL: mainImageUrl,
+    追加画像URL: additionalImageUrls.join(';'),
+    発売日: releaseDate,
+    商品説明: description,
+    特典情報: bonusInfoText,
+    規格サイズ: formatSize,
+    規格: formatText,
+    日本語タイトル: pageJapaneseTitle,
+    URL: url,
+    種別: isBook ? '書籍' : 'グッズ',
+    言語: language,
+    カテゴリ: categoryPath,
+  };
+
+  // ===== 書籍のみ =====
+  if (isBook) {
+    // ISBN
+    const isbn = getIsbn();
+    result['ISBN'] = isbn;
+
+    // 著者
+    let author = '';
+    const authorEl = document.querySelector('a[href*="search=author"], .BD_AUTHOR a, li a[href*="author"]');
+    if (authorEl) {
+      author = authorEl.innerText.trim();
+    } else {
+      author = getLabeledValue(['作者', '著者', '原著']);
+    }
+    result['著者'] = author;
+
+    // 翻訳者
+    const translator = getLabeledValue(['譯者', '译者', '翻譯者', '翻訳者']);
+    result['翻訳者'] = translator;
+
+    // イラストレーター
+    const illustrator = getLabeledValue(['繪者', '绘者', '插畫', '插画', 'イラスト']);
+    result['イラストレーター'] = illustrator;
+
+    // 出版社
+    let publisher = getPublisher();
+    result['出版社'] = publisher;
+  }
+
+  return result;
+}
+
+// popup.jsからのメッセージを受け取る
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'getProductInfo') {
+    Promise.resolve(getProductInfo())
+      .then(info => {
+        sendResponse({ success: true, data: info });
+      })
+      .catch(e => {
+        sendResponse({ success: false, error: e.message });
+      });
+  }
+  return true;
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Aladin Product Tool",
+  "version": "1.1",
+  "description": "aladin.co.kr product info fetcher",
+  "permissions": [
+    "downloads",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://www.aladin.co.kr/*",
+    "https://image.aladin.co.kr/*",
+    "https://cdnimage.aladin.co.kr/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background_kr.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.aladin.co.kr/shop/wproduct.aspx*"
+      ],
+      "js": [
+        "content.shared.js",
+        "content.rules.books.js",
+        "content.rules.magazines.js",
+        "content.rules.manga.js",
+        "content.rules.media.js",
+        "content.rules.goods.js",
+        "content.entry.js"
+      ]
+    }
+  ]
+}

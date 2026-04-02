@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "books.com.tw（博客來）商品取得ツール",
+  "version": "1.1",
+  "description": "books.com.twの商品情報を取得してCSV・画像保存とGASシート書き込みを行う",
+  "permissions": [
+    "downloads",
+    "alarms",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.books.com.tw/*",
+    "https://im1.book.com.tw/*",
+    "https://im2.book.com.tw/*",
+    "https://addons.books.com.tw/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background_tw.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.books.com.tw/products/*"],
+      "js": ["content.js"]
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { width: 360px; font-family: 'Meiryo', sans-serif; font-size: 13px; background: #fafafa; }
+    .header { background: linear-gradient(135deg, #e8463a, #c0392b); color: #fff; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 14px; font-weight: bold; }
+    .badge-count { background: rgba(255,255,255,0.25); border-radius: 12px; padding: 2px 10px; font-size: 12px; }
+    .ttb-area { background: #fff3f3; border-bottom: 1px solid #fdd; padding: 8px 12px; display: flex; gap: 6px; align-items: center; }
+    .ttb-area input { flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; font-size: 11px; color: #333; }
+    .ttb-area button { background: #c0392b; color: #fff; border: none; border-radius: 4px; padding: 4px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+    .gas-area { background: #f0f7ff; border-bottom: 1px solid #cde; padding: 8px 12px; display: flex; gap: 6px; align-items: center; }
+    .gas-area input { flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; font-size: 11px; color: #333; }
+    .gas-area button { background: #2980b9; color: #fff; border: none; border-radius: 4px; padding: 4px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+    .toolbar { padding: 8px 12px; background: #fff; border-bottom: 1px solid #eee; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    button { cursor: pointer; border: none; border-radius: 5px; padding: 6px 12px; font-size: 12px; font-family: inherit; }
+    #btn-add { background: #e8463a; color: #fff; flex: 1; }
+    #btn-send-to-sheet { background: #2980b9; color: #fff; flex: 1; }
+    #btn-download { background: #27ae60; color: #fff; flex: 1; }
+    #btn-download-images { background: #78c2ad; color: #fff; flex: 1 1 100%; }
+    #btn-clear { background: #eee; color: #555; padding: 6px 8px; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .status-bar { padding: 5px 12px; font-size: 11px; min-height: 22px; background: #f0f0f0; border-bottom: 1px solid #e0e0e0; color: #555; }
+    .status-bar.success { background: #eafaf1; color: #1e8449; }
+    .status-bar.error { background: #fdf0f0; color: #c0392b; }
+    .list-container { max-height: 280px; overflow-y: auto; }
+    .empty-state { padding: 24px; text-align: center; color: #aaa; font-size: 12px; }
+    .product-item { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid #f0f0f0; background: #fff; }
+    .product-item:hover { background: #fef9f9; }
+    .product-img { width: 38px; height: 50px; object-fit: cover; border-radius: 3px; border: 1px solid #ddd; flex-shrink: 0; background: #eee; }
+    .product-info { flex: 1; min-width: 0; }
+    .product-name { font-size: 12px; font-weight: bold; color: #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .product-meta { display: flex; gap: 5px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+    .badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; color: #fff; white-space: nowrap; background: #888; }
+    .badge-media { background: #8e44ad; }
+    .badge-comic { background: #2980b9; }
+    .badge-goods { background: #e67e22; }
+    .badge-book { background: #27ae60; }
+    .price { font-size: 11px; color: #c0392b; }
+    .item-id { font-size: 10px; color: #aaa; }
+    .btn-remove { background: none; color: #ccc; font-size: 16px; padding: 2px 6px; flex-shrink: 0; border-radius: 3px; }
+    .btn-remove:hover { background: #fee; color: #e74c3c; }
+    .footer { padding: 6px 12px; font-size: 10px; color: #bbb; border-top: 1px solid #eee; text-align: center; }
+    .section-label { font-size: 10px; color: #888; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🛒 アラジン 商品取得ツール</h1>
+    <span class="badge-count" id="item-count">0 件</span>
+  </div>
+
+  <div class="ttb-area">
+    <span class="section-label">TTBキー</span>
+    <input type="password" id="ttb-key-input" placeholder="TTBキーを入力して保存">
+    <button id="btn-save-key">保存</button>
+  </div>
+
+  <div class="gas-area">
+    <span class="section-label">GAS URL</span>
+    <input type="text" id="gas-url-input" placeholder="GASウェブアプリのURLを入力">
+    <button id="btn-save-gas-url">保存</button>
+  </div>
+
+  <div class="toolbar">
+    <button id="btn-add">📖 このページを追加</button>
+    <button id="btn-send-to-sheet">📤 シートに書込</button>
+    <button id="btn-download" disabled>⬇ CSV+画像</button>
+    <button id="btn-clear" disabled>🗑</button>
+    <button id="btn-download-images" disabled>⬇ 画像だけ保存</button>
+  </div>
+
+  <div class="toolbar" style="background:#f0f7ff; border-bottom:1px solid #cde;">
+    <button id="btn-pick-folder" style="background:#8e44ad; color:#fff; flex:1;">📂 保存先フォルダを選ぶ</button>
+    <span id="folder-label" style="font-size:11px; color:#666; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+  </div>
+
+  <div class="status-bar" id="status">アラジンの商品ページを開いて追加 または シートに書込</div>
+  <div class="list-container" id="list-container">
+    <div class="empty-state">まだ商品が追加されていません</div>
+  </div>
+
+  <div class="footer">URL→API→ページ解析→GAS送信の流れで取得します</div>
+  <script src="folder-save.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

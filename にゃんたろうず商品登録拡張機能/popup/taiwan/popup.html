@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 392px;
+      font-family: "Segoe UI", "Meiryo", sans-serif;
+      font-size: 13px;
+      background: #f5f5f5;
+      color: #333;
+    }
+    .header {
+      background: #c0392b;
+      color: #fff;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header h1 { font-size: 15px; font-weight: bold; }
+    .header .count {
+      background: rgba(255,255,255,0.25);
+      border-radius: 12px;
+      padding: 2px 10px;
+      font-size: 12px;
+    }
+    .status-bar {
+      padding: 8px 16px;
+      background: #fff;
+      border-bottom: 1px solid #e0e0e0;
+      font-size: 12px;
+      color: #666;
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+    }
+    .status-bar.error { color: #c0392b; }
+    .status-bar.success { color: #27ae60; }
+    .config-row {
+      padding: 10px 16px;
+      background: #fff;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .config-label {
+      display: block;
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 6px;
+    }
+    .config-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .config-controls input {
+      flex: 1;
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #333;
+      background: #fff;
+    }
+    .config-controls button {
+      flex: 0 0 auto;
+      padding: 8px 12px;
+      background: #2980b9;
+      color: #fff;
+    }
+    .config-note {
+      display: block;
+      margin-top: 6px;
+      color: #888;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+      background: #fff;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    button {
+      flex: 1;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: bold;
+      transition: opacity 0.2s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #btn-add { background: #c0392b; color: #fff; }
+    #btn-send-sheet { background: #2980b9; color: #fff; }
+    #btn-download { background: #27ae60; color: #fff; }
+    #btn-download-images { background: #16a085; color: #fff; }
+    #btn-clear { background: #e0e0e0; color: #555; flex: 0 0 auto; padding: 8px 10px; }
+    .btn-row-secondary { padding-top: 0; }
+    .option-row {
+      padding: 8px 16px;
+      background: #fff;
+      border-bottom: 1px solid #e0e0e0;
+      font-size: 12px;
+      color: #555;
+    }
+    .option-row label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .option-note {
+      display: block;
+      margin-top: 4px;
+      color: #888;
+      font-size: 11px;
+    }
+    .list-container {
+      max-height: 320px;
+      overflow-y: auto;
+      background: #fff;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 40px 16px;
+      color: #aaa;
+      font-size: 12px;
+    }
+    .product-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .product-item:last-child { border-bottom: none; }
+    .product-img {
+      width: 44px;
+      height: 44px;
+      object-fit: cover;
+      border-radius: 4px;
+      flex-shrink: 0;
+      background: #eee;
+    }
+    .product-info { flex: 1; min-width: 0; }
+    .product-name {
+      font-size: 12px;
+      font-weight: bold;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 3px;
+    }
+    .product-meta {
+      font-size: 11px;
+      color: #888;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: bold;
+    }
+    .badge-comic { background: #d5e8fd; color: #1a5fad; }
+    .badge-book-other { background: #e8f0fe; color: #345995; }
+    .badge-magazine { background: #fce5cd; color: #b45f06; }
+    .badge-goods { background: #fde8d5; color: #ad5f1a; }
+    .price { color: #c0392b; font-weight: bold; }
+    .btn-remove {
+      flex: 0 0 auto;
+      background: none;
+      color: #ccc;
+      font-size: 16px;
+      padding: 4px 6px;
+      border-radius: 4px;
+    }
+    .btn-remove:hover { color: #c0392b; background: #fdecea; }
+    .footer {
+      padding: 8px 16px;
+      font-size: 11px;
+      color: #aaa;
+      text-align: center;
+      background: #f5f5f5;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>books.com.tw（博客來）商品取得ツール</h1>
+    <span class="count" id="item-count">0 件</span>
+  </div>
+
+  <div class="status-bar" id="status">books.com.tw の商品ページで「追加」を押してください</div>
+
+  <div class="config-row">
+  <span class="config-label">GAS Webアプリ URL</span>
+  <div class="config-controls">
+    <input type="url" id="gas-url" placeholder="https://script.google.com/macros/s/.../exec">
+    <button id="btn-save-gas-url" type="button">保存</button>
+  </div>
+  <span class="config-note">保存後は「シートに書込」ボタンで、リスト中の商品をGAS経由でスプレッドシート最終行へ追記します。</span>
+</div>
+
+
+<div class="btn-row">
+  <button id="btn-add">このページを追加</button>
+  <button id="btn-send-sheet" disabled>シートに書込</button>
+  <button id="btn-download" disabled>CSV+画像保存</button>
+  <button id="btn-clear" title="リストをクリア">削除</button>
+</div>
+
+<div class="btn-row btn-row-secondary">
+  <button id="btn-download-images" disabled>画像だけ保存</button>
+</div>
+
+<div class="list-container" id="list-container">
+  <div class="empty-state">まだ商品が追加されていません</div>
+</div>
+
+<div class="footer">CSV出力と画像保存は従来どおり使えます。新しくGAS経由のシート追記にも対応します。</div>
+  <script src="popup.shared.js"></script>
+  <script src="popup.books.js"></script>
+  <script src="popup.comics.js"></script>
+  <script src="popup.nonmanga.js"></script>
+  <script src="popup.goods.js"></script>
+  <script src="popup.magazines.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
