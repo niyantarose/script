@@ -2,13 +2,16 @@
 
 const GAS_SYNC_QUEUE_KEY = 'booksGasSyncQueueV1';
 const GAS_SYNC_STATUS_KEY = 'booksGasSyncStatusV1';
+const GAS_SYNC_RESET_TOKEN_KEY = 'booksGasSyncResetTokenV1';
 const GAS_SYNC_ALARM_NAME = 'booksGasSyncQueueAlarmV1';
 const GAS_SYNC_TIMEOUT_MS = 60000;
+const GAS_SYNC_ALARM_PERIOD_MINUTES = 1;
 const IMAGE_FILENAME_EXT = 'jpg';
 const TAIWAN_IMAGE_MAX_EDGE = 1000;
 const TAIWAN_DOWNLOAD_MARKER = 'nyantarose_tw___-_';
 const pendingTaiwanFilenameByMarker = new Map();
 let gasSyncProcessing = false;
+let gasSyncResetToken = 0;
 
 
 function storageGetLocal(keys) {
@@ -53,16 +56,101 @@ function buildGasSyncStatus(status) {
   };
 }
 
+function parseIsoTimeMs(value) {
+  const time = Date.parse(String(value || ''));
+  return Number.isFinite(time) ? time : 0;
+}
+
+function isGasSyncStatusStale(status) {
+  if (!status?.state) return false;
+  if (status.state === 'running') {
+    const startedAtMs = parseIsoTimeMs(status.startedAt || status.requestedAt);
+    return startedAtMs > 0 && Date.now() - startedAtMs > GAS_SYNC_TIMEOUT_MS + 15000;
+  }
+  if (status.state === 'queued') {
+    const requestedAtMs = parseIsoTimeMs(status.requestedAt);
+    return requestedAtMs > 0 && Date.now() - requestedAtMs > 30000;
+  }
+  return false;
+}
+
+function shouldRecoverGasSyncStatus(status) {
+  if (!status?.state) return false;
+  if ((status.state === 'queued' || status.state === 'running') && !gasSyncProcessing) {
+    return true;
+  }
+  return isGasSyncStatusStale(status);
+}
+
+function scheduleGasSyncAlarm(delayMs = 50) {
+  const when = Date.now() + Math.max(50, Number(delayMs) || 50);
+  chrome.alarms.create(GAS_SYNC_ALARM_NAME, {
+    when,
+    periodInMinutes: GAS_SYNC_ALARM_PERIOD_MINUTES,
+  });
+}
+
+async function getStoredGasSyncResetToken() {
+  const stored = await storageGetLocal([GAS_SYNC_RESET_TOKEN_KEY]);
+  const token = Number(stored[GAS_SYNC_RESET_TOKEN_KEY] || 0);
+  return Number.isFinite(token) ? token : 0;
+}
+
+function clearGasSyncAlarm() {
+  chrome.alarms.clear(GAS_SYNC_ALARM_NAME, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
+async function resumeGasSyncQueueIfNeeded(delayMs = 50) {
+  const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY]);
+  const queue = Array.isArray(stored[GAS_SYNC_QUEUE_KEY]) ? stored[GAS_SYNC_QUEUE_KEY] : [];
+  if (!queue.length) {
+    clearGasSyncAlarm();
+    return false;
+  }
+  scheduleGasSyncAlarm(delayMs);
+  processGasSyncQueue().catch(() => {});
+  return true;
+}
+
+async function getGasSyncStatusWithRecovery() {
+  const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY, GAS_SYNC_STATUS_KEY]);
+  const queue = Array.isArray(stored[GAS_SYNC_QUEUE_KEY]) ? stored[GAS_SYNC_QUEUE_KEY] : [];
+  let status = stored[GAS_SYNC_STATUS_KEY] || null;
+
+  if (!queue.length) {
+    clearGasSyncAlarm();
+    if (status?.state === 'queued' || status?.state === 'running') {
+      storageSetLocal({ [GAS_SYNC_STATUS_KEY]: null }).catch(() => {});
+      return null;
+    }
+    return status;
+  }
+
+  if (shouldRecoverGasSyncStatus(status)) {
+    gasSyncProcessing = false;
+    status = buildGasSyncStatus({
+      ...status,
+      state: 'queued',
+      startedAt: '',
+      finishedAt: '',
+      error: '',
+      message: '⏳ 停止していたGAS書き込みを再開しています...',
+    });
+    await storageSetLocal({ [GAS_SYNC_STATUS_KEY]: status });
+  }
+
+  scheduleGasSyncAlarm(150);
+  processGasSyncQueue().catch(() => {});
+  return status;
+}
+
 async function postGasJson(url, bodyText) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), GAS_SYNC_TIMEOUT_MS);
 
   try {
-    // GAS は POST 受信後 302 リダイレクトでレスポンスを返す。
-    // Service Worker では redirect:'manual' だと Location ヘッダーが読めない
-    // (opaqueredirect) ため status 0 になる。
-    // redirect:'follow' なら 302→GET に変わるが、GAS 側の doPost() は
-    // リダイレクト前に処理済みなので問題ない。
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -154,7 +242,7 @@ async function queueGasSyncJob(request) {
     [GAS_SYNC_STATUS_KEY]: status,
   });
 
-  chrome.alarms.create(GAS_SYNC_ALARM_NAME, { when: Date.now() + 50 });
+  scheduleGasSyncAlarm(50);
   processGasSyncQueue().catch(() => {});
   return status;
 }
@@ -167,10 +255,15 @@ async function processGasSyncQueue() {
     while (true) {
       const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY]);
       const queue = Array.isArray(stored[GAS_SYNC_QUEUE_KEY]) ? stored[GAS_SYNC_QUEUE_KEY] : [];
-      if (!queue.length) return;
+      if (!queue.length) {
+        clearGasSyncAlarm();
+        return;
+      }
 
       const job = queue[0];
       const nextQueue = queue.slice(1);
+      const runToken = await getStoredGasSyncResetToken();
+      gasSyncResetToken = runToken;
 
       await storageSetLocal({
         [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
@@ -186,6 +279,9 @@ async function processGasSyncQueue() {
 
       try {
         const result = await postProductsToGas(job.url, job.items);
+        const latestResetToken = await getStoredGasSyncResetToken();
+        gasSyncResetToken = latestResetToken;
+        if (runToken !== latestResetToken) continue;
         const resultList = Array.isArray(result?.results) ? result.results : [];
         const appended = Number.isFinite(Number(result?.appended))
           ? Number(result.appended)
@@ -219,6 +315,9 @@ async function processGasSyncQueue() {
           }),
         });
       } catch (error) {
+        const latestResetToken = await getStoredGasSyncResetToken();
+        gasSyncResetToken = latestResetToken;
+        if (runToken !== latestResetToken) continue;
         await storageSetLocal({
           [GAS_SYNC_QUEUE_KEY]: nextQueue,
           [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
@@ -237,6 +336,20 @@ async function processGasSyncQueue() {
   } finally {
     gasSyncProcessing = false;
   }
+}
+
+async function resetGasSyncState(request = {}) {
+  const requestedToken = Number(request?.resetToken || 0);
+  const currentToken = await getStoredGasSyncResetToken();
+  const nextToken = requestedToken > 0 ? requestedToken : currentToken + 1;
+  gasSyncResetToken = nextToken;
+  gasSyncProcessing = false;
+  clearGasSyncAlarm();
+  await storageSetLocal({
+    [GAS_SYNC_QUEUE_KEY]: [],
+    [GAS_SYNC_STATUS_KEY]: null,
+    [GAS_SYNC_RESET_TOKEN_KEY]: nextToken,
+  });
 }
 
 function sanitizePathSegment(segment) {
@@ -512,6 +625,16 @@ chrome.alarms.onAlarm.addListener(alarm => {
     processGasSyncQueue().catch(() => {});
   }
 });
+
+chrome.runtime.onStartup.addListener(() => {
+  resumeGasSyncQueueIfNeeded(200).catch(() => {});
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  resumeGasSyncQueueIfNeeded(200).catch(() => {});
+});
+
+resumeGasSyncQueueIfNeeded(250).catch(() => {});
 
 function startDownload(request, sendResponse) {
   const { url, filename, saveAs } = request || {};
@@ -833,8 +956,8 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   }
 
   if (request.action === 'getGasSyncStatus') {
-    storageGetLocal([GAS_SYNC_STATUS_KEY])
-      .then(result => sendResponse({ ok: true, status: result[GAS_SYNC_STATUS_KEY] || null }))
+    getGasSyncStatusWithRecovery()
+      .then(status => sendResponse({ ok: true, status }))
       .catch(error => sendResponse({ ok: false, error: error.message || 'status read failed' }));
     return true;
   }
@@ -843,6 +966,13 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     storageSetLocal({ [GAS_SYNC_STATUS_KEY]: null })
       .then(() => sendResponse({ ok: true }))
       .catch(error => sendResponse({ ok: false, error: error.message || 'status clear failed' }));
+    return true;
+  }
+
+  if (request.action === 'resetGasSyncState') {
+    resetGasSyncState(request)
+      .then(() => sendResponse({ ok: true }))
+      .catch(error => sendResponse({ ok: false, error: error.message || 'reset failed' }));
     return true;
   }
 
@@ -882,6 +1012,18 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     })
       .then(result => sendResponse({ ok: true, ...result }))
       .catch(error => sendResponse({ ok: false, error: error.message || 'save failed' }));
+    return true;
+  }
+  if (request.action === 'mangaUpdatesApiFetch') {
+    (async () => {
+      try {
+        const resp = await fetch(request.url, request.options || {});
+        const text = await resp.text();
+        sendResponse({ ok: resp.ok, status: resp.status, body: text });
+      } catch (e) {
+        sendResponse({ ok: false, status: 0, body: '', error: e.message });
+      }
+    })();
     return true;
   }
   return false;

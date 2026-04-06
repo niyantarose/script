@@ -82,6 +82,48 @@ const normalizeImageUrl = rawUrl => {
   return promoteLargeImageUrl(rawUrl);
 };
 
+const IMAGE_VIEWER_OVERLAY_SELECTORS = [
+  '.fancybox-overlay',
+  '.fancybox-wrap',
+  '.fancybox-inner',
+  '.fancybox-skin',
+  '.fancybox-stage',
+  '.fancybox-container',
+  '.fancybox__container',
+  '.fancybox__backdrop',
+  '.fancybox__carousel',
+  '.fancybox__slide',
+  '[role="dialog"]',
+  '[aria-modal="true"]',
+];
+const IMAGE_VIEWER_OVERLAY_SELECTOR = IMAGE_VIEWER_OVERLAY_SELECTORS.join(', ');
+const isInsideImageViewerOverlay = node => (
+  !!node &&
+  typeof node.closest === 'function' &&
+  !!node.closest(IMAGE_VIEWER_OVERLAY_SELECTOR)
+);
+const getSanitizedHtml = root => {
+  if (!root) return '';
+  try {
+    const clone = root.cloneNode(true);
+    if (clone && typeof clone.querySelectorAll === 'function') {
+      clone.querySelectorAll(IMAGE_VIEWER_OVERLAY_SELECTOR).forEach(node => node.remove());
+    }
+    return clone?.innerHTML || '';
+  } catch {
+    return root?.innerHTML || '';
+  }
+};
+const queryAllOutsideImageViewer = selector => Array.from(document.querySelectorAll(selector))
+  .filter(node => !isInsideImageViewerOverlay(node));
+const queryFirstOutsideImageViewer = (...selectors) => {
+  for (const selector of selectors) {
+    const found = queryAllOutsideImageViewer(selector)[0];
+    if (found) return found;
+  }
+  return null;
+};
+
 const scoreEdgeDistance = edge => {
     if (!Number.isFinite(edge) || edge <= 0) return 0;
     return Math.max(0, 3000 - Math.abs(edge - TARGET_IMAGE_EDGE) * 4);
@@ -99,13 +141,16 @@ const scoreEdgeDistance = edge => {
   };
   const collectImageUrlsFromNode = node => {
     if (!node) return [];
+    if (isInsideImageViewerOverlay(node)) return [];
     const urls = [];
     const pushUrl = raw => {
       const normalized = normalizeImageUrl(raw);
       if (normalized) urls.push(normalized);
     };
 
-    Array.from(node.querySelectorAll('img')).forEach(img => {
+    Array.from(node.querySelectorAll('img'))
+      .filter(img => !isInsideImageViewerOverlay(img))
+      .forEach(img => {
       pushUrl(img?.getAttribute('data-original'));
       pushUrl(img?.getAttribute('data-src'));
       pushUrl(img?.getAttribute('data-large'));
@@ -121,21 +166,25 @@ const scoreEdgeDistance = edge => {
       }
     });
 
-    Array.from(node.querySelectorAll('a[href]')).forEach(a => {
+    Array.from(node.querySelectorAll('a[href]'))
+      .filter(a => !isInsideImageViewerOverlay(a))
+      .forEach(a => {
       const href = a.getAttribute('href') || '';
       if (/\.(?:jpe?g|webp|png)(?:\?|$)/i.test(href) || /getImage\.php/i.test(href)) {
         pushUrl(href);
       }
     });
 
-    Array.from(node.querySelectorAll('[style*="background-image"]')).forEach(el => {
+    Array.from(node.querySelectorAll('[style*="background-image"]'))
+      .filter(el => !isInsideImageViewerOverlay(el))
+      .forEach(el => {
       const style = el.getAttribute('style') || '';
       Array.from(style.matchAll(/url\((['"]?)(.*?)\1\)/gi)).forEach(match => {
         pushUrl(match[2]);
       });
     });
 
-    const html = node.innerHTML || '';
+    const html = getSanitizedHtml(node);
     Array.from(
       html.matchAll(/https?:\/\/[^"'\\s<)]+?\.(?:jpg|jpeg|webp|png)(?:\?[^"'\\s<)]*)?/gi)
     ).forEach(match => pushUrl(match[0]));
@@ -212,13 +261,40 @@ const scoreEdgeDistance = edge => {
     return '';
   };
 
+  const normalizeIsbnText = value => String(value || '')
+    .replace(/[０-９]/g, char => String.fromCharCode(char.charCodeAt(0) - 0xFEE0))
+    .replace(/[Ｘｘ]/g, 'X');
+
+  const isValidIsbn10 = value => {
+    if (!/^\d{9}[\dX]$/.test(value)) return false;
+    const sum = value.split('').reduce((total, char, index) => {
+      const digit = char === 'X' ? 10 : Number(char);
+      return total + digit * (10 - index);
+    }, 0);
+    return sum % 11 === 0;
+  };
+
+  const isValidIsbn13 = value => {
+    if (!/^\d{13}$/.test(value)) return false;
+    const sum = value.split('').reduce((total, char, index) => (
+      total + Number(char) * (index % 2 === 0 ? 1 : 3)
+    ), 0);
+    return sum % 10 === 0;
+  };
+
+  const isValidIsbn = value => (
+    value.length === 13 ? isValidIsbn13(value) : value.length === 10 ? isValidIsbn10(value) : false
+  );
+
   const extractIsbn = raw => {
-    const text = String(raw || '');
+    const text = normalizeIsbnText(raw);
     if (!text) return '';
-    const match = text.match(/(?:97[89][\d\-\s]{10,17}|[\d]{9}[\dXx]|[\d][\d\-\s]{8,16}[\dXx])/);
-    if (!match) return '';
-    const normalized = match[0].replace(/[^\dXx]/g, '').toUpperCase();
-    return /^[\dX]{10,13}$/.test(normalized) ? normalized : '';
+    const matches = text.match(/(?:97[89][\d\-\s]{10,17}|[\d][\d\-\s]{8,16}[\dX])/g) || [];
+    const candidates = matches
+      .map(value => value.replace(/[^\dX]/g, '').toUpperCase())
+      .filter(isValidIsbn)
+      .sort((left, right) => right.length - left.length);
+    return candidates[0] || '';
   };
 
   const findIsbnInObject = node => {
@@ -615,7 +691,7 @@ const scoreEdgeDistance = edge => {
       20
     );
 
-    const html = document.documentElement?.innerHTML || '';
+    const html = getSanitizedHtml(document.documentElement);
     const htmlDetailUrls = uniq(
       Array.from(html.matchAll(
         new RegExp(String.raw`https?:\/\/(?:www\.books\.com\.tw\/img|im\d+\.book\.com\.tw\/image\/getImage\?i=https:\/\/www\.books\.com\.tw\/img)\/(?:N|M)\d{2}\/\d{3}\/\d{2}\/${productCodeRegexSafe}(?:_t_\d+|_b_\d+)?\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s<]*)?`, 'gi')
@@ -760,25 +836,25 @@ const scoreEdgeDistance = edge => {
     const MAX_GALLERY_IMAGES = 10;
     const sortAndLimit = urls => sortProductImageUrls(urls, MAX_GALLERY_IMAGES);
 
-    const thumbImgs = Array.from(document.querySelectorAll(
+    const thumbImgs = queryAllOutsideImageViewer(
       '#thumbnail img, .cnt_prod_img001 #thumbnail img, .cnt_prod_img001 .li_box img, .cnt_prod_img001 .each_box img, .cnt_prod_img001 .items img, .prod_img #thumbnail img'
-    ));
+    );
     const thumbUrls = uniq(
       thumbImgs
         .map(img => img?.getAttribute('data-original') || img?.getAttribute('data-src') || img?.currentSrc || img?.src || '')
         .map(normalizeImageUrl)
     ).filter(isProductGalleryImage);
 
-    const thumbScopes = Array.from(document.querySelectorAll(
+    const thumbScopes = queryAllOutsideImageViewer(
       '#thumbnail, .cnt_prod_img001 #thumbnail, .cnt_prod_img001 .li_box, .cnt_prod_img001 .each_box, .cnt_prod_img001 .items, .prod_img #thumbnail'
-    ));
+    );
     const thumbScopeUrls = uniq(
       thumbScopes.flatMap(scope => collectImageUrlsFromNode(scope))
     ).filter(isProductGalleryImage);
 
-    const coverImgs = Array.from(document.querySelectorAll(
+    const coverImgs = queryAllOutsideImageViewer(
       '.cnt_prod_img001 .cover_img .cover, .cnt_prod_img001 .cover_img img, #item-img-content img.cover, .prod_img img.cover, .cover_img img'
-    ));
+    );
     const coverUrls = uniq(
       coverImgs
         .map(img => img?.getAttribute('data-original') || img?.getAttribute('data-src') || img?.currentSrc || img?.src || '')
@@ -790,7 +866,7 @@ const scoreEdgeDistance = edge => {
       return domGalleryUrls;
     }
 
-    const html = document.documentElement?.innerHTML || '';
+    const html = getSanitizedHtml(document.documentElement);
     const rawHtmlUrls = Array.from(
       html.matchAll(new RegExp(`https?:\\/\\/(?:www\\.books\\.com\\.tw\\/img|im\\d+\\.book\\.com\\.tw\\/image\\/getImage\\?i=https:\\/\\/www\\.books\\.com\\.tw\\/img)\\/[^"'\\s<)]*${productCodeRegexSafe}(?:_(?:b|t)_\\d+)?\\.(?:jpg|jpeg|png|webp)(?:\\?[^"'\\s<)]*)?`, 'gi'))
     ).map(match => normalizeImageUrl(match[0]));
@@ -799,8 +875,11 @@ const scoreEdgeDistance = edge => {
       return htmlUrls;
     }
 
-    const gallerySection = document.querySelector(
-      '.cnt_prod_img001, #item-img-content, .prod_img_box, .item_img'
+    const gallerySection = queryFirstOutsideImageViewer(
+      '.cnt_prod_img001',
+      '#item-img-content',
+      '.prod_img_box',
+      '.item_img'
     );
     const sectionUrls = gallerySection
       ? collectImageUrlsFromNode(gallerySection).filter(isProductGalleryImage)
@@ -856,8 +935,12 @@ const scoreEdgeDistance = edge => {
   const price = getPrice();
 
   // 画像URL（メイン画像）
-  const imgEl = document.querySelector(
-    '#item-img-content img, .cnt_prod_img001 .cover_img .cover, .cnt_prod_img001 .cover_img img, .cover img, img[id*="item-img"]'
+  const imgEl = queryFirstOutsideImageViewer(
+    '#item-img-content img',
+    '.cnt_prod_img001 .cover_img .cover',
+    '.cnt_prod_img001 .cover_img img',
+    '.cover img',
+    'img[id*="item-img"]'
   );
   const fallbackImageUrl = normalizeImageUrl(
     imgEl?.getAttribute('data-original') ||

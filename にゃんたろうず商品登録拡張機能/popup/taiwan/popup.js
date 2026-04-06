@@ -212,6 +212,17 @@ async function handleAddCurrentPage() {
   }
 
   data = clearPendingJapaneseTitleMarkers(data);
+
+  try {
+    if (typeof enrichProductWithMangaUpdatesJapaneseTitle === 'function') {
+      console.log('[popup] MU enrichment 開始');
+      data = await enrichProductWithMangaUpdatesJapaneseTitle(data);
+      console.log('[popup] MU enrichment 完了, 日本語タイトル:', data?.日本語タイトル);
+    }
+  } catch (error) {
+    console.warn('[popup] MU enrichment エラー:', error);
+  }
+
   products.push(data);
   save();
   renderList();
@@ -343,6 +354,14 @@ async function handleSaveGasUrl() {
   setStatus('✅ GAS URL を保存しました', 'success');
 }
 
+async function handleResetGas() {
+  stopGasSyncStatusPolling();
+  await resetGasSyncState();
+  gasSyncStatus = null;
+  updateUI();
+  setStatus('✅ GAS送信状態をリセットしました', 'success');
+}
+
 async function handleSendToSheet() {
   if (products.length === 0) return;
   if (!isValidGasUrl(gasWebAppUrl)) {
@@ -376,6 +395,14 @@ async function handleSendToSheet() {
 document.getElementById('btn-save-gas-url').addEventListener('click', async () => {
   try {
     await handleSaveGasUrl();
+  } catch (error) {
+    setStatus(`❌ ${error.message}`, 'error');
+  }
+});
+
+document.getElementById('btn-reset-gas').addEventListener('click', async () => {
+  try {
+    await handleResetGas();
   } catch (error) {
     setStatus(`❌ ${error.message}`, 'error');
   }

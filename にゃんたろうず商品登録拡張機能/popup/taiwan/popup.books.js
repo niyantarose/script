@@ -103,7 +103,7 @@ function buildCommonBookSheetRow(product, overrides = {}) {
     'カテゴリ': category,
     '形態（通常/初回限定/特装）': detectEditionType(product),
     '配送パターン': trimValue(product?.配送パターン || ''),
-    '特典メモ': '',
+    '特典メモ': extractBonusMemo(product),
     '商品説明': description,
     ' メモ': memo,
     'メイン画像': trimValue(product?.画像URL || ''),

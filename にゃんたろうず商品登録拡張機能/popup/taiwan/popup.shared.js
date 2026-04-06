@@ -9,6 +9,9 @@ let gasUrlDraftTimer = null;
 const MANUAL_SAVE_KEY = 'manualSaveImagesV2';
 const GAS_URL_KEY = 'booksGasWebAppUrl';
 const GAS_URL_DRAFT_KEY = 'booksGasWebAppUrlDraft';
+const GAS_SYNC_QUEUE_KEY = 'booksGasSyncQueueV1';
+const GAS_SYNC_STATUS_KEY = 'booksGasSyncStatusV1';
+const GAS_SYNC_RESET_TOKEN_KEY = 'booksGasSyncResetTokenV1';
 const MAX_IMAGE_DOWNLOADS_PER_PRODUCT = 30;
 const MAX_FALLBACK_IMAGE_CANDIDATES = 30;
 const TARGET_BOOKS_IMAGE_EDGE = 1000;
@@ -457,6 +460,23 @@ async function clearGasSyncStatus() {
   return true;
 }
 
+async function resetGasSyncState() {
+  gasSyncStatus = null;
+  const stored = await storageGet([GAS_SYNC_RESET_TOKEN_KEY]);
+  const currentToken = Number(stored[GAS_SYNC_RESET_TOKEN_KEY] || 0);
+  const nextToken = Number.isFinite(currentToken) ? currentToken + 1 : 1;
+  await storageSet({
+    [GAS_SYNC_QUEUE_KEY]: [],
+    [GAS_SYNC_STATUS_KEY]: null,
+    [GAS_SYNC_RESET_TOKEN_KEY]: nextToken,
+  });
+  const response = await sendRuntimeMessage({ action: 'resetGasSyncState', resetToken: nextToken });
+  if (!response?.ok) {
+    console.warn('Failed to notify background about GAS reset:', response?.error || 'resetGasSyncState failed');
+  }
+  return true;
+}
+
 async function refreshGasSyncStatus(options = {}) {
   const response = await sendRuntimeMessage({ action: 'getGasSyncStatus' });
   if (!response?.ok) return null;
@@ -753,36 +773,187 @@ function uniqNonEmptyTitles(values) {
   return list;
 }
 
-async function fetchMangaUpdatesJapaneseTitleFromGas(queries) {
-  const gasUrl = trimValue(gasWebAppUrl || '');
-  if (!/^https:\/\/(?:script\.google\.com|script\.googleusercontent\.com)\//i.test(gasUrl)) {
-    throw new Error('MangaUpdates proxy unavailable: GAS URL missing');
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&#x([0-9a-f]+);/gi, (match, hex) => {
+      try {
+        return String.fromCodePoint(parseInt(hex, 16));
+      } catch {
+        return match;
+      }
+    })
+    .replace(/&#(\d+);/g, (match, dec) => {
+      try {
+        return String.fromCodePoint(parseInt(dec, 10));
+      } catch {
+        return match;
+      }
+    })
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+function stripMangaUpdatesHtmlToText(html) {
+  return decodeHtmlEntities(
+    String(html || '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(?:p|div|li|tr|section|article|h[1-6])>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+  )
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{2,}/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function extractMangaUpdatesSiteSearchResults(html) {
+  const results = [];
+  const seenUrls = new Set();
+  const pattern = /<a\b[^>]*href="([^"]*(?:\/series\/|series\.html\?id=)[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+
+  while ((match = pattern.exec(String(html || ''))) !== null) {
+    const title = trimValue(stripMangaUpdatesHtmlToText(match[2] || ''));
+    if (!title || title.length < 2 || /^Advanced Search$/i.test(title)) continue;
+
+    let url = trimValue(match[1] || '');
+    try {
+      url = new URL(url, 'https://www.mangaupdates.com/').href;
+    } catch {
+      // Keep the original href if URL parsing fails.
+    }
+
+    if (!/^https:\/\/www\.mangaupdates\.com\//i.test(url) || seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    results.push({ title, url });
   }
 
-  const response = await fetch(gasUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain;charset=utf-8',
-    },
-    body: JSON.stringify({
-      action: MANGA_UPDATES_PROXY_ACTION,
-      source: 'books.com.tw-extension-popup',
-      queries: uniqNonEmptyTitles(queries || []),
-    }),
-  });
+  return results;
+}
 
-  if (!response.ok) {
-    throw new Error(`MangaUpdates proxy error: ${response.status}`);
+function extractMangaUpdatesAssociatedTitles(html) {
+  const text = stripMangaUpdatesHtmlToText(html);
+  const label = 'Associated Names';
+  const startIndex = text.indexOf(label);
+  if (startIndex < 0) return [];
+
+  let block = text.slice(startIndex + label.length);
+  const endLabels = [
+    'Groups Scanlating',
+    'Latest Release(s)',
+    'Recommendations',
+    'Reviews',
+    'Forum',
+    'Status in Country of Origin',
+    'Description',
+    'Anime Start/End Chapter',
+    'Category',
+    'Rating',
+  ];
+  let endIndex = block.length;
+  for (const endLabel of endLabels) {
+    const index = block.indexOf(endLabel);
+    if (index >= 0 && index < endIndex) endIndex = index;
+  }
+  block = block.slice(0, endIndex);
+
+  return uniqNonEmptyTitles(
+    block
+      .split(/\n+/)
+      .map(title => trimValue(title))
+      .filter(title => title && title.length >= 2)
+  );
+}
+
+function cjkCharOverlap(a, b) {
+  const cjkOnly = s => String(s || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
+  const charsA = cjkOnly(a);
+  const charsB = cjkOnly(b);
+  if (!charsA || !charsB) return 0;
+  const setA = new Set(charsA);
+  const setB = new Set(charsB);
+  let common = 0;
+  for (const ch of setA) { if (setB.has(ch)) common++; }
+  return common / Math.min(setA.size, setB.size);
+}
+
+async function fetchMangaUpdatesJapaneseTitleDirect(queries) {
+  const MU_SITE_SEARCH = 'https://www.mangaupdates.com/site/search/result?search=';
+  const normalizedQueries = uniqNonEmptyTitles(queries || []).slice(0, 8);
+  if (!normalizedQueries.length) return { ok: true, japaneseTitle: '' };
+  console.log('[MU直接] 検索開始:', normalizedQueries);
+
+  for (const query of normalizedQueries) {
+    try {
+      // Browser-originated POSTs to the API search endpoint now return 403 when Origin is present.
+      // Use the public site HTML search plus the series page's associated names instead.
+      const searchResp = await fetch(MU_SITE_SEARCH + encodeURIComponent(query), {
+        method: 'GET',
+        headers: {
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        credentials: 'omit',
+        cache: 'no-store',
+      });
+      console.log('[MU直接] site search status:', searchResp.status, 'query:', query);
+      if (!searchResp.ok) continue;
+      const searchHtml = await searchResp.text().catch(() => '');
+      const results = extractMangaUpdatesSiteSearchResults(searchHtml).slice(0, 5);
+
+      for (let ri = 0; ri < results.length; ri++) {
+        const record = results[ri];
+        let candidateTitles = uniqNonEmptyTitles([record?.title || '']);
+        if (!record?.url) continue;
+
+        const detailResp = await fetch(record.url, {
+          method: 'GET',
+          headers: {
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          credentials: 'omit',
+          cache: 'no-store',
+        });
+        if (detailResp.ok) {
+          const detailHtml = await detailResp.text().catch(() => '');
+          candidateTitles = uniqNonEmptyTitles([
+            record.title,
+            ...extractMangaUpdatesAssociatedTitles(detailHtml),
+          ]);
+        }
+
+        const queryKey = normalizeMangaUpdatesTitleKey(query);
+        if (!queryKey || queryKey.length < 2) continue;
+        const matched = candidateTitles.some(c => {
+          const ck = normalizeMangaUpdatesTitleKey(c);
+          if (!ck || ck.length < 2) return false;
+          if (ck === queryKey) return true;
+          if (ck.length >= 4 && queryKey.length >= 4 && (ck.includes(queryKey) || queryKey.includes(ck))) return true;
+          if (ri < 3 && cjkCharOverlap(query, c) >= 0.5) return true;
+          return false;
+        });
+        console.log('[MU直接] series:', record.title, 'matched:', matched);
+        if (!matched) continue;
+
+        for (const c of candidateTitles) {
+          if (hasJapaneseTitleSignal(c)) {
+            console.log('[MU直接] 日本語タイトル発見:', c);
+            return { ok: true, japaneseTitle: trimValue(c) };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[MU直接] エラー:', e.message);
+    }
   }
 
-  const data = await response.json().catch(() => null);
-  if (!data || typeof data !== 'object') {
-    throw new Error('MangaUpdates proxy unavailable: invalid response');
-  }
-  if (!data.ok) {
-    throw new Error(`MangaUpdates proxy unavailable: ${data.error || 'lookup failed'}`);
-  }
-  return data;
+  console.log('[MU直接] 見つからず');
+  return { ok: true, japaneseTitle: '' };
 }
 
 function getMangaUpdatesGenreText(product) {
@@ -814,10 +985,7 @@ function buildMangaUpdatesLookupQueries(product) {
 function shouldUseMangaUpdatesLookup(product) {
   if (mangaUpdatesLookupDisabled) return false;
   if (!product) return false;
-  if (!/^https:\/\/(?:script\.google\.com|script\.googleusercontent\.com)\//i.test(trimValue(gasWebAppUrl || ''))) return false;
 
-  const sheetType = typeof getProductSheetType === 'function' ? getProductSheetType(product) : '';
-  const genreText = getMangaUpdatesGenreText(product);
   const hasSourceTitle = buildMangaUpdatesLookupQueries(product).length > 0;
   if (!hasSourceTitle) return false;
 
@@ -831,8 +999,8 @@ async function lookupJapaneseTitleViaMangaUpdates(query) {
   if (!cacheKey) return '';
   if (mangaUpdatesTitleCache.has(cacheKey)) return mangaUpdatesTitleCache.get(cacheKey) || '';
 
-  const proxyResult = await fetchMangaUpdatesJapaneseTitleFromGas([query]);
-  const japaneseTitle = trimValue(proxyResult?.japaneseTitle || '');
+  const directResult = await fetchMangaUpdatesJapaneseTitleDirect([query]);
+  const japaneseTitle = trimValue(directResult?.japaneseTitle || '');
   mangaUpdatesTitleCache.set(cacheKey, japaneseTitle);
   return japaneseTitle;
 }
@@ -847,14 +1015,12 @@ async function enrichProductWithMangaUpdatesJapaneseTitle(product) {
     && !trimValue(product?.作品名日本語 || product?.['作品名（日本語）'] || '');
   if (!needsJapaneseTitle && !needsWorkJapaneseTitle) return product;
 
-  const genreText = getMangaUpdatesGenreText(product);
   const queries = buildMangaUpdatesLookupQueries(product);
-  const hasGasUrl = /^https:\/\/(?:script\.google\.com|script\.googleusercontent\.com)\//i.test(trimValue(gasWebAppUrl || ''));
   const isLookupTarget = queries.length > 0;
 
-  if (!isLookupTarget || !hasGasUrl || !queries.length || mangaUpdatesLookupDisabled) {
+  if (!isLookupTarget || !queries.length || mangaUpdatesLookupDisabled) {
     if (needsJapaneseTitle && shouldReplaceJapaneseTitleValue(product?.日本語タイトル || '')) {
-      product.日本語タイトル = getMangaUpdatesLookupFallbackStatus(queries, hasGasUrl, isLookupTarget);
+      product.日本語タイトル = getMangaUpdatesLookupFallbackStatus(queries, true, isLookupTarget);
     }
     return product;
   }

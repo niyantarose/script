@@ -311,13 +311,26 @@ function inferLookupFailureSource_(error) {
 
   const message = String((error && (error.message || error.toString())) || '');
   if (!message) return '不明';
+  let match = message.match(/MangaUpdates login error:\s*(\d+)/i);
+  if (match) return 'MU login ' + match[1];
+  if (/MangaUpdates login error:\s*session token missing/i.test(message)) return 'MU session token missing';
+  match = message.match(/MangaUpdates API (search|detail) error:\s*(\d+)/i);
+  if (match) return 'MU API ' + match[1].toLowerCase() + ' ' + match[2];
+  match = message.match(/MangaUpdates API error:\s*(\d+)/i);
+  if (match) return 'MU API ' + match[1];
+  match = message.match(/MangaUpdates site search error:\s*(\d+)/i);
+  if (match) return 'MU site ' + match[1];
+  if (/MangaUpdates parse error:\s*login/i.test(message)) return 'MU parse login';
+  if (/MangaUpdates parse error:\s*search/i.test(message)) return 'MU parse search';
+  if (/MangaUpdates parse error:\s*detail/i.test(message)) return 'MU parse detail';
+  if (/MangaUpdates parse error:/i.test(message)) return 'MU parse';
   if (/MangaUpdates|\bMU\b/i.test(message)) return 'MU';
   if (/AniList/i.test(message)) return 'AniList';
   if (/BookWalker/i.test(message)) return 'BookWalker';
   if (/Amazon/i.test(message)) return 'Amazon';
   if (/BL補助|BL\s*sites|DLsite|Renta|ちるちる/i.test(message)) return 'BL補助';
   if (/辞書|dictionary/i.test(message)) return '辞書';
-  if (/lookup\s*fields|前処理|extract/i.test(message)) return '前処理';
+  if (/lookup\s*fields|前処理|extract|normalize/i.test(message)) return '前処理';
   return '不明';
 }
 
@@ -436,21 +449,9 @@ function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, au
     return result;
   }
 
+  // MangaUpdatesはGASからCloudflareにブロックされているためスキップ
+  // 拡張機能側で直接MU APIを叩いて日本語タイトルを事前セット済み
   let muCandidates = [];
-  result.checkedSources.push('MangaUpdates');
-  try {
-    const muResult = searchMangaUpdatesCandidates_(originalTitle, language, category, originalProductTitle);
-    result.candidates = result.candidates.concat(muResult.candidates || []);
-    muCandidates = muResult.candidates || [];
-    if (muResult.japaneseTitle) {
-      result.japaneseTitle = muResult.japaneseTitle;
-      result.source = 'MangaUpdates';
-      return result;
-    }
-  } catch (e) {
-    result.failedSources.push('MU');
-    Logger.log('MangaUpdates cascade error: ' + e.message);
-  }
 
   let alCandidates = [];
   result.checkedSources.push('AniList');
@@ -555,12 +556,19 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
 
   const searchQueries = buildMangaUpdatesSearchQueries_(query, language, category, originalProductTitle).slice(0, 8);
   const seenSeriesIds = {};
+  let lastApiError = null;
 
   for (let q = 0; q < searchQueries.length; q += 1) {
-    const searchResponse = fetchMangaUpdatesJson_('/series/search', {
-      method: 'post',
-      payload: { search: searchQueries[q] },
-    });
+    let searchResponse = null;
+    try {
+      searchResponse = fetchMangaUpdatesJson_('/series/search', {
+        method: 'post',
+        payload: { search: searchQueries[q] },
+      });
+    } catch (error) {
+      lastApiError = error;
+      continue;
+    }
     const results = Array.isArray(searchResponse && searchResponse.results)
       ? searchResponse.results.slice(0, 5)
       : [];
@@ -571,7 +579,13 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
       if (!seriesId || seenSeriesIds[seriesId]) continue;
       seenSeriesIds[seriesId] = true;
 
-      const detail = fetchMangaUpdatesJson_('/series/' + seriesId, { method: 'get' });
+      let detail = null;
+      try {
+        detail = fetchMangaUpdatesJson_('/series/' + seriesId, { method: 'get' });
+      } catch (error) {
+        lastApiError = error;
+        continue;
+      }
       if (!isStrongMangaUpdatesMatch_(query, record, detail, language, category, originalProductTitle)) continue;
 
       const associated = Array.isArray(detail && detail.associated) ? detail.associated : [];
@@ -609,6 +623,13 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
     return result;
   }
   result.candidates = uniqNonEmptyTitles_(result.candidates);
+  if (!result.japaneseTitle && lastApiError) {
+    throw lastApiError;
+  }
+  if (!result.japaneseTitle && siteFallback.failed && siteFallback.error && !result.candidates.length
+      && !/\b403\b/.test(siteFallback.error)) {
+    throw new Error(siteFallback.error);
+  }
   if (!result.japaneseTitle) {
     cache.put('mu_' + cacheKey, MANGA_UPDATES_EMPTY_CACHE_VALUE, MANGA_UPDATES_CACHE_TTL_SECONDS);
   }
@@ -632,7 +653,7 @@ function searchMangaUpdatesSiteCandidates_(queries, query, language, category, o
         followRedirects: true,
         headers: {
           'Accept-Language': 'ja,en;q=0.8,zh-TW;q=0.6',
-          'User-Agent': 'Mozilla/5.0 (compatible; GAS)',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         },
       });
       const status = response.getResponseCode();
@@ -659,7 +680,10 @@ function searchMangaUpdatesSiteCandidates_(queries, query, language, category, o
         }
       }
     } catch (error) {
-      lastError = error && error.message ? error.message : String(error || 'unknown error');
+      const detail = error && error.message ? error.message : String(error || 'unknown error');
+      lastError = /^MangaUpdates/i.test(detail)
+        ? detail
+        : 'MangaUpdates site search error: ' + detail;
     }
   }
 
@@ -856,7 +880,7 @@ function confirmOnAmazonJp_(originalQuery, candidates, language, category, origi
         followRedirects: true,
         headers: {
           'Accept-Language': 'ja',
-          'User-Agent': 'Mozilla/5.0 (compatible; GAS)',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         },
       });
       if (response.getResponseCode() !== 200) continue;
@@ -994,15 +1018,13 @@ const MANGA_UPDATES_USERNAME = 'niyantarose';
 const MANGA_UPDATES_PASSWORD = 'niyantarose';
 
 function handleMangaUpdatesLookupPost_(payload) {
-  const queries = uniqNonEmptyTitles_(
-    Array.isArray(payload && payload.queries) ? payload.queries : [payload && payload.query]
-  );
-  const result = lookupJapaneseTitleViaMangaUpdatesQueries_(queries);
+  // GASからMU APIはCloudflareにブロックされているため即空を返す
+  // 拡張機能側で直接MU APIを叩く方式に移行済み
   return jsonResponse_({
     ok: true,
-    japaneseTitle: result.japaneseTitle || '',
-    matchedQuery: result.matchedQuery || '',
-    via: 'mangaupdates_proxy',
+    japaneseTitle: '',
+    matchedQuery: '',
+    via: 'mangaupdates_proxy_disabled',
     source: payload && payload.source ? payload.source : 'unknown',
   });
 }
@@ -1069,15 +1091,16 @@ function lookupJapaneseTitleViaMangaUpdates_(query) {
 }
 
 function fetchMangaUpdatesJson_(endpoint, options) {
-  const sessionToken = getMangaUpdatesSessionToken_(
-    options && options.forceRefreshToken === true
-  );
+  const endpointLabel = endpoint === '/series/search'
+    ? 'search'
+    : (/^\/series\/[^\/]+$/i.test(String(endpoint || ''))
+        ? 'detail'
+        : (String(endpoint || '').replace(/^\//, '') || 'unknown'));
   const requestOptions = {
     method: String((options && options.method) || 'get').toUpperCase(),
     muteHttpExceptions: true,
     headers: {
       Accept: 'application/json',
-      Authorization: 'Bearer ' + sessionToken,
     },
   };
 
@@ -1086,21 +1109,28 @@ function fetchMangaUpdatesJson_(endpoint, options) {
     requestOptions.payload = JSON.stringify(options.payload || {});
   }
 
-  const response = UrlFetchApp.fetch(MANGA_UPDATES_API_BASE + endpoint, requestOptions);
-  const status = response.getResponseCode();
-  const responseText = response.getContentText() || '';
-  if ((status === 401 || status === 403) && !(options && options.forceRefreshToken === true)) {
-    clearMangaUpdatesSessionTokenCache_();
-    return fetchMangaUpdatesJson_(
-      endpoint,
-      Object.assign({}, options || {}, { forceRefreshToken: true })
-    );
+  var response;
+  try {
+    response = UrlFetchApp.fetch(MANGA_UPDATES_API_BASE + endpoint, requestOptions);
+  } catch (e) {
+    Logger.log('MangaUpdates API ' + endpointLabel + ' fetch error: ' + e.message);
+    return {};
+  }
+  var status = response.getResponseCode();
+  var responseText = response.getContentText() || '';
+  if (status === 403) {
+    Logger.log('MangaUpdates API ' + endpointLabel + ' blocked (403), skipping');
+    return {};
   }
   if (status < 200 || status >= 300) {
-    throw new Error('MangaUpdates API error: ' + status);
+    throw new Error('MangaUpdates API ' + endpointLabel + ' error: ' + status);
   }
 
-  return responseText ? JSON.parse(responseText) : {};
+  try {
+    return responseText ? JSON.parse(responseText) : {};
+  } catch (error) {
+    throw new Error('MangaUpdates parse error: ' + endpointLabel);
+  }
 }
 
 function getMangaUpdatesSessionToken_(forceRefresh) {
@@ -1116,6 +1146,7 @@ function getMangaUpdatesSessionToken_(forceRefresh) {
     contentType: 'application/json; charset=utf-8',
     headers: {
       Accept: 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     },
     payload: JSON.stringify({
       username: MANGA_UPDATES_USERNAME,
@@ -1129,7 +1160,12 @@ function getMangaUpdatesSessionToken_(forceRefresh) {
     throw new Error('MangaUpdates login error: ' + status);
   }
 
-  const data = responseText ? JSON.parse(responseText) : {};
+  let data = {};
+  try {
+    data = responseText ? JSON.parse(responseText) : {};
+  } catch (error) {
+    throw new Error('MangaUpdates parse error: login');
+  }
   const sessionToken = String((((data || {}).context || {}).session_token) || '').trim();
   if (!sessionToken) {
     throw new Error('MangaUpdates login error: session token missing');
@@ -1304,6 +1340,21 @@ function buildMangaUpdatesTitleKeys_(value, language, category, originalProductT
   );
 }
 
+function cjkCharOverlap_(a, b) {
+  var charsA = String(a || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
+  var charsB = String(b || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
+  if (!charsA || !charsB) return 0;
+  var setA = {};
+  var setB = {};
+  var sizeA = 0;
+  var sizeB = 0;
+  for (var i = 0; i < charsA.length; i++) { if (!setA[charsA[i]]) { setA[charsA[i]] = true; sizeA++; } }
+  for (var j = 0; j < charsB.length; j++) { if (!setB[charsB[j]]) { setB[charsB[j]] = true; sizeB++; } }
+  var common = 0;
+  for (var ch in setA) { if (setB[ch]) common++; }
+  return common / Math.min(sizeA, sizeB);
+}
+
 function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, category, originalProductTitle) {
   const queryKeys = buildMangaUpdatesTitleKeys_(query, language, category, originalProductTitle);
   if (!queryKeys.length) return false;
@@ -1318,7 +1369,9 @@ function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, categ
   })));
 
   return candidates.some(function(candidate) {
-    const candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
+    // CJK文字の重複率でマッチ判定（繁体字↔簡体字↔日本語対応）
+    if (cjkCharOverlap_(query, candidate) >= 0.5) return true;
+    var candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
     return candidateKeys.some(function(candidateKey) {
       return queryKeys.some(function(queryKey) {
         if (!candidateKey || !queryKey) return false;
@@ -1483,7 +1536,7 @@ function appendItems_(ss, items) {
     if (!appendEntries.length) return;
 
     const targetRows = resolveAppendRows_(context.sheet, context.keyColumnIndex, rows.length);
-    writeRows_(context.sheet, context.lastColumn, targetRows, rows);
+    writeRows_(context.sheet, context.lastColumn, targetRows, rows, context.textColumnIndexes);
 
     appendEntries.forEach((entry, entryIndex) => {
       const appendedRow = targetRows[entryIndex];
@@ -1539,6 +1592,7 @@ function buildSheetContext_(ss, sheetName, sampleItem) {
     lastColumn,
     normalizedHeaderMap,
     keyColumnIndex: findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, extractRowData_(sampleItem)),
+    textColumnIndexes: findTextPreservingColumnIndexes_(normalizedHeaderMap),
   };
 }
 
@@ -1600,6 +1654,20 @@ function normalizeDuplicateKeyValue_(value) {
   return normalizeCellText_(value).toLowerCase();
 }
 
+function normalizeDuplicateKeyValueByType_(type, value) {
+  const normalized = normalizeDuplicateKeyValue_(value);
+  if (!normalized) return '';
+
+  if (type === 'productCode') {
+    const compact = normalized.replace(/\s+/g, '');
+    if (/^\d+$/.test(compact)) {
+      return compact.replace(/^0+(?=\d)/, '');
+    }
+  }
+
+  return normalized;
+}
+
 function buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns) {
   const keys = [];
   duplicateKeyColumns.forEach(column => {
@@ -1607,7 +1675,7 @@ function buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns) {
     for (let i = 0; i < column.headers.length; i += 1) {
       const candidate = rowData && rowData[column.headers[i]];
       if (candidate == null) continue;
-      const normalized = normalizeDuplicateKeyValue_(candidate);
+      const normalized = normalizeDuplicateKeyValueByType_(column.type, candidate);
       if (!normalized) continue;
       rawValue = normalized;
       break;
@@ -1628,13 +1696,34 @@ function collectExistingDuplicateKeys_(sheet, duplicateKeyColumns) {
   duplicateKeyColumns.forEach(column => {
     const values = sheet.getRange(2, column.index + 1, lastRow - 1, 1).getDisplayValues();
     values.forEach(row => {
-      const normalized = normalizeDuplicateKeyValue_(row[0]);
+      const normalized = normalizeDuplicateKeyValueByType_(column.type, row[0]);
       if (!normalized) return;
       seen.add(`${column.type}:${normalized}`);
     });
   });
 
   return seen;
+}
+
+function findTextPreservingColumnIndexes_(normalizedHeaderMap) {
+  const headers = [
+    'サイト商品コード',
+    '博客來商品コード',
+    '商品コード',
+    'productCode',
+    '商品コード（SKU）',
+    'ISBN',
+    'isbn',
+    'アラジン商品コード',
+  ];
+  const indexes = new Set();
+
+  headers.forEach(header => {
+    const idx = normalizedHeaderMap[normalizeHeader_(header)];
+    if (typeof idx === 'number') indexes.add(idx);
+  });
+
+  return Array.from(indexes).sort((a, b) => a - b);
 }
 
 function extractRowData_(item) {
@@ -1698,7 +1787,15 @@ function buildSequentialRows_(startRow, count) {
   return Array.from({ length: count }, (_, index) => startRow + index);
 }
 
-function writeRows_(sheet, lastColumn, targetRows, rows) {
+function applyTextFormatToColumns_(sheet, startRow, rowCount, columnIndexes) {
+  if (!rowCount || !columnIndexes || !columnIndexes.length) return;
+
+  columnIndexes.forEach(index => {
+    sheet.getRange(startRow, index + 1, rowCount, 1).setNumberFormat('@');
+  });
+}
+
+function writeRows_(sheet, lastColumn, targetRows, rows, textColumnIndexes) {
   if (!targetRows.length || !rows.length) return;
 
   const maxTargetRow = Math.max.apply(null, targetRows);
@@ -1716,6 +1813,7 @@ function writeRows_(sheet, lastColumn, targetRows, rows) {
     const startRow = targetRows[startIndex];
     const segmentRows = rows.slice(startIndex, endIndex + 1);
     const range = sheet.getRange(startRow, 1, segmentRows.length, lastColumn);
+    applyTextFormatToColumns_(sheet, startRow, segmentRows.length, textColumnIndexes);
     range.setValues(segmentRows);
     range.setWrap(false);
 
@@ -2628,6 +2726,8 @@ function testTaiwanGasRuntime_() {
   Logger.log(JSON.stringify(result, null, 2));
   return result;
 }
+
+
 
 
 

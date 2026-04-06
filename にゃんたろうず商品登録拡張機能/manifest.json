@@ -21,7 +21,8 @@
     "https://cdnimage.aladin.co.kr/*",
     "https://script.google.com/*",
     "https://script.googleusercontent.com/*",
-    "https://api.mangaupdates.com/*"
+    "https://api.mangaupdates.com/*",
+    "https://www.mangaupdates.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html"
