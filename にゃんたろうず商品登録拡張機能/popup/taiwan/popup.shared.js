@@ -883,6 +883,61 @@ function cjkCharOverlap(a, b) {
   return common / Math.min(setA.size, setB.size);
 }
 
+async function fetchMangaUpdatesSiteHtml_(url) {
+  const requestUrl = String(url || '').trim();
+  if (!requestUrl) {
+    return { ok: false, status: 0, body: '', via: 'none', error: 'url missing' };
+  }
+
+  const requestOptions = {
+    method: 'GET',
+    headers: {
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+    credentials: 'omit',
+    cache: 'no-store',
+  };
+
+  try {
+    const backgroundResp = await sendRuntimeMessage({
+      action: 'mangaUpdatesApiFetch',
+      url: requestUrl,
+      options: requestOptions,
+    });
+    if (backgroundResp?.ok || Number(backgroundResp?.status || 0) > 0 || String(backgroundResp?.body || '')) {
+      return {
+        ok: !!backgroundResp?.ok,
+        status: Number(backgroundResp?.status || 0),
+        body: String(backgroundResp?.body || ''),
+        via: 'background',
+        error: String(backgroundResp?.error || ''),
+      };
+    }
+  } catch (error) {
+    console.warn('[MU直接] background fetch failed:', error?.message || error);
+  }
+
+  try {
+    const directResp = await fetch(requestUrl, requestOptions);
+    const body = await directResp.text().catch(() => '');
+    return {
+      ok: directResp.ok,
+      status: directResp.status,
+      body,
+      via: 'direct',
+      error: '',
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      body: '',
+      via: 'direct',
+      error: String(error?.message || error || ''),
+    };
+  }
+}
+
 async function fetchMangaUpdatesJapaneseTitleDirect(queries) {
   const MU_SITE_SEARCH = 'https://www.mangaupdates.com/site/search/result?search=';
   const normalizedQueries = uniqNonEmptyTitles(queries || []).slice(0, 8);
@@ -891,19 +946,10 @@ async function fetchMangaUpdatesJapaneseTitleDirect(queries) {
 
   for (const query of normalizedQueries) {
     try {
-      // Browser-originated POSTs to the API search endpoint now return 403 when Origin is present.
-      // Use the public site HTML search plus the series page's associated names instead.
-      const searchResp = await fetch(MU_SITE_SEARCH + encodeURIComponent(query), {
-        method: 'GET',
-        headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        credentials: 'omit',
-        cache: 'no-store',
-      });
-      console.log('[MU直接] site search status:', searchResp.status, 'query:', query);
-      if (!searchResp.ok) continue;
-      const searchHtml = await searchResp.text().catch(() => '');
+      const searchResp = await fetchMangaUpdatesSiteHtml_(MU_SITE_SEARCH + encodeURIComponent(query));
+      console.log('[MU直接] site search status:', searchResp?.status, 'via:', searchResp?.via, 'query:', query);
+      if (!searchResp?.ok) continue;
+      const searchHtml = searchResp.body || '';
       const results = extractMangaUpdatesSiteSearchResults(searchHtml).slice(0, 5);
 
       for (let ri = 0; ri < results.length; ri++) {
@@ -911,16 +957,9 @@ async function fetchMangaUpdatesJapaneseTitleDirect(queries) {
         let candidateTitles = uniqNonEmptyTitles([record?.title || '']);
         if (!record?.url) continue;
 
-        const detailResp = await fetch(record.url, {
-          method: 'GET',
-          headers: {
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          },
-          credentials: 'omit',
-          cache: 'no-store',
-        });
-        if (detailResp.ok) {
-          const detailHtml = await detailResp.text().catch(() => '');
+        const detailResp = await fetchMangaUpdatesSiteHtml_(record.url);
+        if (detailResp?.ok) {
+          const detailHtml = detailResp.body || '';
           candidateTitles = uniqNonEmptyTitles([
             record.title,
             ...extractMangaUpdatesAssociatedTitles(detailHtml),
