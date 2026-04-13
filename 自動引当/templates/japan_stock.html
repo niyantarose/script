@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}日本在庫管理 | 自動引当ツール{% endblock %}
+{% block page_title %}日本在庫管理{% endblock %}
+{% block content %}
+<section class="panel panel-wide">
+  <div class="panel-header">
+    <div>
+      <h3>EMS日本入荷後の仕分け</h3>
+      <p>受注へ割当、日本在庫反映、除外、EMS差し戻しを行えます。</p>
+    </div>
+    <div class="action-row">
+      <form method="post" action="{{ url_for('main.japan_stock_reflect') }}">
+        <button class="button accent" type="submit">在庫反映ボタン</button>
+      </form>
+      <a class="button ghost" href="{{ url_for('main.export', kind='japan_stock') }}">CSV出力</a>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>EMS</th>
+          <th>商品</th>
+          <th>数量</th>
+          <th>状態</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.id }}</td>
+            <td>{{ row.ems_item.ems.ems_number }}</td>
+            <td>{{ row.product_code }}{% if row.product_sub_code %}/{{ row.product_sub_code }}{% endif %}</td>
+            <td>{{ row.quantity }}</td>
+            <td><span class="badge neutral">{{ japan_staging_status_labels[row.status] }}</span></td>
+            <td>
+              <form class="staging-form" method="post" action="{{ url_for('main.japan_stock_update', staging_id=row.id) }}">
+                <select name="action">
+                  <option value="assign">受注に当てる</option>
+                  <option value="stock">日本在庫へ</option>
+                  <option value="exclude">除外する</option>
+                  <option value="return">EMSに戻す</option>
+                </select>
+                <input type="number" name="assigned_order_item_id" placeholder="受注明細ID">
+                <input name="excluded_reason" placeholder="除外理由">
+                <button class="button tiny" type="submit">更新</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="6" class="muted">仕分け待ちデータがありません。</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="helper-box">
+    <h4>受注明細ID 参照</h4>
+    <div class="table-wrap compact">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>受注番号</th>
+            <th>商品</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in order_items %}
+            <tr>
+              <td>{{ item.id }}</td>
+              <td>{{ item.order.yahoo_order_id }}</td>
+              <td>{{ item.product_code }}{% if item.product_sub_code %}/{{ item.product_sub_code }}{% endif %}</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="3" class="muted">受注明細がありません。</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}

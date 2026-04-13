@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}自動引当ツール{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+  <div class="page-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-kicker">Inventory Flow</span>
+        <h1>自動引当ツール</h1>
+        <p>韓国仕入から日本発送までの引当・漏れチェック・日本在庫反映を1画面ずつ追える構成です。</p>
+      </div>
+      <nav class="nav">
+        <a href="{{ url_for('main.dashboard') }}" class="{% if request.endpoint == 'main.dashboard' %}active{% endif %}">ダッシュボード</a>
+        <a href="{{ url_for('main.orders') }}" class="{% if request.endpoint == 'main.orders' %}active{% endif %}">受注・発送状況</a>
+        <a href="{{ url_for('main.ems') }}" class="{% if request.endpoint == 'main.ems' %}active{% endif %}">EMS梱包リスト</a>
+        <a href="{{ url_for('main.checks') }}" class="{% if request.endpoint == 'main.checks' %}active{% endif %}">漏れチェック</a>
+        <a href="{{ url_for('main.allocation') }}" class="{% if request.endpoint == 'main.allocation' %}active{% endif %}">引当実行</a>
+        <a href="{{ url_for('main.japan_stock') }}" class="{% if request.endpoint == 'main.japan_stock' %}active{% endif %}">日本在庫管理</a>
+        <a href="{{ url_for('main.alerts') }}" class="{% if request.endpoint == 'main.alerts' %}active{% endif %}">アラート一覧</a>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">{% block eyebrow %}在庫自動引当・紐付け{% endblock %}</p>
+          <h2>{% block page_title %}Dashboard{% endblock %}</h2>
+        </div>
+        <div class="topbar-actions">
+          <form method="post" action="{{ url_for('main.trigger_checks') }}">
+            <button class="button ghost" type="submit">漏れチェック再実行</button>
+          </form>
+          <a class="button" href="{{ url_for('main.export', kind='all_tables') }}">全テーブルCSV</a>
+        </div>
+      </header>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <section class="flash-stack">
+            {% for category, message in messages %}
+              <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </section>
+        {% endif %}
+      {% endwith %}
+
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

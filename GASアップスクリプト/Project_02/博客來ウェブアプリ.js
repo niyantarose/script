@@ -449,9 +449,21 @@ function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, au
     return result;
   }
 
-  // MangaUpdatesはGASからCloudflareにブロックされているためスキップ
-  // 拡張機能側で直接MU APIを叩いて日本語タイトルを事前セット済み
   let muCandidates = [];
+  result.checkedSources.push('MangaUpdates');
+  try {
+    const muResult = searchMangaUpdatesCandidates_(originalTitle, language, category, originalProductTitle);
+    result.candidates = result.candidates.concat(muResult.candidates || []);
+    muCandidates = muResult.candidates || [];
+    if (muResult.japaneseTitle) {
+      result.japaneseTitle = muResult.japaneseTitle;
+      result.source = 'MangaUpdates';
+      return result;
+    }
+  } catch (e) {
+    result.failedSources.push(inferLookupFailureSource_(e));
+    Logger.log('MangaUpdates cascade error: ' + e.message);
+  }
 
   let alCandidates = [];
   result.checkedSources.push('AniList');
@@ -622,13 +634,12 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
     result.candidates = uniqNonEmptyTitles_(result.candidates);
     return result;
   }
+  if (siteFallback.failed && siteFallback.error) {
+    throw new Error(siteFallback.error);
+  }
   result.candidates = uniqNonEmptyTitles_(result.candidates);
   if (!result.japaneseTitle && lastApiError) {
     throw lastApiError;
-  }
-  if (!result.japaneseTitle && siteFallback.failed && siteFallback.error && !result.candidates.length
-      && !/\b403\b/.test(siteFallback.error)) {
-    throw new Error(siteFallback.error);
   }
   if (!result.japaneseTitle) {
     cache.put('mu_' + cacheKey, MANGA_UPDATES_EMPTY_CACHE_VALUE, MANGA_UPDATES_CACHE_TTL_SECONDS);
@@ -638,53 +649,42 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
 
 function searchMangaUpdatesSiteCandidates_(queries, query, language, category, originalProductTitle) {
   const result = { japaneseTitle: '', candidates: [], failed: false, error: '' };
-  const searchQueries = uniqNonEmptyTitles_(queries || []).slice(0, 4);
+  const searchQueries = uniqNonEmptyTitles_(queries || []).slice(0, 5);
   if (!searchQueries.length) return result;
 
   const queryKeys = buildMangaUpdatesTitleKeys_(query, language, category, originalProductTitle);
   let hadResponse = false;
   let lastError = '';
 
-  // fetchAll で全クエリを並列実行
-  const requests = searchQueries.map(function(sq) {
-    return {
-      url: MANGA_UPDATES_SITE_SEARCH_BASE + encodeURIComponent(sq),
-      method: 'GET',
-      muteHttpExceptions: true,
-      followRedirects: true,
-      headers: {
-        'Accept-Language': 'ja,en;q=0.8,zh-TW;q=0.6',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      },
-    };
-  });
-
-  let responses;
-  try {
-    responses = UrlFetchApp.fetchAll(requests);
-  } catch (error) {
-    const detail = error && error.message ? error.message : String(error || 'unknown error');
-    result.failed = true;
-    result.error = 'MangaUpdates site search error: ' + detail;
-    return result;
-  }
-
-  for (let i = 0; i < responses.length; i += 1) {
+  for (let i = 0; i < searchQueries.length; i += 1) {
     try {
-      const status = responses[i].getResponseCode();
+      const response = UrlFetchApp.fetch(MANGA_UPDATES_SITE_SEARCH_BASE + encodeURIComponent(searchQueries[i]), {
+        method: 'GET',
+        muteHttpExceptions: true,
+        followRedirects: true,
+        headers: {
+          'Accept-Language': 'ja,en;q=0.8,zh-TW;q=0.6',
+          'User-Agent': 'Mozilla/5.0 (compatible; GAS)',
+        },
+      });
+      const status = response.getResponseCode();
       if (status < 200 || status >= 300) {
         lastError = 'MangaUpdates site search error: ' + status;
         continue;
       }
 
       hadResponse = true;
-      const titles = extractMangaUpdatesSiteSeriesTitles_(responses[i].getContentText() || '');
+      const titles = extractMangaUpdatesSiteSeriesTitles_(response.getContentText() || '');
       if (!titles.length) continue;
 
       result.candidates = result.candidates.concat(titles);
       if (!result.japaneseTitle) {
         const japaneseTitle = pickMatchingMangaUpdatesSiteJapaneseTitle_(
-          titles, queryKeys, language, category, originalProductTitle
+          titles,
+          queryKeys,
+          language,
+          category,
+          originalProductTitle
         );
         if (japaneseTitle) {
           result.japaneseTitle = japaneseTitle;
@@ -767,39 +767,26 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
     ? ['MANGA', 'NOVEL']
     : ['MANGA'];
 
-  // クエリ数を削減して高速化（8→4）
-  const searchQueries = buildMangaUpdatesSearchQueries_(query, language, category, originalProductTitle).slice(0, 4);
-
-  // fetchAll で全クエリ×メディアタイプを並列実行
-  const requests = [];
-  const requestMeta = [];
+  const searchQueries = buildMangaUpdatesSearchQueries_(query, language, category, originalProductTitle).slice(0, 8);
   for (let q = 0; q < searchQueries.length; q += 1) {
     for (let t = 0; t < mediaTypes.length; t += 1) {
       const graphqlQuery = '{ Media(search: ' + JSON.stringify(searchQueries[q]) + ', type: ' + mediaTypes[t] + ') { '
         + 'title { romaji english native userPreferred } '
         + 'synonyms '
         + '} }';
-      requests.push({
-        url: ANILIST_API_URL,
+
+      const response = UrlFetchApp.fetch(ANILIST_API_URL, {
         method: 'POST',
         contentType: 'application/json',
         payload: JSON.stringify({ query: graphqlQuery }),
         muteHttpExceptions: true,
       });
-      requestMeta.push({ queryIndex: q, mediaType: mediaTypes[t] });
-    }
-  }
 
-  if (!requests.length) return result;
+      if (response.getResponseCode() !== 200) continue;
 
-  const responses = UrlFetchApp.fetchAll(requests);
-  for (let r = 0; r < responses.length; r += 1) {
-    const response = responses[r];
-    if (response.getResponseCode() !== 200) continue;
-
-    const data = JSON.parse(response.getContentText() || '{}');
-    const media = data && data.data ? data.data.Media : null;
-    if (!media) continue;
+      const data = JSON.parse(response.getContentText() || '{}');
+      const media = data && data.data ? data.data.Media : null;
+      if (!media) continue;
 
     const title = media.title || {};
     const titleValues = [title.native, title.romaji, title.english, title.userPreferred];
@@ -819,6 +806,7 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
         return result;
       }
     }
+    }
   }
 
   return result;
@@ -831,31 +819,20 @@ function confirmOnBookWalker_(originalQuery, candidates, language, category, ori
       buildMangaUpdatesSearchQueries_(originalQuery, language, category, originalProductTitle),
       [originalQuery]
     )
-  ).slice(0, 3);
+  );
 
-  // fetchAll で全検索語を並列実行
-  const requests = searchTerms.map(function(term) {
-    return {
-      url: 'https://bookwalker.jp/search/?word=' + encodeURIComponent(term) + '&order=score',
-      method: 'GET',
-      muteHttpExceptions: true,
-      followRedirects: true,
-    };
-  });
-  if (!requests.length) return '';
-
-  let responses;
-  try {
-    responses = UrlFetchApp.fetchAll(requests);
-  } catch (e) {
-    Logger.log('BookWalker fetchAll error: ' + e.message);
-    return '';
-  }
-
-  for (let i = 0; i < responses.length; i += 1) {
+  for (let i = 0; i < Math.min(searchTerms.length, 5); i += 1) {
+    const term = searchTerms[i];
     try {
-      if (responses[i].getResponseCode() !== 200) continue;
-      const html = responses[i].getContentText() || '';
+      const url = 'https://bookwalker.jp/search/?word=' + encodeURIComponent(term) + '&order=score';
+      const response = UrlFetchApp.fetch(url, {
+        method: 'GET',
+        muteHttpExceptions: true,
+        followRedirects: true,
+      });
+      if (response.getResponseCode() !== 200) continue;
+
+      const html = response.getContentText() || '';
       const titleMatches = html.match(/class="[^"]*item[Tt]itle[^"]*"[^>]*>([^<]+)</g) || [];
       for (let j = 0; j < Math.min(titleMatches.length, 5); j += 1) {
         const match = titleMatches[j].match(/>([^<]+)$/);
@@ -863,7 +840,9 @@ function confirmOnBookWalker_(originalQuery, candidates, language, category, ori
         const bwTitle = String(match[1]).trim();
         if (!hasJapaneseTitleSignal_(bwTitle)) continue;
 
-        if (!japanCandidates.length) return bwTitle;
+        if (!japanCandidates.length) {
+          return bwTitle;
+        }
 
         const bwKeys = buildMangaUpdatesTitleKeys_(bwTitle);
         for (let k = 0; k < japanCandidates.length; k += 1) {
@@ -876,7 +855,9 @@ function confirmOnBookWalker_(originalQuery, candidates, language, category, ori
                 || (candKey.length >= 4 && bwKey.length >= 4 && (bwKey.indexOf(candKey) >= 0 || candKey.indexOf(bwKey) >= 0));
             });
           });
-          if (matched) return candidate;
+          if (matched) {
+            return candidate;
+          }
         }
       }
     } catch (e) {
@@ -898,60 +879,56 @@ function confirmOnAmazonJp_(originalQuery, candidates, language, category, origi
       buildMangaUpdatesSearchQueries_(originalQuery, language, category, originalProductTitle),
       [originalQuery]
     )
-  ).slice(0, 3);
+  );
 
-  // fetchAll で全検索語を並列実行
-  const requests = searchTerms.map(function(term) {
-    return {
-      url: 'https://www.amazon.co.jp/s?k=' + encodeURIComponent(term) + '&i=stripbooks',
-      method: 'GET',
-      muteHttpExceptions: true,
-      followRedirects: true,
-      headers: {
-        'Accept-Language': 'ja',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      },
-    };
-  });
-  if (!requests.length) return '';
-
-  let responses;
-  try {
-    responses = UrlFetchApp.fetchAll(requests);
-  } catch (e) {
-    Logger.log('Amazon fetchAll error: ' + e.message);
-    return '';
-  }
-
-  for (let i = 0; i < responses.length; i += 1) {
+  for (var i = 0; i < Math.min(searchTerms.length, 3); i += 1) {
+    var term = searchTerms[i];
     try {
-      if (responses[i].getResponseCode() !== 200) continue;
-      const html = responses[i].getContentText() || '';
-      let titleMatches = html.match(/class="[^"]*a-size-medium[^"]*"[^>]*>([^<]+)</g) || [];
+      var url = 'https://www.amazon.co.jp/s?k=' + encodeURIComponent(term) + '&i=stripbooks';
+      var response = UrlFetchApp.fetch(url, {
+        method: 'GET',
+        muteHttpExceptions: true,
+        followRedirects: true,
+        headers: {
+          'Accept-Language': 'ja',
+          'User-Agent': 'Mozilla/5.0 (compatible; GAS)',
+        },
+      });
+      if (response.getResponseCode() !== 200) continue;
+
+      var html = response.getContentText() || '';
+      // Amazon検索結果のタイトルを抽出
+      var titleMatches = html.match(/class="[^"]*a-size-medium[^"]*"[^>]*>([^<]+)</g) || [];
       if (!titleMatches.length) {
         titleMatches = html.match(/class="[^"]*a-text-normal[^"]*"[^>]*>([^<]+)</g) || [];
       }
 
-      for (let j = 0; j < Math.min(titleMatches.length, 5); j += 1) {
-        const match = titleMatches[j].match(/>([^<]+)$/);
+      for (var j = 0; j < Math.min(titleMatches.length, 5); j += 1) {
+        var match = titleMatches[j].match(/>([^<]+)$/);
         if (!match) continue;
-        const amzTitle = String(match[1]).trim();
+        var amzTitle = String(match[1]).trim();
         if (!hasJapaneseTitleSignal_(amzTitle)) continue;
 
-        if (!japanCandidates.length) return amzTitle;
+        // 候補がなければAmazonのタイトルをそのまま返す
+        if (!japanCandidates.length) {
+          return amzTitle;
+        }
 
-        const amzKeys = buildMangaUpdatesTitleKeys_(amzTitle);
-        for (let k = 0; k < japanCandidates.length; k += 1) {
-          const candidate = japanCandidates[k];
-          const candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
-          const matched = candidateKeys.some(function(candKey) {
+        // 候補との照合
+        var amzKeys = buildMangaUpdatesTitleKeys_(amzTitle);
+        for (var k = 0; k < japanCandidates.length; k += 1) {
+          var candidate = japanCandidates[k];
+          var candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
+          var matched = candidateKeys.some(function(candKey) {
             return amzKeys.some(function(aKey) {
               if (!candKey || !aKey) return false;
               return candKey === aKey
                 || (candKey.length >= 4 && aKey.length >= 4 && (aKey.indexOf(candKey) >= 0 || candKey.indexOf(aKey) >= 0));
             });
           });
-          if (matched) return candidate;
+          if (matched) {
+            return candidate;
+          }
         }
       }
     } catch (e) {
@@ -962,60 +939,49 @@ function confirmOnAmazonJp_(originalQuery, candidates, language, category, origi
 }
 
 function searchBLSites_(originalTitle, existingCandidates) {
+  // 既存候補の中に日本語があればそれを各サイトで確認
   const japanCandidates = existingCandidates.filter(function(c) { return hasJapaneseTitleSignal_(c); });
   const searchTerms = uniqNonEmptyTitles_(japanCandidates.concat([originalTitle])).slice(0, 2);
 
+  // DLsite → Renta! → ちるちる の順
   const blSites = [
     { name: 'DLsite', buildUrl: function(q) { return 'https://www.dlsite.com/bl-pro/fsr/=/keyword/' + encodeURIComponent(q); } },
     { name: 'Renta', buildUrl: function(q) { return 'https://renta.papy.co.jp/renta/sc/frm/search?word=' + encodeURIComponent(q); } },
     { name: 'Chil-chil', buildUrl: function(q) { return 'https://www.chil-chil.net/goodsList/find/?keyword=' + encodeURIComponent(q); } },
   ];
 
-  // fetchAll で全サイト×全検索語を並列実行
-  const requests = [];
-  const requestMeta = [];
   for (let s = 0; s < blSites.length; s += 1) {
     for (let i = 0; i < searchTerms.length; i += 1) {
-      requests.push({
-        url: blSites[s].buildUrl(searchTerms[i]),
-        method: 'GET',
-        muteHttpExceptions: true,
-        followRedirects: true,
-      });
-      requestMeta.push({ siteName: blSites[s].name });
-    }
-  }
-  if (!requests.length) return '';
+      try {
+        const url = blSites[s].buildUrl(searchTerms[i]);
+        const response = UrlFetchApp.fetch(url, {
+          method: 'GET',
+          muteHttpExceptions: true,
+          followRedirects: true,
+        });
+        if (response.getResponseCode() !== 200) continue;
 
-  let responses;
-  try {
-    responses = UrlFetchApp.fetchAll(requests);
-  } catch (e) {
-    Logger.log('BL sites fetchAll error: ' + e.message);
-    return '';
-  }
+        const html = response.getContentText() || '';
+        // タイトルっぽい要素を抽出
+        const matches = html.match(/<(?:h[1-4]|a|span)[^>]*class="[^"]*(?:title|name|item)[^"]*"[^>]*>([^<]{2,80})</gi) || [];
+        for (let j = 0; j < Math.min(matches.length, 5); j += 1) {
+          const m = matches[j].match(/>([^<]+)$/);
+          if (!m) continue;
+          const blTitle = String(m[1]).trim();
+          if (!hasJapaneseTitleSignal_(blTitle)) continue;
 
-  for (let r = 0; r < responses.length; r += 1) {
-    try {
-      if (responses[r].getResponseCode() !== 200) continue;
-      const html = responses[r].getContentText() || '';
-      const matches = html.match(/<(?:h[1-4]|a|span)[^>]*class="[^"]*(?:title|name|item)[^"]*"[^>]*>([^<]{2,80})</gi) || [];
-      for (let j = 0; j < Math.min(matches.length, 5); j += 1) {
-        const m = matches[j].match(/>([^<]+)$/);
-        if (!m) continue;
-        const blTitle = String(m[1]).trim();
-        if (!hasJapaneseTitleSignal_(blTitle)) continue;
-
-        const blKey = normalizeMangaUpdatesTitleKey_(blTitle);
-        for (let k = 0; k < japanCandidates.length; k += 1) {
-          const candKey = normalizeMangaUpdatesTitleKey_(japanCandidates[k]);
-          if (candKey && blKey && (blKey.indexOf(candKey) >= 0 || candKey.indexOf(blKey) >= 0)) {
-            return japanCandidates[k];
+          // 既存候補との照合
+          const blKey = normalizeMangaUpdatesTitleKey_(blTitle);
+          for (let k = 0; k < japanCandidates.length; k += 1) {
+            const candKey = normalizeMangaUpdatesTitleKey_(japanCandidates[k]);
+            if (candKey && blKey && (blKey.indexOf(candKey) >= 0 || candKey.indexOf(blKey) >= 0)) {
+              return japanCandidates[k];
+            }
           }
         }
+      } catch (e) {
+        Logger.log(blSites[s].name + ' search error: ' + e.message);
       }
-    } catch (e) {
-      Logger.log(requestMeta[r].siteName + ' search error: ' + e.message);
     }
   }
   return '';
@@ -1063,13 +1029,36 @@ const MANGA_UPDATES_USERNAME = 'niyantarose';
 const MANGA_UPDATES_PASSWORD = 'niyantarose';
 
 function handleMangaUpdatesLookupPost_(payload) {
-  // GASからMU APIはCloudflareにブロックされているため即空を返す
-  // 拡張機能側で直接MU APIを叩く方式に移行済み
+  const queries = uniqNonEmptyTitles_(
+    Array.isArray(payload && payload.queries) ? payload.queries : [payload && payload.query]
+  );
+  const language = String((payload && payload.language) || '台湾').trim();
+  const category = String((payload && payload.category) || '').trim();
+  const originalProductTitle = String((payload && payload.originalProductTitle) || '').trim();
+
+  let japaneseTitle = '';
+  let matchedQuery = '';
+
+  for (let i = 0; i < queries.length; i += 1) {
+    const cascadeResult = cascadeLookupJapaneseTitleResult_(
+      language,
+      category,
+      queries[i],
+      '',
+      originalProductTitle
+    );
+    if (cascadeResult.japaneseTitle) {
+      japaneseTitle = cascadeResult.japaneseTitle;
+      matchedQuery = queries[i];
+      break;
+    }
+  }
+
   return jsonResponse_({
     ok: true,
-    japaneseTitle: '',
-    matchedQuery: '',
-    via: 'mangaupdates_proxy_disabled',
+    japaneseTitle: japaneseTitle,
+    matchedQuery: matchedQuery,
+    via: 'cascade_proxy',
     source: payload && payload.source ? payload.source : 'unknown',
   });
 }
@@ -1136,6 +1125,9 @@ function lookupJapaneseTitleViaMangaUpdates_(query) {
 }
 
 function fetchMangaUpdatesJson_(endpoint, options) {
+  const sessionToken = getMangaUpdatesSessionToken_(
+    options && options.forceRefreshToken === true
+  );
   const endpointLabel = endpoint === '/series/search'
     ? 'search'
     : (/^\/series\/[^\/]+$/i.test(String(endpoint || ''))
@@ -1146,6 +1138,7 @@ function fetchMangaUpdatesJson_(endpoint, options) {
     muteHttpExceptions: true,
     headers: {
       Accept: 'application/json',
+      Authorization: 'Bearer ' + sessionToken,
     },
   };
 
@@ -1154,18 +1147,15 @@ function fetchMangaUpdatesJson_(endpoint, options) {
     requestOptions.payload = JSON.stringify(options.payload || {});
   }
 
-  var response;
-  try {
-    response = UrlFetchApp.fetch(MANGA_UPDATES_API_BASE + endpoint, requestOptions);
-  } catch (e) {
-    Logger.log('MangaUpdates API ' + endpointLabel + ' fetch error: ' + e.message);
-    return {};
-  }
-  var status = response.getResponseCode();
-  var responseText = response.getContentText() || '';
-  if (status === 403) {
-    Logger.log('MangaUpdates API ' + endpointLabel + ' blocked (403), skipping');
-    return {};
+  const response = UrlFetchApp.fetch(MANGA_UPDATES_API_BASE + endpoint, requestOptions);
+  const status = response.getResponseCode();
+  const responseText = response.getContentText() || '';
+  if ((status === 401 || status === 403) && !(options && options.forceRefreshToken === true)) {
+    clearMangaUpdatesSessionTokenCache_();
+    return fetchMangaUpdatesJson_(
+      endpoint,
+      Object.assign({}, options || {}, { forceRefreshToken: true })
+    );
   }
   if (status < 200 || status >= 300) {
     throw new Error('MangaUpdates API ' + endpointLabel + ' error: ' + status);
@@ -1191,7 +1181,6 @@ function getMangaUpdatesSessionToken_(forceRefresh) {
     contentType: 'application/json; charset=utf-8',
     headers: {
       Accept: 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     },
     payload: JSON.stringify({
       username: MANGA_UPDATES_USERNAME,
@@ -1385,21 +1374,6 @@ function buildMangaUpdatesTitleKeys_(value, language, category, originalProductT
   );
 }
 
-function cjkCharOverlap_(a, b) {
-  var charsA = String(a || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
-  var charsB = String(b || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
-  if (!charsA || !charsB) return 0;
-  var setA = {};
-  var setB = {};
-  var sizeA = 0;
-  var sizeB = 0;
-  for (var i = 0; i < charsA.length; i++) { if (!setA[charsA[i]]) { setA[charsA[i]] = true; sizeA++; } }
-  for (var j = 0; j < charsB.length; j++) { if (!setB[charsB[j]]) { setB[charsB[j]] = true; sizeB++; } }
-  var common = 0;
-  for (var ch in setA) { if (setB[ch]) common++; }
-  return common / Math.min(sizeA, sizeB);
-}
-
 function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, category, originalProductTitle) {
   const queryKeys = buildMangaUpdatesTitleKeys_(query, language, category, originalProductTitle);
   if (!queryKeys.length) return false;
@@ -1414,9 +1388,7 @@ function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, categ
   })));
 
   return candidates.some(function(candidate) {
-    // CJK文字の重複率でマッチ判定（繁体字↔簡体字↔日本語対応）
-    if (cjkCharOverlap_(query, candidate) >= 0.5) return true;
-    var candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
+    const candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
     return candidateKeys.some(function(candidateKey) {
       return queryKeys.some(function(queryKey) {
         if (!candidateKey || !queryKey) return false;
@@ -1487,31 +1459,6 @@ function doGet() {
     editionRuleSheet: MAGAZINE_EDITION_RULE_SHEET,
     typeRuleSheet: MAGAZINE_TYPE_RULE_SHEET,
   });
-}
-
-function doGet(e) {
-  // ウォームアップ用エンドポイント（GASコールドスタート防止）
-  // 拡張機能がポップアップ起動時にここへGETリクエストを送り、
-  // 実際のdoPostが呼ばれる前にGASとスプレッドシートを起動しておく。
-  try {
-    SpreadsheetApp.openById(SPREADSHEET_ID);
-  } catch (_) {}
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, warmed: true }))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-/**
- * 時間トリガー用ウォームアップ関数
- * GASエディタで「トリガーを追加」→ warmup → 時間ベース → 5分ごと に設定してください。
- * これによりGASが常にウォームアップ状態を保ち、コールドスタートを防止します。
- * ※ GASでは末尾に _ がつく関数はプライベート扱いでトリガー登録不可のため warmup_ → warmup に変更
- */
-function warmup() {
-  try {
-    SpreadsheetApp.openById(SPREADSHEET_ID);
-  } catch (e) {
-    Logger.log('warmup error: ' + e.message);
-  }
 }
 
 function doPost(e) {
@@ -1606,7 +1553,7 @@ function appendItems_(ss, items) {
     if (!appendEntries.length) return;
 
     const targetRows = resolveAppendRows_(context.sheet, context.keyColumnIndex, rows.length);
-    writeRows_(context.sheet, context.lastColumn, targetRows, rows, context.textColumnIndexes);
+    writeRows_(context.sheet, context.lastColumn, targetRows, rows);
 
     appendEntries.forEach((entry, entryIndex) => {
       const appendedRow = targetRows[entryIndex];
@@ -1662,13 +1609,7 @@ function buildSheetContext_(ss, sheetName, sampleItem) {
     lastColumn,
     normalizedHeaderMap,
     keyColumnIndex: findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, extractRowData_(sampleItem)),
-    textColumnIndexes: findTextPreservingColumnIndexes_(normalizedHeaderMap),
   };
-}
-
-function sanitizeIsbn_(value) {
-  const text = String(value || '').replace(/[^\d]/g, '');
-  return /^\d{13}$/.test(text) ? text : '';
 }
 
 function buildRow_(context, item) {
@@ -1678,13 +1619,7 @@ function buildRow_(context, item) {
   Object.keys(rowData).forEach(key => {
     const idx = context.normalizedHeaderMap[normalizeHeader_(key)];
     if (typeof idx !== 'number') return;
-    const normalizedKey = normalizeHeader_(key);
-    const rawValue = rowData[key];
-    // ISBN列は13桁のみ許可
-    const cellValue = (normalizedKey === 'ISBN' || normalizedKey === 'isbn')
-      ? sanitizeIsbn_(rawValue)
-      : toCellValue_(rawValue);
-    row[idx] = cellValue;
+    row[idx] = toCellValue_(rowData[key]);
   });
 
   return row;
@@ -1735,20 +1670,6 @@ function normalizeDuplicateKeyValue_(value) {
   return normalizeCellText_(value).toLowerCase();
 }
 
-function normalizeDuplicateKeyValueByType_(type, value) {
-  const normalized = normalizeDuplicateKeyValue_(value);
-  if (!normalized) return '';
-
-  if (type === 'productCode') {
-    const compact = normalized.replace(/\s+/g, '');
-    if (/^\d+$/.test(compact)) {
-      return compact.replace(/^0+(?=\d)/, '');
-    }
-  }
-
-  return normalized;
-}
-
 function buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns) {
   const keys = [];
   duplicateKeyColumns.forEach(column => {
@@ -1756,7 +1677,7 @@ function buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns) {
     for (let i = 0; i < column.headers.length; i += 1) {
       const candidate = rowData && rowData[column.headers[i]];
       if (candidate == null) continue;
-      const normalized = normalizeDuplicateKeyValueByType_(column.type, candidate);
+      const normalized = normalizeDuplicateKeyValue_(candidate);
       if (!normalized) continue;
       rawValue = normalized;
       break;
@@ -1774,60 +1695,16 @@ function collectExistingDuplicateKeys_(sheet, duplicateKeyColumns) {
   const lastRow = Math.max(sheet.getLastRow(), 1);
   if (lastRow <= 1) return seen;
 
-  // CacheServiceで重複キーをキャッシュ（5分間）
-  const cacheKey = `dupkeys_${sheet.getSheetId()}_${lastRow}`;
-  const cache = CacheService.getScriptCache();
-  try {
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      JSON.parse(cached).forEach(k => seen.add(k));
-      return seen;
-    }
-  } catch (_) {}
-
-  // 全必要列のインデックスを集約し、含む最小～最大範囲を一括読み取り
-  const colIndexes = duplicateKeyColumns.map(c => c.index);
-  const minCol = Math.min.apply(null, colIndexes);
-  const maxCol = Math.max.apply(null, colIndexes);
-  const numRows = lastRow - 1;
-  const numCols = maxCol - minCol + 1;
-  const allValues = sheet.getRange(2, minCol + 1, numRows, numCols).getDisplayValues();
-
   duplicateKeyColumns.forEach(column => {
-    const localCol = column.index - minCol;
-    for (let r = 0; r < numRows; r += 1) {
-      const normalized = normalizeDuplicateKeyValueByType_(column.type, allValues[r][localCol]);
-      if (!normalized) continue;
+    const values = sheet.getRange(2, column.index + 1, lastRow - 1, 1).getDisplayValues();
+    values.forEach(row => {
+      const normalized = normalizeDuplicateKeyValue_(row[0]);
+      if (!normalized) return;
       seen.add(`${column.type}:${normalized}`);
-    }
+    });
   });
-
-  try {
-    cache.put(cacheKey, JSON.stringify([...seen]), 300);
-  } catch (_) {}
 
   return seen;
-}
-
-function findTextPreservingColumnIndexes_(normalizedHeaderMap) {
-  const headers = [
-    'サイト商品コード',
-    '博客來商品コード',
-    '商品コード',
-    'productCode',
-    '商品コード（SKU）',
-    'ISBN',
-    'isbn',
-    'アラジン商品コード',
-  ];
-  const indexes = new Set();
-
-  headers.forEach(header => {
-    const idx = normalizedHeaderMap[normalizeHeader_(header)];
-    if (typeof idx === 'number') indexes.add(idx);
-  });
-
-  return Array.from(indexes).sort((a, b) => a - b);
 }
 
 function extractRowData_(item) {
@@ -1891,17 +1768,7 @@ function buildSequentialRows_(startRow, count) {
   return Array.from({ length: count }, (_, index) => startRow + index);
 }
 
-function applyTextFormatToColumns_(sheet, startRow, rowCount, columnIndexes) {
-  if (!rowCount || !columnIndexes || !columnIndexes.length) return;
-
-  // getRangeList でまとめて1回のAPI呼び出しに集約（列ごと個別呼び出しより高速）
-  const a1Notations = columnIndexes.map(index =>
-    sheet.getRange(startRow, index + 1, rowCount, 1).getA1Notation()
-  );
-  sheet.getRangeList(a1Notations).setNumberFormat('@');
-}
-
-function writeRows_(sheet, lastColumn, targetRows, rows, textColumnIndexes) {
+function writeRows_(sheet, lastColumn, targetRows, rows) {
   if (!targetRows.length || !rows.length) return;
 
   const maxTargetRow = Math.max.apply(null, targetRows);
@@ -1919,16 +1786,11 @@ function writeRows_(sheet, lastColumn, targetRows, rows, textColumnIndexes) {
     const startRow = targetRows[startIndex];
     const segmentRows = rows.slice(startIndex, endIndex + 1);
     const range = sheet.getRange(startRow, 1, segmentRows.length, lastColumn);
-    // テキスト書式を先に適用してからデータ書き込み（順序を保持しつつバッファ活用）
-    applyTextFormatToColumns_(sheet, startRow, segmentRows.length, textColumnIndexes);
     range.setValues(segmentRows);
     range.setWrap(false);
 
     startIndex = endIndex + 1;
   }
-
-  // 全セグメント書き込み完了後に一括フラッシュ（API遅延を最小化）
-  SpreadsheetApp.flush();
 }
 
 function normalizeHeader_(value) {
@@ -2836,14 +2698,4 @@ function testTaiwanGasRuntime_() {
   Logger.log(JSON.stringify(result, null, 2));
   return result;
 }
-
-
-
-
-
-
-
-
-
-
 

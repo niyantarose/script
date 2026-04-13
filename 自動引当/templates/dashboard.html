@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}ダッシュボード | 自動引当ツール{% endblock %}
+{% block page_title %}ダッシュボード{% endblock %}
+{% block content %}
+<section class="stats-grid">
+  <article class="stat-card">
+    <span>発送可能受注</span>
+    <strong>{{ stats.ready_orders }}</strong>
+    <p>全明細が引当済みで、発送まで進められる件数です。</p>
+  </article>
+  <article class="stat-card">
+    <span>赤判定遅延</span>
+    <strong>{{ stats.delay_orders }}</strong>
+    <p>注文から所定日数を超えた受注です。</p>
+  </article>
+  <article class="stat-card">
+    <span>発注漏れ</span>
+    <strong>{{ stats.purchase_missing }}</strong>
+    <p>受注に対して発注記録が見つからない件数です。</p>
+  </article>
+  <article class="stat-card">
+    <span>在庫不足</span>
+    <strong>{{ stats.stock_shortage }}</strong>
+    <p>未引当でアラート対象の件数です。</p>
+  </article>
+  <article class="stat-card">
+    <span>未解決アラート</span>
+    <strong>{{ stats.unresolved_alerts }}</strong>
+    <p>画面上で確認・解決待ちのアラートです。</p>
+  </article>
+  <article class="stat-card">
+    <span>輸送中EMS</span>
+    <strong>{{ stats.ems_in_transit }}</strong>
+    <p>韓国から日本へ配送中の便数です。</p>
+  </article>
+</section>
+
+<section class="panel panel-wide">
+  <div class="panel-header">
+    <div>
+      <h3>クイック操作</h3>
+      <p>初回起動時はデモデータ投入で全画面の流れをすぐ確認できます。</p>
+    </div>
+  </div>
+  <div class="action-row">
+    <form method="post" action="{{ url_for('main.seed_demo') }}">
+      <button class="button accent" type="submit">デモデータ投入</button>
+    </form>
+    <form method="post" action="{{ url_for('main.trigger_checks') }}">
+      <button class="button ghost" type="submit">4段階チェック更新</button>
+    </form>
+    <a class="button ghost" href="{{ url_for('main.export', kind='orders') }}">受注CSV</a>
+    <a class="button ghost" href="{{ url_for('main.export', kind='alerts') }}">アラートCSV</a>
+  </div>
+</section>
+
+<div class="two-column">
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <h3>直近の受注</h3>
+        <p>遅延色と希望日判定を合わせて見られます。</p>
+      </div>
+      <a class="text-link" href="{{ url_for('main.orders') }}">受注画面へ</a>
+    </div>
+    {% if orders %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>受注番号</th>
+              <th>顧客</th>
+              <th>状態</th>
+              <th>遅延</th>
+              <th>希望日判定</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for order in orders %}
+              {% set judgement, note = delivery_judgement(order) %}
+              <tr>
+                <td>{{ order.yahoo_order_id }}</td>
+                <td>{{ order.customer_name or '未設定' }}</td>
+                <td><span class="badge neutral">{{ order_status_labels[order.status] }}</span></td>
+                <td><span class="badge {{ delay_level_for_order(order) }}">{{ delay_level_labels[delay_level_for_order(order)] }}</span></td>
+                <td>{{ judgement }} / {{ note }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <h3>まだデータがありません</h3>
+        <p>ダッシュボード上の「デモデータ投入」からすぐ確認できます。</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <h3>未解決アラート</h3>
+        <p>対応が必要なものを上から確認できます。</p>
+      </div>
+      <a class="text-link" href="{{ url_for('main.alerts') }}">アラート画面へ</a>
+    </div>
+    <div class="stack-list">
+      {% for alert in unresolved_alerts %}
+        <article class="list-card">
+          <div class="list-card-header">
+            <span class="badge danger">{{ alert_type_labels[alert.alert_type] }}</span>
+            <span>{{ alert.order.yahoo_order_id if alert.order else '共通' }}</span>
+          </div>
+          <p>{{ alert.message }}</p>
+        </article>
+      {% else %}
+        <p class="muted">未解決アラートはありません。</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h3>在庫サマリー</h3>
+      <p>即納とお取り寄せ在庫の現在値です。</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>商品コード</th>
+          <th>サブコード</th>
+          <th>種別</th>
+          <th>総在庫</th>
+          <th>取置</th>
+          <th>引当可能</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in inventory_summary %}
+          <tr>
+            <td>{{ row.product_code }}</td>
+            <td>{{ row.product_sub_code or '-' }}</td>
+            <td>{{ row.inventory_type }}</td>
+            <td>{{ row.quantity }}</td>
+            <td>{{ row.reserved_qty }}</td>
+            <td>{{ row.available_qty }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="6" class="muted">在庫データがありません。</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

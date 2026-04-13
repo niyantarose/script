@@ -1,11 +1,6 @@
 <?php
 
 require_once __DIR__ . '/_vps_secret.php';
-require_secret_or_403();
-
-// ↓ここに追加
-error_log('POST: ' . json_encode($_POST));
-error_log('GET: ' . json_encode($_GET));
 
 /**
  * yahoo_zip_upload.php (FULL FIXED)
@@ -24,6 +19,7 @@ header('Content-Type: application/json; charset=utf-8');
 date_default_timezone_set('Asia/Tokyo');
 @set_time_limit(0);
 @ini_set('memory_limit', '1024M');
+ob_start();
 
 // =========================
 // Constants
@@ -38,6 +34,7 @@ const EP_TOKEN = 'https://auth.login.yahoo.co.jp/yconnect/v2/token';
 const ZIP_LIMIT_BYTES = 25 * 1024 * 1024; // 25MB
 const RUN_BASE_DIR    = '/tmp/yahoo_zip_runs';
 const TOKEN_CACHE     = '/tmp/yahoo_access_token_cache.json';
+const OAUTH_OVERRIDE_FILE = '/var/www/private/yahoo_oauth_override.json';
 
 // SSRF 対策: zip_url は自ドメイン /dl/ だけ許可
 const ALLOW_ZIP_URL_HOST   = 'img.niyantarose.com';
@@ -50,15 +47,27 @@ const ALLOW_ZIP_PATH_DIRS = [
 ];
 
 // preprocess script
-const PREPROCESS_BIN = '/usr/local/bin/yahoo_img_preprocess_dir.sh';
+const PREPROCESS_BIN = '/var/www/html/img/_bin/yahoo_img_preprocess_dir.sh';
 
 // =========================
 // JSON responder
 // =========================
 
 function respond($arr, $code = 200) {
+  while (ob_get_level() > 0) {
+    @ob_end_clean();
+  }
   http_response_code($code);
-  echo json_encode($arr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  header('Content-Type: application/json; charset=utf-8');
+  $json = json_encode($arr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  if ($json === false) {
+    $json = json_encode([
+      'ok' => false,
+      'error' => 'JSON_ENCODE_FAIL',
+      'message' => json_last_error_msg(),
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  }
+  echo $json;
   exit;
 }
 
@@ -74,6 +83,9 @@ register_shutdown_function(function () {
 
   $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
   if (!in_array($e['type'], $fatalTypes, true)) return;
+  while (ob_get_level() > 0) {
+    @ob_end_clean();
+  }
   http_response_code(500);
   echo json_encode([
     'ok' => false,
@@ -242,26 +254,114 @@ function compute_notice_nums($count): array {
 }
 
 
-// ★ここに追加
-function google_drive_resolve_url_($url) {
-  $ch = curl_init($url);
-  curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-  curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-  curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-  curl_setopt($ch, CURLOPT_COOKIEJAR, '/tmp/gdrive_cookie.txt');
-  curl_setopt($ch, CURLOPT_COOKIEFILE, '/tmp/gdrive_cookie.txt');
-  $body = curl_exec($ch);
-  curl_close($ch);
-
-  if (preg_match('/confirm=([0-9A-Za-z_\-]+)/', $body, $m)) {
-    $sep = strpos($url, '?') !== false ? '&' : '?';
-    return $url . $sep . 'confirm=' . $m[1];
-  }
-
-  return $url;
+// Google Drive URL に confirm=t を付与（大容量ウイルススキャン警告をスキップ）
+function google_drive_add_confirm($url): string {
+  if (strpos($url, 'confirm=') !== false) return $url;
+  return $url . (strpos($url, '?') !== false ? '&' : '?') . 'confirm=t';
 }
 
+// 全URLを curl_multi で並列ダウンロードする
+// $tasks: [['url'=>'...', 'dst'=>'...', 'item_code'=>'...', 'slot'=>'...', 'name'=>'...'], ...]
+// 戻り値: downloadSummary 配列（元のインデックス順）
+function download_urls_parallel(array $tasks): array {
+  $results = array_fill(0, count($tasks), null);
+  $mh      = curl_multi_init();
+  $handles = [];
+  $fps     = [];
 
+  foreach ($tasks as $idx => $task) {
+    $url = $task['url'];
+
+    if (!url_is_allowed($url)) {
+      $results[$idx] = [
+        'item_code' => $task['item_code'], 'slot' => $task['slot'],
+        'name' => $task['name'], 'url' => $url, 'dst' => $task['dst'],
+        'ok' => false, 'http' => 0, 'err' => 'url not allowed', 'size' => 0,
+      ];
+      continue;
+    }
+
+    // Google Drive: confirm=t で大容量スキャン警告をスキップ
+    if (strpos($url, 'drive.google.com') !== false) {
+      $url = google_drive_add_confirm($url);
+    }
+
+    $fp = @fopen($task['dst'], 'wb');
+    if (!$fp) {
+      $results[$idx] = [
+        'item_code' => $task['item_code'], 'slot' => $task['slot'],
+        'name' => $task['name'], 'url' => $url, 'dst' => $task['dst'],
+        'ok' => false, 'http' => 0, 'err' => 'fopen failed', 'size' => 0,
+      ];
+      continue;
+    }
+    $fps[$idx] = $fp;
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_FILE,           $fp);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT,        120);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+    curl_setopt($ch, CURLOPT_FAILONERROR,    false);
+    curl_setopt($ch, CURLOPT_USERAGENT,      'niyantarose-reupload/1.0');
+
+    curl_multi_add_handle($mh, $ch);
+    $handles[$idx] = ['ch' => $ch, 'task' => $task, 'url' => $url];
+  }
+
+  // 全ダウンロードを並列実行
+  $active = 0;
+  do {
+    $status = curl_multi_exec($mh, $active);
+    if ($active > 0) curl_multi_select($mh, 0.5);
+  } while ($active > 0 && $status === CURLM_OK);
+
+  // 結果を収集
+  foreach ($handles as $idx => $h) {
+    $ch   = $h['ch'];
+    $task = $h['task'];
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err  = curl_error($ch);
+    curl_multi_remove_handle($mh, $ch);
+    curl_close($ch);
+    fclose($fps[$idx]);
+
+    $ok   = ($err === '' && $http >= 200 && $http < 300);
+    $size = 0;
+
+    if ($ok) {
+      clearstatcache(true, $task['dst']);
+      $size = (int)@filesize($task['dst']);
+      // 極端に小さいレスポンスはHTMLエラーページの可能性
+      if ($size < 100) {
+        @unlink($task['dst']);
+        $ok  = false;
+        $err = "response too small ({$size} bytes, likely HTML error page)";
+      }
+    }
+    if (!$ok && is_file($task['dst'])) {
+      @unlink($task['dst']);
+    }
+
+    $results[$idx] = [
+      'item_code' => $task['item_code'],
+      'slot'      => $task['slot'],
+      'name'      => $task['name'],
+      'url'       => $task['url'],
+      'dst'       => $task['dst'],
+      'ok'        => $ok,
+      'http'      => $http,
+      'err'       => $ok ? '' : ($err ?: "http={$http}"),
+      'size'      => $size,
+    ];
+  }
+
+  curl_multi_close($mh);
+  return $results;
+}
+
+// 後方互換用（legacy フロー等で単体呼び出し箇所が残っている場合のため残す）
 function download_to_file($url, $dst, &$info = []) {
   $info = ['url'=>$url, 'dst'=>$dst, 'ok'=>false, 'http'=>0, 'err'=>''];
   if (!url_is_allowed($url)) {
@@ -269,11 +369,9 @@ function download_to_file($url, $dst, &$info = []) {
     return false;
   }
 
-  // ★ Google Drive の確認トークン対応
   if (strpos($url, 'drive.google.com') !== false) {
-    $url = google_drive_resolve_url_($url);
+    $url = google_drive_add_confirm($url);
   }
-
 
   $fp = @fopen($dst, 'wb');
   if (!$fp) {
@@ -282,15 +380,15 @@ function download_to_file($url, $dst, &$info = []) {
   }
 
   $ch = curl_init($url);
-  curl_setopt($ch, CURLOPT_FILE, $fp);
+  curl_setopt($ch, CURLOPT_FILE,           $fp);
   curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-  curl_setopt($ch, CURLOPT_TIMEOUT, 180);
+  curl_setopt($ch, CURLOPT_TIMEOUT,        180);
   curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 20);
   curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-  curl_setopt($ch, CURLOPT_FAILONERROR, false);
-  curl_setopt($ch, CURLOPT_USERAGENT, 'niyantarose-reupload/1.0');
+  curl_setopt($ch, CURLOPT_FAILONERROR,    false);
+  curl_setopt($ch, CURLOPT_USERAGENT,      'niyantarose-reupload/1.0');
 
-  $ok = curl_exec($ch);
+  $ok   = curl_exec($ch);
   $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
   $err  = curl_error($ch);
   curl_close($ch);
@@ -311,7 +409,7 @@ function download_to_file($url, $dst, &$info = []) {
     return false;
   }
 
-  $info['ok'] = true;
+  $info['ok']  = true;
   $info['size'] = $sz;
   return true;
 }
@@ -349,9 +447,10 @@ function parse_reupload_items(array $post): array {
 function build_workdir_from_items(array $items, string $workDir, array &$downloadSummary) {
   $downloadSummary = [];
   $itemCodes = [];
+  $tasks     = [];  // 全ダウンロードタスクをまず収集
 
   foreach ($items as $it) {
-    $code = $it['item_code'];
+    $code      = $it['item_code'];
     $codeLower = strtolower($code);
     $itemCodes[] = $code;
 
@@ -371,33 +470,27 @@ function build_workdir_from_items(array $items, string $workDir, array &$downloa
     }
 
     if ($s !== '') {
-      $dst = $workDir . '/' . $codeLower . '.jpg';
-      $info = [];
-      $ok = download_to_file($s, $dst, $info);
-      $downloadSummary[] = array_merge(['item_code'=>$code, 'slot'=>'S', 'name'=>basename($dst)], $info);
+      $dst = "{$workDir}/{$codeLower}.jpg";
+      $tasks[] = ['url'=>$s, 'dst'=>$dst, 'item_code'=>$code, 'slot'=>'S', 'name'=>basename($dst)];
     }
 
     $prod = array_slice($prod, 0, REUPLOAD_MAX_DETAIL);
-
-    for ($i=0; $i<count($prod); $i++) {
+    for ($i = 0; $i < count($prod); $i++) {
       $num = $i + 1;
-      $dst = $workDir . '/' . $codeLower . '_' . $num . '.jpg';
-      $info = [];
-      $ok = download_to_file($prod[$i], $dst, $info);
-      $downloadSummary[] = array_merge(['item_code'=>$code, 'slot'=>'T', 'name'=>basename($dst)], $info);
+      $dst = "{$workDir}/{$codeLower}_{$num}.jpg";
+      $tasks[] = ['url'=>$prod[$i], 'dst'=>$dst, 'item_code'=>$code, 'slot'=>'T', 'name'=>basename($dst)];
     }
 
     $notice = array_slice($notice, 0, REUPLOAD_MAX_NOTICE);
-    $nums = compute_notice_nums(count($notice));
-
-    for ($k=0; $k<count($notice); $k++) {
-      $num = $nums[$k];
-      $dst = $workDir . '/' . $codeLower . '_' . $num . '.jpg';
-      $info = [];
-      $ok = download_to_file($notice[$k], $dst, $info);
-      $downloadSummary[] = array_merge(['item_code'=>$code, 'slot'=>'NOTICE', 'name'=>basename($dst)], $info);
+    $nums   = compute_notice_nums(count($notice));
+    for ($k = 0; $k < count($notice); $k++) {
+      $dst = "{$workDir}/{$codeLower}_{$nums[$k]}.jpg";
+      $tasks[] = ['url'=>$notice[$k], 'dst'=>$dst, 'item_code'=>$code, 'slot'=>'NOTICE', 'name'=>basename($dst)];
     }
   }
+
+  // 全画像を curl_multi で並列ダウンロード（逐次→並列で大幅高速化）
+  $downloadSummary = download_urls_parallel($tasks);
 
   return $itemCodes;
 }
@@ -415,6 +508,189 @@ function yahoo_error_code($xmlStr): string {
     return trim($m[1]);
   }
   return '';
+}
+
+function yahoo_error_message($xmlStr): string {
+  if (!is_string($xmlStr) || $xmlStr === '') return '';
+  if (preg_match('~<Message>\s*(.*?)\s*</Message>~is', $xmlStr, $m)) {
+    $msg = html_entity_decode(strip_tags((string)$m[1]), ENT_QUOTES | ENT_XML1, 'UTF-8');
+    $msg = preg_replace('/\s+/u', ' ', trim($msg));
+    return is_string($msg) ? $msg : '';
+  }
+  return '';
+}
+
+function tail_text($text, int $maxLen = 600): string {
+  $text = is_string($text) ? $text : '';
+  if ($text === '') return '';
+  return strlen($text) <= $maxLen ? $text : substr($text, -$maxLen);
+}
+
+function build_placeholder_section_for_gas(array $itemCodes, string $kind, string $message): array {
+  $details = [];
+  $seen = [];
+  foreach ($itemCodes as $code) {
+    $code = trim((string)$code);
+    if ($code === '' || isset($seen[$code])) continue;
+    $seen[$code] = true;
+
+    $item = [
+      'item_code' => $code,
+      'ok' => false,
+      'message' => $message,
+    ];
+    if ($kind === 'delete') {
+      $item['deleted_count'] = 0;
+    } elseif ($kind === 'upload') {
+      $item['uploaded_count'] = 0;
+    } elseif ($kind === 'submit') {
+      $item['body_tail'] = '';
+    }
+    $details[] = $item;
+  }
+
+  return [
+    'ok_count' => 0,
+    'ng_count' => count($details),
+    'details' => $details,
+  ];
+}
+
+function build_reupload_pending_sections(array $itemCodes, string $reason): array {
+  return [
+    'delete' => build_placeholder_section_for_gas($itemCodes, 'delete', $reason . 'ため削除は未実行です'),
+    'upload' => build_placeholder_section_for_gas($itemCodes, 'upload', $reason . 'ためアップロードは未実行です'),
+    'submit' => build_placeholder_section_for_gas($itemCodes, 'submit', $reason . 'ため反映申請は未実行です'),
+  ];
+}
+
+function collect_ok_item_codes_from_upload_section(array $uploadSection): array {
+  $out = [];
+  $seen = [];
+  foreach (($uploadSection['details'] ?? []) as $row) {
+    if (empty($row['ok'])) continue;
+    $code = trim((string)($row['item_code'] ?? ''));
+    if ($code === '' || isset($seen[$code])) continue;
+    $seen[$code] = true;
+    $out[] = $code;
+  }
+  return $out;
+}
+
+function build_skipped_submit_section_for_gas(array $itemCodes, string $message): array {
+  $pendingItemCodes = [];
+  $seen = [];
+  foreach ($itemCodes as $code) {
+    $code = trim((string)$code);
+    if ($code === '' || isset($seen[$code])) continue;
+    $seen[$code] = true;
+    $pendingItemCodes[] = $code;
+  }
+
+  return [
+    'ok_count' => 0,
+    'ng_count' => 0,
+    'skipped' => true,
+    'message' => $message,
+    'pending_count' => count($pendingItemCodes),
+    'pending_item_codes' => $pendingItemCodes,
+    'details' => [],
+  ];
+}
+
+function token_failure_message(array $debugTok): string {
+  $tail = tail_text((string)($debugTok['token_error_body_tail'] ?? ''), 240);
+  if (stripos($tail, 'consent has been revoked') !== false) {
+    return '【要対応】Yahoo認証が失効しています。リフレッシュトークンを再発行して /var/www/private/yahoo_oauth_override.json を更新してください';
+  }
+  if (stripos($tail, 'invalid_grant') !== false) {
+    return '【要対応】Yahoo リフレッシュトークンが期限切れです。Yahoo Developer Console で再発行し /var/www/private/yahoo_oauth_override.json を更新してください';
+  }
+  if (($debugTok['YAHOO_REFRESH_TOKEN'] ?? false) === true) {
+    return '【要対応】Yahoo リフレッシュトークンが設定されていません。/var/www/private/yahoo_oauth_override.json にリフレッシュトークンを設定してください';
+  }
+  if ($tail !== '') {
+    return '【Yahoo認証失敗】未実行です: ' . $tail;
+  }
+  return '【Yahoo認証失敗】未実行です（原因不明）';
+}
+
+function respond_token_failure(string $action, string $sellerId, array $debugTok): void {
+  $message = token_failure_message($debugTok);
+
+  if ($action === 'reupload_urls') {
+    $items = parse_reupload_items($_POST);
+    $itemCodes = array_values(array_unique(array_map(
+      static fn($it) => trim((string)($it['item_code'] ?? '')),
+      $items
+    )));
+    $pending = build_reupload_pending_sections($itemCodes, $message);
+    respond([
+      'ok' => false,
+      'error' => 'access_token missing and refresh failed',
+      'action' => 'reupload_urls',
+      'seller_id' => $sellerId,
+      'message' => $message,
+      'delete' => $pending['delete'],
+      'upload' => $pending['upload'],
+      'submit' => $pending['submit'],
+      'item_codes' => $itemCodes,
+      'token_debug' => $debugTok,
+      'v' => 'reupload_urls-auth-fail-v1',
+    ], 401);
+  }
+
+  if ($action === 'delete') {
+    $itemCodes = parse_submit_item_codes($_POST);
+    respond([
+      'ok' => false,
+      'error' => 'access_token missing and refresh failed',
+      'action' => 'delete',
+      'seller_id' => $sellerId,
+      'message' => $message,
+      'delete' => build_placeholder_section_for_gas($itemCodes, 'delete', $message),
+      'item_codes' => $itemCodes,
+      'token_debug' => $debugTok,
+      'v' => 'delete-auth-fail-v1',
+    ], 401);
+  }
+
+  if ($action === 'submit') {
+    $itemCodes = parse_submit_item_codes($_POST);
+    respond([
+      'ok' => false,
+      'error' => 'access_token missing and refresh failed',
+      'action' => 'submit',
+      'seller_id' => $sellerId,
+      'message' => $message,
+      'submit' => build_placeholder_section_for_gas($itemCodes, 'submit', $message),
+      'item_codes' => $itemCodes,
+      'token_debug' => $debugTok,
+      'v' => 'submit-auth-fail-v1',
+    ], 401);
+  }
+
+  if ($action === 'reserve_publish') {
+    respond([
+      'ok' => false,
+      'error' => 'access_token missing and refresh failed',
+      'action' => 'reserve_publish',
+      'seller_id' => $sellerId,
+      'message' => $message,
+      'token_debug' => $debugTok,
+      'v' => 'reserve-publish-auth-fail-v1',
+    ], 401);
+  }
+
+  respond([
+    'ok' => false,
+    'error' => 'access_token missing and refresh failed',
+    'action' => $action,
+    'seller_id' => $sellerId,
+    'message' => $message,
+    'token_debug' => $debugTok,
+    'v' => 'auth-fail-v1',
+  ], 401);
 }
 
 function xml_load($xmlStr) {
@@ -437,6 +713,32 @@ function chunk_array($arr, $size) {
 // =========================
 // OAuth token refresh (ENV + cache)
 // =========================
+function load_oauth_override_config(): array {
+  if (!is_file(OAUTH_OVERRIDE_FILE)) return [];
+
+  $raw = @file_get_contents(OAUTH_OVERRIDE_FILE);
+  if ($raw === false) return [];
+
+  $json = json_decode($raw, true);
+  if (!is_array($json)) return [];
+
+  $pick = static function(array $src, array $keys): string {
+    foreach ($keys as $key) {
+      $v = $src[$key] ?? '';
+      if (!is_string($v)) continue;
+      $v = trim($v);
+      if ($v !== '') return $v;
+    }
+    return '';
+  };
+
+  return [
+    'client_id' => $pick($json, ['client_id', 'YAHOO_CLIENT_ID']),
+    'client_secret' => $pick($json, ['client_secret', 'YAHOO_CLIENT_SECRET']),
+    'refresh_token' => $pick($json, ['refresh_token', 'YAHOO_REFRESH_TOKEN']),
+  ];
+}
+
 function load_cached_token() {
   if (!file_exists(TOKEN_CACHE)) return null;
   $j = json_decode(@file_get_contents(TOKEN_CACHE), true);
@@ -458,16 +760,26 @@ function save_cached_token($token, $expiresIn) {
   ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 }
 
-function refresh_access_token_from_env(&$debug = []) {
-  $cached = load_cached_token();
-  if ($cached) {
-    $debug['token_source'] = 'cache';
-    return $cached;
+function refresh_access_token_from_env(&$debug = [], bool $forceRefresh = false) {
+  if (!$forceRefresh) {
+    $cached = load_cached_token();
+    if ($cached) {
+      $debug['token_source'] = 'cache';
+      return $cached;
+    }
+  } else {
+    $debug['token_force_refresh'] = true;
   }
 
-  $cid = getenv('YAHOO_CLIENT_ID') ?: '';
-  $sec = getenv('YAHOO_CLIENT_SECRET') ?: '';
-  $rt  = getenv('YAHOO_REFRESH_TOKEN') ?: '';
+  $override = load_oauth_override_config();
+  $cid = $override['client_id'] ?: (getenv('YAHOO_CLIENT_ID') ?: '');
+  $sec = $override['client_secret'] ?: (getenv('YAHOO_CLIENT_SECRET') ?: '');
+  $rt  = $override['refresh_token'] ?: (getenv('YAHOO_REFRESH_TOKEN') ?: '');
+  $debug['token_sources'] = [
+    'client_id' => ($override['client_id'] !== '') ? 'override_file' : 'env',
+    'client_secret' => ($override['client_secret'] !== '') ? 'override_file' : 'env',
+    'refresh_token' => ($override['refresh_token'] !== '') ? 'override_file' : 'env',
+  ];
 
   if ($cid === '' || $sec === '' || $rt === '') {
     $debug['token_source'] = 'none';
@@ -511,6 +823,52 @@ function refresh_access_token_from_env(&$debug = []) {
   $debug['token_source'] = 'refresh_parse_failed';
   $debug['token_error_body_tail'] = substr($r['body'], -800);
   return '';
+}
+
+function yahoo_response_needs_token_refresh(array $resp): bool {
+  $http = (int)($resp['http'] ?? 0);
+  if ($http === 401) return true;
+
+  $body = strtolower((string)($resp['body'] ?? ''));
+  if ($body === '') return false;
+
+  $markers = [
+    'invalid_token',
+    'expired_token',
+    'token expired',
+    'access token expired',
+    'authorization failed',
+  ];
+  foreach ($markers as $marker) {
+    if (strpos($body, $marker) !== false) return true;
+  }
+  return false;
+}
+
+function yahoo_api_req($method, $url, &$token, $postFields = null, $isMultipart = false, $extraHeaders = [], &$tokenDebug = [], string $retryLabel = '') {
+  $resp = curl_req($method, $url, $token, $postFields, $isMultipart, $extraHeaders);
+  if (!yahoo_response_needs_token_refresh($resp)) {
+    return $resp;
+  }
+
+  $refreshDebug = [];
+  $newToken = refresh_access_token_from_env($refreshDebug, true);
+  $tokenDebug['refresh_retry'][] = [
+    'label' => $retryLabel,
+    'trigger_http' => (int)($resp['http'] ?? 0),
+    'trigger_body_tail' => tail_text((string)($resp['body'] ?? ''), 200),
+    'refresh' => $refreshDebug,
+    'retried' => ($newToken !== ''),
+  ];
+
+  if ($newToken === '') {
+    return $resp;
+  }
+
+  $token = $newToken;
+  $retryResp = curl_req($method, $url, $token, $postFields, $isMultipart, $extraHeaders);
+  $retryResp['retried_with_refreshed_token'] = true;
+  return $retryResp;
 }
 
 // =========================
@@ -673,26 +1031,29 @@ function inject_notice_images_into_workdir(array $itemCodes, string $workDir, bo
 // =========================
 // submit one item (ZIPレス用)
 // =========================
-function submit_one_item($sellerId, $itemCode, $token) {
+function submit_one_item($sellerId, $itemCode, &$token, array &$tokenDebug = []) {
   $post = http_build_query([
     'seller_id' => $sellerId,
     'item_code' => $itemCode,
   ]);
-  $r = curl_req('POST', EP_SUBMIT_ITEM, $token, $post, false);
+  $r = yahoo_api_req('POST', EP_SUBMIT_ITEM, $token, $post, false, [], $tokenDebug, 'submit_one_item');
   $ok = ($r['ok'] && $r['http'] === 200 && yahoo_xml_ok($r['body']));
+  $bodyTail = tail_text($r['body'], 600);
   return [
     'item_code' => $itemCode,
     'http' => $r['http'],
     'ok' => $ok,
-    'body_tail' => substr($r['body'], -600),
+    'body_tail' => $bodyTail,
+    'error_code' => $ok ? '' : yahoo_error_code($r['body']),
     'curl_error' => $r['ok'] ? '' : ($r['error'] ?? ''),
+    'token_retried' => !empty($r['retried_with_refreshed_token']),
   ];
 }
 
 // =========================
 // DELETE helper: 指定item_codesの画像を全削除（legacy / delete共用）
 // =========================
-function delete_images_for_codes(array $itemCodes, string $sellerId, string $token): array {
+function delete_images_for_codes(array $itemCodes, string $sellerId, string &$token, array &$tokenDebug = []): array {
   $deleteSummary = [];
   $totalDeleteTargets = 0;
   $deleteAllOk = true;
@@ -708,7 +1069,7 @@ function delete_images_for_codes(array $itemCodes, string $sellerId, string $tok
       'start'     => 1,
     ]);
 
-    $r = curl_req('GET', $url, $token, null, false);
+    $r = yahoo_api_req('GET', $url, $token, null, false, [], $tokenDebug, 'itemImageList');
     $targets = [];
 
     if (!($r['ok'] && $r['http'] === 200)) {
@@ -745,14 +1106,16 @@ function delete_images_for_codes(array $itemCodes, string $sellerId, string $tok
         'image_id'  => implode(',', $chunk),
       ]);
 
-      $dr = curl_req('POST', EP_DELETE_IMAGE, $token, $post, false);
+      $dr = yahoo_api_req('POST', EP_DELETE_IMAGE, $token, $post, false, [], $tokenDebug, 'deleteItemImage');
       $chunkOk = ($dr['ok'] && $dr['http'] === 200 && yahoo_xml_ok($dr['body']));
       if (!$chunkOk) $itemDeleteOk = false;
 
       $delResults[] = [
         'http' => $dr['http'],
         'ok'   => $chunkOk,
-        'body_tail' => substr($dr['body'], -600),
+        'requested_count' => count($chunk),
+        'body_tail' => tail_text($dr['body'], 600),
+        'curl_error' => $dr['ok'] ? '' : ($dr['error'] ?? ''),
       ];
     }
 
@@ -763,7 +1126,8 @@ function delete_images_for_codes(array $itemCodes, string $sellerId, string $tok
       'ok'        => $itemDeleteOk,
       'found'     => count($ids),
       'list_http' => $r['http'],
-      'list_body_tail' => substr($r['body'], -600),
+      'list_body_tail' => tail_text($r['body'], 600),
+      'list_curl_error' => $r['ok'] ? '' : ($r['error'] ?? ''),
       'delete_calls' => $delResults,
     ];
   }
@@ -775,6 +1139,234 @@ function delete_images_for_codes(array $itemCodes, string $sellerId, string $tok
   ];
 }
 
+
+// =========================
+// GAS向け通知フォーマット変換ヘルパー
+// =========================
+
+/**
+ * delete_images_for_codes の戻り値を GAS向け delete セクションに変換。
+ * item_code ごとの成功/失敗・削除件数・日本語メッセージを返す。
+ */
+function format_delete_section_for_gas(array $deleteResult): array {
+  $details  = [];
+  $okCount  = 0;
+  $ngCount  = 0;
+  foreach ($deleteResult['details'] ?? [] as $d) {
+    $ok      = !empty($d['ok']);
+    $deleted = $ok ? (int)($d['found'] ?? 0) : 0;
+    $listHttp = (int)($d['list_http'] ?? 0);
+    $listCurlError = (string)($d['list_curl_error'] ?? '');
+    $listBodyTail = (string)($d['list_body_tail'] ?? '');
+    $firstFailedCall = null;
+    $deletedPartial = 0;
+
+    foreach (($d['delete_calls'] ?? []) as $call) {
+      if (!empty($call['ok'])) {
+        $deletedPartial += (int)($call['requested_count'] ?? 0);
+        continue;
+      }
+      if ($firstFailedCall === null) $firstFailedCall = $call;
+    }
+    if (!$ok && $deletedPartial > 0) {
+      $deleted = $deletedPartial;
+    }
+
+    if ($ok) {
+      $msg = $deleted > 0
+        ? "既存画像 {$deleted} 件を削除しました"
+        : '削除対象の既存画像はありませんでした';
+      $okCount++;
+    } else {
+      $failBodyTail = (string)($firstFailedCall['body_tail'] ?? $listBodyTail);
+      $failErrorCode = yahoo_error_code($failBodyTail);
+      $failErrorMessage = yahoo_error_message($failBodyTail);
+      $deleteHttp = (int)($firstFailedCall['http'] ?? 0);
+      $deleteCurlError = (string)($firstFailedCall['curl_error'] ?? '');
+
+      if ($listCurlError !== '') {
+        $msg = "既存画像一覧の取得に失敗しました: {$listCurlError}";
+      } elseif ($listHttp !== 200 && $listHttp > 0) {
+        $msg = "既存画像一覧の取得に失敗しました（HTTP {$listHttp}）";
+      } elseif ($deleteCurlError !== '') {
+        $msg = "既存画像の削除に失敗しました: {$deleteCurlError}";
+      } elseif ($failErrorCode !== '' && $failErrorMessage !== '') {
+        $msg = "既存画像の削除に失敗しました（{$failErrorCode}: {$failErrorMessage}）";
+      } elseif ($failErrorCode !== '') {
+        $msg = "既存画像の削除に失敗しました（Yahooコード: {$failErrorCode}）";
+      } elseif ($deleteHttp > 0) {
+        $msg = "既存画像の削除に失敗しました（HTTP {$deleteHttp}）";
+      } else {
+        $msg = '既存画像の削除に失敗しました';
+      }
+      $ngCount++;
+    }
+    $item = [
+      'item_code'     => $d['item_code'],
+      'ok'            => $ok,
+      'deleted_count' => $deleted,
+      'message'       => $msg,
+    ];
+    if (!$ok) {
+      $failBodyTail = (string)(($firstFailedCall['body_tail'] ?? '') ?: $listBodyTail);
+      if ($failBodyTail !== '') $item['body_tail'] = $failBodyTail;
+      $failErrorCode = yahoo_error_code($failBodyTail);
+      if ($failErrorCode !== '') $item['error_code'] = $failErrorCode;
+    }
+    $details[] = $item;
+  }
+  return [
+    'ok_count' => $okCount,
+    'ng_count'  => $ngCount,
+    'details'   => $details,
+  ];
+}
+
+/**
+ * workDir 内の JPEG を item_code 別に集計して upload セクションを生成。
+ * uploadOk=true でも画像が 0 件の item_code は失敗扱い。
+ */
+function build_upload_section_for_gas(
+  array $itemCodes,
+  string $workDir,
+  bool $uploadOk,
+  int $uploadHttp,
+  string $uploadBody = '',
+  string $uploadCurlError = '',
+  array $downloadSummary = []
+): array {
+  // workDir 内の画像ファイルを item_code 別にカウント
+  $countByCode = [];
+  $downloadByCode = [];
+  foreach ($itemCodes as $code) {
+    $key = strtolower($code);
+    $countByCode[$key] = 0;
+    $downloadByCode[$key] = ['ok' => 0, 'ng' => 0];
+  }
+  $dh = @opendir($workDir);
+  if ($dh !== false) {
+    while (($fn = readdir($dh)) !== false) {
+      if (!preg_match('/\.jpe?g$/i', $fn)) continue;
+      $stem     = strtolower(preg_replace('/\.jpe?g$/i', '', $fn));
+      // "twf0001_1" → "twf0001"、"twf0001" → "twf0001"（数字サフィックスを除去）
+      $baseCode = preg_replace('/_\d+$/', '', $stem);
+      if (isset($countByCode[$baseCode])) {
+        $countByCode[$baseCode]++;
+      }
+    }
+    closedir($dh);
+  }
+
+  foreach ($downloadSummary as $row) {
+    $codeKey = strtolower((string)($row['item_code'] ?? ''));
+    if (!isset($downloadByCode[$codeKey])) continue;
+    if (!empty($row['ok'])) $downloadByCode[$codeKey]['ok']++;
+    else $downloadByCode[$codeKey]['ng']++;
+  }
+
+  $details = [];
+  $okCount = 0;
+  $ngCount = 0;
+  $uploadBodyTail = tail_text($uploadBody, 800);
+  $uploadErrorCode = yahoo_error_code($uploadBody);
+  $uploadErrorMessage = yahoo_error_message($uploadBody);
+  foreach ($itemCodes as $code) {
+    $codeKey = strtolower($code);
+    $cnt = $countByCode[$codeKey] ?? 0;
+    $downloadNg = (int)($downloadByCode[$codeKey]['ng'] ?? 0);
+    if (!$uploadOk) {
+      $ok  = false;
+      if ($uploadCurlError !== '') {
+        $msg = "画像ZIPのアップロードに失敗しました: {$uploadCurlError}";
+      } elseif ($uploadErrorCode !== '' && $uploadErrorMessage !== '') {
+        $msg = "画像ZIPのアップロードに失敗しました（{$uploadErrorCode}: {$uploadErrorMessage}）";
+      } elseif ($uploadErrorCode !== '') {
+        $msg = "画像ZIPのアップロードに失敗しました（Yahooコード: {$uploadErrorCode}、HTTP {$uploadHttp}）";
+      } else {
+        $msg = "画像ZIPのアップロードに失敗しました（HTTP {$uploadHttp}）";
+      }
+    } elseif ($cnt === 0) {
+      $ok  = false;
+      $msg = $downloadNg > 0
+        ? "画像取得に失敗したため、この商品コードのアップロード対象がありませんでした（取得失敗 {$downloadNg} 件）"
+        : 'この商品コードの画像がZIPに含まれていませんでした';
+    } else {
+      $ok  = true;
+      $msg = "{$cnt} 件の画像をアップロードしました";
+      if ($downloadNg > 0) {
+        $msg .= "（取得失敗 {$downloadNg} 件あり）";
+      }
+    }
+    if ($ok) $okCount++; else $ngCount++;
+    $item = [
+      'item_code'      => $code,
+      'ok'             => $ok,
+      'uploaded_count' => $cnt,
+      'message'        => $msg,
+    ];
+    if ($downloadNg > 0) $item['download_ng_count'] = $downloadNg;
+    if (!$ok && $uploadBodyTail !== '') $item['body_tail'] = $uploadBodyTail;
+    if (!$ok && $uploadErrorCode !== '') $item['error_code'] = $uploadErrorCode;
+    $details[] = $item;
+  }
+  return [
+    'ok_count' => $okCount,
+    'ng_count'  => $ngCount,
+    'details'   => $details,
+  ];
+}
+
+/**
+ * submit_one_item の戻り値リストを GAS向け submit セクションに変換。
+ * 失敗時は body_tail・error_code・日本語メッセージを付与。
+ */
+function format_submit_section_for_gas(array $submitSummaryRaw): array {
+  $details = [];
+  $okCount = 0;
+  $ngCount = 0;
+  foreach ($submitSummaryRaw as $d) {
+    $ok       = !empty($d['ok']);
+    $code     = $d['item_code'] ?? '';
+    $http     = $d['http'] ?? 0;
+    $bodyTail = $d['body_tail'] ?? '';
+    $errCode  = !$ok ? (string)($d['error_code'] ?? yahoo_error_code($bodyTail)) : '';
+    $errMsg   = !$ok ? yahoo_error_message($bodyTail) : '';
+    $curlErr  = $d['curl_error'] ?? '';
+
+    if ($ok) {
+      $msg = '反映申請が完了しました';
+      $okCount++;
+    } elseif ($curlErr !== '') {
+      $msg = "通信エラーが発生しました: {$curlErr}";
+      $ngCount++;
+    } elseif ($errCode !== '' && $errMsg !== '') {
+      $msg = "Yahoo側で反映申請に失敗しました（{$errCode}: {$errMsg}）";
+      $ngCount++;
+    } elseif ($errCode !== '') {
+      $msg = "Yahoo APIエラー（コード: {$errCode}、HTTP {$http}）";
+      $ngCount++;
+    } else {
+      $msg = "反映申請に失敗しました（HTTP {$http}）";
+      $ngCount++;
+    }
+
+    $item = [
+      'item_code' => $code,
+      'ok'        => $ok,
+      'message'   => $msg,
+    ];
+    if (!$ok) {
+      $item['body_tail'] = $bodyTail;
+      if ($errCode !== '') $item['error_code'] = $errCode;
+    }
+    $details[] = $item;
+  }
+  return [
+    'ok_count' => $okCount,
+    'ng_count'  => $ngCount,
+    'details'   => $details,
+  ];
+}
 
 // =========================
 // Main
@@ -802,11 +1394,7 @@ $debugTok = [];
 if ($token === '') {
   $token = refresh_access_token_from_env($debugTok);
   if ($token === '') {
-    respond([
-      'ok' => false,
-      'error' => 'access_token missing and refresh failed',
-      'token_debug' => $debugTok,
-    ], 401);
+    respond_token_failure($action, $sellerId, $debugTok);
   }
 }
 
@@ -971,7 +1559,7 @@ if (!$skipDelete) {
 
   $upUrl = EP_UPLOAD_PACK . '?seller_id=' . rawurlencode($sellerId);
   $cfile = new CURLFile($zipOut, 'application/zip', 'images.zip');
-  $up = curl_req('POST', $upUrl, $token, ['file' => $cfile], true);
+  $up = yahoo_api_req('POST', $upUrl, $token, ['file' => $cfile], true, [], $debugTok, 'uploadItemImagePack:pipeline');
   $uploadOk = ($up['ok'] && $up['http'] === 200 && yahoo_xml_ok($up['body']));
 
   $submitSummary = [];
@@ -980,7 +1568,7 @@ if (!$skipDelete) {
 
   if (!$skipSubmit && $uploadOk) {
     foreach ($itemCodes as $code) {
-      $d = submit_one_item($sellerId, $code, $token);
+      $d = submit_one_item($sellerId, $code, $token, $debugTok);
       $submitSummary[] = $d;
       if (!empty($d['ok'])) $okCount++;
       else $ngCount++;
@@ -1057,7 +1645,7 @@ if ($action === 'submit') {
   $ngCount = 0;
 
   foreach ($itemCodes as $code) {
-    $d = submit_one_item($sellerId, $code, $token);
+    $d = submit_one_item($sellerId, $code, $token, $debugTok);
     $details[] = $d;
     if (!empty($d['ok'])) $okCount++;
     else $ngCount++;
@@ -1106,19 +1694,26 @@ if ($action === 'delete') {
     respond(['ok'=>false,'error'=>'too_many_item_codes','count'=>count($itemCodes)], 400);
   }
 
-$t0 = now_ms();
-// $deleteResult = delete_images_for_codes($itemCodes, $sellerId, $token); // ←ここをコメントアウト！
-$deleteResult = ['ok' => true, 'targets_total' => 0, 'details' => []]; // ←追記
+  $t0 = now_ms();
+  // ★ 削除を有効化（以前コメントアウトされていたが復元）
+  $deleteResult = delete_images_for_codes($itemCodes, $sellerId, $token, $debugTok);
   $elapsed = now_ms() - $t0;
 
+  // GAS向けフォーマット変換
+  $deleteSection = format_delete_section_for_gas($deleteResult);
+
   respond([
-    'ok' => $deleteResult['ok'],
-    'action' => 'delete',
+    'ok'        => $deleteResult['ok'],
+    'action'    => 'delete',
+    'seller_id' => $sellerId,
     'item_codes' => $itemCodes,
-    'delete' => $deleteResult,
-    'elapsed_ms' => $elapsed,
+    // GAS通知用
+    'delete'    => $deleteSection,
+    // 後方互換用（詳細生データも残す）
+    'delete_raw' => $deleteResult,
+    'elapsed_ms'  => $elapsed,
     'token_debug' => $debugTok,
-    'v' => 'delete-v1',
+    'v'           => 'delete-v2',
   ], 200);
 }
 
@@ -1132,7 +1727,7 @@ if ($action === 'reserve_publish') {
   ]);
 
   $t0 = now_ms();
-  $r = curl_req('POST', EP_RESERVE_PUBLISH, $token, $post, false);
+  $r = yahoo_api_req('POST', EP_RESERVE_PUBLISH, $token, $post, false, [], $debugTok, 'reservePublish');
   $elapsed = now_ms() - $t0;
 
   $ok = false;
@@ -1145,22 +1740,51 @@ if ($action === 'reserve_publish') {
     }
   }
 
-  respond([
-    'ok' => $ok,
-    'action' => 'reserve_publish',
+  // GAS向け日本語メッセージとエラー詳細を生成
+  $reserveBodyTail = tail_text($r['body'], 600);
+  $errCodeRp = $ok ? '' : yahoo_error_code($r['body']);
+  $errMsgRp = $ok ? '' : yahoo_error_message($r['body']);
+  $curlErrRp = $r['ok'] ? '' : ($r['error'] ?? '');
+  if ($ok) {
+    $reserveMsg  = "全反映予約を受け付けました（予約時刻: {$reserveTime}）";
+  } else {
+    if ($curlErrRp !== '') {
+      $reserveMsg = "Yahooとの通信に失敗しました: {$curlErrRp}";
+    } elseif ($errCodeRp === 'ed-00006') {
+      $reserveMsg = 'Yahoo側がまだ処理中です。少し待ってから再試行してください';
+    } elseif ($errCodeRp !== '' && $errMsgRp !== '') {
+      $reserveMsg = "Yahoo側で全反映予約に失敗しました（{$errCodeRp}: {$errMsgRp}）";
+    } elseif ($errCodeRp !== '') {
+      $reserveMsg = "Yahoo APIエラー（コード: {$errCodeRp}、HTTP {$r['http']}）";
+    } else {
+      $reserveMsg = "全反映予約に失敗しました（HTTP {$r['http']}）";
+    }
+  }
+
+  $rpRes = [
+    'ok'           => $ok,
+    'action'       => 'reserve_publish',
+    'seller_id'    => $sellerId,
+    'message'      => $reserveMsg,
     'reserve_time' => $reserveTime,
-    'http' => $r['http'],
-    'body_tail' => substr($r['body'], -600),
-    'elapsed_ms' => $elapsed,
-    'token_debug' => $debugTok,
-    'v' => 'reserve-publish-v1',
-  ], 200);
+    'elapsed_ms'   => $elapsed,
+    'token_debug'  => $debugTok,
+    'v'            => 'reserve-publish-v2',
+  ];
+  if (!$ok) {
+    $rpRes['error_code'] = $errCodeRp;
+    $rpRes['body_tail']  = $reserveBodyTail;
+    $rpRes['http']       = $r['http'];
+    if ($curlErrRp !== '') $rpRes['curl_error'] = $curlErrRp;
+  }
+  respond($rpRes, 200);
 }
 
 // =====================================================
 // action=reupload_urls : URL群(S/T/免責) -> 全削除 -> ZIP化 -> uploadPack -> submit
 // =====================================================
 if ($action === 'reupload_urls') {
+  $skipSubmit = !empty($_REQUEST['skip_submit']);
   $strict = !empty($_REQUEST['strict']);
 
   $items = parse_reupload_items($_POST);
@@ -1168,14 +1792,32 @@ if ($action === 'reupload_urls') {
     respond([
       'ok' => false,
       'error' => 'items_json required (JSON array)',
+      'message' => '商品コード付きの画像URL一覧が見つからないため、処理を開始できませんでした',
       'example' => '[{"item_code":"TWF0001","s":"https://...","t":"https://...\\nhttps://...;https://..."}]',
       'post_keys' => array_keys($_POST),
+      'delete' => build_placeholder_section_for_gas([], 'delete', 'item_code を特定できないため削除は未実行です'),
+      'upload' => build_placeholder_section_for_gas([], 'upload', 'item_code を特定できないためアップロードは未実行です'),
+      'submit' => build_placeholder_section_for_gas([], 'submit', 'item_code を特定できないため反映申請は未実行です'),
       'v' => 'reupload_urls-missing-items',
     ], 400);
   }
 
+  $requestedItemCodes = array_values(array_unique(array_map(
+    static fn($it) => trim((string)($it['item_code'] ?? '')),
+    $items
+  )));
+
   if (count($items) > 200) {
-    respond(['ok'=>false,'error'=>'too_many_items','count'=>count($items)], 400);
+    respond([
+      'ok' => false,
+      'error' => 'too_many_items',
+      'message' => '一度に処理できる商品コード数を超えています',
+      'count' => count($items),
+      'item_codes' => $requestedItemCodes,
+      'delete' => build_placeholder_section_for_gas($requestedItemCodes, 'delete', '件数超過のため削除は未実行です'),
+      'upload' => build_placeholder_section_for_gas($requestedItemCodes, 'upload', '件数超過のためアップロードは未実行です'),
+      'submit' => build_placeholder_section_for_gas($requestedItemCodes, 'submit', '件数超過のため反映申請は未実行です'),
+    ], 400);
   }
 
   safe_mkdir(RUN_BASE_DIR);
@@ -1189,6 +1831,7 @@ if ($action === 'reupload_urls') {
   $downloadSummary = [];
   $itemCodes = build_workdir_from_items($items, $workDir, $downloadSummary);
   $itemCodes = array_values(array_unique($itemCodes));
+  $pendingSections = build_reupload_pending_sections($itemCodes, '前段処理で失敗した');
 
   $noticeSummary = [];
   try {
@@ -1198,8 +1841,19 @@ if ($action === 'reupload_urls') {
       respond([
         'ok' => false,
         'error' => 'NOTICE_INJECT_FAIL',
-        'message' => $e->getMessage(),
+        'message' => '免責画像の注入に失敗したため、以降の処理を中断しました',
+        'error_detail' => $e->getMessage(),
+        'seller_id' => $sellerId,
+        'item_codes' => $itemCodes,
+        'delete' => $pendingSections['delete'],
+        'upload' => $pendingSections['upload'],
+        'submit' => $pendingSections['submit'],
         'notice' => $noticeSummary,
+        'download' => [
+          'count'    => count($downloadSummary),
+          'ok_count' => count(array_filter($downloadSummary, fn($x) => !empty($x['ok']))),
+          'details'  => $downloadSummary,
+        ],
       ], 500);
     }
     $noticeSummary[] = [
@@ -1212,7 +1866,17 @@ if ($action === 'reupload_urls') {
   }
 
   if (!is_file(PREPROCESS_BIN)) {
-    respond(['ok'=>false,'error'=>'missing preprocess bin','bin'=>PREPROCESS_BIN], 500);
+    respond([
+      'ok' => false,
+      'error' => 'missing preprocess bin',
+      'message' => '画像前処理スクリプトが見つからないため、アップロードを開始できませんでした',
+      'bin' => PREPROCESS_BIN,
+      'seller_id' => $sellerId,
+      'item_codes' => $itemCodes,
+      'delete' => $pendingSections['delete'],
+      'upload' => $pendingSections['upload'],
+      'submit' => $pendingSections['submit'],
+    ], 500);
   }
   $cmd = PREPROCESS_BIN . ' ' . escapeshellarg($workDir) . ' 2>&1';
   $ppOut = [];
@@ -1222,7 +1886,16 @@ if ($action === 'reupload_urls') {
   $zipOut = $runDir . '/input_processed.zip';
   $zb = new ZipArchive();
   if ($zb->open($zipOut, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
-    respond(['ok'=>false,'error'=>'ZIP_CREATE_FAIL_FOR_REUPLOAD'], 500);
+    respond([
+      'ok' => false,
+      'error' => 'ZIP_CREATE_FAIL_FOR_REUPLOAD',
+      'message' => 'アップロード用ZIPの作成に失敗しました',
+      'seller_id' => $sellerId,
+      'item_codes' => $itemCodes,
+      'delete' => $pendingSections['delete'],
+      'upload' => $pendingSections['upload'],
+      'submit' => $pendingSections['submit'],
+    ], 500);
   }
 
   $added = 0;
@@ -1242,30 +1915,56 @@ if ($action === 'reupload_urls') {
     respond([
       'ok' => false,
       'error' => 'PREPROCESS_FAIL_OR_EMPTY',
+      'message' => '画像前処理に失敗したか、処理後の画像が0件でした',
       'preprocess_ret' => $ppRet,
       'added_jpg' => $added,
       'preprocess_tail' => array_slice($ppOut, -80),
       'download_head' => array_slice($downloadSummary, 0, 20),
+      'seller_id' => $sellerId,
+      'item_codes' => $itemCodes,
+      'delete' => $pendingSections['delete'],
+      'upload' => $pendingSections['upload'],
+      'submit' => $pendingSections['submit'],
     ], 500);
   }
 
   $t0 = now_ms();
-  $deleteResult = delete_images_for_codes($itemCodes, $sellerId, $token);
+  $deleteResult = delete_images_for_codes($itemCodes, $sellerId, $token, $debugTok);
 
   $upUrl = EP_UPLOAD_PACK . '?seller_id=' . rawurlencode($sellerId);
   $cfile = new CURLFile($zipOut, 'application/zip', 'images.zip');
   $postFields = [ 'file' => $cfile ];
 
-  $up = curl_req('POST', $upUrl, $token, $postFields, true);
+  $up = yahoo_api_req('POST', $upUrl, $token, $postFields, true, [], $debugTok, 'uploadItemImagePack:reupload_urls');
   $uploadOk = ($up['ok'] && $up['http'] === 200 && yahoo_xml_ok($up['body']));
 
   $submitSummary = [];
-  $allSubmitOk = true;
+  $allSubmitOk = $skipSubmit;
 
-  foreach ($itemCodes as $code) {
-    $d = submit_one_item($sellerId, $code, $token);
-    $submitSummary[] = $d;
-    if (!$d['ok']) $allSubmitOk = false;
+  if (!$skipSubmit && $uploadOk) {
+    foreach ($itemCodes as $code) {
+      $d = submit_one_item($sellerId, $code, $token, $debugTok);
+      $submitSummary[] = $d;
+      if (!$d['ok']) $allSubmitOk = false;
+    }
+
+    // submit 失敗があれば PHP 内部で最大2回リトライ（Yahoo API の一時的な処理待ちに対応）
+    // リトライ成功時は ok:true を返せるので GAS 側の "CDN反映:0件" 誤表示を防ぐ
+    for ($retryN = 1; $retryN <= 2 && !$allSubmitOk; $retryN++) {
+      sleep($retryN === 1 ? 2 : 4);  // 1回目: 2秒待機 / 2回目: 4秒待機
+      $allSubmitOk = true;
+      foreach ($submitSummary as &$sd) {
+        if (!empty($sd['ok'])) continue;  // 既に成功済みはスキップ
+        $d2 = submit_one_item($sellerId, $sd['item_code'], $token, $debugTok);
+        if ($d2['ok']) {
+          $d2['php_retry_count'] = $retryN;
+          $sd = $d2;
+        } else {
+          $allSubmitOk = false;
+        }
+      }
+      unset($sd);
+    }
   }
 
   $okCount = 0; $ngCount = 0;
@@ -1277,48 +1976,95 @@ if ($action === 'reupload_urls') {
   $elapsed = now_ms() - $t0;
   $anySubmitOk = ($okCount > 0);
 
-  $finalOk = $strict
-    ? ($deleteResult['ok'] && $uploadOk && $allSubmitOk)
-    : ($uploadOk && $anySubmitOk);
+  // ========================================================
+  // GAS向けフォーマット変換（delete / upload / submit 各セクション）
+  // ========================================================
+  $deleteSection = format_delete_section_for_gas($deleteResult);
+  $uploadSection = build_upload_section_for_gas(
+    $itemCodes,
+    $workDir,
+    $uploadOk,
+    (int)($up['http'] ?? 0),
+    (string)($up['body'] ?? ''),
+    $up['ok'] ? '' : (string)($up['error'] ?? ''),
+    $downloadSummary
+  );
+  $pendingSubmitCodes = collect_ok_item_codes_from_upload_section($uploadSection);
+  $submitSection = $skipSubmit
+    ? build_skipped_submit_section_for_gas($pendingSubmitCodes, 'アップロード完了のため、反映申請は後段で実行してください')
+    : format_submit_section_for_gas($submitSummary);
+  $legacyFinalOk = $skipSubmit
+    ? ($strict ? ($deleteResult['ok'] && $uploadOk) : $uploadOk)
+    : ($strict ? ($deleteResult['ok'] && $uploadOk && $allSubmitOk) : ($uploadOk && $anySubmitOk));
+  $finalOk = $skipSubmit
+    ? (
+      (int)($deleteSection['ng_count'] ?? 0) === 0 &&
+      (int)($uploadSection['ng_count'] ?? 0) === 0
+    )
+    : (
+      (int)($deleteSection['ng_count'] ?? 0) === 0 &&
+      (int)($uploadSection['ng_count'] ?? 0) === 0 &&
+      (int)($submitSection['ng_count'] ?? 0) === 0
+    );
+
+  if ($skipSubmit && $finalOk) {
+    $topMessage = '削除とアップロードが完了しました。反映申請は後段で実行してください';
+  } elseif ($skipSubmit) {
+    $failParts = [];
+    if (!empty($deleteSection['ng_count'])) $failParts[] = "削除NG {$deleteSection['ng_count']} 件";
+    if (!empty($uploadSection['ng_count'])) $failParts[] = "アップロードNG {$uploadSection['ng_count']} 件";
+    $topMessage = '一部失敗があります: ' . implode(' / ', $failParts);
+  } elseif ($finalOk) {
+    $topMessage = '削除・アップロード・反映申請がすべて完了しました';
+  } else {
+    $failParts = [];
+    if (!empty($deleteSection['ng_count'])) $failParts[] = "削除NG {$deleteSection['ng_count']} 件";
+    if (!empty($uploadSection['ng_count'])) $failParts[] = "アップロードNG {$uploadSection['ng_count']} 件";
+    if (!empty($submitSection['ng_count'])) $failParts[] = "反映申請NG {$submitSection['ng_count']} 件";
+    $topMessage = '一部失敗があります: ' . implode(' / ', $failParts);
+  }
 
   respond([
-    'ok' => $finalOk,
-    'action' => 'reupload_urls',
-    'strict' => $strict,
-    'run_id' => $runId,
-    'saved_zip' => $zipOut,
-    'item_codes' => $itemCodes,
+    'ok'        => $finalOk,
+    'action'    => 'reupload_urls',
+    'seller_id' => $sellerId,
+    'message'   => $topMessage,
+    'ok_legacy' => $legacyFinalOk,
+    'skip_submit' => $skipSubmit,
 
-    'notice' => [
-      'count' => count($noticeSummary),
-      'ok_count' => count(array_filter($noticeSummary, fn($x) => !empty($x['ok']))),
-      'details_head' => array_slice($noticeSummary, 0, 20),
-    ],
+    // ===== GAS通知用メインセクション =====
+    // GASはこの3つのセクションを見て成功/失敗を判定します
+    'delete' => $deleteSection,
+    'upload' => $uploadSection,
+    'submit' => $submitSection,
 
-    'download' => [
-      'count' => count($downloadSummary),
-      'ok_count' => count(array_filter($downloadSummary, fn($x) => !empty($x['ok']))),
-      'details_head' => array_slice($downloadSummary, 0, 80),
-    ],
-
-    'delete' => $deleteResult,
-
+    // ===== 後方互換用（既存クライアントのため残す） =====
+    'delete_raw' => $deleteResult,
     'upload_pack' => [
-      'http' => $up['http'],
-      'ok'   => $uploadOk,
-      'body_tail' => substr($up['body'], -800),
+      'http'      => $up['http'],
+      'ok'        => $uploadOk,
+      'body_tail' => tail_text($up['body'], 800),
+    ],
+    'submit_raw' => $skipSubmit ? [] : $submitSummary,
+
+    // ===== 補足情報 =====
+    'notice' => [
+      'count'    => count($noticeSummary),
+      'ok_count' => count(array_filter($noticeSummary, fn($x) => !empty($x['ok']))),
+      'details'  => $noticeSummary,
+    ],
+    'download' => [
+      'count'    => count($downloadSummary),
+      'ok_count' => count(array_filter($downloadSummary, fn($x) => !empty($x['ok']))),
+      'details'  => $downloadSummary,
     ],
 
-    'submit' => [
-      'ok' => $allSubmitOk,
-      'ok_count' => $okCount,
-      'ng_count' => $ngCount,
-      'details' => $submitSummary,
-    ],
-
-    'elapsed_ms' => $elapsed,
+    'strict'      => $strict,
+    'run_id'      => $runId,
+    'item_codes'  => $itemCodes,
+    'elapsed_ms'  => $elapsed,
     'token_debug' => $debugTok,
-    'v' => 'reupload_urls-v2',
+    'v'           => 'reupload_urls-v4',
   ], 200);
 }
 
@@ -1395,11 +2141,11 @@ $foundCodes = [];
     respond(['ok' => false, 'error' => 'ZIP empty after preprocess'], 500);
   }
 
-  $deleteResult = delete_images_for_codes($foundCodes, $sellerId, $token);
+  $deleteResult = delete_images_for_codes($foundCodes, $sellerId, $token, $debugTok);
 
   $upUrl = EP_UPLOAD_PACK . '?seller_id=' . rawurlencode($sellerId);
   $cfile = new CURLFile($zipOut, 'application/zip', 'images.zip');
-  $up = curl_req('POST', $upUrl, $token, ['file' => $cfile], true);
+  $up = yahoo_api_req('POST', $upUrl, $token, ['file' => $cfile], true, [], $debugTok, 'uploadItemImagePack:local_upload');
   $uploadOk = ($up['ok'] && $up['http'] === 200 && yahoo_xml_ok($up['body']));
 
   $skipSubmit = !empty($_REQUEST['skip_submit']);
@@ -1571,7 +2317,7 @@ if (isset($_POST['item_codes_json']) && $_POST['item_codes_json'] !== '') {
 $t0 = now_ms();
 
 // --- 4) DELETE (best-effort) ---
- $deleteResult = delete_images_for_codes($itemCodes, $sellerId, $token); 
+ $deleteResult = delete_images_for_codes($itemCodes, $sellerId, $token, $debugTok); 
 
 
 // --- 5) UPLOAD PACK ---
@@ -1579,7 +2325,7 @@ $upUrl = EP_UPLOAD_PACK . '?seller_id=' . rawurlencode($sellerId);
 $cfile = new CURLFile($zipPath, 'application/zip', 'images.zip');
 $postFields = [ 'file' => $cfile ];
 
-$up = curl_req('POST', $upUrl, $token, $postFields, true);
+$up = yahoo_api_req('POST', $upUrl, $token, $postFields, true, [], $debugTok, 'uploadItemImagePack:legacy');
 $uploadOk = ($up['ok'] && $up['http'] === 200 && yahoo_xml_ok($up['body']));
 
 // --- 6) SUBMIT ---
@@ -1592,7 +2338,7 @@ $ngCount = 0;
 
 if (!$skipSubmit) {
   foreach ($itemCodes as $code) {
-    $d = submit_one_item($sellerId, $code, $token);
+    $d = submit_one_item($sellerId, $code, $token, $debugTok);
     $submitSummary[] = $d;
     if (!$d['ok']) $allSubmitOk = false;
   }

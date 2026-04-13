@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}引当実行 | 自動引当ツール{% endblock %}
+{% block page_title %}引当実行・発注リスト{% endblock %}
+{% block content %}
+<section class="panel panel-wide">
+  <div class="panel-header">
+    <div>
+      <h3>操作バー</h3>
+      <p>上で発注登録や手動引当をして、下の発注リストと受注明細一覧を横長テーブルで確認できます。</p>
+    </div>
+    <div class="action-row">
+      <form method="post" action="{{ url_for('main.recalculate_route') }}">
+        <button class="button accent" type="submit">引当再計算</button>
+      </form>
+      <a class="button ghost" href="{{ url_for('main.export', kind='allocations') }}">CSV出力</a>
+    </div>
+  </div>
+
+  <div class="sheet-tool-grid">
+    <form class="sheet-toolbar-form" method="post" action="{{ url_for('main.create_purchase_route') }}">
+      <h4>韓国発注入力</h4>
+      <div class="toolbar-fields">
+        <label>
+          <span>受注明細ID</span>
+          <input type="number" name="order_item_id" required>
+        </label>
+        <label>
+          <span>発注日</span>
+          <input type="date" name="ordered_at" required>
+        </label>
+        <label>
+          <span>数量</span>
+          <input type="number" name="quantity" min="1" required>
+        </label>
+        <label>
+          <span>発注状態</span>
+          <select name="status">
+            <option value="ordered">ordered</option>
+            <option value="arrived">arrived</option>
+          </select>
+        </label>
+        <label>
+          <span>業者</span>
+          <input name="shop_name" placeholder="ミストップなど">
+        </label>
+        <label class="wide">
+          <span>メモ</span>
+          <input name="memo" placeholder="補足があれば入力">
+        </label>
+      </div>
+      <button class="button accent" type="submit">発注登録</button>
+    </form>
+
+    <form class="sheet-toolbar-form" method="post" action="{{ url_for('main.manual_allocation_route') }}">
+      <h4>手動引当</h4>
+      <div class="toolbar-fields manual-fields">
+        <label>
+          <span>受注明細ID</span>
+          <input type="number" name="order_item_id" required>
+        </label>
+        <label>
+          <span>数量</span>
+          <input type="number" name="quantity" min="1" required>
+        </label>
+        <label>
+          <span>在庫種別</span>
+          <select name="inventory_type">
+            <option value="即納">即納</option>
+            <option value="お取り寄せ">お取り寄せ</option>
+          </select>
+        </label>
+        <label>
+          <span>実行者</span>
+          <input name="allocated_by" placeholder="日本側スタッフ">
+        </label>
+      </div>
+      <button class="button accent" type="submit">手動引当実行</button>
+    </form>
+  </div>
+</section>
+
+<section class="panel panel-wide">
+  <div class="panel-header">
+    <div>
+      <h3>発注リスト</h3>
+      <p>参考画像のように、横へ流れる一覧で発注日・受注・業者・商品・数量・状態をまとめて見られるようにしています。</p>
+    </div>
+  </div>
+
+  <div class="table-wrap sheet-wrap">
+    <table class="sheet-table purchase-sheet">
+      <thead>
+        <tr>
+          <th>発注日</th>
+          <th>発注No</th>
+          <th>受注番号</th>
+          <th>受注明細ID</th>
+          <th>希望日</th>
+          <th>業者</th>
+          <th>商品コード</th>
+          <th>オプション</th>
+          <th>数量</th>
+          <th>発注状態</th>
+          <th>受注状態</th>
+          <th>EMS搭載数</th>
+          <th>メモ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for purchase in purchases %}
+          <tr>
+            <td>{{ purchase.ordered_at }}</td>
+            <td>PO-{{ "%05d"|format(purchase.id) }}</td>
+            <td class="strong-cell">{{ purchase.order_item.order.yahoo_order_id }}</td>
+            <td>{{ purchase.order_item_id }}</td>
+            <td>{{ purchase.order_item.order.desired_delivery_date or '未指定' }}</td>
+            <td>{{ purchase.shop_name or '-' }}</td>
+            <td>{{ purchase.product_code }}</td>
+            <td>{{ purchase.product_sub_code or '-' }}</td>
+            <td>{{ purchase.quantity }}</td>
+            <td><span class="badge {{ 'notice' if purchase.status == 'arrived' else 'warning' }}">{{ purchase.status }}</span></td>
+            <td>{{ order_item_status_labels[purchase.order_item.status] }}</td>
+            <td>{{ purchase.order_item.ems_items | sum(attribute='quantity') }}</td>
+            <td>{{ purchase.memo or '-' }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="13" class="muted">まだ発注データがありません。</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h3>受注明細一覧</h3>
+      <p>ID を見ながら発注登録や手動引当の対象を選べます。</p>
+    </div>
+  </div>
+  <div class="table-wrap sheet-wrap">
+    <table class="sheet-table compact-sheet">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>受注番号</th>
+          <th>顧客名</th>
+          <th>商品コード</th>
+          <th>オプション</th>
+          <th>注文数</th>
+          <th>引当数</th>
+          <th>在庫種別</th>
+          <th>状態</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+          <tr>
+            <td>{{ item.id }}</td>
+            <td class="strong-cell">{{ item.order.yahoo_order_id }}</td>
+            <td>{{ item.order.customer_name or '-' }}</td>
+            <td>{{ item.product_code }}</td>
+            <td>{{ item.product_sub_code or '-' }}</td>
+            <td>{{ item.quantity }}</td>
+            <td>{{ item.allocated_qty }}</td>
+            <td>{{ item.inventory_type }}</td>
+            <td>{{ order_item_status_labels[item.status] }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="9" class="muted">受注明細がありません。</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

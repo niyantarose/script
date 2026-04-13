@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}EMS梱包リスト | 自動引当ツール{% endblock %}
+{% block page_title %}EMS梱包リスト{% endblock %}
+{% block content %}
+<div class="two-column uneven">
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <h3>EMS登録</h3>
+        <p>`受注明細ID,数量` を1行ずつ入力すると本引当まで実行します。</p>
+      </div>
+    </div>
+    <form class="form-grid" method="post" action="{{ url_for('main.create_ems_route') }}">
+      <label>
+        <span>EMS番号</span>
+        <input name="ems_number" required placeholder="EMS123456789KR">
+      </label>
+      <label>
+        <span>発送日</span>
+        <input type="date" name="shipped_at" required>
+      </label>
+      <label class="full">
+        <span>備考</span>
+        <input name="memo" placeholder="4月2便など">
+      </label>
+      <label class="full">
+        <span>EMS明細</span>
+        <textarea name="items_text" rows="8" placeholder="2,1&#10;4,1"></textarea>
+      </label>
+      <button class="button accent" type="submit">EMS登録して本引当</button>
+    </form>
+
+    <div class="helper-box">
+      <h4>受注明細ID 早見表</h4>
+      <div class="table-wrap compact">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>受注番号</th>
+              <th>商品</th>
+              <th>状態</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in order_items %}
+              <tr>
+                <td>{{ item.id }}</td>
+                <td>{{ item.order.yahoo_order_id }}</td>
+                <td>{{ item.product_code }}{% if item.product_sub_code %}/{{ item.product_sub_code }}{% endif %}</td>
+                <td>{{ order_item_status_labels[item.status] }}</td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="4" class="muted">受注明細がありません。</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <h3>EMS便一覧</h3>
+        <p>入荷登録すると日本在庫仕分けテーブルへ自動追加します。</p>
+      </div>
+      <a class="button ghost" href="{{ url_for('main.export', kind='ems') }}">CSV出力</a>
+    </div>
+    <div class="stack-list">
+      {% for ems in ems_list %}
+        <article class="list-card">
+          <div class="list-card-header split">
+            <div>
+              <h4>{{ ems.ems_number }}</h4>
+              <p>{{ ems.shipped_at }} 発送 / 到着予定 {{ ems.estimated_arrival }}</p>
+            </div>
+            <span class="badge {{ 'notice' if ems.status == 'arrived' else 'warning' }}">{{ ems.status }}</span>
+          </div>
+          <ul class="plain-list">
+            {% for item in ems.items %}
+              <li>#{{ item.order_item.id }} / {{ item.product_code }}{% if item.product_sub_code %} / {{ item.product_sub_code }}{% endif %} / {{ item.quantity }}個 / {{ item.order_item.order.yahoo_order_id }}</li>
+            {% endfor %}
+          </ul>
+          {% if ems.status != 'arrived' %}
+            <form class="inline-form" method="post" action="{{ url_for('main.arrive_ems_route', ems_id=ems.id) }}">
+              <label>
+                <span>日本入荷日</span>
+                <input type="date" name="arrived_at" required>
+              </label>
+              <button class="button tiny" type="submit">入荷登録</button>
+            </form>
+          {% else %}
+            <p class="muted">入荷日: {{ ems.arrived_at }}</p>
+          {% endif %}
+        </article>
+      {% else %}
+        <div class="empty-state">
+          <h3>EMS便がありません</h3>
+          <p>左側フォームから登録するとこの一覧に追加されます。</p>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

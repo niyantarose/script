@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}アラート一覧 | 自動引当ツール{% endblock %}
+{% block page_title %}アラート一覧{% endblock %}
+{% block content %}
+<div class="two-column">
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <h3>未解決</h3>
+        <p>ここで解決済みにすると履歴側へ移動します。</p>
+      </div>
+      <a class="button ghost" href="{{ url_for('main.export', kind='alerts') }}">CSV出力</a>
+    </div>
+    <div class="stack-list">
+      {% for alert in unresolved %}
+        <article class="list-card">
+          <div class="list-card-header split">
+            <div>
+              <span class="badge danger">{{ alert_type_labels[alert.alert_type] }}</span>
+              <h4>{{ alert.order.yahoo_order_id if alert.order else '共通アラート' }}</h4>
+            </div>
+            <form method="post" action="{{ url_for('main.resolve_alert_route', alert_id=alert.id) }}">
+              <button class="button tiny" type="submit">解決済み</button>
+            </form>
+          </div>
+          <p>{{ alert.message }}</p>
+        </article>
+      {% else %}
+        <p class="muted">未解決アラートはありません。</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <h3>解決済み履歴</h3>
+        <p>対応済みの記録です。</p>
+      </div>
+    </div>
+    <div class="stack-list">
+      {% for alert in resolved %}
+        <article class="list-card muted-card">
+          <div class="list-card-header">
+            <span class="badge ok">{{ alert_type_labels[alert.alert_type] }}</span>
+            <span>{{ alert.order.yahoo_order_id if alert.order else '共通' }}</span>
+          </div>
+          <p>{{ alert.message }}</p>
+        </article>
+      {% else %}
+        <p class="muted">まだ解決済み履歴はありません。</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

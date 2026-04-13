@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}漏れチェック | 自動引当ツール{% endblock %}
+{% block page_title %}4段階漏れチェック{% endblock %}
+{% block content %}
+<section class="panel panel-wide">
+  <div class="panel-header">
+    <div>
+      <h3>チェック一覧</h3>
+      <p>発注漏れ、韓国発送漏れ、日本入荷漏れ、発送漏れ、在庫不足、遅延を一括で確認します。</p>
+    </div>
+    <a class="button ghost" href="{{ url_for('main.export', kind='checks') }}">CSV出力</a>
+  </div>
+  <div class="check-grid">
+    {% for key, alerts in grouped_alerts.items() %}
+      <article class="panel nested">
+        <div class="panel-header">
+          <div>
+            <h3>{{ alert_type_labels[key] }}</h3>
+            <p>{{ alerts|length }} 件</p>
+          </div>
+        </div>
+        <div class="stack-list compact-list">
+          {% for alert in alerts %}
+            <article class="list-card">
+              <div class="list-card-header">
+                <span>{{ alert.order.yahoo_order_id if alert.order else '共通' }}</span>
+                <span>{{ alert.product_code or '-' }}</span>
+              </div>
+              <p>{{ alert.message }}</p>
+            </article>
+          {% else %}
+            <p class="muted">該当なし</p>
+          {% endfor %}
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

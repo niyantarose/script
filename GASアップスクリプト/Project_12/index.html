@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>画像カットツール V49 Fixed</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", "Meiryo", sans-serif;
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    h1 { font-size: 1.8rem; margin-bottom: 4px; }
+    .sub { color: #94a3b8; font-size: .85rem; margin-bottom: 16px; }
+    .layout { display: grid; grid-template-columns: 360px 1fr; gap: 16px; }
+    @media (max-width: 1024px) { .layout { grid-template-columns: 1fr; } }
+    .panel {
+      background: rgba(30, 41, 59, .78);
+      border: 1px solid rgba(148, 163, 184, .18);
+      border-radius: 12px;
+      padding: 14px;
+    }
+    .title { font-size: .9rem; color: #cbd5e1; font-weight: 700; margin-bottom: 10px; }
+    .drop-zone {
+      border: 2px dashed rgba(129, 140, 248, .7);
+      border-radius: 10px;
+      background: rgba(15, 23, 42, .7);
+      text-align: center;
+      padding: 22px 10px;
+      cursor: pointer;
+      margin-bottom: 10px;
+      user-select: none;
+      position: relative;
+      overflow: hidden;
+    }
+    .drop-zone.dragover { background: rgba(129, 140, 248, .16); border-color: #818cf8; }
+    .drop-zone .icon { font-size: 2rem; margin-bottom: 8px; }
+    .muted { color: #94a3b8; font-size: .8rem; }
+    .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .btn {
+      border: 1px solid #475569;
+      background: #334155;
+      color: #fff;
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: .85rem;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-primary { background: linear-gradient(135deg, #34d399, #059669); border: none; }
+    .mode {
+      margin-top: 14px;
+      border-top: 1px solid rgba(255, 255, 255, .1);
+      padding-top: 10px;
+    }
+    .zoom {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      background: rgba(0, 0, 0, .2);
+      border-radius: 6px;
+      padding: 8px;
+    }
+    .zoom input { width: 100%; }
+    .policy {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+    .policy label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: .78rem;
+      color: #cbd5e1;
+      background: rgba(255, 255, 255, .06);
+      border: 1px solid rgba(148, 163, 184, .2);
+      border-radius: 6px;
+      padding: 6px 4px;
+      cursor: pointer;
+    }
+    .manual {
+      margin-top: 12px;
+      border-top: 1px solid rgba(255, 255, 255, .1);
+      padding-top: 10px;
+      max-height: 210px;
+      overflow: auto;
+    }
+    .manual-item {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 6px;
+      padding: 6px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, .05);
+      font-size: .8rem;
+    }
+    .manual-item input {
+      width: 90px;
+      background: #0f172a;
+      color: #fff;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 2px 6px;
+    }
+    .preview-wrap {
+      position: relative;
+      border: 1px solid rgba(148, 163, 184, .2);
+      border-radius: 8px;
+      background: #0f172a;
+      overflow: auto;
+      max-height: 80vh;
+      display: block;
+      width: 100%;
+    }
+    #previewStage {
+      position: relative;
+      display: block;
+      width: 100%;
+      min-width: 100%;
+      margin: 0 auto;
+    }
+    #previewImage { display: block; max-width: none; height: auto; width: 100%; pointer-events: none; }
+    #overlayCanvas, #cutLinesLayer {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #overlayCanvas { z-index: 20; }
+    #cutLinesLayer { z-index: 30; pointer-events: auto; }
+    .cut-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 18px;
+      margin-top: -9px;
+      cursor: ns-resize;
+      background: transparent;
+    }
+    .cut-line::before {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 4px;
+      margin-top: -2px;
+      background: #ef4444;
+      box-shadow: 0 0 10px rgba(239, 68, 68, .8);
+    }
+    .cut-line.selected::before { background: #38bdf8; box-shadow: 0 0 12px rgba(56, 189, 248, .9); }
+    #globalDropOverlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, .6);
+      z-index: 9999;
+      pointer-events: none;
+    }
+    #globalDropOverlay.show { display: flex; }
+    #globalDropOverlay > div {
+      border: 2px dashed rgba(255, 255, 255, .8);
+      padding: 14px 18px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, .9);
+      color: white;
+      font-weight: 700;
+    }
+    .results { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+    .result {
+      background: rgba(15, 23, 42, .65);
+      border: 1px solid rgba(148, 163, 184, .2);
+      border-radius: 8px;
+      padding: 8px;
+    }
+    .result img { width: 100%; border-radius: 4px; margin-bottom: 6px; border: 1px solid #334155; }
+  </style>
+</head>
+<body>
+  <div id="globalDropOverlay"><div>📂 ここに画像をドロップ</div></div>
+
+  <div class="container">
+    <h1>画像カットツール V49</h1>
+    <p class="sub">画像取込み修正 / ダブルクリックで線追加修正 / 右側欠け修正</p>
+
+    <div class="layout">
+      <div class="panel">
+        <div class="title">1. 画像をアップロード</div>
+        <div id="dropZone" class="drop-zone" tabindex="0" role="button">
+          <div class="icon">📁</div>
+          <div>画像を選択</div>
+          <div class="muted">またはドラッグ＆ドロップ</div>
+        </div>
+        <input id="fileInput" type="file" accept="image/*" hidden>
+        <div id="fileInfo" class="row" style="display:none;">
+          <div id="fileNameEl" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#818cf8;"></div>
+          <button class="btn" id="btnChangeFile" type="button">変更</button>
+        </div>
+
+        <div class="mode">
+          <div class="title" style="margin-bottom:4px;">表示調整</div>
+          <div class="muted">右側が欠けないよう、横スクロール表示に対応</div>
+          <div class="zoom">
+            <span>🔍</span>
+            <input id="zoomSlider" type="range" min="20" max="300" value="100">
+            <span id="zoomValue" style="min-width:48px; text-align:right;">100%</span>
+          </div>
+          <div class="policy">
+            <label><input type="radio" name="cutPolicy" value="auto" checked>Auto</label>
+            <label><input type="radio" name="cutPolicy" value="fit">Fit</label>
+            <label><input type="radio" name="cutPolicy" value="scroll">Scroll</label>
+          </div>
+        </div>
+
+        <div class="manual">
+          <div class="title" style="margin-bottom:6px;">カット位置</div>
+          <div id="manualList"></div>
+        </div>
+
+        <button id="btnProcess" class="btn btn-primary" style="width:100%; margin-top:12px;" disabled>✂️ カットして保存</button>
+        <button id="btnDownloadAll" class="btn" style="width:100%; margin-top:8px; display:none;">📦 すべて一括ダウンロード</button>
+        <button id="btnReset" class="btn" style="width:100%; margin-top:8px;">🗑️ 線をリセット</button>
+      </div>
+
+      <div class="panel">
+        <div class="title">2. プレビュー（ダブルクリックでカット線追加）</div>
+        <div id="previewContainer" style="display:none;">
+          <div id="previewWrapper" class="preview-wrap">
+            <div id="previewStage">
+              <img id="previewImage" alt="preview">
+              <canvas id="overlayCanvas"></canvas>
+              <div id="cutLinesLayer"></div>
+            </div>
+          </div>
+        </div>
+        <div id="previewEmpty" class="muted">画像を読み込むとここに表示されます。</div>
+        <div id="results" class="results"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const dropZone = document.getElementById('dropZone');
+    const globalDropOverlay = document.getElementById('globalDropOverlay');
+    const fileInfo = document.getElementById('fileInfo');
+    const fileNameEl = document.getElementById('fileNameEl');
+    const previewContainer = document.getElementById('previewContainer');
+    const previewEmpty = document.getElementById('previewEmpty');
+    const previewWrapper = document.getElementById('previewWrapper');
+    const previewStage = document.getElementById('previewStage');
+    const previewImage = document.getElementById('previewImage');
+    const overlayCanvas = document.getElementById('overlayCanvas');
+    const cutLinesLayer = document.getElementById('cutLinesLayer');
+    const octx = overlayCanvas.getContext('2d');
+    const manualList = document.getElementById('manualList');
+    const zoomSlider = document.getElementById('zoomSlider');
+    const zoomValue = document.getElementById('zoomValue');
+    const btnProcess = document.getElementById('btnProcess');
+    const btnDownloadAll = document.getElementById('btnDownloadAll');
+    const btnReset = document.getElementById('btnReset');
+    const results = document.getElementById('results');
+    const btnChangeFile = document.getElementById('btnChangeFile');
+
+    let originalImage = null;
+    let objectUrl = null;
+    let splitPoints = [];
+    let selectedLineIndex = -1;
+    let draggingIndex = -1;
+    let isDraggingLine = false;
+    let resultImages = [];
+    let zoomPercent = 100;
+    let dragLastClientY = 0;
+    let dragScrollTimer = null;
+    let dragScrollDir = 0;
+    let cutPolicy = 'auto';
+    let windowDragCounter = 0;
+
+    function isImageFile(file) {
+      return !!(file && file.type && file.type.startsWith('image/'));
+    }
+
+    function openFilePicker() {
+      clearDropUi();
+      try {
+        if (typeof fileInput.showPicker === 'function') {
+          fileInput.showPicker();
+        } else {
+          fileInput.click();
+        }
+      } catch (_) {
+        fileInput.click();
+      }
+    }
+
+    function clearDropUi() {
+      windowDragCounter = 0;
+      dropZone.classList.remove('dragover');
+      globalDropOverlay.classList.remove('show');
+    }
+
+    function defaultSplitPoints() {
+      splitPoints = [];
+      if (!originalImage) return;
+      for (let y = 1000; y < originalImage.height; y += 1000) splitPoints.push(y);
+      normalizeSplitPoints();
+    }
+
+    function normalizeSplitPoints() {
+      if (!originalImage) return;
+      splitPoints = splitPoints
+        .map((y) => Math.round(y))
+        .filter((y) => Number.isFinite(y))
+        .map((y) => Math.max(10, Math.min(originalImage.height - 10, y)))
+        .sort((a, b) => a - b);
+      const dedup = [];
+      splitPoints.forEach((y) => {
+        if (dedup.length === 0 || Math.abs(dedup[dedup.length - 1] - y) >= 3) dedup.push(y);
+      });
+      splitPoints = dedup;
+    }
+
+    function loadImage(file) {
+      if (!isImageFile(file)) {
+        alert('画像ファイルを選択してください。');
+        return;
+      }
+      clearDropUi();
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = url;
+        originalImage = img;
+        previewImage.src = objectUrl;
+        fileNameEl.textContent = file.name;
+        fileInfo.style.display = 'flex';
+        previewContainer.style.display = 'block';
+        previewEmpty.style.display = 'none';
+        btnProcess.disabled = false;
+        defaultSplitPoints();
+        applyZoom(zoomPercent);
+        renderCutLines();
+        updateManualList();
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        alert('画像の読み込みに失敗しました。');
+      };
+      img.src = url;
+    }
+
+    function syncOverlaySize() {
+      if (!originalImage) return;
+      const rect = previewImage.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      previewStage.style.width = `${w}px`;
+      previewStage.style.height = `${h}px`;
+      overlayCanvas.width = w;
+      overlayCanvas.height = h;
+      overlayCanvas.style.width = `${w}px`;
+      overlayCanvas.style.height = `${h}px`;
+      cutLinesLayer.style.width = `${w}px`;
+      cutLinesLayer.style.height = `${h}px`;
+      drawLineGuides();
+    }
+
+    function drawLineGuides() {
+      if (!originalImage) return;
+      const rect = previewImage.getBoundingClientRect();
+      if (!rect.height) return;
+      octx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      const scale = rect.height / originalImage.height;
+      splitPoints.forEach((y, idx) => {
+        const dy = Math.round(y * scale);
+        octx.beginPath();
+        octx.moveTo(0, dy);
+        octx.lineTo(overlayCanvas.width, dy);
+        octx.lineWidth = idx === selectedLineIndex ? 2 : 1;
+        octx.strokeStyle = idx === selectedLineIndex ? 'rgba(56,189,248,.5)' : 'rgba(239,68,68,.32)';
+        octx.setLineDash([5, 5]);
+        octx.stroke();
+        octx.setLineDash([]);
+      });
+    }
+
+    function renderCutLines() {
+      cutLinesLayer.innerHTML = '';
+      if (!originalImage) return;
+      const rect = previewImage.getBoundingClientRect();
+      if (!rect.height) return;
+      const scale = rect.height / originalImage.height;
+      splitPoints.forEach((y, idx) => {
+        const line = document.createElement('div');
+        line.className = 'cut-line';
+        if (idx === selectedLineIndex) line.classList.add('selected');
+        line.style.top = `${Math.round(y * scale)}px`;
+        line.dataset.index = String(idx);
+        line.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          isDraggingLine = true;
+          draggingIndex = idx;
+          dragLastClientY = e.clientY;
+          selectedLineIndex = idx;
+          renderCutLines();
+          updateManualList();
+        });
+        line.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectedLineIndex = idx;
+          renderCutLines();
+          updateManualList();
+        });
+        cutLinesLayer.appendChild(line);
+      });
+      drawLineGuides();
+    }
+
+    function updateDraggingLineByClientY(clientY) {
+      if (!isDraggingLine || draggingIndex < 0 || !originalImage) return;
+      const r = previewImage.getBoundingClientRect();
+      if (!r.height) return;
+      let y = Math.round((clientY - r.top) * (originalImage.height / r.height));
+      y = Math.max(10, Math.min(originalImage.height - 10, y));
+      splitPoints[draggingIndex] = y;
+      normalizeSplitPoints();
+      renderCutLines();
+    }
+
+    function stopInnerDragScroll() {
+      if (dragScrollTimer) {
+        clearInterval(dragScrollTimer);
+        dragScrollTimer = null;
+      }
+      dragScrollDir = 0;
+    }
+
+    function startInnerDragScroll(dir) {
+      if (dragScrollTimer && dragScrollDir === dir) return;
+      stopInnerDragScroll();
+      dragScrollDir = dir;
+      dragScrollTimer = setInterval(() => {
+        if (!isDraggingLine) {
+          stopInnerDragScroll();
+          return;
+        }
+        const before = previewWrapper.scrollTop;
+        previewWrapper.scrollTop += dir * 22;
+        const moved = previewWrapper.scrollTop !== before;
+        if (!moved) return;
+        // マウスを押したままでも、内側スクロールに追従して線を更新
+        updateDraggingLineByClientY(dragLastClientY);
+      }, 16);
+    }
+
+    function updateManualList() {
+      manualList.innerHTML = '';
+      normalizeSplitPoints();
+      splitPoints.forEach((pt, idx) => {
+        const item = document.createElement('div');
+        item.className = 'manual-item';
+        if (idx === selectedLineIndex) item.style.background = 'rgba(56,189,248,.16)';
+        item.innerHTML = `
+          <span style="width:30px; color:#cbd5e1;">#${idx + 1}</span>
+          <input type="number" value="${pt}">
+          <span style="color:#94a3b8;">px</span>
+          <button class="btn" style="padding:2px 8px; margin-left:auto;">×</button>
+        `;
+        const input = item.querySelector('input');
+        const removeBtn = item.querySelector('button');
+        input.addEventListener('change', () => {
+          const v = parseInt(input.value, 10);
+          if (!Number.isNaN(v) && originalImage) {
+            splitPoints[idx] = Math.max(10, Math.min(originalImage.height - 10, v));
+            normalizeSplitPoints();
+            renderCutLines();
+            updateManualList();
+          }
+        });
+        removeBtn.addEventListener('click', () => {
+          splitPoints.splice(idx, 1);
+          selectedLineIndex = -1;
+          normalizeSplitPoints();
+          renderCutLines();
+          updateManualList();
+        });
+        item.addEventListener('click', (e) => {
+          if (e.target === input || e.target === removeBtn) return;
+          selectedLineIndex = idx;
+          renderCutLines();
+          updateManualList();
+        });
+        manualList.appendChild(item);
+      });
+    }
+
+    function addCutLineAtClientY(clientY) {
+      if (!originalImage) return;
+      const rect = previewImage.getBoundingClientRect();
+      if (!rect.height) return;
+      const offsetY = clientY - rect.top;
+      if (offsetY < 0 || offsetY > rect.height) return;
+      const y = Math.round(offsetY * (originalImage.height / rect.height));
+      const clamped = Math.max(10, Math.min(originalImage.height - 10, y));
+      splitPoints.push(clamped);
+      normalizeSplitPoints();
+      selectedLineIndex = splitPoints.findIndex((v) => v === clamped);
+      if (selectedLineIndex < 0) selectedLineIndex = splitPoints.length - 1;
+      renderCutLines();
+      updateManualList();
+    }
+
+    function getEffectiveCutPolicy() {
+      if (cutPolicy !== 'auto') return cutPolicy;
+      if (!originalImage) return 'fit';
+      return (originalImage.height / originalImage.width) > 1.6 ? 'scroll' : 'fit';
+    }
+
+    function getBaseDisplayWidth() {
+      const containerWidth = Math.max(200, previewWrapper.clientWidth || previewWrapper.parentElement.clientWidth);
+      if (!originalImage) return containerWidth;
+      const effectivePolicy = getEffectiveCutPolicy();
+      if (effectivePolicy === 'fit') {
+        const wr = previewWrapper.getBoundingClientRect();
+        const maxHeight = Math.max(260, window.innerHeight - wr.top - 24);
+        const fitByHeight = maxHeight / (originalImage.height / originalImage.width);
+        return Math.min(containerWidth, fitByHeight);
+      }
+      // scroll: 横幅はコンテナ幅に合わせて、必要ならズームで拡大
+      return containerWidth;
+    }
+
+    function setCutPolicy(policy) {
+      cutPolicy = policy;
+      applyZoom(zoomPercent);
+    }
+
+    function applyZoom(percent) {
+      zoomPercent = Math.max(20, Math.min(300, parseInt(percent, 10) || 100));
+      zoomSlider.value = String(zoomPercent);
+      zoomValue.textContent = `${zoomPercent}%`;
+      if (!originalImage) return;
+
+      const oldWidth = previewImage.getBoundingClientRect().width || 1;
+      const oldCenterX = previewWrapper.scrollLeft + (previewWrapper.clientWidth / 2);
+      const centerRatio = oldCenterX / oldWidth;
+
+      const baseWidth = getBaseDisplayWidth();
+      const displayWidth = Math.round(baseWidth * (zoomPercent / 100));
+      previewImage.style.width = `${displayWidth}px`;
+      previewImage.style.maxWidth = 'none';
+      previewStage.style.width = `${displayWidth}px`;
+      previewStage.style.minWidth = `${displayWidth}px`;
+      syncOverlaySize();
+      renderCutLines();
+
+      // 拡大縮小で右にズレる問題の対策: ビューポート中心を維持
+      requestAnimationFrame(() => {
+        const newWidth = previewImage.getBoundingClientRect().width || displayWidth;
+        if (newWidth <= previewWrapper.clientWidth) {
+          previewWrapper.scrollLeft = 0;
+          return;
+        }
+        const target = (centerRatio * newWidth) - (previewWrapper.clientWidth / 2);
+        previewWrapper.scrollLeft = Math.max(0, Math.min(target, newWidth - previewWrapper.clientWidth));
+      });
+    }
+
+    function processCuts() {
+      if (!originalImage) return;
+      normalizeSplitPoints();
+      const points = [0, ...splitPoints, originalImage.height];
+      const baseName = (fileNameEl.textContent || 'image').replace(/\.[^/.]+$/, '');
+      results.innerHTML = '';
+      resultImages = [];
+
+      for (let i = 0; i < points.length - 1; i += 1) {
+        const y = points[i];
+        const h = points[i + 1] - y;
+        if (h < 5) continue;
+        const canvas = document.createElement('canvas');
+        canvas.width = originalImage.width;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(originalImage, 0, y, originalImage.width, h, 0, 0, originalImage.width, h);
+
+        const url = canvas.toDataURL('image/jpeg', 0.92);
+        const filename = `${baseName}_${String(i + 1).padStart(2, '0')}.jpg`;
+        resultImages.push({ url, filename });
+
+        const card = document.createElement('div');
+        card.className = 'result';
+        card.innerHTML = `<img src="${url}" alt="cut-${i + 1}"><button class="btn btn-primary" style="width:100%;">保存</button>`;
+        card.querySelector('button').addEventListener('click', () => downloadOne(url, filename));
+        results.appendChild(card);
+      }
+
+      btnDownloadAll.style.display = resultImages.length ? 'block' : 'none';
+    }
+
+    function downloadOne(url, filename) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+    }
+
+    async function downloadAll() {
+      for (const item of resultImages) {
+        downloadOne(item.url, item.filename);
+        await new Promise((r) => setTimeout(r, 180));
+      }
+    }
+
+    function resetLines() {
+      if (!originalImage) return;
+      defaultSplitPoints();
+      selectedLineIndex = -1;
+      renderCutLines();
+      updateManualList();
+    }
+
+    function setupDnD() {
+      ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((ev) => {
+        window.addEventListener(ev, (e) => {
+          // 常に既定動作を止めて、ブラウザのタブ遷移を防ぐ
+          e.preventDefault();
+          e.stopPropagation();
+        }, { passive: false });
+      });
+      window.addEventListener('dragenter', (e) => {
+        if (!hasFiles(e)) return;
+        windowDragCounter += 1;
+        globalDropOverlay.classList.add('show');
+      }, { passive: false });
+      window.addEventListener('dragover', (e) => {
+        if (!hasFiles(e)) return;
+        globalDropOverlay.classList.add('show');
+      }, { passive: false });
+      window.addEventListener('dragleave', () => {
+        windowDragCounter = Math.max(0, windowDragCounter - 1);
+        if (windowDragCounter === 0) clearDropUi();
+      }, { passive: false });
+      window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        clearDropUi();
+        const file = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (file) loadImage(file);
+      }, { passive: false });
+      window.addEventListener('dragend', clearDropUi, { passive: false });
+      window.addEventListener('blur', clearDropUi);
+    }
+
+    function hasFiles(e) {
+      try {
+        return e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function bindEvents() {
+      dropZone.addEventListener('click', openFilePicker);
+      dropZone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openFilePicker();
+        }
+      });
+      dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+      });
+      dropZone.addEventListener('dragleave', (e) => {
+        if (!dropZone.contains(e.relatedTarget)) dropZone.classList.remove('dragover');
+      });
+      dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove('dragover');
+        const file = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (file) loadImage(file);
+      });
+      fileInput.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) loadImage(file);
+        fileInput.value = '';
+      });
+      if (btnChangeFile) {
+        btnChangeFile.addEventListener('click', openFilePicker);
+      }
+
+      previewImage.addEventListener('load', () => {
+        syncOverlaySize();
+        renderCutLines();
+      });
+
+      previewWrapper.addEventListener('dblclick', (e) => {
+        // ダブルクリック追加を一箇所に統一
+        if (!originalImage) return;
+        if (e.target.closest('.cut-line')) return;
+        addCutLineAtClientY(e.clientY);
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isDraggingLine || draggingIndex < 0 || !originalImage) return;
+        e.preventDefault();
+        dragLastClientY = e.clientY;
+
+        // 端に来たら「内側プレビュー」だけ自動スクロール
+        const wr = previewWrapper.getBoundingClientRect();
+        const edge = 50;
+        const yInWrapper = e.clientY - wr.top;
+        const canInnerScroll = previewWrapper.scrollHeight > previewWrapper.clientHeight + 1;
+        if (!canInnerScroll) {
+          stopInnerDragScroll();
+        } else if (yInWrapper < edge) {
+          // 上側はラッパー外(負値)でも上スクロールさせる
+          startInnerDragScroll(-1);
+        } else if (yInWrapper > wr.height - edge) {
+          // 下側もラッパー外まで許容
+          startInnerDragScroll(1);
+        } else {
+          stopInnerDragScroll();
+        }
+
+        updateDraggingLineByClientY(dragLastClientY);
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (!isDraggingLine) return;
+        isDraggingLine = false;
+        draggingIndex = -1;
+        stopInnerDragScroll();
+        renderCutLines();
+        updateManualList();
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLineIndex !== -1) {
+          e.preventDefault();
+          splitPoints.splice(selectedLineIndex, 1);
+          selectedLineIndex = -1;
+          normalizeSplitPoints();
+          renderCutLines();
+          updateManualList();
+        }
+      });
+
+      zoomSlider.addEventListener('input', () => applyZoom(zoomSlider.value));
+      document.querySelectorAll('input[name="cutPolicy"]').forEach((r) => {
+        r.addEventListener('change', () => setCutPolicy(r.value));
+      });
+      btnProcess.addEventListener('click', processCuts);
+      btnDownloadAll.addEventListener('click', downloadAll);
+      btnReset.addEventListener('click', resetLines);
+      window.addEventListener('resize', () => {
+        applyZoom(zoomPercent);
+        syncOverlaySize();
+      });
+    }
+
+    setupDnD();
+    bindEvents();
+  </script>
+</body>
+</html>
