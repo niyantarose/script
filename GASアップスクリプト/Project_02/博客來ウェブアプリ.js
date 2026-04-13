@@ -35,6 +35,7 @@ const JAPANESE_TITLE_NOT_FOUND_LABEL = '登録なし';
 const JAPANESE_TITLE_LOOKUP_FAILED_LABEL = '照会失敗';
 const JAPANESE_TITLE_NOT_LOOKED_UP_LABEL = '未照会';
 const JAPANESE_TITLE_NOT_FOUND_ALL_SOURCES_LABEL = '登録なし(全サイト)';
+const FAST_DUPLICATE_CHECK_ITEM_LIMIT = 3;
 
 let _masterSpreadsheetCache = null;
 let _japaneseTitleDictionaryCache = null;
@@ -1524,14 +1525,22 @@ function appendItems_(ss, items) {
     const entries = groupedBySheet[sheetName];
     const context = buildSheetContext_(ss, sheetName, entries[0].item);
     const duplicateKeyColumns = findDuplicateKeyColumns_(context.normalizedHeaderMap, entries[0].item);
-    const knownDuplicateKeys = collectExistingDuplicateKeys_(context.sheet, duplicateKeyColumns);
+    const useFastDuplicateCheck = entries.length <= FAST_DUPLICATE_CHECK_ITEM_LIMIT;
+    const knownDuplicateKeys = useFastDuplicateCheck
+      ? null
+      : collectExistingDuplicateKeys_(context.sheet, duplicateKeyColumns);
+    const pendingDuplicateKeys = new Set();
     const appendEntries = [];
     const rows = [];
 
     entries.forEach(entry => {
       const convertedItem = convertJapaneseTitle_(entry.item);
       const duplicateKeys = buildDuplicateKeysForRowData_(extractRowData_(convertedItem), duplicateKeyColumns);
-      const duplicateHit = duplicateKeys.find(key => knownDuplicateKeys.has(key));
+      const duplicateHit = duplicateKeys.find(key => {
+        if (pendingDuplicateKeys.has(key)) return true;
+        if (knownDuplicateKeys) return knownDuplicateKeys.has(key);
+        return hasExistingDuplicateKey_(context.sheet, duplicateKeyColumns, key);
+      });
       if (duplicateHit) {
         results[entry.index] = {
           ok: true,
@@ -1545,7 +1554,10 @@ function appendItems_(ss, items) {
         return;
       }
 
-      duplicateKeys.forEach(key => knownDuplicateKeys.add(key));
+      duplicateKeys.forEach(key => pendingDuplicateKeys.add(key));
+      if (knownDuplicateKeys) {
+        duplicateKeys.forEach(key => knownDuplicateKeys.add(key));
+      }
       appendEntries.push(Object.assign({}, entry, { item: convertedItem }));
       rows.push(buildRow_(context, convertedItem));
     });
@@ -1705,6 +1717,33 @@ function collectExistingDuplicateKeys_(sheet, duplicateKeyColumns) {
   });
 
   return seen;
+}
+
+function hasExistingDuplicateKey_(sheet, duplicateKeyColumns, duplicateKey) {
+  if (!duplicateKey) return false;
+
+  const separatorIndex = String(duplicateKey).indexOf(':');
+  if (separatorIndex <= 0) return false;
+
+  const type = duplicateKey.slice(0, separatorIndex);
+  const value = duplicateKey.slice(separatorIndex + 1);
+  if (!value) return false;
+
+  const targetColumn = duplicateKeyColumns.find(function(column) {
+    return column && column.type === type;
+  });
+  if (!targetColumn) return false;
+
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  if (lastRow <= 1) return false;
+
+  const finder = sheet
+    .getRange(2, targetColumn.index + 1, lastRow - 1, 1)
+    .createTextFinder(value)
+    .matchCase(false)
+    .matchEntireCell(true);
+
+  return !!finder.findNext();
 }
 
 function extractRowData_(item) {
@@ -2698,4 +2737,3 @@ function testTaiwanGasRuntime_() {
   Logger.log(JSON.stringify(result, null, 2));
   return result;
 }
-

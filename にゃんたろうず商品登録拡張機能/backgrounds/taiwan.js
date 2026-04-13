@@ -44,6 +44,7 @@ function buildGasSyncStatus(status) {
   return {
     state: '',
     jobId: '',
+    requestKey: '',
     itemCount: 0,
     queueLength: 0,
     message: '',
@@ -258,12 +259,32 @@ async function postProductsToGas(url, items) {
   return data;
 }
 
+function createGasSyncRequestKey(url, items) {
+  return JSON.stringify({
+    url: String(url || '').trim(),
+    items: Array.isArray(items)
+      ? items.map(item => ({
+          sheetName: String(item?.sheetName || '').trim(),
+          productCode: String(item?.productCode || '').trim(),
+          itemType: String(item?.itemType || '').trim(),
+          headers: Array.isArray(item?.headers) ? item.headers : [],
+          rowData: item?.rowData ?? null,
+        }))
+      : [],
+  });
+}
+
+function getGasSyncJobRequestKey(job) {
+  return String(job?.requestKey || createGasSyncRequestKey(job?.url, job?.items));
+}
+
 function createGasSyncJob(request) {
   return {
     jobId: `gas_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     url: String(request.url || '').trim(),
     items: Array.isArray(request.items) ? request.items : [],
     requestedAt: new Date().toISOString(),
+    requestKey: createGasSyncRequestKey(request.url, request.items),
   };
 }
 
@@ -272,13 +293,27 @@ async function queueGasSyncJob(request) {
   if (!job.url) throw new Error('GAS URL が未設定です');
   if (!job.items.length) throw new Error('送信対象の商品がありません');
 
-  const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY]);
+  const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY, GAS_SYNC_STATUS_KEY]);
   const queue = Array.isArray(stored[GAS_SYNC_QUEUE_KEY]) ? stored[GAS_SYNC_QUEUE_KEY] : [];
+  const duplicateJob = queue.find(entry => getGasSyncJobRequestKey(entry) === job.requestKey);
+  if (duplicateJob) {
+    return buildGasSyncStatus({
+      ...(stored[GAS_SYNC_STATUS_KEY] || {}),
+      state: stored[GAS_SYNC_STATUS_KEY]?.state || 'queued',
+      jobId: duplicateJob.jobId,
+      requestKey: job.requestKey,
+      itemCount: duplicateJob.items.length,
+      queueLength: queue.length,
+      requestedAt: duplicateJob.requestedAt,
+      message: `⏳ 同じ ${duplicateJob.items.length}件のシート書き込みは送信中です`,
+    });
+  }
   queue.push(job);
 
   const status = buildGasSyncStatus({
     state: 'queued',
     jobId: job.jobId,
+    requestKey: job.requestKey,
     itemCount: job.items.length,
     queueLength: queue.length,
     requestedAt: job.requestedAt,
@@ -317,6 +352,7 @@ async function processGasSyncQueue() {
         [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
           state: 'running',
           jobId: job.jobId,
+          requestKey: getGasSyncJobRequestKey(job),
           itemCount: job.items.length,
           queueLength: queue.length,
           requestedAt: job.requestedAt,
@@ -352,6 +388,7 @@ async function processGasSyncQueue() {
           [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
             state: 'success',
             jobId: job.jobId,
+            requestKey: getGasSyncJobRequestKey(job),
             itemCount: job.items.length,
             queueLength: nextQueue.length,
             requestedAt: job.requestedAt,
@@ -373,6 +410,7 @@ async function processGasSyncQueue() {
           [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
             state: 'error',
             jobId: job.jobId,
+            requestKey: getGasSyncJobRequestKey(job),
             itemCount: job.items.length,
             queueLength: nextQueue.length,
             requestedAt: job.requestedAt,

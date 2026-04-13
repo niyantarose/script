@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% set active_page = "orders" %}
+
+{% block content %}
+<div class="topbar">
+  <span class="page-title">受注リスト</span>
+  <div class="topbar-actions">
+    <button class="btn-success" onclick="allocateOrders()">引当実行</button>
+    <a href="{{ url_for('orders.export_csv') }}" class="btn">CSV出力</a>
+  </div>
+</div>
+
+<div class="toolbar">
+  <input type="checkbox" id="chk-all-o" onchange="toggleAll('o', this.checked)">
+  <label for="chk-all-o">全選択</label>
+  <button onclick="clearAll('o')">全解除</button>
+  <span class="sel-count" id="sel-count-o">0件選択中</span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:36px;"></th>
+        <th>注文番号</th>
+        <th>商品コード</th>
+        <th>商品名</th>
+        <th>数量</th>
+        <th>配送ステータス</th>
+        <th>引当状況</th>
+        <th>経過日数</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in order_data %}
+      <tr class="{{ 'delay-red' if d.order.days_elapsed >= 10 else ('delay-yellow' if d.order.days_elapsed >= 7 else '') }}">
+        <td><input type="checkbox" class="row-chk-o" data-id="{{ d.item.id }}" onchange="updateCount('o')"></td>
+        <td {% if d.order.days_elapsed >= 10 %}style="color:var(--accent-red);font-weight:500;"{% endif %}>{{ d.order.yahoo_order_id }}</td>
+        <td>{{ d.item.product_code }}</td>
+        <td>{{ d.item.product_name or '' }}</td>
+        <td>{{ d.item.quantity }}</td>
+        <td>
+          {% if d.item.inventory_type == '即納' %}
+            即納（日本在庫）
+          {% else %}
+            お取り寄せ（韓国）
+          {% endif %}
+        </td>
+        <td>
+          {% if d.item.status == 'fully_allocated' %}
+            <span class="badge badge-done">引当完了</span>
+          {% elif d.item.status == 'allocated_sokunou' %}
+            <span class="badge badge-sokunou">即納引当済</span>
+          {% elif d.item.status == 'provisional_allocated' %}
+            <span class="badge badge-tori">仮引当済</span>
+          {% elif d.item.status == 'partial_waiting' %}
+            <span class="badge badge-tori">EMS待ち</span>
+          {% elif d.item.status == 'shortage' %}
+            <span class="badge badge-alert">在庫不足</span>
+          {% elif d.item.status == 'shipped' %}
+            <span class="badge badge-done">発送完了</span>
+          {% else %}
+            <span class="badge badge-alert">{{ d.item.status_label }}</span>
+          {% endif %}
+        </td>
+        <td>{{ d.order.days_elapsed }}日</td>
+      </tr>
+      {% endfor %}
+      {% if not order_data %}
+      <tr><td colspan="8" class="empty-state">受注データがありません</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function allocateOrders() {
+  const ids = getCheckedIds('o');
+  if (ids.length === 0) { alert('引当する受注を選択してください'); return; }
+  fetch('/orders/allocate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({item_ids: ids})
+  })
+  .then(r => r.json())
+  .then(data => {
+    alert('引当実行完了: ' + data.results.length + '件処理しました');
+    location.reload();
+  });
+}
+</script>
+{% endblock %}

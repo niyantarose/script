@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% set active_page = "japan" %}
+
+{% block content %}
+<div class="topbar">
+  <span class="page-title">日本在庫管理</span>
+  <div class="topbar-actions">
+    <button class="btn-primary" onclick="reflectToYahoo()">在庫反映</button>
+    <a href="{{ url_for('japan_inventory.export_csv') }}" class="btn">CSV出力</a>
+  </div>
+</div>
+
+<div class="toolbar">
+  <input type="checkbox" id="chk-all-j" onchange="toggleAll('j', this.checked)">
+  <label for="chk-all-j">全選択</label>
+  <button onclick="clearAll('j')">全解除</button>
+  <span class="sel-count" id="sel-count-j">0件選択中</span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:36px;"></th>
+        <th>EMS番号</th>
+        <th>入荷日</th>
+        <th>商品コード</th>
+        <th>数量</th>
+        <th>仕分けステータス</th>
+        <th>引当先受注番号</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in staging_data %}
+      <tr id="staging-row-{{ d.staging.id }}">
+        <td><input type="checkbox" class="row-chk-j" data-id="{{ d.staging.id }}" onchange="updateCount('j')"></td>
+        <td>{{ d.ems.ems_number }}</td>
+        <td>{{ d.ems.arrived_at.strftime('%Y/%m/%d') if d.ems.arrived_at else '' }}</td>
+        <td>{{ d.staging.product_code }}</td>
+        <td>{{ d.staging.quantity }}</td>
+        <td>
+          {% if d.staging.status == 'waiting' %}
+            <span class="badge badge-tori">仕分け待ち</span>
+          {% elif d.staging.status == 'assigned_to_order' %}
+            <span class="badge badge-ems">受注割当済</span>
+          {% elif d.staging.status == 'to_japan_stock' %}
+            <span class="badge badge-sokunou">日本在庫へ</span>
+          {% elif d.staging.status == 'excluded' %}
+            <span class="badge badge-done">除外</span>
+          {% elif d.staging.status == 'reflected' %}
+            <span class="badge badge-done">反映完了</span>
+          {% elif d.staging.status == 'returned_to_ems' %}
+            <span class="badge badge-alert">EMS差戻</span>
+          {% endif %}
+        </td>
+        <td>{{ d.assigned_order.yahoo_order_id if d.assigned_order else '' }}</td>
+        <td>
+          <div class="action-btns">
+            {% if d.staging.status == 'waiting' %}
+              <button class="btn-sm btn-info" onclick="showAssignModal({{ d.staging.id }}, '{{ d.staging.product_code }}')">受注に当てる</button>
+              <div class="divider"></div>
+              <button class="btn-sm btn-success" onclick="updateStagingStatus({{ d.staging.id }}, 'to_japan_stock')">日本在庫へ</button>
+              <div class="divider"></div>
+              <button class="btn-sm" onclick="updateStagingStatus({{ d.staging.id }}, 'excluded')">除外</button>
+            {% elif d.staging.status == 'to_japan_stock' %}
+              <button class="btn-sm btn-success btn-japan-active">&#10003; 日本在庫へ</button>
+              <div class="divider"></div>
+              <button class="btn-sm" onclick="updateStagingStatus({{ d.staging.id }}, 'waiting')">取消</button>
+            {% elif d.staging.status == 'assigned_to_order' %}
+              <button class="btn-sm btn-warning" onclick="updateStagingStatus({{ d.staging.id }}, 'returned_to_ems')">EMSに戻す</button>
+            {% elif d.staging.status == 'excluded' %}
+              <button class="btn-sm" onclick="updateStagingStatus({{ d.staging.id }}, 'waiting')">戻す</button>
+            {% elif d.staging.status == 'reflected' %}
+              <span style="color:var(--text-secondary);font-size:11px;">反映済</span>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not staging_data %}
+      <tr><td colspan="8" class="empty-state">日本在庫データがありません</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<!-- 受注割当モーダル -->
+<div class="modal-overlay" id="assign-modal">
+  <div class="modal">
+    <h3>受注に手動引当</h3>
+    <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+      商品コード: <strong id="assign-product-code"></strong>
+    </p>
+    <div style="margin-bottom:12px;">
+      <label>引当先受注明細ID:</label><br>
+      <input type="text" id="assign-order-item-id" placeholder="受注明細IDを入力" style="width:100%;margin-top:4px;">
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeAssignModal()">キャンセル</button>
+      <button class="btn-primary" onclick="executeAssign()">引当実行</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentStagingId = null;
+
+function showAssignModal(stagingId, productCode) {
+  currentStagingId = stagingId;
+  document.getElementById('assign-product-code').textContent = productCode;
+  document.getElementById('assign-order-item-id').value = '';
+  document.getElementById('assign-modal').classList.add('active');
+}
+
+function closeAssignModal() {
+  document.getElementById('assign-modal').classList.remove('active');
+  currentStagingId = null;
+}
+
+function executeAssign() {
+  const orderItemId = document.getElementById('assign-order-item-id').value;
+  if (!orderItemId) { alert('受注明細IDを入力してください'); return; }
+
+  fetch('/japan/assign_order', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({staging_id: currentStagingId, order_item_id: parseInt(orderItemId)})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) { alert(data.error); return; }
+    alert('受注 ' + data.assigned_order_id + ' に引当しました');
+    closeAssignModal();
+    location.reload();
+  });
+}
+
+function updateStagingStatus(stagingId, status) {
+  let reason = '';
+  if (status === 'excluded') {
+    reason = prompt('除外理由を入力してください（任意）:') || '';
+  }
+
+  fetch('/japan/update_status', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({staging_id: stagingId, status: status, reason: reason})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) { alert(data.error); return; }
+    location.reload();
+  });
+}
+
+function reflectToYahoo() {
+  if (!confirm('「日本在庫へ」の商品をYahoo在庫に反映しますか？')) return;
+
+  fetch('/japan/reflect', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+  })
+  .then(r => r.json())
+  .then(data => {
+    alert(data.reflected_count + '件の在庫を反映しました');
+    location.reload();
+  });
+}
+</script>
+{% endblock %}

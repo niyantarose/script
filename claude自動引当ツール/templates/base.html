@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>在庫引当ツール</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="app">
+    <div class="sidebar">
+      <div class="sidebar-logo">在庫引当ツール</div>
+      <a href="{{ url_for('dashboard.index') }}" class="nav-item {{ 'active' if active_page == 'dashboard' }}">ダッシュボード</a>
+      <a href="{{ url_for('purchases.index') }}" class="nav-item {{ 'active' if active_page == 'purchases' }}">
+        発注リスト
+        {% if purchase_missing_count is defined and purchase_missing_count > 0 %}
+          <span class="nav-badge">{{ purchase_missing_count }}</span>
+        {% endif %}
+      </a>
+      <a href="{{ url_for('orders.index') }}" class="nav-item {{ 'active' if active_page == 'orders' }}">受注リスト</a>
+      <a href="{{ url_for('ems.index') }}" class="nav-item {{ 'active' if active_page == 'ems' }}">EMSリスト</a>
+      <a href="{{ url_for('japan_inventory.index') }}" class="nav-item {{ 'active' if active_page == 'japan' }}">日本在庫管理</a>
+    </div>
+    <div class="main">
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

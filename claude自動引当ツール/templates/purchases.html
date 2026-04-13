@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% set active_page = "purchases" %}
+
+{% block content %}
+<div class="topbar">
+  <span class="page-title">発注リスト</span>
+  <div class="topbar-actions">
+    <button class="btn-success" onclick="allocatePurchases()">引当実行</button>
+    <a href="{{ url_for('purchases.export_csv') }}" class="btn">CSV出力</a>
+  </div>
+</div>
+
+<div class="toolbar">
+  <input type="checkbox" id="chk-all-p" onchange="toggleAll('p', this.checked)">
+  <label for="chk-all-p">全選択</label>
+  <button onclick="clearAll('p')">全解除</button>
+  <span class="sel-count" id="sel-count-p">0件選択中</span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:36px;"></th>
+        <th>発注NO</th>
+        <th>受注番号</th>
+        <th>商品コード</th>
+        <th>商品名</th>
+        <th>数量</th>
+        <th>発注先</th>
+        <th>発注日</th>
+        <th>ステータス</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in purchase_data %}
+      <tr>
+        <td><input type="checkbox" class="row-chk-p" data-id="{{ d.purchase.id }}" onchange="updateCount('p')"></td>
+        <td>{{ d.purchase_no }}</td>
+        <td>{{ d.order.yahoo_order_id }}</td>
+        <td>{{ d.purchase.product_code }}</td>
+        <td>{{ d.purchase.product_name or d.order_item.product_name or '' }}</td>
+        <td>{{ d.purchase.quantity }}</td>
+        <td>{{ d.purchase.shop_name or '' }}</td>
+        <td>{{ d.purchase.ordered_at.strftime('%Y/%m/%d') if d.purchase.ordered_at else '' }}</td>
+        <td>
+          {% if d.purchase.status == 'ordered' %}
+            <span class="badge badge-tori">発注済</span>
+          {% elif d.purchase.status == 'arrived' %}
+            <span class="badge badge-ems">入荷済</span>
+          {% else %}
+            <span class="badge badge-alert">未発注</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not purchase_data %}
+      <tr><td colspan="9" class="empty-state">発注データがありません</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function allocatePurchases() {
+  const ids = getCheckedIds('p');
+  if (ids.length === 0) { alert('引当する発注を選択してください'); return; }
+  fetch('/purchases/allocate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({purchase_ids: ids})
+  })
+  .then(r => r.json())
+  .then(data => {
+    alert('引当実行完了: ' + data.results.length + '件処理しました');
+    location.reload();
+  });
+}
+</script>
+{% endblock %}

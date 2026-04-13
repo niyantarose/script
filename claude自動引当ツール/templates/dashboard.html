@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% set active_page = "dashboard" %}
+
+{% block content %}
+<div class="topbar">
+  <span class="page-title">ダッシュボード</span>
+  <span class="topbar-date">{{ now }}</span>
+</div>
+
+<div style="flex:1;overflow:auto;">
+  <div class="dash-grid">
+    <div class="metric">
+      <div class="metric-label">発送可能</div>
+      <div class="metric-val success">{{ shippable }}</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">部分在庫待ち</div>
+      <div class="metric-val warning">{{ partial }}</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">遅延中</div>
+      <div class="metric-val danger">{{ delayed }}</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">発注漏れ</div>
+      <div class="metric-val danger">{{ purchase_missing }}</div>
+    </div>
+  </div>
+
+  <div class="dash-section">
+    <h3>要対応アラート</h3>
+    {% if alerts %}
+      {% for alert in alerts %}
+      <div class="alert-row">
+        <div class="alert-dot {% if alert.alert_type in ('delay_warning', 'japan_ship_missing') %}dot-red{% elif alert.alert_type in ('purchase_missing', 'korea_ship_missing') %}dot-yellow{% else %}dot-blue{% endif %}"></div>
+        <span style="font-weight:500;">{{ alert.product_code or '' }}</span>
+        <span style="color:var(--text-secondary);">— {{ alert.message }}</span>
+        <span class="badge {% if alert.alert_type == 'delay_warning' %}badge-alert{% elif alert.alert_type == 'purchase_missing' %}badge-tori{% else %}badge-ems{% endif %}" style="margin-left:auto;">{{ alert.alert_type_label }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="alert-row" style="color:var(--text-secondary);">
+        現在、未解決のアラートはありません。
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

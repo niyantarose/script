@@ -1,107 +1,97 @@
 {% extends "base.html" %}
-{% block title %}受注・発送状況 | 自動引当ツール{% endblock %}
-{% block page_title %}受注・発送状況{% endblock %}
+{% block title %}受注リスト | 自動引当ツール{% endblock %}
+{% block page_title %}受注リスト{% endblock %}
 {% block content %}
-<section class="panel panel-wide">
-  <div class="panel-header">
-    <div>
-      <h3>受注一覧</h3>
-      <p>カード表示をやめて、受注明細を横並びの業務表として見られる形にしています。受注単位のメモ更新は右端でまとめて操作できます。</p>
+<section class="panel">
+  <div class="toolbar-row">
+    <div class="section-title">Yahoo受注一覧</div>
+    <div class="toolbar-actions">
+      <form method="post" action="{{ url_for('main.recalculate_route') }}">
+        <button type="submit" class="success-btn">引当実行</button>
+      </form>
+      <a class="button-link" href="{{ url_for('main.export', kind='orders') }}">CSV出力</a>
     </div>
-    <a class="button ghost" href="{{ url_for('main.export', kind='orders') }}">CSV出力</a>
   </div>
 
-  {% if orders %}
-    <div class="table-wrap sheet-wrap">
-      <table class="sheet-table orders-sheet">
-        <thead>
-          <tr>
-            <th>注文日時</th>
-            <th>受注番号</th>
-            <th>顧客名</th>
-            <th>希望日</th>
-            <th>受注状態</th>
-            <th>遅延</th>
-            <th>希望日判定</th>
-            <th>商品コード</th>
-            <th>オプション</th>
-            <th>注文数</th>
-            <th>引当数</th>
-            <th>在庫種別</th>
-            <th>商品状態</th>
-            <th>発注数</th>
-            <th>EMS数</th>
-            <th>発送</th>
-            <th>受注メモ・フラグ</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for order in orders %}
-            {% set row_count = order.items|length %}
-            {% set judgement, note = delivery_judgement(order) %}
-            {% for item in order.items %}
-              <tr class="delay-{{ delay_level_for_order(order) }}">
-                {% if loop.first %}
-                  <td rowspan="{{ row_count }}">{{ order.ordered_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                  <td rowspan="{{ row_count }}" class="strong-cell">{{ order.yahoo_order_id }}</td>
-                  <td rowspan="{{ row_count }}">{{ order.customer_name or '顧客名未設定' }}</td>
-                  <td rowspan="{{ row_count }}">{{ order.desired_delivery_date or '未指定' }}</td>
-                  <td rowspan="{{ row_count }}"><span class="badge neutral">{{ order_status_labels[order.status] }}</span></td>
-                  <td rowspan="{{ row_count }}"><span class="badge {{ delay_level_for_order(order) }}">{{ delay_level_labels[delay_level_for_order(order)] }}</span></td>
-                  <td rowspan="{{ row_count }}">
-                    <div class="cell-stack">
-                      <strong>{{ judgement }}</strong>
-                      <span>{{ note }}</span>
-                    </div>
-                  </td>
+  <div class="select-toolbar">
+    <label><input type="checkbox" id="chk-all-orders" onchange="toggleAllRows('orders', this.checked)"> 全選択</label>
+    <button type="button" onclick="clearAllRows('orders')">全解除</button>
+    <span class="sel-count" id="sel-count-orders">0件選択中</span>
+  </div>
+
+  <div class="table-wrap">
+    <table class="simple-table grouped-table">
+      <thead>
+        <tr>
+          <th style="width:32px;"></th>
+          <th>注文日時</th>
+          <th>受注番号</th>
+          <th>顧客名</th>
+          <th>希望日</th>
+          <th>受注状態</th>
+          <th>遅延</th>
+          <th>商品コード</th>
+          <th>オプション</th>
+          <th>数量</th>
+          <th>引当数</th>
+          <th>在庫種別</th>
+          <th>引当状況</th>
+          <th>発送</th>
+          <th>メモ更新</th>
+        </tr>
+      </thead>
+      {% for order in orders %}
+        {% set row_count = order.items|length %}
+        <tbody class="order-group">
+          {% for item in order.items %}
+            <tr class="{% if loop.first %}group-start{% endif %} {% if loop.last %}group-end{% endif %}">
+              <td>
+                <input type="checkbox" class="row-chk-orders" onchange="updateCheckedRows('orders')">
+              </td>
+              {% if loop.first %}
+                <td rowspan="{{ row_count }}" class="group-meta">{{ order.ordered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td rowspan="{{ row_count }}" class="group-meta {% if delay_level_for_order(order) == 'danger' %}text-danger strong-text{% else %}strong-text{% endif %}">{{ order.yahoo_order_id }}</td>
+                <td rowspan="{{ row_count }}" class="group-meta">{{ order.customer_name or '未設定' }}</td>
+                <td rowspan="{{ row_count }}" class="group-meta">{{ order.desired_delivery_date or '未指定' }}</td>
+                <td rowspan="{{ row_count }}" class="group-meta">{{ order_status_labels[order.status] }}</td>
+                <td rowspan="{{ row_count }}" class="group-meta {% if delay_level_for_order(order) == 'danger' %}text-danger{% endif %}">{{ delay_level_labels[delay_level_for_order(order)] }}</td>
+              {% endif %}
+              <td>{{ item.product_code }}</td>
+              <td>{{ item.product_sub_code or '-' }}</td>
+              <td>{{ item.quantity }}</td>
+              <td>{{ item.allocated_qty }}</td>
+              <td>{{ item.inventory_type }}</td>
+              <td>{{ order_item_status_labels[item.status] }}</td>
+              <td>
+                {% if item.status in ['allocated_sokunou', 'fully_allocated'] and not item.shipped_flag %}
+                  <form method="post" action="{{ url_for('main.ship_item', order_item_id=item.id) }}">
+                    <button type="submit">発送完了</button>
+                  </form>
+                {% else %}
+                  {{ '完了' if item.shipped_flag else '待機' }}
                 {% endif %}
-                <td>{{ item.product_code }}</td>
-                <td>{{ item.product_sub_code or '-' }}</td>
-                <td>{{ item.quantity }}</td>
-                <td>{{ item.allocated_qty }}</td>
-                <td>{{ item.inventory_type }}</td>
-                <td><span class="badge neutral">{{ order_item_status_labels[item.status] }}</span></td>
-                <td>{{ item.purchases | sum(attribute='quantity') }}</td>
-                <td>{{ item.ems_items | sum(attribute='quantity') }}</td>
-                <td>
-                  {% if item.status in ['allocated_sokunou', 'fully_allocated'] and not item.shipped_flag %}
-                    <form method="post" action="{{ url_for('main.ship_item', order_item_id=item.id) }}">
-                      <button class="button tiny" type="submit">発送完了</button>
-                    </form>
-                  {% else %}
-                    <span class="sheet-text">{{ '完了' if item.shipped_flag else '待機' }}</span>
-                  {% endif %}
-                </td>
+              </td>
+              <td>
                 {% if loop.first %}
-                  <td rowspan="{{ row_count }}" class="edit-cell">
-                    <form class="sheet-row-form" method="post" action="{{ url_for('main.update_order', order_id=order.id) }}">
-                      <label>
-                        <span>遅延理由メモ</span>
-                        <textarea name="delay_memo" rows="3">{{ order.delay_memo or '' }}</textarea>
-                      </label>
-                      <label class="checkbox compact-check">
-                        <input type="checkbox" name="priority_ship_flag" {% if order.priority_ship_flag %}checked{% endif %}>
-                        <span>先送り待機</span>
-                      </label>
-                      <label class="checkbox compact-check">
-                        <input type="checkbox" name="customer_contacted_flag" {% if order.customer_contacted_flag %}checked{% endif %}>
-                        <span>お客様連絡済み</span>
-                      </label>
-                      <button class="button tiny accent" type="submit">更新</button>
-                    </form>
-                  </td>
+                  <form class="mini-form group-meta" method="post" action="{{ url_for('main.update_order', order_id=order.id) }}">
+                    <textarea name="delay_memo" rows="2" placeholder="遅延理由">{{ order.delay_memo or '' }}</textarea>
+                    <label><input type="checkbox" name="priority_ship_flag" {% if order.priority_ship_flag %}checked{% endif %}> 先送り</label>
+                    <label><input type="checkbox" name="customer_contacted_flag" {% if order.customer_contacted_flag %}checked{% endif %}> 連絡済み</label>
+                    <button type="submit">更新</button>
+                  </form>
                 {% endif %}
-              </tr>
-            {% endfor %}
+              </td>
+            </tr>
           {% endfor %}
         </tbody>
-      </table>
-    </div>
-  {% else %}
-    <div class="empty-state">
-      <h3>受注データがありません</h3>
-      <p>ダッシュボードからデモデータを投入してください。</p>
-    </div>
-  {% endif %}
+      {% else %}
+        <tbody>
+          <tr>
+            <td colspan="15" class="empty-line">受注データがありません。</td>
+          </tr>
+        </tbody>
+      {% endfor %}
+    </table>
+  </div>
 </section>
 {% endblock %}

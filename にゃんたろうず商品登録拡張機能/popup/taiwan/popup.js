@@ -1,9 +1,12 @@
 // popup.js - 台湾 books.com.tw 拡張 UI / 送信制御
 
 const DEFAULT_STATUS_MESSAGE = 'books.com.tw の商品ページで「追加」を押してください';
-const GAS_SYNC_SUCCESS_MESSAGE_TTL_MS = 5000;
+const GAS_SYNC_SUCCESS_MESSAGE_TTL_MS = 300;
 const GAS_SYNC_ERROR_MESSAGE_TTL_MS = 8000;
+const DEFAULT_SEND_BUTTON_LABEL = 'シートに書込';
+const BUSY_SEND_BUTTON_LABEL = '書き込み中...';
 let gasSyncSuccessClearTimer = null;
+let sendToSheetRequestInFlight = false;
 
 async function ensurePopupSharedReady() {
   const requiredNames = ['storageGet', 'storageSet', 'refreshGasSyncStatus', 'setStatus'];
@@ -101,6 +104,7 @@ async function initPopup() {
 function updateUI() {
   const hasProducts = products.length > 0;
   const gasBusy = isGasSyncBusyStatus(gasSyncStatus);
+  const sendBusy = gasBusy || sendToSheetRequestInFlight;
   document.getElementById('item-count').textContent = `${products.length} 件`;
   document.getElementById('btn-download').disabled = !hasProducts;
   document.getElementById('btn-clear').disabled = !hasProducts;
@@ -112,7 +116,8 @@ function updateUI() {
 
   const sendButton = document.getElementById('btn-send-sheet');
   if (sendButton) {
-    sendButton.disabled = !hasProducts || !isValidGasUrl(gasWebAppUrl) || gasBusy;
+    sendButton.disabled = !hasProducts || !isValidGasUrl(gasWebAppUrl) || sendBusy;
+    sendButton.textContent = sendBusy ? BUSY_SEND_BUTTON_LABEL : DEFAULT_SEND_BUTTON_LABEL;
   }
 }
 
@@ -465,31 +470,39 @@ async function handleResetGas() {
 
 async function handleSendToSheet() {
   if (products.length === 0) return;
+  if (sendToSheetRequestInFlight || isGasSyncBusyStatus(gasSyncStatus)) return;
   if (!isValidGasUrl(gasWebAppUrl)) {
     throw new Error('先にGAS Webアプリ URL を保存してください');
   }
 
-  setStatus('シート送信用データを準備中...', '');
-  const preparedProducts = await prepareProductsForSheetSend(products);
-  products = preparedProducts;
-  save();
-  renderList();
+  sendToSheetRequestInFlight = true;
   updateUI();
+  try {
+    setStatus('シート送信用データを準備中...', '');
+    const preparedProducts = await prepareProductsForSheetSend(products);
+    products = preparedProducts;
+    save();
+    renderList();
+    updateUI();
 
-  setStatus('バックグラウンド送信を登録中...', '');
-  const response = await sendRuntimeMessage({
-    action: 'queueGasPost',
-    url: gasWebAppUrl,
-    items: buildGasPayload(preparedProducts).items,
-  });
+    setStatus('バックグラウンド送信を登録中...', '');
+    const response = await sendRuntimeMessage({
+      action: 'queueGasPost',
+      url: gasWebAppUrl,
+      items: buildGasPayload(preparedProducts).items,
+    });
 
-  if (!response?.ok) {
-    throw new Error(response?.error || 'バックグラウンド送信の登録に失敗しました');
+    if (!response?.ok) {
+      throw new Error(response?.error || 'バックグラウンド送信の登録に失敗しました');
+    }
+
+    clearGasSyncSuccessAutoClearTimer();
+    syncGasStatusUi(gasSyncStatus, response.status || null);
+    setStatus(gasSyncStatusMessage(gasSyncStatus) || `⏳ ${products.length}件の送信を開始しました`, gasSyncStatusType(gasSyncStatus));
+  } finally {
+    sendToSheetRequestInFlight = false;
+    updateUI();
   }
-
-  clearGasSyncSuccessAutoClearTimer();
-  syncGasStatusUi(gasSyncStatus, response.status || null);
-  setStatus(gasSyncStatusMessage(gasSyncStatus) || `⏳ ${products.length}件の送信を開始しました`, gasSyncStatusType(gasSyncStatus));
 }
 
 document.getElementById('btn-save-gas-url').addEventListener('click', async () => {

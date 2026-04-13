@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% set active_page = "ems" %}
+
+{% block content %}
+<div class="topbar">
+  <span class="page-title">EMSリスト</span>
+  <div class="topbar-actions">
+    <a href="{{ url_for('ems.export_csv') }}" class="btn">CSV出力</a>
+  </div>
+</div>
+
+<div class="toolbar">
+  <input type="checkbox" id="chk-all-e" onchange="toggleAll('e', this.checked)">
+  <label for="chk-all-e">全選択</label>
+  <button onclick="clearAll('e')">全解除</button>
+  <span class="sel-count" id="sel-count-e">0件選択中</span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:36px;"></th>
+        <th>EMS番号</th>
+        <th>発送日</th>
+        <th>到着予定日</th>
+        <th>入荷日</th>
+        <th>商品コード</th>
+        <th>数量</th>
+        <th>引当先受注番号</th>
+        <th>ステータス</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in ems_data %}
+      <tr>
+        <td><input type="checkbox" class="row-chk-e" data-id="{{ d.ems_item.id }}" onchange="updateCount('e')"></td>
+        <td>{{ d.ems.ems_number }}</td>
+        <td>{{ d.ems.shipped_at.strftime('%Y/%m/%d') if d.ems.shipped_at else '' }}</td>
+        <td>{{ d.ems.estimated_arrival.strftime('%Y/%m/%d') if d.ems.estimated_arrival else '' }}</td>
+        <td>{{ d.ems.arrived_at.strftime('%Y/%m/%d') if d.ems.arrived_at else '' }}</td>
+        <td>{{ d.ems_item.product_code }}</td>
+        <td>{{ d.ems_item.quantity }}</td>
+        <td>{{ d.order.yahoo_order_id }}</td>
+        <td>
+          {% if d.ems.status == 'arrived' %}
+            <span class="badge badge-ems">入荷済</span>
+          {% else %}
+            <span class="badge badge-tori">輸送中</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not ems_data %}
+      <tr><td colspan="9" class="empty-state">EMSデータがありません</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
