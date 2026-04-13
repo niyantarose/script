@@ -4,7 +4,7 @@ const GAS_SYNC_QUEUE_KEY = 'booksGasSyncQueueV1';
 const GAS_SYNC_STATUS_KEY = 'booksGasSyncStatusV1';
 const GAS_SYNC_RESET_TOKEN_KEY = 'booksGasSyncResetTokenV1';
 const GAS_SYNC_ALARM_NAME = 'booksGasSyncQueueAlarmV1';
-const GAS_SYNC_TIMEOUT_MS = 60000;
+const GAS_SYNC_TIMEOUT_MS = 180000;
 const GAS_SYNC_ALARM_PERIOD_MINUTES = 1;
 const IMAGE_FILENAME_EXT = 'jpg';
 const TAIWAN_IMAGE_MAX_EDGE = 1000;
@@ -54,6 +54,24 @@ function buildGasSyncStatus(status) {
     finishedAt: '',
     ...status,
   };
+}
+
+function isGasWebAppExecUrl(url) {
+  try {
+    const parsed = new URL(String(url || '').trim());
+    return parsed.protocol === 'https:'
+      && parsed.hostname === 'script.google.com'
+      && /^\/macros\/s\/[^/]+\/exec\/?$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function buildGasHttpErrorMessage(status) {
+  if (status === 401) {
+    return 'GAS が HTTP 401 を返しました。Webアプリの /exec URL と、デプロイのアクセス権（全員）を確認してください';
+  }
+  return `HTTP ${status}`;
 }
 
 function parseIsoTimeMs(value) {
@@ -114,6 +132,19 @@ async function resumeGasSyncQueueIfNeeded(delayMs = 50) {
   return true;
 }
 
+function showGasNotification(id, title, message) {
+  try {
+    chrome.notifications.create(id, {
+      type: 'basic',
+      iconUrl: 'icon48.png',
+      title,
+      message,
+    });
+  } catch {
+    // notifications API unavailable
+  }
+}
+
 async function getGasSyncStatusWithRecovery() {
   const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY, GAS_SYNC_STATUS_KEY]);
   const queue = Array.isArray(stored[GAS_SYNC_QUEUE_KEY]) ? stored[GAS_SYNC_QUEUE_KEY] : [];
@@ -122,7 +153,8 @@ async function getGasSyncStatusWithRecovery() {
   if (!queue.length) {
     clearGasSyncAlarm();
     if (status?.state === 'queued' || status?.state === 'running') {
-      storageSetLocal({ [GAS_SYNC_STATUS_KEY]: null }).catch(() => {});
+      // awaitすることで storage.onChanged が確実に発火し、ポップアップ側が更新される
+      await storageSetLocal({ [GAS_SYNC_STATUS_KEY]: null }).catch(() => {});
       return null;
     }
     return status;
@@ -151,23 +183,35 @@ async function postGasJson(url, bodyText) {
   const timeoutId = setTimeout(() => controller.abort(), GAS_SYNC_TIMEOUT_MS);
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: bodyText,
-      credentials: 'omit',
-      redirect: 'follow',
-      signal: controller.signal,
-    });
+    // GASは script.google.com → script.googleusercontent.com へ302リダイレクトする。
+    // redirect:'follow' だと POST→GET に変換されて 401 になるため、手動でリダイレクトを追う。
+    let currentUrl = url;
+    let response = null;
+    const MAX_REDIRECTS = 5;
+    for (let i = 0; i <= MAX_REDIRECTS; i++) {
+      response = await fetch(currentUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: bodyText,
+        credentials: 'omit',
+        redirect: 'manual',
+        signal: controller.signal,
+      });
+      if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+        const location = response.headers.get('location');
+        if (location) { currentUrl = location; continue; }
+      }
+      break;
+    }
 
     return {
       status: response.status,
       responseText: await response.text(),
-      responseUrl: response.url || url,
+      responseUrl: response.url || currentUrl,
     };
   } catch (error) {
     if (error && error.name === 'AbortError') {
-      throw new Error('GAS request timed out');
+      throw new Error('GAS request timed out（GAS側の処理に時間がかかりすぎています。再度お試しください）');
     }
     throw error;
   } finally {
@@ -176,6 +220,10 @@ async function postGasJson(url, bodyText) {
 }
 
 async function postProductsToGas(url, items) {
+  if (!isGasWebAppExecUrl(url)) {
+    throw new Error('GAS Webアプリの /exec URL を設定してください（/macros/library/... ではなく /macros/s/.../exec）');
+  }
+
   const response = await postGasJson(url, JSON.stringify({
     source: 'books.com.tw-extension',
     appendMode: 'append',
@@ -192,7 +240,7 @@ async function postProductsToGas(url, items) {
   }
 
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(data?.error || `HTTP ${response.status}`);
+    throw new Error(data?.error || buildGasHttpErrorMessage(response.status));
   }
 
   if (!data || typeof data !== 'object') {
@@ -314,10 +362,12 @@ async function processGasSyncQueue() {
             message,
           }),
         });
+        showGasNotification('gas_sync_success', 'GASシート書き込み完了', message);
       } catch (error) {
         const latestResetToken = await getStoredGasSyncResetToken();
         gasSyncResetToken = latestResetToken;
         if (runToken !== latestResetToken) continue;
+        const errorMessage = error?.message || 'GAS write failed';
         await storageSetLocal({
           [GAS_SYNC_QUEUE_KEY]: nextQueue,
           [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
@@ -327,10 +377,11 @@ async function processGasSyncQueue() {
             queueLength: nextQueue.length,
             requestedAt: job.requestedAt,
             finishedAt: new Date().toISOString(),
-            error: error?.message || 'GAS write failed',
-            message: `❌ ${error?.message || 'GAS write failed'}`,
+            error: errorMessage,
+            message: `❌ ${errorMessage}`,
           }),
         });
+        showGasNotification('gas_sync_error', 'GASシート書き込みエラー', errorMessage);
       }
     }
   } finally {

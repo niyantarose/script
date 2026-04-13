@@ -94,7 +94,7 @@ function buildCommonBookSheetRow(product, overrides = {}) {
     '売価': trimValue(product?.売価 || ''),
     '原価': trimValue(product?.価格 || ''),
     '粗利益率': trimValue(product?.粗利益率 || ''),
-    'ISBN': trimValue(product?.ISBN || ''),
+    'ISBN': /^\d{13}$/.test(trimValue(product?.ISBN || '')) ? trimValue(product?.ISBN || '') : '',
     '発売日': trimValue(product?.発売日 || ''),
     '言語': getLanguageValue(product),
     '単巻数': trimValue(product?.単巻数 || ''),

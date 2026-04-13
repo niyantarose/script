@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "にゃんたろうず商品登録拡張機能",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "台湾 books.com.tw とアラジンの既存機能を統合した Chrome 拡張",
   "permissions": [
     "downloads",
@@ -9,7 +9,8 @@
     "activeTab",
     "scripting",
     "tabs",
-    "storage"
+    "storage",
+    "notifications"
   ],
   "host_permissions": [
     "https://www.books.com.tw/*",

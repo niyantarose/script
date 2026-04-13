@@ -265,15 +265,6 @@ const scoreEdgeDistance = edge => {
     .replace(/[０-９]/g, char => String.fromCharCode(char.charCodeAt(0) - 0xFEE0))
     .replace(/[Ｘｘ]/g, 'X');
 
-  const isValidIsbn10 = value => {
-    if (!/^\d{9}[\dX]$/.test(value)) return false;
-    const sum = value.split('').reduce((total, char, index) => {
-      const digit = char === 'X' ? 10 : Number(char);
-      return total + digit * (10 - index);
-    }, 0);
-    return sum % 11 === 0;
-  };
-
   const isValidIsbn13 = value => {
     if (!/^\d{13}$/.test(value)) return false;
     const sum = value.split('').reduce((total, char, index) => (
@@ -282,65 +273,79 @@ const scoreEdgeDistance = edge => {
     return sum % 10 === 0;
   };
 
-  const isValidIsbn = value => (
-    value.length === 13 ? isValidIsbn13(value) : value.length === 10 ? isValidIsbn10(value) : false
-  );
+  const isValidIsbn = value => value.length === 13 ? isValidIsbn13(value) : false;
 
-  const extractIsbn = raw => {
+  const collectIsbnCandidates = raw => {
     const text = normalizeIsbnText(raw);
-    if (!text) return '';
-    const matches = text.match(/(?:97[89][\d\-\s]{10,17}|[\d][\d\-\s]{8,16}[\dX])/g) || [];
-    const candidates = matches
-      .map(value => value.replace(/[^\dX]/g, '').toUpperCase())
-      .filter(isValidIsbn)
-      .sort((left, right) => right.length - left.length);
-    return candidates[0] || '';
+    if (!text) return [];
+
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = value => {
+      const normalized = String(value || '').replace(/[^\d]/g, '');
+      if (!/^\d{13}$/.test(normalized)) return;
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      candidates.push(normalized);
+    };
+
+    Array.from(text.matchAll(/\d{13}/g)).forEach(match => addCandidate(match[0]));
+    Array.from(text.matchAll(/[\dXx][\dXx\-\s]{8,24}[\dXx]/g)).forEach(match => addCandidate(match[0]));
+
+    return candidates;
   };
 
-  const findIsbnInObject = node => {
-    if (!node || typeof node !== 'object') return '';
+  const pickPreferredIsbn = candidates => {
+    const list = (candidates || []).filter(Boolean);
+    return list.find(value => value.length === 13 && isValidIsbn13(value))
+      || list.find(value => value.length === 13)
+      || '';
+  };
+
+  const extractIsbn = raw => pickPreferredIsbn(collectIsbnCandidates(raw));
+
+  const collectIsbnCandidatesInObject = node => {
+    if (node == null) return [];
+    if (typeof node !== 'object') return collectIsbnCandidates(node);
     if (Array.isArray(node)) {
-      for (const item of node) {
-        const found = findIsbnInObject(item);
-        if (found) return found;
-      }
-      return '';
+      return node.flatMap(item => collectIsbnCandidatesInObject(item));
     }
 
+    const candidates = [];
     if (node.isbn != null) {
-      const isbn = extractIsbn(node.isbn);
-      if (isbn) return isbn;
+      candidates.push(...collectIsbnCandidates(node.isbn));
     }
 
     for (const key of Object.keys(node)) {
-      const found = findIsbnInObject(node[key]);
-      if (found) return found;
+      candidates.push(...collectIsbnCandidatesInObject(node[key]));
     }
-    return '';
+    return candidates;
   };
 
+  const findIsbnInObject = node => pickPreferredIsbn(collectIsbnCandidatesInObject(node));
+
   const getIsbn = () => {
-    const byLabel = extractIsbn(getLabeledValue(['ISBN', 'isbn']));
-    if (byLabel) return byLabel;
+    const candidates = [];
+    const addCandidates = value => {
+      candidates.push(...collectIsbnCandidates(value));
+    };
 
-    const metaBooksIsbn = extractIsbn(document.querySelector('meta[property="books:isbn"]')?.getAttribute('content'));
-    if (metaBooksIsbn) return metaBooksIsbn;
-
-    const metaDescription = document.querySelector('meta[name="description"]')?.getAttribute('content') || '';
-    const byDescription = extractIsbn(metaDescription);
-    if (byDescription) return byDescription;
+    addCandidates(getLabeledValue(['ISBN', 'isbn']));
+    addCandidates(document.querySelector('meta[property="books:isbn"]')?.getAttribute('content'));
+    addCandidates(document.querySelector('meta[name="description"]')?.getAttribute('content') || '');
 
     for (const scriptEl of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
       try {
         const parsed = JSON.parse(scriptEl.textContent || '');
-        const fromJsonLd = findIsbnInObject(parsed);
-        if (fromJsonLd) return fromJsonLd;
+        candidates.push(...collectIsbnCandidatesInObject(parsed));
       } catch {
         // ignore invalid JSON-LD
       }
     }
 
-    return '';
+    addCandidates(infoListItems.map(li => getText(li)).join(' '));
+    addCandidates(document.body?.innerText || document.documentElement?.textContent || '');
+    return pickPreferredIsbn(candidates);
   };
 
   const getPublisher = () => {

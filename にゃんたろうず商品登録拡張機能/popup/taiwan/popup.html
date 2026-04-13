@@ -201,7 +201,7 @@
 </head>
 <body>
   <div class="header">
-    <h1>books.com.tw（博客來）商品取得ツール</h1>
+    <h1>books.com.tw（博客來）商品取得ツール v0.2.1</h1>
     <span class="count" id="item-count">0 件</span>
   </div>
 
@@ -212,15 +212,15 @@
   <div class="config-controls">
     <input type="url" id="gas-url" placeholder="https://script.google.com/macros/s/.../exec">
     <button id="btn-save-gas-url" type="button">保存</button>
-    <button id="btn-reset-gas" type="button">GASリセット</button>
   </div>
-  <span class="config-note">保存後は「シートに書込」ボタンで、リスト中の商品をGAS経由でスプレッドシート最終行へ追記します。</span>
+  <span class="config-note">GAS の「デプロイ済み Web アプリ」URL（/macros/s/.../exec）を保存してください。/macros/library/... は使用できません。</span>
 </div>
 
 
 <div class="btn-row">
   <button id="btn-add">このページを追加</button>
   <button id="btn-send-sheet" disabled>シートに書込</button>
+  <button id="btn-reset-gas" type="button">GASリセット</button>
   <button id="btn-download" disabled>CSV+画像保存</button>
   <button id="btn-clear" title="リストをクリア">削除</button>
 </div>

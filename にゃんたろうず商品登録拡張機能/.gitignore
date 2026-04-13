@@ -1,0 +1,14 @@
+# 拡張機能テスト用の数万件のゴミフォルダ（絶対除外！）
+tmp-*
+.claude/
+.remote_edit/
+
+# その他、一般的な不要ファイル
+node_modules/
+dist/
+__pycache__/
+venv/
+.env
+
+# 今回の辞書データなどのCSV
+*.csv

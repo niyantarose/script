@@ -1,5 +1,10 @@
 // popup.js - 台湾 books.com.tw 拡張 UI / 送信制御
 
+const DEFAULT_STATUS_MESSAGE = 'books.com.tw の商品ページで「追加」を押してください';
+const GAS_SYNC_SUCCESS_MESSAGE_TTL_MS = 5000;
+const GAS_SYNC_ERROR_MESSAGE_TTL_MS = 8000;
+let gasSyncSuccessClearTimer = null;
+
 async function ensurePopupSharedReady() {
   const requiredNames = ['storageGet', 'storageSet', 'refreshGasSyncStatus', 'setStatus'];
   if (requiredNames.every(name => typeof globalThis[name] === 'function')) {
@@ -61,6 +66,11 @@ async function initPopup() {
       });
     }
 
+    // GASコールドスタート防止：ポップアップ起動時にウォームアップGETを先行送信
+    if (isValidGasUrl(gasWebAppUrl)) {
+      warmupGas(gasWebAppUrl);
+    }
+
     renderList();
     await refreshGasSyncStatus({ updateUi: false, applyMessage: false });
     if (gasSyncStatus?.state && !['queued', 'running'].includes(gasSyncStatus.state)) {
@@ -90,7 +100,7 @@ async function initPopup() {
 
 function updateUI() {
   const hasProducts = products.length > 0;
-  const gasBusy = !!gasSyncStatus && ['queued', 'running'].includes(gasSyncStatus.state);
+  const gasBusy = isGasSyncBusyStatus(gasSyncStatus);
   document.getElementById('item-count').textContent = `${products.length} 件`;
   document.getElementById('btn-download').disabled = !hasProducts;
   document.getElementById('btn-clear').disabled = !hasProducts;
@@ -146,11 +156,85 @@ function renderList() {
   });
 }
 
+function warmupGas(url) {
+  // GASへGETリクエストを送ってコールドスタートを解消しておく（fire-and-forget）
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 15000);
+  fetch(url, { method: 'GET', credentials: 'omit', redirect: 'follow', signal: controller.signal })
+    .catch(() => {});
+}
+
 function setStatus(msg, type = '') {
   const el = document.getElementById('status');
-  el.textContent = msg;
+  el.textContent = msg || DEFAULT_STATUS_MESSAGE;
   el.className = `status-bar ${type}`;
 }
+
+function clearGasSyncSuccessAutoClearTimer() {
+  if (!gasSyncSuccessClearTimer) return;
+  clearTimeout(gasSyncSuccessClearTimer);
+  gasSyncSuccessClearTimer = null;
+}
+
+function restoreDefaultStatusIfMatching(previousStatus) {
+  const previousMessage = gasSyncStatusMessage(previousStatus);
+  const statusEl = document.getElementById('status');
+  if (!previousMessage || !statusEl || statusEl.textContent !== previousMessage) return;
+  setStatus(DEFAULT_STATUS_MESSAGE, '');
+}
+
+function syncGasStatusUi(previousStatus, nextStatus) {
+  gasSyncStatus = nextStatus || null;
+  const nextMessage = gasSyncStatusMessage(gasSyncStatus);
+
+  if (nextMessage) {
+    setStatus(nextMessage, gasSyncStatusType(gasSyncStatus));
+  } else if (previousStatus) {
+    restoreDefaultStatusIfMatching(previousStatus);
+  }
+
+  updateUI();
+  if (isGasSyncBusyStatus(gasSyncStatus)) {
+    startGasSyncStatusPolling();
+  } else {
+    stopGasSyncStatusPolling();
+  }
+}
+
+function scheduleGasSyncSuccessAutoClear(status) {
+  clearGasSyncSuccessAutoClearTimer();
+  if (status?.state !== 'success' && status?.state !== 'error') return;
+
+  const ttl = status.state === 'error' ? GAS_SYNC_ERROR_MESSAGE_TTL_MS : GAS_SYNC_SUCCESS_MESSAGE_TTL_MS;
+  const expectedState = status.state;
+
+  gasSyncSuccessClearTimer = window.setTimeout(async () => {
+    if (gasSyncStatus?.jobId !== status.jobId || gasSyncStatus?.state !== expectedState) return;
+
+    try {
+      await clearGasSyncStatus();
+    } catch (error) {
+      console.warn('Failed to auto clear GAS sync status:', error);
+      const previousStatus = gasSyncStatus;
+      syncGasStatusUi(previousStatus, null);
+    }
+    updateUI();
+  }, ttl);
+}
+
+function handleGasSyncStorageChange(changes, areaName) {
+  if (areaName !== 'local') return;
+  if (!Object.prototype.hasOwnProperty.call(changes, GAS_SYNC_STATUS_KEY)) return;
+
+  const previousStatus = changes[GAS_SYNC_STATUS_KEY]?.oldValue || gasSyncStatus || null;
+  const nextStatus = changes[GAS_SYNC_STATUS_KEY]?.newValue || null;
+
+  clearGasSyncSuccessAutoClearTimer();
+  syncGasStatusUi(previousStatus, nextStatus);
+  scheduleGasSyncSuccessAutoClear(nextStatus);
+}
+
+chrome.storage.onChanged.addListener(handleGasSyncStorageChange);
 
 function save() {
   storageSet({ products }).catch(error => {
@@ -187,7 +271,17 @@ async function prepareProductsForSheetSend(items) {
 }
 
 function isValidGasUrl(url) {
-  return /^https:\/\/(?:script\.google\.com|script\.googleusercontent\.com)\//i.test(String(url || '').trim());
+  if (typeof isGasWebAppExecUrl === 'function') {
+    return isGasWebAppExecUrl(url);
+  }
+  try {
+    const parsed = new URL(String(url || '').trim());
+    return parsed.protocol === 'https:'
+      && parsed.hostname === 'script.google.com'
+      && /^\/macros\/s\/[^/]+\/exec\/?$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function buildCsvBaseRow(product) {
@@ -207,8 +301,14 @@ function buildCsvBaseRow(product) {
 async function handleAddCurrentPage() {
   setStatus('取得中...', '');
   let data = await requestActiveTabProductInfo();
-  if (products.some(p => extractProductCode(p) === extractProductCode(data))) {
-    throw new Error('この商品はすでにリストにあります');
+  const existingIndex = products.findIndex(p => extractProductCode(p) === extractProductCode(data));
+  if (existingIndex >= 0) {
+    products[existingIndex] = { ...products[existingIndex], ...data };
+    save();
+    renderList();
+    updateUI();
+    setStatus('✅ 既存商品の情報を更新しました: ' + (data.商品名?.slice(0, 30) || extractProductCode(data)), 'success');
+    return;
   }
 
   data = clearPendingJapaneseTitleMarkers(data);
@@ -356,6 +456,7 @@ async function handleSaveGasUrl() {
 
 async function handleResetGas() {
   stopGasSyncStatusPolling();
+  clearGasSyncSuccessAutoClearTimer();
   await resetGasSyncState();
   gasSyncStatus = null;
   updateUI();
@@ -386,10 +487,9 @@ async function handleSendToSheet() {
     throw new Error(response?.error || 'バックグラウンド送信の登録に失敗しました');
   }
 
-  gasSyncStatus = response.status || null;
+  clearGasSyncSuccessAutoClearTimer();
+  syncGasStatusUi(gasSyncStatus, response.status || null);
   setStatus(gasSyncStatusMessage(gasSyncStatus) || `⏳ ${products.length}件の送信を開始しました`, gasSyncStatusType(gasSyncStatus));
-  updateUI();
-  startGasSyncStatusPolling();
 }
 
 document.getElementById('btn-save-gas-url').addEventListener('click', async () => {

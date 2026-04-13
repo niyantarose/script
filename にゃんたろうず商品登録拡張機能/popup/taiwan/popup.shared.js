@@ -434,6 +434,10 @@ function getProductSheetName(product) {
   return isComicBookProduct(product) ? COMIC_BOOK_SHEET_NAME : OTHER_BOOK_SHEET_NAME;
 }
 
+function isGasSyncBusyStatus(status) {
+  return !!status?.state && ['queued', 'running'].includes(status.state);
+}
+
 function gasSyncStatusType(status) {
   if (!status?.state) return '';
   if (status.state === 'success') return 'success';
@@ -479,7 +483,9 @@ async function resetGasSyncState() {
 
 async function refreshGasSyncStatus(options = {}) {
   const response = await sendRuntimeMessage({ action: 'getGasSyncStatus' });
-  if (!response?.ok) return null;
+  if (!response?.ok) {
+    return options.keepStatusOnError === false ? null : gasSyncStatus;
+  }
 
   gasSyncStatus = response.status || null;
   const message = gasSyncStatusMessage(gasSyncStatus);
@@ -502,9 +508,17 @@ function stopGasSyncStatusPolling() {
 function startGasSyncStatusPolling() {
   if (gasSyncPollTimer) return;
   gasSyncPollTimer = setInterval(() => {
+    const wasBusy = isGasSyncBusyStatus(gasSyncStatus);
     refreshGasSyncStatus().then(status => {
-      if (!status?.state || !['queued', 'running'].includes(status.state)) {
+      if (status?.state === 'success' && typeof scheduleGasSyncSuccessAutoClear === 'function') {
+        scheduleGasSyncSuccessAutoClear(status);
+      }
+      if (!isGasSyncBusyStatus(status)) {
         stopGasSyncStatusPolling();
+        // statusがnullになった（スタック状態を解消した）場合、表示を明示的にリセット
+        if (!status?.state && wasBusy) {
+          setStatus('', '');
+        }
       }
     }).catch(() => {});
   }, 1500);
@@ -607,6 +621,17 @@ async function downloadCsvFile(headers, rows, filename, options = {}) {
 
 function trimValue(value) {
   return String(value ?? '').trim();
+}
+
+function isGasWebAppExecUrl(url) {
+  try {
+    const parsed = new URL(trimValue(url));
+    return parsed.protocol === 'https:'
+      && parsed.hostname === 'script.google.com'
+      && /^\/macros\/s\/[^/]+\/exec\/?$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function cleanDescription(value) {
