@@ -16,12 +16,14 @@ def create_app():
     from routes.purchases import bp as purchases_bp
     from routes.ems import bp as ems_bp
     from routes.japan_inventory import bp as japan_bp
+    from routes.import_data import bp as import_bp
 
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(orders_bp)
     app.register_blueprint(purchases_bp)
     app.register_blueprint(ems_bp)
     app.register_blueprint(japan_bp)
+    app.register_blueprint(import_bp)
 
     # テンプレートにnowを渡す
     @app.context_processor
