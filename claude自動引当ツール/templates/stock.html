@@ -1,0 +1,311 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="topbar">
+  <span class="page-title">在庫リアルタイム確認</span>
+  <div class="topbar-actions">
+    <span id="sync-indicator" class="topbar-date" style="display:none">
+      <span style="display:inline-block;animation:spin 1s linear infinite">⟳</span> 更新中…
+    </span>
+    <span id="next-refresh" class="topbar-date"></span>
+    <button class="btn btn-info btn-sm" onclick="loadData(true)">⟳ 今すぐ更新</button>
+  </div>
+</div>
+
+<!-- サマリーメトリクス -->
+<div id="stats-bar" class="dash-grid" style="padding:12px 20px;gap:10px;">
+  <div class="metric">
+    <div class="metric-label">総SKU数</div>
+    <div class="metric-val" id="stat-total">—</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">即納在庫あり</div>
+    <div class="metric-val success" id="stat-sokunou">—</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">お取り寄せ</div>
+    <div class="metric-val warning" id="stat-tori">—</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">在庫なし</div>
+    <div class="metric-val danger" id="stat-zero">—</div>
+  </div>
+</div>
+
+<!-- 検索・フィルターバー -->
+<div class="filter-bar" style="gap:12px;padding:8px 20px;">
+  <div style="display:flex;align-items:center;gap:6px;">
+    <label style="font-size:12px;color:var(--text-secondary);">検索</label>
+    <input type="text" id="search-input" placeholder="商品コード / 商品名"
+           style="width:260px;font-size:13px;padding:5px 10px;"
+           oninput="onSearchInput()">
+    <button class="btn btn-sm" onclick="clearSearch()">✕</button>
+  </div>
+
+  <div style="display:flex;align-items:center;gap:4px;">
+    <button class="btn btn-sm filter-btn active" data-filter="all"    onclick="setFilter('all')">すべて</button>
+    <button class="btn btn-sm filter-btn"        data-filter="sokunou" onclick="setFilter('sokunou')">即納のみ</button>
+    <button class="btn btn-sm filter-btn"        data-filter="tori"   onclick="setFilter('tori')">お取り寄せのみ</button>
+    <button class="btn btn-sm filter-btn"        data-filter="zero"   onclick="setFilter('zero')">在庫なし</button>
+  </div>
+
+  <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+    <label style="font-size:12px;color:var(--text-secondary);">表示件数</label>
+    <select id="per-page" onchange="loadData(true)" style="font-size:12px;padding:4px 8px;">
+      <option value="100">100件</option>
+      <option value="200" selected>200件</option>
+      <option value="500">500件</option>
+    </select>
+  </div>
+</div>
+
+<!-- 結果情報バー -->
+<div id="result-info" class="search-result-info">読み込み中…</div>
+
+<!-- テーブル -->
+<div class="table-wrap" style="flex:1;overflow:auto;">
+  <table id="stock-table">
+    <thead>
+      <tr>
+        <th style="width:160px;">商品コード</th>
+        <th style="width:110px;">サブコード</th>
+        <th>商品名</th>
+        <th style="width:74px;text-align:right;color:var(--accent-green);">即納</th>
+        <th style="width:84px;text-align:right;color:var(--accent-yellow);">お取り寄せ</th>
+        <th style="width:68px;text-align:right;" title="引当済み数">引当済</th>
+        <th style="width:74px;text-align:right;" title="引当可能残数">引当可能</th>
+        <th style="width:100px;text-align:center;">最終同期</th>
+      </tr>
+    </thead>
+    <tbody id="stock-tbody">
+      <tr><td colspan="8" class="empty-state">読み込み中…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ページネーション -->
+<div id="pagination" style="
+  padding:10px 20px;
+  border-top:1px solid var(--border);
+  display:flex; align-items:center; gap:8px;
+  background:var(--bg-secondary);
+  flex-shrink:0;
+">
+</div>
+
+<!-- 最終同期時刻フッター -->
+<div style="padding:4px 20px;font-size:11px;color:var(--text-secondary);background:var(--bg-secondary);border-top:1px solid var(--border-light);">
+  Yahoo最終同期: <span id="last-synced">—</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+.filter-btn.active { background:var(--text-primary);color:var(--bg-primary);border-color:var(--text-primary); }
+.qty-positive { font-weight:600;color:var(--accent-green); }
+.qty-zero     { color:var(--text-secondary); }
+.page-btn { min-width:32px; text-align:center; }
+.page-btn.current { background:var(--text-primary);color:var(--bg-primary);border-color:var(--text-primary);font-weight:600; }
+</style>
+
+<script>
+/* ===== 状態 ===== */
+let currentFilter  = 'all';
+let currentPage    = 1;
+let currentSearch  = '';
+let totalPages     = 1;
+let refreshTimer   = null;
+let refreshCountdown = 30;
+let searchDebounce = null;
+const REFRESH_SEC  = 30;
+
+/* ===== 初期化 ===== */
+document.addEventListener('DOMContentLoaded', () => {
+  loadData(true);
+  startCountdown();
+});
+
+/* ===== 検索 ===== */
+function onSearchInput() {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    currentSearch = document.getElementById('search-input').value.trim();
+    currentPage   = 1;
+    loadData(true);
+  }, 400);
+}
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  currentSearch = '';
+  currentPage   = 1;
+  loadData(true);
+}
+
+/* ===== フィルター ===== */
+function setFilter(f) {
+  currentFilter = f;
+  currentPage   = 1;
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === f);
+  });
+  loadData(true);
+}
+
+/* ===== データ取得 ===== */
+async function loadData(resetCountdown = false) {
+  const per   = document.getElementById('per-page').value;
+  const params = new URLSearchParams({
+    q:      currentSearch,
+    filter: currentFilter,
+    page:   currentPage,
+    per:    per,
+  });
+
+  document.getElementById('sync-indicator').style.display = '';
+  try {
+    const res  = await fetch('/stock/api?' + params);
+    const data = await res.json();
+    renderStats(data.stats);
+    renderTable(data.items);
+    renderPagination(data.page, data.pages, data.total, per);
+    document.getElementById('last-synced').textContent = data.stats.last_synced;
+    if (resetCountdown) {
+      refreshCountdown = REFRESH_SEC;
+    }
+  } catch(e) {
+    document.getElementById('result-info').textContent = '⚠ 読み込みエラー: ' + e.message;
+  } finally {
+    document.getElementById('sync-indicator').style.display = 'none';
+  }
+}
+
+/* ===== メトリクス表示 ===== */
+function renderStats(s) {
+  document.getElementById('stat-total').textContent   = s.total.toLocaleString();
+  document.getElementById('stat-sokunou').textContent = s.sokunou.toLocaleString();
+  document.getElementById('stat-tori').textContent    = s.tori.toLocaleString();
+  document.getElementById('stat-zero').textContent    = s.zero.toLocaleString();
+}
+
+/* ===== テーブル描画 ===== */
+function renderTable(items) {
+  const tbody = document.getElementById('stock-tbody');
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">該当する商品がありません</td></tr>';
+    return;
+  }
+
+  const rows = items.map(it => {
+    // 即納数・お取り寄せ数（片方だけ値が入る）
+    const sokunou = it.is_immediate ? it.yahoo_stock : 0;
+    const tori    = (!it.is_immediate && it.yahoo_stock > 0) ? it.yahoo_stock : 0;
+
+    const sokCol  = sokunou > 0
+      ? `<td style="text-align:right;font-weight:600;color:var(--accent-green);">${sokunou.toLocaleString()}</td>`
+      : `<td style="text-align:right;color:var(--border);">—</td>`;
+    const toriCol = tori > 0
+      ? `<td style="text-align:right;font-weight:600;color:var(--accent-yellow);">${tori.toLocaleString()}</td>`
+      : `<td style="text-align:right;color:var(--border);">—</td>`;
+
+    const resvStyle  = it.reserved_qty > 0
+      ? 'text-align:right;color:var(--accent-red);font-weight:600;'
+      : 'text-align:right;color:var(--border);';
+    const availStyle = it.available_qty > 0
+      ? 'text-align:right;font-weight:600;color:var(--accent-green);'
+      : 'text-align:right;color:var(--text-secondary);';
+
+    const name = it.product_name
+      ? `<span style="font-size:13px;">${esc(it.product_name)}</span>`
+      : '<span style="color:var(--text-secondary);font-size:12px;">—</span>';
+
+    // 行背景: 在庫ゼロは薄グレー
+    const rowStyle = (sokunou === 0 && tori === 0) ? ' style="opacity:0.5;"' : '';
+
+    return `<tr${rowStyle}>
+      <td style="font-family:monospace;font-size:12px;">${esc(it.product_code)}</td>
+      <td style="font-size:12px;color:var(--text-secondary);">${esc(it.sub_code)}</td>
+      <td>${name}</td>
+      ${sokCol}
+      ${toriCol}
+      <td style="${resvStyle}">${it.reserved_qty > 0 ? it.reserved_qty.toLocaleString() : '—'}</td>
+      <td style="${availStyle}">${it.available_qty > 0 ? it.available_qty.toLocaleString() : '—'}</td>
+      <td style="text-align:center;font-size:11px;color:var(--text-secondary);">${esc(it.last_synced_at)}</td>
+    </tr>`;
+  });
+  tbody.innerHTML = rows.join('');
+}
+
+/* ===== ページネーション ===== */
+function renderPagination(page, pages, total, per) {
+  totalPages = pages;
+  const info = `${((page-1)*per+1).toLocaleString()}–${Math.min(page*per, total).toLocaleString()} / ${total.toLocaleString()} 件`;
+  document.getElementById('result-info').textContent = info;
+
+  const el = document.getElementById('pagination');
+  if (pages <= 1) { el.innerHTML = ''; return; }
+
+  let html = '';
+  html += `<button class="btn btn-sm page-btn" onclick="goPage(${page-1})" ${page===1?'disabled':''}>‹</button>`;
+
+  // ページ番号ボタン（最大9個表示）
+  const range = pageRange(page, pages);
+  let prev = null;
+  for (const p of range) {
+    if (prev !== null && p - prev > 1) {
+      html += `<span style="padding:0 4px;color:var(--text-secondary);">…</span>`;
+    }
+    html += `<button class="btn btn-sm page-btn ${p===page?'current':''}" onclick="goPage(${p})">${p}</button>`;
+    prev = p;
+  }
+
+  html += `<button class="btn btn-sm page-btn" onclick="goPage(${page+1})" ${page===pages?'disabled':''}>›</button>`;
+  html += `<span style="font-size:11px;color:var(--text-secondary);margin-left:4px;">${page} / ${pages} ページ</span>`;
+  el.innerHTML = html;
+}
+
+function pageRange(cur, total) {
+  const delta = 3;
+  const left  = Math.max(1, cur - delta);
+  const right = Math.min(total, cur + delta);
+  const pages = [];
+  if (left > 1)     pages.push(1);
+  for (let i = left; i <= right; i++) pages.push(i);
+  if (right < total) pages.push(total);
+  return pages;
+}
+
+function goPage(p) {
+  if (p < 1 || p > totalPages) return;
+  currentPage = p;
+  loadData(false);
+  window.scrollTo(0, 0);
+}
+
+/* ===== 自動更新カウントダウン ===== */
+function startCountdown() {
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    refreshCountdown--;
+    const el = document.getElementById('next-refresh');
+    if (refreshCountdown > 0) {
+      el.textContent = `次回更新まで ${refreshCountdown}s`;
+    } else {
+      el.textContent = '';
+      refreshCountdown = REFRESH_SEC;
+      loadData(false);
+    }
+  }, 1000);
+}
+
+/* ===== ユーティリティ ===== */
+function esc(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+</script>
+{% endblock %}

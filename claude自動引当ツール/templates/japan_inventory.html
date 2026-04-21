@@ -15,6 +15,22 @@
   <label for="chk-all-j">全選択</label>
   <button onclick="clearAll('j')">全解除</button>
   <span class="sel-count" id="sel-count-j">0件選択中</span>
+  <div style="margin-left:auto;">
+    <form method="get" style="display:flex;gap:6px;align-items:center;">
+      <input type="text" name="q" value="{{ q }}" placeholder="商品コード・EMS番号" style="width:200px;">
+      <select name="status">
+        <option value="">全ステータス</option>
+        <option value="waiting"          {{ 'selected' if status_filter=='waiting'          }}>仕分け待ち</option>
+        <option value="assigned_to_order" {{ 'selected' if status_filter=='assigned_to_order' }}>受注割当済</option>
+        <option value="to_japan_stock"   {{ 'selected' if status_filter=='to_japan_stock'   }}>日本在庫へ</option>
+        <option value="excluded"         {{ 'selected' if status_filter=='excluded'         }}>除外</option>
+        <option value="returned_to_ems"  {{ 'selected' if status_filter=='returned_to_ems'  }}>EMS差戻</option>
+        <option value="reflected"        {{ 'selected' if status_filter=='reflected'        }}>反映完了</option>
+      </select>
+      <button type="submit">検索</button>
+      {% if q or status_filter %}<a href="{{ url_for('japan_inventory.index') }}" class="btn">クリア</a>{% endif %}
+    </form>
+  </div>
 </div>
 
 <div class="table-wrap">
@@ -25,7 +41,7 @@
         <th>EMS番号</th>
         <th>入荷日</th>
         <th>商品コード</th>
-        <th>数量</th>
+        <th style="width:60px;text-align:center;">数量</th>
         <th>仕分けステータス</th>
         <th>引当先受注番号</th>
         <th>操作</th>
@@ -37,8 +53,17 @@
         <td><input type="checkbox" class="row-chk-j" data-id="{{ d.staging.id }}" onchange="updateCount('j')"></td>
         <td>{{ d.ems.ems_number }}</td>
         <td>{{ d.ems.arrived_at.strftime('%Y/%m/%d') if d.ems.arrived_at else '' }}</td>
-        <td>{{ d.staging.product_code }}</td>
-        <td>{{ d.staging.quantity }}</td>
+
+        <td class="cell-edit" data-url="/japan/update" data-field="product_code" data-id="{{ d.staging.id }}">
+          <span class="cell-val">{{ d.staging.product_code }}</span>
+          <input class="cell-input" type="text" value="{{ d.staging.product_code }}">
+        </td>
+
+        <td class="cell-edit" style="text-align:center;" data-url="/japan/update" data-field="quantity" data-id="{{ d.staging.id }}">
+          <span class="cell-val">{{ d.staging.quantity }}</span>
+          <input class="cell-input" type="number" min="1" value="{{ d.staging.quantity }}" style="width:55px;">
+        </td>
+
         <td>
           {% if d.staging.status == 'waiting' %}
             <span class="badge badge-tori">仕分け待ち</span>
@@ -54,7 +79,9 @@
             <span class="badge badge-alert">EMS差戻</span>
           {% endif %}
         </td>
+
         <td>{{ d.assigned_order.yahoo_order_id if d.assigned_order else '' }}</td>
+
         <td>
           <div class="action-btns">
             {% if d.staging.status == 'waiting' %}
@@ -63,6 +90,8 @@
               <button class="btn-sm btn-success" onclick="updateStagingStatus({{ d.staging.id }}, 'to_japan_stock')">日本在庫へ</button>
               <div class="divider"></div>
               <button class="btn-sm" onclick="updateStagingStatus({{ d.staging.id }}, 'excluded')">除外</button>
+              <div class="divider"></div>
+              <button class="btn-sm btn-warning" onclick="updateStagingStatus({{ d.staging.id }}, 'returned_to_ems')">EMSに戻す</button>
             {% elif d.staging.status == 'to_japan_stock' %}
               <button class="btn-sm btn-success btn-japan-active">&#10003; 日本在庫へ</button>
               <div class="divider"></div>
@@ -123,7 +152,6 @@ function closeAssignModal() {
 function executeAssign() {
   const orderItemId = document.getElementById('assign-order-item-id').value;
   if (!orderItemId) { alert('受注明細IDを入力してください'); return; }
-
   fetch('/japan/assign_order', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -132,9 +160,9 @@ function executeAssign() {
   .then(r => r.json())
   .then(data => {
     if (data.error) { alert(data.error); return; }
-    alert('受注 ' + data.assigned_order_id + ' に引当しました');
+    showToast('受注 ' + data.assigned_order_id + ' に引当しました');
     closeAssignModal();
-    location.reload();
+    setTimeout(() => location.reload(), 1000);
   });
 }
 
@@ -143,7 +171,6 @@ function updateStagingStatus(stagingId, status) {
   if (status === 'excluded') {
     reason = prompt('除外理由を入力してください（任意）:') || '';
   }
-
   fetch('/japan/update_status', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -152,21 +179,21 @@ function updateStagingStatus(stagingId, status) {
   .then(r => r.json())
   .then(data => {
     if (data.error) { alert(data.error); return; }
-    location.reload();
+    showToast('ステータスを更新しました');
+    setTimeout(() => location.reload(), 800);
   });
 }
 
 function reflectToYahoo() {
   if (!confirm('「日本在庫へ」の商品をYahoo在庫に反映しますか？')) return;
-
   fetch('/japan/reflect', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
   })
   .then(r => r.json())
   .then(data => {
-    alert(data.reflected_count + '件の在庫を反映しました');
-    location.reload();
+    showToast(data.reflected_count + '件の在庫を反映しました');
+    setTimeout(() => location.reload(), 1000);
   });
 }
 </script>

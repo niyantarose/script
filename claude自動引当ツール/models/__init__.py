@@ -11,3 +11,4 @@ from models.inventory import Inventory
 from models.allocation import Allocation
 from models.alert import Alert
 from models.japan_inventory import JapanInventoryStaging
+from models.import_log import ImportLog

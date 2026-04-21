@@ -21,7 +21,7 @@
   --radius-lg: 10px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); background: var(--bg-secondary); }
+body { font-family: var(--font-sans); font-size: 17px; color: var(--text-primary); background: var(--bg-secondary); }
 
 /* Layout */
 .app { display: flex; height: 100vh; }
@@ -43,7 +43,7 @@ body { font-family: var(--font-sans); font-size: 13px; color: var(--text-primary
   padding: 9px 16px;
   cursor: pointer;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 14px;
   display: flex; align-items: center; gap: 8px;
   border-left: 3px solid transparent;
   text-decoration: none;
@@ -78,7 +78,7 @@ body { font-family: var(--font-sans); font-size: 13px; color: var(--text-primary
 
 /* Buttons */
 button, .btn {
-  font-family: var(--font-sans); font-size: 12px;
+  font-family: var(--font-sans); font-size: 13px;
   cursor: pointer; padding: 6px 14px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
@@ -113,16 +113,63 @@ button:hover, .btn:hover { background: var(--bg-secondary); }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 thead { position: sticky; top: 0; background: var(--bg-secondary); z-index: 2; }
 th {
-  padding: 9px 12px; text-align: left;
+  padding: 10px 14px; text-align: left;
   font-weight: 500; color: var(--text-secondary);
   border-bottom: 1px solid var(--border);
-  white-space: nowrap; font-size: 12px;
+  white-space: nowrap; font-size: 15px;
 }
 td {
-  padding: 8px 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-light);
   vertical-align: middle;
+  font-size: 15px;
 }
+
+/* ===== フォントサイズ切替 ===== */
+/* 小 */
+html.font-sm body { font-size: 13px; }
+html.font-sm th, html.font-sm td { font-size: 12px; }
+html.font-sm .nav-item { font-size: 13px; }
+html.font-sm button, html.font-sm .btn { font-size: 12px; }
+html.font-sm .badge { font-size: 11px; }
+html.font-sm .page-title { font-size: 14px; }
+
+/* 中（デフォルト） */
+html.font-md body { font-size: 17px; }
+html.font-md th, html.font-md td { font-size: 15px; }
+html.font-md .nav-item { font-size: 15px; }
+html.font-md button, html.font-md .btn { font-size: 14px; }
+html.font-md .badge { font-size: 13px; }
+html.font-md .page-title { font-size: 16px; }
+
+/* 大 */
+html.font-lg body { font-size: 20px; }
+html.font-lg th, html.font-lg td { font-size: 18px; }
+html.font-lg .nav-item { font-size: 18px; }
+html.font-lg button, html.font-lg .btn { font-size: 17px; }
+html.font-lg .badge { font-size: 15px; }
+html.font-lg .page-title { font-size: 20px; }
+
+/* フォント切替ボタン */
+.font-switcher {
+  margin-top: auto;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex; gap: 6px; align-items: center;
+}
+.font-switcher span { font-size: 11px; color: var(--text-secondary); margin-right: 2px; }
+.fs-btn {
+  flex: 1; padding: 5px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer; font-family: var(--font-sans);
+  font-size: 12px; text-align: center;
+  transition: all 0.15s;
+}
+.fs-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.fs-btn.active { background: var(--text-primary); color: var(--bg-primary); border-color: var(--text-primary); font-weight: 600; }
 tr:hover td { background: var(--bg-secondary); }
 tr.selected td { background: var(--accent-blue-bg); }
 input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent-blue); }
@@ -191,6 +238,79 @@ input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color:
 tr.delay-red td { background: #fef2f2; }
 tr.delay-orange td { background: #fff7ed; }
 tr.delay-yellow td { background: #fffbeb; }
+
+/* EMS overdue */
+tr.ems-overdue td { background: #fef2f2; }
+.overdue-date { color: var(--accent-red); font-weight: 600; }
+
+/* Order grouping borders */
+tr.order-first-row td { border-top: 2px solid var(--border); }
+tr.order-divider td { height: 0; padding: 0; border: none; background: var(--bg-secondary); border-bottom: 2px solid var(--border); }
+tr.order-last-row td { border-bottom: 2px solid var(--border); }
+
+/* Sidebar section label */
+.nav-section-label {
+  padding: 8px 16px 2px;
+  font-size: 11px; font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+.nav-item.nav-sub { padding-left: 24px; font-size: 13px; }
+html.font-lg .nav-item.nav-sub { font-size: 16px; }
+html.font-sm .nav-item.nav-sub { font-size: 12px; }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: #1a1a1a; color: #fff;
+  padding: 10px 20px; border-radius: 6px;
+  font-size: 13px; z-index: 999;
+  opacity: 0; transition: opacity 0.2s;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; }
+
+/* Inline edit */
+.cell-edit { cursor: pointer; position: relative; }
+.cell-edit:hover .cell-val { background: var(--accent-blue-bg); border-radius: 3px; }
+.cell-edit .cell-input { display: none; width: 100%; }
+.cell-edit .cell-input.active { display: inline-block; }
+.cell-edit .cell-val.hidden { display: none; }
+select.status-sel {
+  font-size: 12px; padding: 3px 6px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-primary); cursor: pointer;
+}
+
+/* Filter toolbar */
+.filter-bar {
+  padding: 6px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.filter-bar label { font-size: 12px; color: var(--text-secondary); }
+.filter-bar select { font-size: 12px; padding: 4px 8px; }
+
+/* Search panel */
+.search-panel {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.search-form { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.search-fields { display: flex; gap: 12px; flex-wrap: wrap; }
+.search-field { display: flex; flex-direction: column; gap: 4px; }
+.search-field label { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
+.search-field input { width: 200px; }
+.search-actions { display: flex; gap: 6px; }
+.search-result-info {
+  padding: 8px 20px;
+  font-size: 12px; color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+}
 
 /* Empty state */
 .empty-state {

@@ -3,10 +3,16 @@
 
 {% block content %}
 <div class="topbar">
-  <span class="page-title">発注リスト</span>
+  <span class="page-title">{{ agent_label }}発注リスト</span>
   <div class="topbar-actions">
     <button class="btn-success" onclick="allocatePurchases()">引当実行</button>
-    <a href="{{ url_for('purchases.export_csv') }}" class="btn">CSV出力</a>
+    {% if agent == 'daniel' %}
+    <button class="btn-success" id="btn-sync-now-purchase" onclick="syncNow('purchase')">🔄 今すぐ取込</button>
+    <button class="btn-info" onclick="showUploadModal('purchase')">📁 ファイル指定</button>
+    {% else %}
+    <button onclick="importData('/import/google_purchases','テグ発注取込')">データ取込</button>
+    {% endif %}
+    <a href="{{ url_for('purchases.export_csv') }}?agent={{ agent }}" class="btn">CSV出力</a>
   </div>
 </div>
 
@@ -15,6 +21,20 @@
   <label for="chk-all-p">全選択</label>
   <button onclick="clearAll('p')">全解除</button>
   <span class="sel-count" id="sel-count-p">0件選択中</span>
+  <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+    <span style="font-size:12px;color:var(--text-secondary);">{{ total }}件中 {{ (page-1)*200+1 }}–{{ [page*200, total]|min }}件表示</span>
+    <form method="get" style="display:flex;gap:6px;align-items:center;">
+      <input type="hidden" name="agent" value="{{ agent }}">
+      <input type="text" name="q" value="{{ q }}" placeholder="受注番号・商品コード・発注先" style="width:200px;">
+      <select name="status">
+        <option value="">全ステータス</option>
+        <option value="ordered" {{ 'selected' if status_filter=='ordered' }}>発注済</option>
+        <option value="arrived" {{ 'selected' if status_filter=='arrived' }}>入荷済</option>
+      </select>
+      <button type="submit">検索</button>
+      {% if q or status_filter %}<a href="{{ url_for('purchases.index', agent=agent) }}" class="btn">クリア</a>{% endif %}
+    </form>
+  </div>
 </div>
 
 <div class="table-wrap">
@@ -26,58 +46,255 @@
         <th>受注番号</th>
         <th>商品コード</th>
         <th>商品名</th>
-        <th>数量</th>
+        <th style="width:60px;text-align:center;">数量</th>
         <th>発注先</th>
         <th>発注日</th>
         <th>ステータス</th>
+        <th>メモ</th>
       </tr>
     </thead>
     <tbody>
-      {% for d in purchase_data %}
-      <tr>
-        <td><input type="checkbox" class="row-chk-p" data-id="{{ d.purchase.id }}" onchange="updateCount('p')"></td>
+      {% for d in purchase_data %}{% set p = d.purchase %}
+      <tr class="data-row">
+        <td><input type="checkbox" class="row-chk-p" data-id="{{ p.id }}" onchange="updateCount('p')"></td>
         <td>{{ d.purchase_no }}</td>
-        <td>{{ d.order.yahoo_order_id }}</td>
-        <td>{{ d.purchase.product_code }}</td>
-        <td>{{ d.purchase.product_name or d.order_item.product_name or '' }}</td>
-        <td>{{ d.purchase.quantity }}</td>
-        <td>{{ d.purchase.shop_name or '' }}</td>
-        <td>{{ d.purchase.ordered_at.strftime('%Y/%m/%d') if d.purchase.ordered_at else '' }}</td>
+        <td>{{ d.order.yahoo_order_id if d.order else (d.purchase.order_id or '') }}</td>
+
+        <td class="cell-edit" data-url="/purchases/update" data-field="product_code" data-id="{{ p.id }}">
+          <span class="cell-val">{{ p.product_code }}</span>
+          <input class="cell-input" type="text" value="{{ p.product_code }}">
+        </td>
+
+        <td class="cell-edit" data-url="/purchases/update" data-field="product_name" data-id="{{ p.id }}">
+          <span class="cell-val">{{ p.product_name or '' }}</span>
+          <input class="cell-input" type="text" value="{{ p.product_name or '' }}">
+        </td>
+
+        <td class="cell-edit" style="text-align:center;" data-url="/purchases/update" data-field="quantity" data-id="{{ p.id }}">
+          <span class="cell-val">{{ p.quantity }}</span>
+          <input class="cell-input" type="number" min="1" value="{{ p.quantity }}" style="width:55px;">
+        </td>
+
+        <td class="cell-edit" data-url="/purchases/update" data-field="shop_name" data-id="{{ p.id }}">
+          <span class="cell-val">{{ p.shop_name or '' }}</span>
+          <input class="cell-input" type="text" value="{{ p.shop_name or '' }}">
+        </td>
+
+        <td class="cell-edit" data-url="/purchases/update" data-field="ordered_at" data-id="{{ p.id }}">
+          <span class="cell-val">{{ p.ordered_at.strftime('%Y/%m/%d') if p.ordered_at else '' }}</span>
+          <input class="cell-input" type="date" value="{{ p.ordered_at.strftime('%Y-%m-%d') if p.ordered_at else '' }}">
+        </td>
+
         <td>
-          {% if d.purchase.status == 'ordered' %}
-            <span class="badge badge-tori">発注済</span>
-          {% elif d.purchase.status == 'arrived' %}
-            <span class="badge badge-ems">入荷済</span>
-          {% else %}
-            <span class="badge badge-alert">未発注</span>
-          {% endif %}
+          <select class="status-sel" onchange="saveStatus(this,'/purchases/update',{{ p.id }})">
+            <option value="ordered" {{ 'selected' if p.status=='ordered' }}>発注済</option>
+            <option value="arrived" {{ 'selected' if p.status=='arrived' }}>入荷済</option>
+          </select>
+        </td>
+
+        <td class="cell-edit" data-url="/purchases/update" data-field="memo" data-id="{{ p.id }}">
+          <span class="cell-val">{{ p.memo or '' }}</span>
+          <input class="cell-input" type="text" value="{{ p.memo or '' }}" style="width:120px;">
         </td>
       </tr>
       {% endfor %}
       {% if not purchase_data %}
-      <tr><td colspan="9" class="empty-state">発注データがありません</td></tr>
+      <tr><td colspan="10" class="empty-state">発注データがありません</td></tr>
       {% endif %}
     </tbody>
   </table>
 </div>
 
+<!-- ページネーション -->
+{% if total_pages > 1 %}
+<div style="padding:10px 20px;border-top:1px solid var(--border);
+            display:flex;align-items:center;gap:6px;background:var(--bg-secondary);flex-shrink:0;">
+  {% if page > 1 %}
+  <a href="?agent={{ agent }}&q={{ q }}&status={{ status_filter }}&page={{ page-1 }}" class="btn btn-sm">‹ 前へ</a>
+  {% endif %}
+  {% for p in range(1, total_pages+1) %}
+    {% if p == page %}
+    <span class="btn btn-sm" style="background:var(--text-primary);color:#fff;border-color:var(--text-primary);">{{ p }}</span>
+    {% elif p == 1 or p == total_pages or (p >= page-2 and p <= page+2) %}
+    <a href="?agent={{ agent }}&q={{ q }}&status={{ status_filter }}&page={{ p }}" class="btn btn-sm">{{ p }}</a>
+    {% elif p == 2 or p == total_pages-1 %}
+    <span style="color:var(--text-secondary);padding:0 2px;">…</span>
+    {% endif %}
+  {% endfor %}
+  {% if page < total_pages %}
+  <a href="?agent={{ agent }}&q={{ q }}&status={{ status_filter }}&page={{ page+1 }}" class="btn btn-sm">次へ ›</a>
+  {% endif %}
+  <span style="font-size:11px;color:var(--text-secondary);margin-left:4px;">
+    {{ page }} / {{ total_pages }} ページ（全{{ total }}件）
+  </span>
+</div>
+{% endif %}
+
+<!-- ファイルアップロードモーダル -->
+<div class="modal-overlay" id="upload-modal">
+  <div class="modal">
+    <h3 id="upload-modal-title">発注ファイル取込</h3>
+    <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;">
+      CloudikeからダウンロードしたExcelファイルを選択してください。<br>
+      対応形式: <strong>.xlsm / .xlsx</strong>
+    </p>
+    <div id="p-drop-zone" style="border:2px dashed var(--border);border-radius:var(--radius-md);
+         padding:20px;text-align:center;cursor:pointer;margin-bottom:12px;transition:all 0.2s;"
+         onclick="document.getElementById('upload-file-input').click()"
+         ondragover="pDropOver(event)" ondragleave="pDropLeave(event)" ondrop="pDrop(event)">
+      <div style="font-size:24px;margin-bottom:6px;">📂</div>
+      <div style="font-size:13px;color:var(--text-secondary);" id="p-drop-label">クリックまたはドラッグ＆ドロップ</div>
+    </div>
+    <input type="file" id="upload-file-input" accept=".xlsm,.xlsx,.xls" style="display:none"
+           onchange="pFileSelected(this.files[0])">
+    <div id="upload-preview" style="display:none;margin-bottom:12px;">
+      <p style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;">ファイル先頭プレビュー（列確認用）:</p>
+      <div id="upload-preview-table" style="overflow-x:auto;font-size:11px;"></div>
+    </div>
+    <div id="upload-status" style="font-size:12px;color:var(--accent-blue);min-height:18px;"></div>
+    <div class="modal-actions">
+      <button onclick="closeUploadModal()">キャンセル</button>
+      <button class="btn-info" onclick="previewUpload()" id="btn-preview">プレビュー</button>
+      <button class="btn-primary" onclick="executeUpload()" id="btn-upload">取込実行</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+let uploadType = '';
+let pSelectedFile = null;
+
+function pDropOver(e) {
+  e.preventDefault();
+  document.getElementById('p-drop-zone').style.borderColor = 'var(--accent-blue)';
+  document.getElementById('p-drop-zone').style.background = 'var(--accent-blue-bg)';
+}
+function pDropLeave(e) {
+  document.getElementById('p-drop-zone').style.borderColor = 'var(--border)';
+  document.getElementById('p-drop-zone').style.background = '';
+}
+function pDrop(e) {
+  e.preventDefault();
+  pDropLeave(e);
+  const file = e.dataTransfer.files[0];
+  if (file) pFileSelected(file);
+}
+function pFileSelected(file) {
+  pSelectedFile = file;
+  document.getElementById('p-drop-label').textContent = '✓ ' + file.name;
+  document.getElementById('upload-status').textContent = '';
+}
+
+async function syncNow(type) {
+  const btn = document.getElementById('btn-sync-now-' + type);
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ 取込中…'; }
+  try {
+    // ① ローカル同期エージェント（port 5050）を試みる
+    let ok = false;
+    try {
+      const r = await fetch('http://127.0.0.1:5050/sync', {
+        method: 'POST',
+        signal: AbortSignal.timeout(90000),
+      });
+      const d = await r.json();
+      showToast(d.ok ? '✓ ' + d.message : '⚠ ' + d.message, !d.ok);
+      if (d.ok && (d.purchase > 0 || d.ems > 0)) setTimeout(() => location.reload(), 1200);
+      ok = true;
+    } catch (_) {}
+
+    // ② フォールバック: VPS側フォルダスキャン（ローカル実行時）
+    if (!ok) {
+      const r = await fetch('/import/from_folder?type=' + type, { method: 'POST' });
+      const d = await r.json();
+      showToast(d.message || '完了');
+      if ((d.imported || 0) > 0) setTimeout(() => location.reload(), 1200);
+    }
+  } catch(e) {
+    showToast('エラー: ' + e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 今すぐ取込'; }
+  }
+}
+
 function allocatePurchases() {
   const ids = getCheckedIds('p');
-  if (ids.length === 0) { alert('引当する発注を選択してください'); return; }
+  if (!ids.length) { alert('引当する発注を選択してください'); return; }
   fetch('/purchases/allocate', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({purchase_ids: ids})
-  })
-  .then(r => r.json())
-  .then(data => {
-    alert('引当実行完了: ' + data.results.length + '件処理しました');
-    location.reload();
+  }).then(r=>r.json()).then(d=>{
+    showToast('引当実行完了: '+d.results.length+'件');
+    setTimeout(()=>location.reload(),1200);
   });
+}
+
+function showUploadModal(type) {
+  uploadType = type;
+  pSelectedFile = null;
+  document.getElementById('upload-modal-title').textContent =
+    type === 'purchase' ? '発注ファイル取込 (Watanabe_list_*.xlsm)' : 'EMSファイル取込 (EMS발송리스트_*.xlsx)';
+  document.getElementById('upload-file-input').value = '';
+  document.getElementById('p-drop-label').textContent = 'クリックまたはドラッグ＆ドロップ';
+  document.getElementById('upload-preview').style.display = 'none';
+  document.getElementById('upload-status').textContent = '';
+  document.getElementById('upload-modal').classList.add('active');
+}
+
+function closeUploadModal() {
+  document.getElementById('upload-modal').classList.remove('active');
+}
+
+function previewUpload() {
+  const file = pSelectedFile;
+  if (!file) { alert('ファイルを選択してください'); return; }
+  const fd = new FormData();
+  fd.append('file', file);
+  document.getElementById('upload-status').textContent = 'プレビュー読込中...';
+  fetch('/import/preview', {method:'POST', body: fd})
+  .then(r=>r.json())
+  .then(data=>{
+    if (data.error) { document.getElementById('upload-status').textContent = 'エラー: '+data.error; return; }
+    let html = '<table style="border-collapse:collapse;">';
+    data.rows.forEach((row, ri) => {
+      html += '<tr>';
+      row.forEach((cell, ci) => {
+        const bg = ri===0 ? 'var(--bg-secondary)' : 'white';
+        const fw = ri===0 ? '600' : 'normal';
+        html += `<td style="border:1px solid var(--border);padding:3px 6px;background:${bg};font-weight:${fw};">` +
+                `<small style="color:var(--text-secondary);">[${ci}]</small> ${cell ?? ''}` + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</table>';
+    document.getElementById('upload-preview-table').innerHTML = html;
+    document.getElementById('upload-preview').style.display = 'block';
+    document.getElementById('upload-status').textContent = '列番号を確認して取込実行してください';
+  });
+}
+
+function executeUpload() {
+  const file = pSelectedFile;
+  if (!file) { alert('ファイルを選択してください'); return; }
+  const url = uploadType === 'purchase' ? '/import/upload/daniel_purchase' : '/import/upload/daniel_ems';
+  const fd = new FormData();
+  fd.append('file', file);
+  document.getElementById('upload-status').textContent = '取込中...';
+  document.getElementById('btn-upload').disabled = true;
+  fetch(url, {method:'POST', body: fd})
+  .then(r=>r.json())
+  .then(data=>{
+    document.getElementById('btn-upload').disabled = false;
+    if (data.status === 'error') {
+      document.getElementById('upload-status').textContent = 'エラー: '+data.message;
+    } else {
+      showToast(data.message || data.imported+'件取込みました');
+      closeUploadModal();
+      setTimeout(()=>location.reload(), 1000);
+    }
+  })
+  .catch(()=>{ document.getElementById('btn-upload').disabled = false; });
 }
 </script>
 {% endblock %}

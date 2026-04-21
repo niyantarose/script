@@ -16,13 +16,25 @@ bp = Blueprint('japan_inventory', __name__, url_prefix='/japan')
 
 @bp.route('/')
 def index():
-    staging = db.session.query(
+    q = request.args.get('q', '').strip()
+    status_filter = request.args.get('status', '')
+
+    query = db.session.query(
         JapanInventoryStaging, EmsItem, Ems
     ).join(
         EmsItem, JapanInventoryStaging.ems_item_id == EmsItem.id
     ).join(
         Ems, EmsItem.ems_id == Ems.id
-    ).order_by(Ems.arrived_at.desc()).all()
+    )
+    if q:
+        query = query.filter(
+            JapanInventoryStaging.product_code.contains(q) |
+            Ems.ems_number.contains(q)
+        )
+    if status_filter:
+        query = query.filter(JapanInventoryStaging.status == status_filter)
+
+    staging = query.order_by(Ems.arrived_at.desc()).all()
 
     staging_data = []
     for jis, ei, e in staging:
@@ -39,7 +51,29 @@ def index():
             'assigned_order': assigned_order,
         })
 
-    return render_template('japan_inventory.html', staging_data=staging_data)
+    return render_template('japan_inventory.html', staging_data=staging_data,
+                           q=q, status_filter=status_filter)
+
+
+@bp.route('/update/<int:staging_id>', methods=['POST'])
+def update(staging_id):
+    jis = JapanInventoryStaging.query.get_or_404(staging_id)
+    data = request.get_json()
+    field, value = data.get('field'), data.get('value', '')
+    allowed = {'product_code', 'quantity'}
+    if field not in allowed:
+        return jsonify({'ok': False, 'error': 'field not allowed'}), 400
+    try:
+        if field == 'quantity':
+            jis.quantity = int(value)
+        else:
+            setattr(jis, field, value)
+        jis.updated_at = datetime.now()
+        db.session.commit()
+        return jsonify({'ok': True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @bp.route('/update_status', methods=['POST'])

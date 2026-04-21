@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% set active_page = "order_search" %}
+
+{% block content %}
+<div class="topbar">
+  <span class="page-title">注文検索</span>
+</div>
+
+<div class="search-panel">
+  <form method="get" class="search-form">
+    <div class="search-fields">
+      <div class="search-field">
+        <label for="order_no">注文番号</label>
+        <input type="text" id="order_no" name="order_no" value="{{ order_no }}" placeholder="例：yjp-12345">
+      </div>
+      <div class="search-field">
+        <label for="customer">お客様名</label>
+        <input type="text" id="customer" name="customer" value="{{ customer }}" placeholder="お客様名で検索">
+      </div>
+      <div class="search-field">
+        <label for="product_code">商品コード</label>
+        <input type="text" id="product_code" name="product_code" value="{{ product_code }}" placeholder="例：KR-001">
+      </div>
+    </div>
+    <div class="search-actions">
+      <button type="submit" class="btn-primary">検索</button>
+      {% if searched %}<a href="{{ url_for('order_search.index') }}" class="btn">クリア</a>{% endif %}
+    </div>
+  </form>
+</div>
+
+{% if searched %}
+<div class="search-result-info">
+  {{ results|length }} 件の注文が見つかりました
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>注文番号</th>
+        <th>注文日</th>
+        <th>お客様名</th>
+        <th style="width:50px;text-align:center;">No.</th>
+        <th>商品コード</th>
+        <th style="width:60px;text-align:center;">数量</th>
+        <th>配送ステータス</th>
+        <th>注文ステータス</th>
+        <th>入荷EMS番号</th>
+        <th>経過日数</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for g in results %}
+        {% set o = g.order %}
+        {% for item in g.order_items %}
+        <tr class="order-group-{{ loop.index0 % 2 }}
+                   {{ 'delay-red' if o.days_elapsed >= 10 else ('delay-yellow' if o.days_elapsed >= 7 else '') }}
+                   {{ 'order-first-row' if loop.first else '' }}
+                   {{ 'order-last-row' if loop.last else '' }}">
+          <td {% if o.days_elapsed >= 10 %}style="color:var(--accent-red);font-weight:600;"{% endif %}>
+            {% if loop.first %}{{ o.yahoo_order_id }}{% endif %}
+          </td>
+          <td>{% if loop.first %}{{ o.ordered_at.strftime('%Y/%m/%d') }}{% endif %}</td>
+          <td>{% if loop.first %}{{ o.customer_name or '' }}{% endif %}</td>
+          <td style="text-align:center;color:var(--text-secondary);">{{ loop.index }}</td>
+          <td>{{ item.product_code }}</td>
+          <td style="text-align:center;">{{ item.quantity }}</td>
+          <td>{% if loop.first %}{{ o.yahoo_ship_status or '—' }}{% endif %}</td>
+          <td>
+            {% if loop.first %}
+              {% if item.status == 'fully_allocated' %}
+                <span class="badge badge-done">引当完了</span>
+              {% elif item.status == 'allocated_sokunou' %}
+                <span class="badge badge-sokunou">即納引当済</span>
+              {% elif item.status == 'provisional_allocated' %}
+                <span class="badge badge-tori">仮引当済</span>
+              {% elif item.status == 'partial_waiting' %}
+                <span class="badge badge-tori">EMS待ち</span>
+              {% elif item.status == 'shortage' %}
+                <span class="badge badge-alert">在庫不足</span>
+              {% elif item.status == 'shipped' %}
+                <span class="badge badge-done">発送完了</span>
+              {% else %}
+                <span class="badge badge-alert">{{ item.status_label }}</span>
+              {% endif %}
+            {% endif %}
+          </td>
+          <td>{% if loop.first %}{{ g.ems_numbers or '—' }}{% endif %}</td>
+          <td>{% if loop.first %}{{ o.days_elapsed }}日{% endif %}</td>
+        </tr>
+        {% endfor %}
+        {% if not loop.last %}
+        <tr class="order-divider"><td colspan="10"></td></tr>
+        {% endif %}
+      {% endfor %}
+      {% if not results %}
+      <tr><td colspan="10" class="empty-state">該当する注文はありません</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty-state" style="padding:80px 20px;">
+  注文番号・お客様名・商品コードのいずれかを入力して検索してください
+</div>
+{% endif %}
+{% endblock %}

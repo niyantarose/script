@@ -3,58 +3,355 @@
 
 {% block content %}
 <div class="topbar">
-  <span class="page-title">EMSリスト</span>
+  <span class="page-title">{{ agent_label }}EMSリスト</span>
   <div class="topbar-actions">
-    <a href="{{ url_for('ems.export_csv') }}" class="btn">CSV出力</a>
+    {% if agent == 'daniel' %}
+    <button class="btn-success" id="btn-sync-now-ems" onclick="syncNow('ems')">🔄 今すぐ取込</button>
+    <button class="btn-info" onclick="showEmsUploadModal()">📁 ファイル指定</button>
+    {% else %}
+    <button onclick="importData('/import/google_ems','テグEMS取込')">データ取込</button>
+    {% endif %}
+    <a href="{{ url_for('ems.export_csv') }}?agent={{ agent }}" class="btn">CSV出力</a>
   </div>
 </div>
 
-<div class="toolbar">
-  <input type="checkbox" id="chk-all-e" onchange="toggleAll('e', this.checked)">
-  <label for="chk-all-e">全選択</label>
-  <button onclick="clearAll('e')">全解除</button>
-  <span class="sel-count" id="sel-count-e">0件選択中</span>
+<!-- 検索バー -->
+<div class="filter-bar" style="padding:8px 20px;gap:8px;">
+  <form method="get" style="display:flex;gap:6px;align-items:center;flex:1;">
+    <input type="hidden" name="agent" value="{{ agent }}">
+    <input type="text" name="q" value="{{ q }}"
+           placeholder="EMS番号・商品コード・商品名" style="width:240px;">
+    <select name="status">
+      <option value="">全ステータス</option>
+      <option value="in_transit" {{ 'selected' if status_filter=='in_transit' }}>輸送中</option>
+      <option value="arrived"    {{ 'selected' if status_filter=='arrived'    }}>入荷済</option>
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">検索</button>
+    {% if q or status_filter %}
+    <a href="{{ url_for('ems.index', agent=agent) }}" class="btn btn-sm">クリア</a>
+    {% endif %}
+  </form>
+  <span style="font-size:12px;color:var(--text-secondary);">全 {{ total }} 箱</span>
 </div>
 
-<div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th style="width:36px;"></th>
-        <th>EMS番号</th>
-        <th>発送日</th>
-        <th>到着予定日</th>
-        <th>入荷日</th>
-        <th>商品コード</th>
-        <th>数量</th>
-        <th>引当先受注番号</th>
-        <th>ステータス</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for d in ems_data %}
-      <tr>
-        <td><input type="checkbox" class="row-chk-e" data-id="{{ d.ems_item.id }}" onchange="updateCount('e')"></td>
-        <td>{{ d.ems.ems_number }}</td>
-        <td>{{ d.ems.shipped_at.strftime('%Y/%m/%d') if d.ems.shipped_at else '' }}</td>
-        <td>{{ d.ems.estimated_arrival.strftime('%Y/%m/%d') if d.ems.estimated_arrival else '' }}</td>
-        <td>{{ d.ems.arrived_at.strftime('%Y/%m/%d') if d.ems.arrived_at else '' }}</td>
-        <td>{{ d.ems_item.product_code }}</td>
-        <td>{{ d.ems_item.quantity }}</td>
-        <td>{{ d.order.yahoo_order_id }}</td>
-        <td>
-          {% if d.ems.status == 'arrived' %}
-            <span class="badge badge-ems">入荷済</span>
-          {% else %}
-            <span class="badge badge-tori">輸送中</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-      {% if not ems_data %}
-      <tr><td colspan="9" class="empty-state">EMSデータがありません</td></tr>
+<!-- EMSボックスリスト -->
+<div class="table-wrap" style="padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
+
+  {% for box in boxes %}
+  {% set e = box.ems %}
+
+  <div class="ems-box {{ 'ems-box-overdue' if box.is_overdue else ('ems-box-arrived' if e.status=='arrived' else '') }}">
+
+    <!-- ヘッダー行（クリックで展開/折りたたみ） -->
+    <div class="ems-box-header" onclick="toggleBox({{ e.id }})">
+      <div class="ems-box-left">
+        <span class="ems-num">{{ e.ems_number }}</span>
+        {% if e.status == 'arrived' %}
+          <span class="badge badge-done">入荷済</span>
+        {% elif box.is_overdue %}
+          <span class="badge badge-alert">⚠ 遅延{{ box.days_in_transit }}日</span>
+        {% else %}
+          <span class="badge badge-ems">輸送中 {{ box.days_in_transit }}日目</span>
+        {% endif %}
+        <span class="ems-item-count">{{ box.rows|length }}件</span>
+      </div>
+      <div class="ems-box-dates">
+        <span title="発送日">📦 {{ e.shipped_at.strftime('%m/%d') if e.shipped_at else '—' }}</span>
+        <span style="color:var(--text-secondary);">→</span>
+        <span title="到着予定日" class="{{ 'overdue-date' if box.is_overdue else '' }}">
+          🎯 {{ e.estimated_arrival.strftime('%m/%d') if e.estimated_arrival else '—' }}
+        </span>
+        {% if e.arrived_at %}
+        <span title="入荷日" style="color:var(--accent-green);">
+          ✓ {{ e.arrived_at.strftime('%m/%d') }}
+        </span>
+        {% endif %}
+      </div>
+      <div class="ems-box-toggle" id="toggle-{{ e.id }}">▼</div>
+    </div>
+
+    <!-- アイテム一覧（展開部分） -->
+    <div class="ems-box-items" id="box-{{ e.id }}">
+      {% if box.rows %}
+      <table class="ems-items-table">
+        <thead>
+          <tr>
+            <th style="width:110px;">구매日</th>
+            <th style="width:130px;">구매番号</th>
+            <th style="width:150px;">商品コード</th>
+            <th style="width:50px;text-align:center;">数量</th>
+            <th>受注番号</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in box.rows %}
+          {% set ei = row.ems_item %}
+          {% set o  = row.order %}
+          <tr>
+            {# ── 구매日 作成日（B列: Wata260418 形式） ── #}
+            <td style="font-family:monospace;font-size:12px;color:var(--text-secondary);">
+              {{ ei.purchase_date if ei and ei.purchase_date else '—' }}
+            </td>
+            {# ── 구매番号（F列: Wata260418_07 形式） ── #}
+            <td style="font-family:monospace;font-size:12px;font-weight:600;color:var(--accent-blue);">
+              {{ ei.purchase_no if ei and ei.purchase_no else '—' }}
+            </td>
+            <td class="cell-edit" data-url="/ems/update/item" data-field="product_code" data-id="{{ ei.id if ei else '' }}">
+              <span class="cell-val" style="font-family:monospace;font-size:12px;">{{ ei.product_code if ei else '—' }}</span>
+              <input class="cell-input" type="text" value="{{ ei.product_code if ei else '' }}">
+            </td>
+            <td class="cell-edit" style="text-align:center;" data-url="/ems/update/item" data-field="quantity" data-id="{{ ei.id if ei else '' }}">
+              <span class="cell-val">{{ ei.quantity if ei else '—' }}</span>
+              <input class="cell-input" type="number" min="1" value="{{ ei.quantity if ei else 1 }}" style="width:50px;">
+            </td>
+            <td style="font-size:12px;color:var(--text-secondary);">
+              {{ o.yahoo_order_id if o else (e.order_id or '—') }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div style="padding:8px 16px;font-size:12px;color:var(--text-secondary);">商品未紐付け</div>
       {% endif %}
-    </tbody>
-  </table>
+
+      <!-- EMS編集フォーム（折りたたみ内下部） -->
+      <div class="ems-edit-row">
+        <label>発送日
+          <input type="date" value="{{ e.shipped_at.strftime('%Y-%m-%d') if e.shipped_at else '' }}"
+                 onchange="saveEmsField({{ e.id }},'shipped_at',this.value)">
+        </label>
+        <label>到着予定日
+          <input type="date" value="{{ e.estimated_arrival.strftime('%Y-%m-%d') if e.estimated_arrival else '' }}"
+                 onchange="saveEmsField({{ e.id }},'estimated_arrival',this.value)">
+        </label>
+        <label>入荷日
+          <input type="date" value="{{ e.arrived_at.strftime('%Y-%m-%d') if e.arrived_at else '' }}"
+                 onchange="saveEmsField({{ e.id }},'arrived_at',this.value)">
+        </label>
+        <label>ステータス
+          <select onchange="saveEmsField({{ e.id }},'status',this.value)">
+            <option value="in_transit" {{ 'selected' if e.status=='in_transit' }}>輸送中</option>
+            <option value="arrived"    {{ 'selected' if e.status=='arrived'    }}>入荷済</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  {% if not boxes %}
+  <div class="empty-state">EMSデータがありません</div>
+  {% endif %}
 </div>
+
+<!-- ページネーション -->
+{% if total_pages > 1 %}
+<div style="padding:10px 20px;border-top:1px solid var(--border);
+            display:flex;align-items:center;gap:6px;background:var(--bg-secondary);flex-shrink:0;">
+  {% if page > 1 %}
+  <a href="?agent={{ agent }}&q={{ q }}&status={{ status_filter }}&page={{ page-1 }}" class="btn btn-sm">‹</a>
+  {% endif %}
+  {% for p in range(1, total_pages+1) %}
+    {% if p == page %}
+    <span class="btn btn-sm" style="background:var(--text-primary);color:#fff;border-color:var(--text-primary);">{{ p }}</span>
+    {% elif p == 1 or p == total_pages or (p >= page-2 and p <= page+2) %}
+    <a href="?agent={{ agent }}&q={{ q }}&status={{ status_filter }}&page={{ p }}" class="btn btn-sm">{{ p }}</a>
+    {% elif p == 2 or p == total_pages-1 %}
+    <span style="color:var(--text-secondary);padding:0 2px;">…</span>
+    {% endif %}
+  {% endfor %}
+  {% if page < total_pages %}
+  <a href="?agent={{ agent }}&q={{ q }}&status={{ status_filter }}&page={{ page+1 }}" class="btn btn-sm">›</a>
+  {% endif %}
+  <span style="font-size:11px;color:var(--text-secondary);margin-left:4px;">
+    {{ page }} / {{ total_pages }} ページ（{{ total }}箱）
+  </span>
+</div>
+{% endif %}
+
+<!-- EMSファイルアップロードモーダル -->
+<div class="modal-overlay" id="ems-upload-modal">
+  <div class="modal">
+    <h3>EMSファイル取込 (EMS발송리스트_*.xlsx)</h3>
+    <div id="ems-drop-zone" style="border:2px dashed var(--border);border-radius:var(--radius-md);
+         padding:20px;text-align:center;cursor:pointer;margin-bottom:12px;"
+         onclick="document.getElementById('ems-file-input').click()"
+         ondragover="emsDropOver(event)" ondragleave="emsDropLeave(event)" ondrop="emsDrop(event)">
+      <div style="font-size:24px;margin-bottom:6px;">📂</div>
+      <div style="font-size:13px;color:var(--text-secondary);" id="ems-drop-label">クリックまたはドラッグ＆ドロップ</div>
+    </div>
+    <input type="file" id="ems-file-input" accept=".xlsx,.xls" style="display:none"
+           onchange="emsFileSelected(this.files[0])">
+    <div id="ems-upload-status" style="font-size:12px;color:var(--accent-blue);min-height:18px;"></div>
+    <div class="modal-actions">
+      <button onclick="closeEmsUploadModal()">キャンセル</button>
+      <button class="btn-primary" onclick="emsExecuteUpload()" id="ems-btn-upload">取込実行</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+/* ── EMS箱スタイル ── */
+.ems-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+.ems-box-overdue  { border-color: #fca5a5; }
+.ems-box-arrived  { border-color: var(--border-light); }
+
+.ems-box-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-light);
+  user-select: none;
+}
+.ems-box-header:hover { background: var(--bg-primary); }
+.ems-box-arrived .ems-box-header { background: var(--bg-secondary); }
+.ems-box-overdue .ems-box-header { background: #fef2f2; }
+
+.ems-num { font-family: monospace; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ems-item-count { font-size: 12px; color: var(--text-secondary); }
+.ems-box-left  { display: flex; align-items: center; gap: 8px; flex: 1; }
+.ems-box-dates { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); }
+.ems-box-toggle { font-size: 13px; color: var(--text-primary); transition: transform 0.15s; }
+.ems-box-toggle.open { transform: rotate(180deg); }
+
+.ems-box-items { display: none; }
+.ems-box-items.open { display: block; }
+
+.ems-items-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ems-items-table th {
+  padding: 6px 14px; text-align: left; font-size: 12px;
+  font-weight: 500; color: var(--text-secondary);
+  background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+}
+.ems-items-table td {
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+.ems-items-table tr:last-child td { border-bottom: none; }
+.ems-items-table tr:hover td { background: var(--bg-secondary); }
+
+.ems-edit-row {
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  padding: 8px 14px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-light);
+  font-size: 12px;
+}
+.ems-edit-row label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+.ems-edit-row input[type=date], .ems-edit-row select {
+  font-size: 12px; padding: 3px 6px;
+}
+</style>
+
+<script>
+// ── 展開/折りたたみ ──────────────────────────────────────────
+function toggleBox(id) {
+  const items  = document.getElementById('box-' + id);
+  const toggle = document.getElementById('toggle-' + id);
+  const open   = items.classList.toggle('open');
+  toggle.classList.toggle('open', open);
+}
+
+// デフォルト: 輸送中の箱は展開、入荷済みは折りたたみ
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.ems-box').forEach(box => {
+    // arrived クラスがなければ（= 輸送中か遅延）展開
+    if (!box.classList.contains('ems-box-arrived')) {
+      const m = box.querySelector('.ems-box-header');
+      if (m) {
+        const id = m.getAttribute('onclick').match(/\d+/)[0];
+        toggleBox(id);
+      }
+    }
+  });
+});
+
+// ── EMS フィールド保存 ─────────────────────────────────────
+function saveEmsField(id, field, value) {
+  fetch('/ems/update/ems/' + id, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({field, value}),
+  }).then(r => r.json()).then(d => {
+    if (d.ok) showToast('保存しました');
+    else      showToast('エラー: ' + d.error, true);
+  });
+}
+
+// ── 今すぐ取込（ローカル同期エージェント経由） ──────────────
+async function syncNow(type) {
+  const btn = document.getElementById('btn-sync-now-' + type);
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ 取込中…'; }
+  try {
+    // ① ローカル同期エージェント（port 5050）を試みる
+    let ok = false;
+    try {
+      const r = await fetch('http://127.0.0.1:5050/sync', {
+        method: 'POST',
+        signal: AbortSignal.timeout(90000),
+      });
+      const d = await r.json();
+      showToast(d.ok ? '✓ ' + d.message : '⚠ ' + d.message, !d.ok);
+      if (d.ok && (d.purchase > 0 || d.ems > 0)) setTimeout(() => location.reload(), 1200);
+      ok = true;
+    } catch (_) {}
+
+    // ② フォールバック: VPS側フォルダスキャン（ローカル実行時）
+    if (!ok) {
+      const r = await fetch('/import/from_folder?type=' + type, { method: 'POST' });
+      const d = await r.json();
+      showToast(d.message || '完了');
+      if ((d.imported || 0) > 0) setTimeout(() => location.reload(), 1200);
+    }
+  } catch(e) {
+    showToast('エラー: ' + e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 今すぐ取込'; }
+  }
+}
+
+let emsSelectedFile = null;
+function showEmsUploadModal() {
+  emsSelectedFile = null;
+  document.getElementById('ems-file-input').value = '';
+  document.getElementById('ems-drop-label').textContent = 'クリックまたはドラッグ＆ドロップ';
+  document.getElementById('ems-upload-status').textContent = '';
+  document.getElementById('ems-upload-modal').classList.add('active');
+}
+function closeEmsUploadModal() { document.getElementById('ems-upload-modal').classList.remove('active'); }
+function emsDropOver(e)  { e.preventDefault(); }
+function emsDropLeave(e) {}
+function emsDrop(e) { e.preventDefault(); const f=e.dataTransfer.files[0]; if(f) emsFileSelected(f); }
+function emsFileSelected(file) {
+  emsSelectedFile = file;
+  document.getElementById('ems-drop-label').textContent = '✓ ' + file.name;
+}
+function emsExecuteUpload() {
+  if (!emsSelectedFile) { alert('ファイルを選択してください'); return; }
+  const fd = new FormData();
+  fd.append('file', emsSelectedFile);
+  document.getElementById('ems-upload-status').textContent = '取込中...';
+  document.getElementById('ems-btn-upload').disabled = true;
+  fetch('/import/upload/daniel_ems',{method:'POST',body:fd})
+    .then(r=>r.json()).then(data=>{
+      document.getElementById('ems-btn-upload').disabled = false;
+      if (data.status==='error') {
+        document.getElementById('ems-upload-status').textContent = 'エラー: '+data.message;
+      } else {
+        showToast(data.message||data.imported+'件取込みました');
+        closeEmsUploadModal();
+        setTimeout(()=>location.reload(),1000);
+      }
+    }).catch(()=>{ document.getElementById('ems-btn-upload').disabled=false; });
+}
+</script>
 {% endblock %}

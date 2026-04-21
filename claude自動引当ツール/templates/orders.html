@@ -5,6 +5,8 @@
 <div class="topbar">
   <span class="page-title">受注リスト</span>
   <div class="topbar-actions">
+    <span id="sync-status" style="font-size:12px;color:var(--text-secondary);"></span>
+    <button class="btn btn-success btn-sm" onclick="syncOrders()">⟳ 今すぐ更新</button>
     <button class="btn-success" onclick="allocateOrders()">引当実行</button>
     <a href="{{ url_for('orders.export_csv') }}" class="btn">CSV出力</a>
   </div>
@@ -15,6 +17,23 @@
   <label for="chk-all-o">全選択</label>
   <button onclick="clearAll('o')">全解除</button>
   <span class="sel-count" id="sel-count-o">0件選択中</span>
+  <div style="margin-left:auto;">
+    <form method="get" style="display:flex;gap:6px;align-items:center;">
+      <input type="text" name="q" value="{{ q }}" placeholder="注文番号・お客様名・商品コード" style="width:240px;">
+      <select name="status">
+        <option value="">全ステータス</option>
+        <option value="pending"               {{ 'selected' if status_filter=='pending'               }}>引当待ち</option>
+        <option value="provisional_allocated" {{ 'selected' if status_filter=='provisional_allocated' }}>仮引当済</option>
+        <option value="allocated_sokunou"     {{ 'selected' if status_filter=='allocated_sokunou'     }}>即納引当済</option>
+        <option value="partial_waiting"       {{ 'selected' if status_filter=='partial_waiting'       }}>EMS待ち</option>
+        <option value="shortage"              {{ 'selected' if status_filter=='shortage'              }}>在庫不足</option>
+        <option value="fully_allocated"       {{ 'selected' if status_filter=='fully_allocated'       }}>引当完了</option>
+        <option value="shipped"               {{ 'selected' if status_filter=='shipped'               }}>発送完了</option>
+      </select>
+      <button type="submit">検索</button>
+      {% if q or status_filter %}<a href="{{ url_for('orders.index') }}" class="btn">クリア</a>{% endif %}
+    </form>
+  </div>
 </div>
 
 <div class="table-wrap">
@@ -23,51 +42,90 @@
       <tr>
         <th style="width:36px;"></th>
         <th>注文番号</th>
+        <th>注文日</th>
+        <th>お客様名</th>
+        <th style="width:50px;text-align:center;">No.</th>
         <th>商品コード</th>
-        <th>商品名</th>
-        <th>数量</th>
+        <th style="width:60px;text-align:center;">数量</th>
         <th>配送ステータス</th>
-        <th>引当状況</th>
+        <th>注文ステータス</th>
+        <th>入荷EMS番号</th>
         <th>経過日数</th>
       </tr>
     </thead>
     <tbody>
-      {% for d in order_data %}
-      <tr class="{{ 'delay-red' if d.order.days_elapsed >= 10 else ('delay-yellow' if d.order.days_elapsed >= 7 else '') }}">
-        <td><input type="checkbox" class="row-chk-o" data-id="{{ d.item.id }}" onchange="updateCount('o')"></td>
-        <td {% if d.order.days_elapsed >= 10 %}style="color:var(--accent-red);font-weight:500;"{% endif %}>{{ d.order.yahoo_order_id }}</td>
-        <td>{{ d.item.product_code }}</td>
-        <td>{{ d.item.product_name or '' }}</td>
-        <td>{{ d.item.quantity }}</td>
-        <td>
-          {% if d.item.inventory_type == '即納' %}
-            即納（日本在庫）
+      {% for g in grouped %}
+        {% set o = g.order %}
+        {% set order_items = g.order_items %}
+        {% set ems_nums = g.ems_numbers %}
+        {% for item in order_items %}
+        <tr class="data-row order-group-{{ loop.index0 % 2 }}
+                   {{ 'delay-red' if o.days_elapsed >= 10 else ('delay-yellow' if o.days_elapsed >= 7 else '') }}
+                   {{ 'order-first-row' if loop.first else '' }}
+                   {{ 'order-last-row' if loop.last else '' }}">
+
+          <td><input type="checkbox" class="row-chk-o" data-id="{{ item.id }}" onchange="updateCount('o')"></td>
+
+          <td {% if o.days_elapsed >= 10 %}style="color:var(--accent-red);font-weight:600;"{% endif %}>
+            {% if loop.first %}{{ o.yahoo_order_id }}{% endif %}
+          </td>
+
+          <td>{% if loop.first %}{{ o.ordered_at.strftime('%Y/%m/%d') }}{% endif %}</td>
+
+          {% if loop.first %}
+          <td class="cell-edit" data-url="/orders/update/order" data-field="customer_name" data-id="{{ o.id }}">
+            <span class="cell-val">{{ o.customer_name or '' }}</span>
+            <input class="cell-input" type="text" value="{{ o.customer_name or '' }}">
+          </td>
           {% else %}
-            お取り寄せ（韓国）
+          <td></td>
           {% endif %}
-        </td>
-        <td>
-          {% if d.item.status == 'fully_allocated' %}
-            <span class="badge badge-done">引当完了</span>
-          {% elif d.item.status == 'allocated_sokunou' %}
-            <span class="badge badge-sokunou">即納引当済</span>
-          {% elif d.item.status == 'provisional_allocated' %}
-            <span class="badge badge-tori">仮引当済</span>
-          {% elif d.item.status == 'partial_waiting' %}
-            <span class="badge badge-tori">EMS待ち</span>
-          {% elif d.item.status == 'shortage' %}
-            <span class="badge badge-alert">在庫不足</span>
-          {% elif d.item.status == 'shipped' %}
-            <span class="badge badge-done">発送完了</span>
+
+          <td style="text-align:center;color:var(--text-secondary);">{{ loop.index }}</td>
+
+          <td class="cell-edit" data-url="/orders/update/item" data-field="product_code" data-id="{{ item.id }}">
+            <span class="cell-val">{{ item.product_code }}</span>
+            <input class="cell-input" type="text" value="{{ item.product_code }}">
+          </td>
+
+          <td class="cell-edit" style="text-align:center;" data-url="/orders/update/item" data-field="quantity" data-id="{{ item.id }}">
+            <span class="cell-val">{{ item.quantity }}</span>
+            <input class="cell-input" type="number" min="1" value="{{ item.quantity }}" style="width:50px;">
+          </td>
+
+          {% if loop.first %}
+          <td class="cell-edit" data-url="/orders/update/order" data-field="yahoo_ship_status" data-id="{{ o.id }}">
+            <span class="cell-val">{{ o.yahoo_ship_status or '—' }}</span>
+            <input class="cell-input" type="text" value="{{ o.yahoo_ship_status or '' }}">
+          </td>
           {% else %}
-            <span class="badge badge-alert">{{ d.item.status_label }}</span>
+          <td></td>
           {% endif %}
-        </td>
-        <td>{{ d.order.days_elapsed }}日</td>
-      </tr>
+
+          <td>
+            <select class="status-sel" onchange="saveStatus(this,'/orders/update/item',{{ item.id }})">
+              <option value="pending"               {{ 'selected' if item.status=='pending'               }}>引当待ち</option>
+              <option value="provisional_allocated" {{ 'selected' if item.status=='provisional_allocated' }}>仮引当済</option>
+              <option value="allocated_sokunou"     {{ 'selected' if item.status=='allocated_sokunou'     }}>即納引当済</option>
+              <option value="partial_waiting"       {{ 'selected' if item.status=='partial_waiting'       }}>EMS待ち</option>
+              <option value="priority_hold"         {{ 'selected' if item.status=='priority_hold'         }}>先送り待機</option>
+              <option value="shortage"              {{ 'selected' if item.status=='shortage'              }}>在庫不足</option>
+              <option value="fully_allocated"       {{ 'selected' if item.status=='fully_allocated'       }}>引当完了</option>
+              <option value="shipped"               {{ 'selected' if item.status=='shipped'               }}>発送完了</option>
+            </select>
+          </td>
+
+          <td>{% if loop.first %}{{ ems_nums or '—' }}{% endif %}</td>
+
+          <td>{% if loop.first %}{{ o.days_elapsed }}日{% endif %}</td>
+        </tr>
+        {% endfor %}
+        {% if not loop.last %}
+        <tr class="order-divider"><td colspan="11"></td></tr>
+        {% endif %}
       {% endfor %}
-      {% if not order_data %}
-      <tr><td colspan="8" class="empty-state">受注データがありません</td></tr>
+      {% if not grouped %}
+      <tr><td colspan="11" class="empty-state">受注データがありません</td></tr>
       {% endif %}
     </tbody>
   </table>
@@ -76,6 +134,36 @@
 
 {% block scripts %}
 <script>
+async function syncOrders() {
+  const btn = document.querySelector('[onclick="syncOrders()"]');
+  const st  = document.getElementById('sync-status');
+  btn.disabled = true;
+  st.textContent = '⟳ 更新中…';
+  try {
+    const res  = await fetch('/import/yahoo_orders', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({days: 30}),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      st.textContent = `✓ ${data.imported_orders}件新規 / 引当:即納${(data.alloc||{}).fully_allocated||0}件`;
+      st.style.color = 'var(--accent-green)';
+      if ((data.imported_orders || 0) > 0) {
+        setTimeout(() => location.reload(), 1000);
+      }
+    } else {
+      st.textContent = 'エラー: ' + data.message;
+      st.style.color = 'var(--accent-red)';
+    }
+  } catch(e) {
+    st.textContent = 'エラー: ' + e.message;
+    st.style.color = 'var(--accent-red)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function allocateOrders() {
   const ids = getCheckedIds('o');
   if (ids.length === 0) { alert('引当する受注を選択してください'); return; }
@@ -86,8 +174,8 @@ function allocateOrders() {
   })
   .then(r => r.json())
   .then(data => {
-    alert('引当実行完了: ' + data.results.length + '件処理しました');
-    location.reload();
+    showToast('引当実行完了: ' + data.results.length + '件処理しました');
+    setTimeout(() => location.reload(), 1200);
   });
 }
 </script>

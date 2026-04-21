@@ -105,14 +105,18 @@ def seed():
         db.session.add_all([p1, p2, p3, p4])
         db.session.flush()
 
-        # === EMS便 ===
+        # === EMS便 ===（到着予定は発送日+3日 = 中2日）
         e1 = Ems(ems_number='EMS240408', shipped_at=date(2026, 4, 8),
-                 estimated_arrival=date(2026, 4, 10), arrived_at=date(2026, 4, 10),
+                 estimated_arrival=date(2026, 4, 11), arrived_at=date(2026, 4, 11),
                  status='arrived')
         e2 = Ems(ems_number='EMS240412', shipped_at=date(2026, 4, 12),
-                 estimated_arrival=date(2026, 4, 14), arrived_at=None,
+                 estimated_arrival=date(2026, 4, 15), arrived_at=None,
                  status='in_transit')
-        db.session.add_all([e1, e2])
+        # 遅延デモ用：発送から11日経過・未入荷
+        e3 = Ems(ems_number='EMS240403', shipped_at=date(2026, 4, 3),
+                 estimated_arrival=date(2026, 4, 6), arrived_at=None,
+                 status='in_transit')
+        db.session.add_all([e1, e2, e3])
         db.session.flush()
 
         # === EMS明細 ===
@@ -124,7 +128,9 @@ def seed():
                       product_code='MRBLUE40_3', quantity=4)
         ei4 = EmsItem(ems_id=e2.id, order_item_id=oi12.id,
                       product_code='MRBLUE40_8', quantity=30)
-        db.session.add_all([ei1, ei2, ei3, ei4])
+        ei5 = EmsItem(ems_id=e3.id, order_item_id=oi1.id,
+                      product_code='TWF0076-CM-20', quantity=1)
+        db.session.add_all([ei1, ei2, ei3, ei4, ei5])
         db.session.flush()
 
         # === 在庫 ===

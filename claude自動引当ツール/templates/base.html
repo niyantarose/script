@@ -11,21 +11,49 @@
     <div class="sidebar">
       <div class="sidebar-logo">在庫引当ツール</div>
       <a href="{{ url_for('dashboard.index') }}" class="nav-item {{ 'active' if active_page == 'dashboard' }}">ダッシュボード</a>
-      <a href="{{ url_for('purchases.index') }}" class="nav-item {{ 'active' if active_page == 'purchases' }}">
-        発注リスト
+      <a href="{{ url_for('order_search.index') }}" class="nav-item {{ 'active' if active_page == 'order_search' }}">注文検索</a>
+      <a href="{{ url_for('orders.index') }}" class="nav-item {{ 'active' if active_page == 'orders' }}">
+        受注リスト
         {% if purchase_missing_count is defined and purchase_missing_count > 0 %}
           <span class="nav-badge">{{ purchase_missing_count }}</span>
         {% endif %}
       </a>
-      <a href="{{ url_for('orders.index') }}" class="nav-item {{ 'active' if active_page == 'orders' }}">受注リスト</a>
-      <a href="{{ url_for('ems.index') }}" class="nav-item {{ 'active' if active_page == 'ems' }}">EMSリスト</a>
+
+      <div class="nav-section-label">ダニエル</div>
+      <a href="{{ url_for('purchases.index', agent='daniel') }}" class="nav-item nav-sub {{ 'active' if active_page == 'purchases' and request.args.get('agent','daniel') == 'daniel' }}">発注リスト</a>
+      <a href="{{ url_for('ems.index', agent='daniel') }}" class="nav-item nav-sub {{ 'active' if active_page == 'ems' and request.args.get('agent','daniel') == 'daniel' }}">EMSリスト</a>
+
+      <div class="nav-section-label">テグ</div>
+      <a href="{{ url_for('purchases.index', agent='tegu') }}" class="nav-item nav-sub {{ 'active' if active_page == 'purchases' and request.args.get('agent') == 'tegu' }}">発注リスト</a>
+      <a href="{{ url_for('ems.index', agent='tegu') }}" class="nav-item nav-sub {{ 'active' if active_page == 'ems' and request.args.get('agent') == 'tegu' }}">EMSリスト</a>
+
       <a href="{{ url_for('japan_inventory.index') }}" class="nav-item {{ 'active' if active_page == 'japan' }}">日本在庫管理</a>
+      <a href="{{ url_for('stock.index') }}" class="nav-item {{ 'active' if active_page == 'stock' }}">在庫リアルタイム確認</a>
+
+      <div class="font-switcher">
+        <span>文字</span>
+        <button class="fs-btn" id="fs-sm" onclick="setFont('sm')">小</button>
+        <button class="fs-btn" id="fs-md" onclick="setFont('md')">中</button>
+        <button class="fs-btn" id="fs-lg" onclick="setFont('lg')">大</button>
+      </div>
     </div>
     <div class="main">
       {% block content %}{% endblock %}
     </div>
   </div>
+  <div id="toast" class="toast"></div>
   <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  <script>
+    function setFont(size) {
+      document.documentElement.className = 'font-' + size;
+      localStorage.setItem('fontSize', size);
+      ['sm','md','lg'].forEach(s => {
+        const btn = document.getElementById('fs-' + s);
+        if (btn) btn.classList.toggle('active', s === size);
+      });
+    }
+    (function() { setFont(localStorage.getItem('fontSize') || 'md'); })();
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
