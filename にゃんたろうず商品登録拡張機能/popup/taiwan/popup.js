@@ -9,7 +9,7 @@ let gasSyncSuccessClearTimer = null;
 let sendToSheetRequestInFlight = false;
 
 async function ensurePopupSharedReady() {
-  const requiredNames = ['storageGet', 'storageSet', 'refreshGasSyncStatus', 'setStatus'];
+  const requiredNames = ['storageGet', 'storageSet', 'refreshGasSyncStatus', 'clearGasSyncStatus', 'resetGasSyncState'];
   if (requiredNames.every(name => typeof globalThis[name] === 'function')) {
     return;
   }

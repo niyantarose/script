@@ -25,6 +25,7 @@ class Order(TimestampMixin, db.Model):
     yahoo_order_id = db.Column(db.String(50), nullable=False, unique=True)
     ordered_at = db.Column(db.DateTime, nullable=False)
     desired_delivery_date = db.Column(db.Date)
+    customer_code = db.Column(db.String(100))
     customer_name = db.Column(db.String(100))
     priority_ship_flag = db.Column(db.Boolean, nullable=False, default=False)
     yahoo_ship_status = db.Column(db.String(30))
@@ -70,6 +71,7 @@ class Purchase(TimestampMixin, db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     order_item_id = db.Column(db.Integer, db.ForeignKey("order_items.id"), nullable=False)
+    source_type = db.Column(db.String(20), nullable=False, default="daniel")
     product_code = db.Column(db.String(100), nullable=False)
     product_sub_code = db.Column(db.String(100))
     quantity = db.Column(db.Integer, nullable=False)
@@ -85,6 +87,7 @@ class Ems(TimestampMixin, db.Model):
     __tablename__ = "ems"
 
     id = db.Column(db.Integer, primary_key=True)
+    source_type = db.Column(db.String(20), nullable=False, default="daniel")
     ems_number = db.Column(db.String(50), nullable=False, unique=True)
     shipped_at = db.Column(db.Date, nullable=False)
     estimated_arrival = db.Column(db.Date, nullable=False)
@@ -182,3 +185,26 @@ class JapanInventoryStaging(TimestampMixin, db.Model):
         back_populates="staging_assignments",
         foreign_keys=[assigned_order_item_id],
     )
+
+
+class ImportedFile(db.Model):
+    __tablename__ = "imported_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    file_name = db.Column(db.String(255), nullable=False, unique=True)
+    file_type = db.Column(db.String(50), nullable=False)
+    imported_at = db.Column(db.DateTime, nullable=False, server_default=func.now())
+    record_count = db.Column(db.Integer, nullable=False, default=0)
+
+
+class EditLog(db.Model):
+    __tablename__ = "edit_logs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    table_name = db.Column(db.String(50), nullable=False)
+    record_id = db.Column(db.Integer, nullable=False)
+    field_name = db.Column(db.String(100), nullable=False)
+    old_value = db.Column(db.Text)
+    new_value = db.Column(db.Text)
+    edited_by = db.Column(db.String(100))
+    edited_at = db.Column(db.DateTime, nullable=False, server_default=func.now())

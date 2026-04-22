@@ -1,102 +1,76 @@
 # 自動引当ツール
 
-要件定義書・DB設計書をもとに作成した、Flask + SQLAlchemy ベースの自動引当ツールです。  
-このフォルダ単体で起動でき、以下を一通り試せます。
+`要件定義書_v2.docx`、`DB設計書_v2.docx`、`環境構築手順書.docx` を参照しながら進めている、Flask + SQLAlchemy ベースの在庫自動引当ツールです。
 
-- 7画面のWeb UI
-- 即納優先の自動引当再計算
-- 韓国発注の仮引当
-- EMS登録時の本引当
-- 4段階漏れチェックと遅延アラート
-- 日本在庫仕分けと即納在庫への反映
-- 画面単位のCSV出力
+現時点で入っている土台:
 
-## フォルダ構成
+- ダッシュボード
+- ダニエル発注リスト
+- ダニエルEMSリスト
+- テグ発注リスト
+- テグEMSリスト
+- Yahoo受注リスト
+- 日本在庫管理
+- 注文検索
+- imported_files による取込ファイル重複防止の土台
+- Ubuntu / MySQL / Nginx / systemd 用の配置ファイル
 
-```text
-app.py
-inventory_tool/
-templates/
-static/
-create_tables.sql
-requirements.txt
-```
+## 参照した設計書の要点
 
-## 初回セットアップ
+- DB設計書: 9テーブル構成を基準に、追加要件として `imported_files` を実装
+- 要件定義書: 2段階引当、4段階漏れチェック、遅延管理、日本在庫反映の流れを反映
+- 環境構築手順書: Ubuntu 22.04 + MySQL + Flask + Nginx + systemd の配置を前提化
+
+補足:
+
+- ダニエル / テグのページ分離を実現するため、`purchases.source_type` と `ems.source_type` を追加しています。これは画面要件に合わせた実装上の補助列です。
+- 以前のご要望に合わせて、画面上の「商品名」はまだ出していません。
+
+## ローカル起動
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 Copy-Item .env.example .env
-```
-
-`.env` の `DATABASE_URL` はデフォルトで SQLite を使います。  
-本番で MySQL を使う場合は、例えば次のように変更します。
-
-```env
-DATABASE_URL=mysql+pymysql://inventory_user:password@localhost/inventory_db?charset=utf8mb4
-```
-
-## 起動方法
-
-```powershell
 .\.venv\Scripts\python app.py
 ```
 
-起動後、ブラウザで [http://127.0.0.1:5000](http://127.0.0.1:5000) を開いてください。
+ブラウザ:
 
-コマンドを毎回打ちたくない場合は、[start_tool.bat](</C:/Users/Owner/Desktop/script/自動引当/start_tool.bat>) をダブルクリックすると、サーバー起動とブラウザ表示までまとめて実行できます。
+- [http://127.0.0.1:5000](http://127.0.0.1:5000)
 
 ## 便利コマンド
-
-デモデータ投入:
 
 ```powershell
 $env:FLASK_APP='app.py'
 .\.venv\Scripts\flask seed-demo
-```
-
-引当再計算:
-
-```powershell
-$env:FLASK_APP='app.py'
 .\.venv\Scripts\flask recalculate
-```
-
-漏れチェック:
-
-```powershell
-$env:FLASK_APP='app.py'
 .\.venv\Scripts\flask run-checks
+.\.venv\Scripts\flask import-all
+.\.venv\Scripts\flask import-kind daniel_purchases
 ```
 
-## 画面一覧
+## 本番配置ファイル
 
-1. ダッシュボード
-2. 受注・発送状況
-3. EMS梱包リスト
-4. 4段階漏れチェック
-5. 引当実行
-6. 日本在庫管理
-7. アラート一覧
+- Gunicorn設定: [gunicorn.conf.py](/C:/Users/Owner/Desktop/script/自動引当/gunicorn.conf.py)
+- Ubuntuセットアップ: [deploy/ubuntu/setup_vps.sh](/C:/Users/Owner/Desktop/script/自動引当/deploy/ubuntu/setup_vps.sh)
+- systemd: [deploy/systemd/inventory-tool.service](/C:/Users/Owner/Desktop/script/自動引当/deploy/systemd/inventory-tool.service)
+- Nginx: [deploy/nginx/inventory-tool.conf](/C:/Users/Owner/Desktop/script/自動引当/deploy/nginx/inventory-tool.conf)
+- cron: [deploy/cron/hourly_import.cron](/C:/Users/Owner/Desktop/script/自動引当/deploy/cron/hourly_import.cron)
 
-## 実装メモ
+## いまの取込の状態
 
-- 受注・在庫の Yahoo API 取込は、認証情報未提供のため今回は接続点のみ確保し、運用前提の主要ロジックと UI を先に構築しています。
-- SQLite でも動作しますが、`create_tables.sql` は MySQL 本番投入用に残しています。
-- デモデータを入れると、即納引当、発注漏れ、遅延、EMS到着後の日本在庫仕分けまで確認できます。
+外部APIの実接続そのものはまだ未実装です。現状の `データ取込` ボタンと CLI は、設計書どおりのデータ源を置くための土台として、以下を先に持っています。
 
-## 今回の方針メモ
+- 取込種別ごとのルーティング
+- 取込済みファイル名の記録
+- 同一ファイル名の重複取込防止
+- ダニエル / テグ / Yahoo の画面別導線
 
-- 受注リスト: Yahoo の現在ある全受注を行リストで表示
-- 発注リスト: Google Drive 上の 1 ファイル 2 シート運用を前提に実装予定
-- EMS リスト: Cloudike WebDAV と韓国代行から届く Excel を取り込み予定
-- UI: カードより行リスト優先、左サイドバー切替、各ページ CSV、遅延受注は赤字表示
+次に実装する対象:
 
-## 次に進める順番
-
-1. さくらVPS の環境構築
-2. 9テーブルの MySQL SQL 固定
-3. Yahoo API 連携
-4. 引当ロジック
-5. 画面実装
+1. Yahoo API 実接続
+2. Cloudike WebDAV 実接続
+3. Google Sheets API 実接続
+4. cron の本番設定
+5. インライン編集と編集ログ

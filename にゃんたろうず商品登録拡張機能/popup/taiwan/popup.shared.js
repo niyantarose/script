@@ -135,31 +135,33 @@ const GOODS_SHEET_HEADERS = [
 ];
 
 const MAGAZINE_SHEET_HEADERS = [
+  '発番発行',
   '登録状況',
+  '商品コード（SKU）',
+  '商品名（出品用）',
   '言語',
   '雑誌名',
   '年',
   '月',
+  '号数',
+  '版種',
+  'バリエーションコード',
   '表紙情報',
   '特典メモ',
-  '親コード',
-  'コードステータス',
-  '商品名（出品用）',
-  '粗利益率',
-  '登録日',
   '売価',
-  '配送パターン',
-  '登録者',
-  '商品説明',
   '原価',
+  '粗利益率',
+  '配送パターン',
+  '商品説明',
   '原題タイトル',
   '原題商品名',
-  'アラジン商品コード',
-  'アラジンURL',
   '博客來商品コード',
   '博客來URL',
   'メイン画像URL',
   '追加画像URL',
+  '登録日',
+  '登録者',
+  '備考',
 ];
 
 function sanitizeFolderName(name) {
@@ -207,6 +209,14 @@ function formatToday(date = new Date()) {
   return `${year}/${month}/${day}`;
 }
 
+function buildBooksBannerWrapperUrl(imageUrl) {
+  let urlText = String(imageUrl || '').trim();
+  if (!urlText) return '';
+  if (urlText.startsWith('//')) urlText = `https:${urlText}`;
+  if (!/^https?:\/\/addons\.books\.com\.tw\/G\/ADbanner\//i.test(urlText)) return '';
+  return `https://im1.book.com.tw/image/getImage?i=${encodeURIComponent(urlText)}`;
+}
+
 function getBooksImageSourceUrl(imageUrl, productCode = '') {
   let urlText = String(imageUrl || '').trim();
   if (!urlText) return '';
@@ -218,11 +228,15 @@ function getBooksImageSourceUrl(imageUrl, productCode = '') {
     if (original) {
       let originalUrl = decodeURIComponent(original);
       if (originalUrl.startsWith('//')) originalUrl = `https:${originalUrl}`;
+      const wrappedBannerUrl = buildBooksBannerWrapperUrl(originalUrl);
+      if (wrappedBannerUrl) return wrappedBannerUrl;
       return upgradeBooksImageVariant(originalUrl, { keepThumbVariant: isGoodsLikeProductCode(productCode) });
     }
-    return upgradeBooksImageVariant(parsed.href, { keepThumbVariant: isGoodsLikeProductCode(productCode) });
+    const upgradedUrl = upgradeBooksImageVariant(parsed.href, { keepThumbVariant: isGoodsLikeProductCode(productCode) });
+    return buildBooksBannerWrapperUrl(upgradedUrl) || upgradedUrl;
   } catch {
-    return upgradeBooksImageVariant(urlText, { keepThumbVariant: isGoodsLikeProductCode(productCode) });
+    const upgradedUrl = upgradeBooksImageVariant(urlText, { keepThumbVariant: isGoodsLikeProductCode(productCode) });
+    return buildBooksBannerWrapperUrl(upgradedUrl) || upgradedUrl;
   }
 }
 function normalizeBooksImageUrl(rawUrl, productCode = '') {
@@ -255,12 +269,16 @@ function isNoiseBooksImageUrl(imageUrl, productCode = '') {
   return !isGoodsLikeProductCode(productCode) && /_t_\d+\.(?:jpg|jpeg|png|webp)/i.test(text);
 }
 
+function isBooksAdBannerImage(imageUrl) {
+  return /(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/)/i.test(String(imageUrl || ''));
+}
+
 function isProductBonusBannerImage(imageUrl, productCode = '') {
   const text = String(imageUrl || '');
   const code = String(productCode || '').trim();
-  return !!code &&
-    new RegExp(escapeRegExp(code), 'i').test(text) &&
-    /(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/|\/banner\/)/i.test(text);
+  if (!isBooksAdBannerImage(text)) return false;
+  if (!code) return true;
+  return new RegExp(escapeRegExp(code), 'i').test(text) || /^https?:\/\/addons\.books\.com\.tw\/G\/ADbanner\//i.test(text);
 }
 
 function buildImageDedupeKey(imageUrl, productCode = '') {
@@ -434,15 +452,15 @@ function getProductSheetName(product) {
   return isComicBookProduct(product) ? COMIC_BOOK_SHEET_NAME : OTHER_BOOK_SHEET_NAME;
 }
 
-function isGasSyncBusyStatus(status) {
-  return !!status?.state && ['queued', 'running'].includes(status.state);
-}
-
 function gasSyncStatusType(status) {
   if (!status?.state) return '';
   if (status.state === 'success') return 'success';
   if (status.state === 'error') return 'error';
   return '';
+}
+
+function isGasSyncBusyStatus(status) {
+  return !!(status?.state && ['queued', 'running'].includes(status.state));
 }
 
 function gasSyncStatusMessage(status) {
@@ -469,11 +487,13 @@ async function resetGasSyncState() {
   const stored = await storageGet([GAS_SYNC_RESET_TOKEN_KEY]);
   const currentToken = Number(stored[GAS_SYNC_RESET_TOKEN_KEY] || 0);
   const nextToken = Number.isFinite(currentToken) ? currentToken + 1 : 1;
+
   await storageSet({
     [GAS_SYNC_QUEUE_KEY]: [],
     [GAS_SYNC_STATUS_KEY]: null,
     [GAS_SYNC_RESET_TOKEN_KEY]: nextToken,
   });
+
   const response = await sendRuntimeMessage({ action: 'resetGasSyncState', resetToken: nextToken });
   if (!response?.ok) {
     console.warn('Failed to notify background about GAS reset:', response?.error || 'resetGasSyncState failed');
@@ -483,9 +503,7 @@ async function resetGasSyncState() {
 
 async function refreshGasSyncStatus(options = {}) {
   const response = await sendRuntimeMessage({ action: 'getGasSyncStatus' });
-  if (!response?.ok) {
-    return options.keepStatusOnError === false ? null : gasSyncStatus;
-  }
+  if (!response?.ok) return null;
 
   gasSyncStatus = response.status || null;
   const message = gasSyncStatusMessage(gasSyncStatus);
@@ -508,17 +526,9 @@ function stopGasSyncStatusPolling() {
 function startGasSyncStatusPolling() {
   if (gasSyncPollTimer) return;
   gasSyncPollTimer = setInterval(() => {
-    const wasBusy = isGasSyncBusyStatus(gasSyncStatus);
     refreshGasSyncStatus().then(status => {
-      if (status?.state === 'success' && typeof scheduleGasSyncSuccessAutoClear === 'function') {
-        scheduleGasSyncSuccessAutoClear(status);
-      }
-      if (!isGasSyncBusyStatus(status)) {
+      if (!status?.state || !['queued', 'running'].includes(status.state)) {
         stopGasSyncStatusPolling();
-        // statusがnullになった（スタック状態を解消した）場合、表示を明示的にリセット
-        if (!status?.state && wasBusy) {
-          setStatus('', '');
-        }
       }
     }).catch(() => {});
   }, 1500);
@@ -560,7 +570,6 @@ async function downloadImage(imageUrl, filename, saveAs) {
   await waitForQueuedDownloadTick();
   return true;
 }
-
 async function downloadProductImages(items, options = {}) {
   const manualSave = !!options.manualSave;
   let total = 0;
@@ -623,17 +632,6 @@ function trimValue(value) {
   return String(value ?? '').trim();
 }
 
-function isGasWebAppExecUrl(url) {
-  try {
-    const parsed = new URL(trimValue(url));
-    return parsed.protocol === 'https:'
-      && parsed.hostname === 'script.google.com'
-      && /^\/macros\/s\/[^/]+\/exec\/?$/i.test(parsed.pathname);
-  } catch {
-    return false;
-  }
-}
-
 function cleanDescription(value) {
   return String(value || '')
     .replace(/\r/g, '')
@@ -653,21 +651,35 @@ function getAdditionalImagesValue(product) {
   );
 }
 
+function cleanupOriginalTitleTextOnce(value) {
+  return value
+    .replace(/^[台臺][湾灣]版\s*/u, '')
+    .replace(/\s*【[^】]*(?:首刷|初回|初版|限定|特裝|特装|特別|特别|通常|普通)[^】]*】\s*/gu, ' ')
+    .replace(/\s*\([^)]*(?:首刷|初回|初版|限定|特裝|特装|特別|特别|通常|普通)[^)]*\)\s*/gu, ' ')
+    .replace(/\s*\[[^\]]*(?:首刷|初回|初版|限定|特裝|特装|特別|特别|通常|普通)[^\]]*\]\s*/gu, ' ')
+    .replace(/\s*（[^）]*(?:首刷|初回|初版|限定|特裝|特装|特別|特别|通常|普通)[^）]*）\s*/gu, ' ')
+    .replace(/\s*[\(（【\[]\s*(?:第?\s*)?\d+\s*(?:巻|卷|冊|册|集|話|话|部)?\s*[\)）】\]]\s*$/u, ' ')
+    .replace(/\s*[-/／]\s*(?:首刷|初回|初版|限定|特裝|特装|特別|特别|通常|普通)[^ ]*\s*/gu, ' ')
+    .replace(/\s*(?:首刷(?:限定)?|初回(?:限定)?|初版(?:限定)?|限定|特裝|特装|特別|特别|通常|普通)(?:版)?\s*$/u, '')
+    .replace(/\s*第?\s*\d+\s*(?:巻|卷|冊|册|集|話|话|部)\s*$/u, '')
+    .replace(/\s*\d+\s*$/u, '')
+    .replace(/^《\s*([^》]+?)\s*》$/u, '$1')
+    .replace(/^「\s*([^」]+?)\s*」$/u, '$1')
+    .replace(/^『\s*([^』]+?)\s*』$/u, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function extractOriginalTitleText(value) {
   const fallback = trimValue(value);
   if (!fallback) return '';
 
-  const normalized = fallback
-    .replace(/^[台臺][湾灣]版\s*/u, '')
-    .replace(/\s*【[^】]*(?:首刷|初回|限定|特裝|特装|通常|普通)[^】]*】\s*/gu, ' ')
-    .replace(/\s*\([^)]*(?:首刷|初回|限定|特裝|特装|通常|普通)[^)]*\)\s*/gu, ' ')
-    .replace(/\s*\[[^\]]*(?:首刷|初回|限定|特裝|特装|通常|普通)[^\]]*\]\s*/gu, ' ')
-    .replace(/\s*（[^）]*(?:首刷|初回|限定|特裝|特装|通常|普通)[^）]*）\s*/gu, ' ')
-    .replace(/\s*[-/／]\s*(?:首刷|初回|限定|特裝|特装|通常|普通)[^ ]*\s*/gu, ' ')
-    .replace(/\s*第?\s*\d+\s*(?:巻|卷|冊|册|集|話|话|部)\s*$/u, '')
-    .replace(/\s+\d+\s*$/u, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  let normalized = fallback;
+  for (let i = 0; i < 4; i += 1) {
+    const next = cleanupOriginalTitleTextOnce(normalized);
+    if (next === normalized) break;
+    normalized = next;
+  }
 
   return normalized || fallback;
 }
@@ -721,6 +733,7 @@ function getLanguageValue(product) {
     .join('\n');
 
   if (!source) return '台湾';
+  if (/香港|Hong\s*Kong|HK\b/i.test(source)) return '香港';
   if (/繁體|繁体|繁體中文|繁体中文|中文|華文|华文/.test(source)) return '台湾';
   if (/韓文|韩文|韓語|韩语|朝鮮語|朝鲜语/.test(source)) return '韓国';
   if (/日文|日語|日语|日本語/.test(source)) return '日本';
@@ -798,226 +811,36 @@ function uniqNonEmptyTitles(values) {
   return list;
 }
 
-function decodeHtmlEntities(value) {
-  return String(value || '')
-    .replace(/&#x([0-9a-f]+);/gi, (match, hex) => {
-      try {
-        return String.fromCodePoint(parseInt(hex, 16));
-      } catch {
-        return match;
-      }
-    })
-    .replace(/&#(\d+);/g, (match, dec) => {
-      try {
-        return String.fromCodePoint(parseInt(dec, 10));
-      } catch {
-        return match;
-      }
-    })
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
-}
-
-function stripMangaUpdatesHtmlToText(html) {
-  return decodeHtmlEntities(
-    String(html || '')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(?:p|div|li|tr|section|article|h[1-6])>/gi, '\n')
-      .replace(/<[^>]+>/g, ' ')
-  )
-    .replace(/\r/g, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n[ \t]+/g, '\n')
-    .replace(/\n{2,}/g, '\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
-}
-
-function extractMangaUpdatesSiteSearchResults(html) {
-  const results = [];
-  const seenUrls = new Set();
-  const pattern = /<a\b[^>]*href="([^"]*(?:\/series\/|series\.html\?id=)[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
-  let match;
-
-  while ((match = pattern.exec(String(html || ''))) !== null) {
-    const title = trimValue(stripMangaUpdatesHtmlToText(match[2] || ''));
-    if (!title || title.length < 2 || /^Advanced Search$/i.test(title)) continue;
-
-    let url = trimValue(match[1] || '');
-    try {
-      url = new URL(url, 'https://www.mangaupdates.com/').href;
-    } catch {
-      // Keep the original href if URL parsing fails.
-    }
-
-    if (!/^https:\/\/www\.mangaupdates\.com\//i.test(url) || seenUrls.has(url)) continue;
-    seenUrls.add(url);
-    results.push({ title, url });
+async function fetchMangaUpdatesJapaneseTitleFromGas(queries) {
+  const gasUrl = trimValue(gasWebAppUrl || '');
+  if (!/^https:\/\/(?:script\.google\.com|script\.googleusercontent\.com)\//i.test(gasUrl)) {
+    throw new Error('MangaUpdates proxy unavailable: GAS URL missing');
   }
 
-  return results;
-}
-
-function extractMangaUpdatesAssociatedTitles(html) {
-  const text = stripMangaUpdatesHtmlToText(html);
-  const label = 'Associated Names';
-  const startIndex = text.indexOf(label);
-  if (startIndex < 0) return [];
-
-  let block = text.slice(startIndex + label.length);
-  const endLabels = [
-    'Groups Scanlating',
-    'Latest Release(s)',
-    'Recommendations',
-    'Reviews',
-    'Forum',
-    'Status in Country of Origin',
-    'Description',
-    'Anime Start/End Chapter',
-    'Category',
-    'Rating',
-  ];
-  let endIndex = block.length;
-  for (const endLabel of endLabels) {
-    const index = block.indexOf(endLabel);
-    if (index >= 0 && index < endIndex) endIndex = index;
-  }
-  block = block.slice(0, endIndex);
-
-  return uniqNonEmptyTitles(
-    block
-      .split(/\n+/)
-      .map(title => trimValue(title))
-      .filter(title => title && title.length >= 2)
-  );
-}
-
-function cjkCharOverlap(a, b) {
-  const cjkOnly = s => String(s || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
-  const charsA = cjkOnly(a);
-  const charsB = cjkOnly(b);
-  if (!charsA || !charsB) return 0;
-  const setA = new Set(charsA);
-  const setB = new Set(charsB);
-  let common = 0;
-  for (const ch of setA) { if (setB.has(ch)) common++; }
-  return common / Math.min(setA.size, setB.size);
-}
-
-async function fetchMangaUpdatesSiteHtml_(url) {
-  const requestUrl = String(url || '').trim();
-  if (!requestUrl) {
-    return { ok: false, status: 0, body: '', via: 'none', error: 'url missing' };
-  }
-
-  const requestOptions = {
-    method: 'GET',
+  const response = await fetch(gasUrl, {
+    method: 'POST',
     headers: {
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Content-Type': 'text/plain;charset=utf-8',
     },
-    credentials: 'omit',
-    cache: 'no-store',
-  };
+    body: JSON.stringify({
+      action: MANGA_UPDATES_PROXY_ACTION,
+      source: 'books.com.tw-extension-popup',
+      queries: uniqNonEmptyTitles(queries || []),
+    }),
+  });
 
-  try {
-    const backgroundResp = await sendRuntimeMessage({
-      action: 'mangaUpdatesApiFetch',
-      url: requestUrl,
-      options: requestOptions,
-    });
-    if (backgroundResp?.ok || Number(backgroundResp?.status || 0) > 0 || String(backgroundResp?.body || '')) {
-      return {
-        ok: !!backgroundResp?.ok,
-        status: Number(backgroundResp?.status || 0),
-        body: String(backgroundResp?.body || ''),
-        via: 'background',
-        error: String(backgroundResp?.error || ''),
-      };
-    }
-  } catch (error) {
-    console.warn('[MU直接] background fetch failed:', error?.message || error);
+  if (!response.ok) {
+    throw new Error(`MangaUpdates proxy error: ${response.status}`);
   }
 
-  try {
-    const directResp = await fetch(requestUrl, requestOptions);
-    const body = await directResp.text().catch(() => '');
-    return {
-      ok: directResp.ok,
-      status: directResp.status,
-      body,
-      via: 'direct',
-      error: '',
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      status: 0,
-      body: '',
-      via: 'direct',
-      error: String(error?.message || error || ''),
-    };
+  const data = await response.json().catch(() => null);
+  if (!data || typeof data !== 'object') {
+    throw new Error('MangaUpdates proxy unavailable: invalid response');
   }
-}
-
-async function fetchMangaUpdatesJapaneseTitleDirect(queries) {
-  const MU_SITE_SEARCH = 'https://www.mangaupdates.com/site/search/result?search=';
-  const normalizedQueries = uniqNonEmptyTitles(queries || []).slice(0, 8);
-  if (!normalizedQueries.length) return { ok: true, japaneseTitle: '' };
-  console.log('[MU直接] 検索開始:', normalizedQueries);
-
-  for (const query of normalizedQueries) {
-    try {
-      const searchResp = await fetchMangaUpdatesSiteHtml_(MU_SITE_SEARCH + encodeURIComponent(query));
-      console.log('[MU直接] site search status:', searchResp?.status, 'via:', searchResp?.via, 'query:', query);
-      if (!searchResp?.ok) continue;
-      const searchHtml = searchResp.body || '';
-      const results = extractMangaUpdatesSiteSearchResults(searchHtml).slice(0, 5);
-
-      for (let ri = 0; ri < results.length; ri++) {
-        const record = results[ri];
-        let candidateTitles = uniqNonEmptyTitles([record?.title || '']);
-        if (!record?.url) continue;
-
-        const detailResp = await fetchMangaUpdatesSiteHtml_(record.url);
-        if (detailResp?.ok) {
-          const detailHtml = detailResp.body || '';
-          candidateTitles = uniqNonEmptyTitles([
-            record.title,
-            ...extractMangaUpdatesAssociatedTitles(detailHtml),
-          ]);
-        }
-
-        const queryKey = normalizeMangaUpdatesTitleKey(query);
-        if (!queryKey || queryKey.length < 2) continue;
-        const matched = candidateTitles.some(c => {
-          const ck = normalizeMangaUpdatesTitleKey(c);
-          if (!ck || ck.length < 2) return false;
-          if (ck === queryKey) return true;
-          if (ck.length >= 4 && queryKey.length >= 4 && (ck.includes(queryKey) || queryKey.includes(ck))) return true;
-          if (ri < 3 && cjkCharOverlap(query, c) >= 0.5) return true;
-          return false;
-        });
-        console.log('[MU直接] series:', record.title, 'matched:', matched);
-        if (!matched) continue;
-
-        for (const c of candidateTitles) {
-          if (hasJapaneseTitleSignal(c)) {
-            console.log('[MU直接] 日本語タイトル発見:', c);
-            return { ok: true, japaneseTitle: trimValue(c) };
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[MU直接] エラー:', e.message);
-    }
+  if (!data.ok) {
+    throw new Error(`MangaUpdates proxy unavailable: ${data.error || 'lookup failed'}`);
   }
-
-  console.log('[MU直接] 見つからず');
-  return { ok: true, japaneseTitle: '' };
+  return data;
 }
 
 function getMangaUpdatesGenreText(product) {
@@ -1049,7 +872,10 @@ function buildMangaUpdatesLookupQueries(product) {
 function shouldUseMangaUpdatesLookup(product) {
   if (mangaUpdatesLookupDisabled) return false;
   if (!product) return false;
+  if (!/^https:\/\/(?:script\.google\.com|script\.googleusercontent\.com)\//i.test(trimValue(gasWebAppUrl || ''))) return false;
 
+  const sheetType = typeof getProductSheetType === 'function' ? getProductSheetType(product) : '';
+  const genreText = getMangaUpdatesGenreText(product);
   const hasSourceTitle = buildMangaUpdatesLookupQueries(product).length > 0;
   if (!hasSourceTitle) return false;
 
@@ -1063,8 +889,8 @@ async function lookupJapaneseTitleViaMangaUpdates(query) {
   if (!cacheKey) return '';
   if (mangaUpdatesTitleCache.has(cacheKey)) return mangaUpdatesTitleCache.get(cacheKey) || '';
 
-  const directResult = await fetchMangaUpdatesJapaneseTitleDirect([query]);
-  const japaneseTitle = trimValue(directResult?.japaneseTitle || '');
+  const proxyResult = await fetchMangaUpdatesJapaneseTitleFromGas([query]);
+  const japaneseTitle = trimValue(proxyResult?.japaneseTitle || '');
   mangaUpdatesTitleCache.set(cacheKey, japaneseTitle);
   return japaneseTitle;
 }
@@ -1079,12 +905,14 @@ async function enrichProductWithMangaUpdatesJapaneseTitle(product) {
     && !trimValue(product?.作品名日本語 || product?.['作品名（日本語）'] || '');
   if (!needsJapaneseTitle && !needsWorkJapaneseTitle) return product;
 
+  const genreText = getMangaUpdatesGenreText(product);
   const queries = buildMangaUpdatesLookupQueries(product);
+  const hasGasUrl = /^https:\/\/(?:script\.google\.com|script\.googleusercontent\.com)\//i.test(trimValue(gasWebAppUrl || ''));
   const isLookupTarget = queries.length > 0;
 
-  if (!isLookupTarget || !queries.length || mangaUpdatesLookupDisabled) {
+  if (!isLookupTarget || !hasGasUrl || !queries.length || mangaUpdatesLookupDisabled) {
     if (needsJapaneseTitle && shouldReplaceJapaneseTitleValue(product?.日本語タイトル || '')) {
-      product.日本語タイトル = getMangaUpdatesLookupFallbackStatus(queries, true, isLookupTarget);
+      product.日本語タイトル = getMangaUpdatesLookupFallbackStatus(queries, hasGasUrl, isLookupTarget);
     }
     return product;
   }

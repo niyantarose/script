@@ -1,106 +1,140 @@
 {% extends "base.html" %}
 {% block title %}日本在庫管理 | 自動引当ツール{% endblock %}
 {% block page_title %}日本在庫管理{% endblock %}
+{% block page_subtitle %}<div class="page-subtitle">EMS入荷後の仕分けを表形式で管理します。操作ボタンは行内で横並びです。</div>{% endblock %}
+{% block page_actions %}
+  <form method="post" action="{{ url_for('main.import_data_route', kind='ems') }}" class="d-inline-flex">
+    <button type="submit" class="btn btn-outline-secondary btn-sm">データ取込</button>
+  </form>
+  <form method="post" action="{{ url_for('main.japan_stock_reflect') }}" class="d-inline-flex">
+    <button type="submit" class="btn btn-success btn-sm">在庫反映</button>
+  </form>
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    data-export-url="{{ url_for('main.export', kind='japan_stock') }}"
+    data-export-filename="japan_stock.csv"
+  >
+    CSV出力
+  </button>
+{% endblock %}
 {% block content %}
-<section class="panel">
-  <div class="toolbar-row">
-    <div class="section-title">日本在庫管理</div>
-    <div class="toolbar-actions">
-      <form method="post" action="{{ url_for('main.japan_stock_reflect') }}">
-        <button type="submit" class="primary-btn">在庫反映</button>
-      </form>
-      <a class="button-link" href="{{ url_for('main.export', kind='japan_stock') }}">CSV出力</a>
+  <section class="surface-card grid-card">
+    <div class="grid-toolbar">
+      <div class="grid-toolbar-meta">
+        <span class="metric-chip">日本在庫仕分け</span>
+        <span>ステータスや受注明細IDもセルから修正できます</span>
+        <span id="japan-selection-count">0件選択中</span>
+      </div>
     </div>
-  </div>
+    <div class="grid-container">
+      <div id="japan-grid"></div>
+    </div>
+  </section>
+{% endblock %}
+{% block page_scripts %}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const statusChoices = window.inventoryLabels.japanStatus;
+      const actionButtons = (cell) => {
+        const row = cell.getRow().getData();
+        return `
+          <div class="grid-action-buttons">
+            <button type="button" class="btn btn-outline-primary" data-action="assign" data-id="${row.staging_id}">受注に当てる</button>
+            <button type="button" class="btn btn-outline-success" data-action="stock" data-id="${row.staging_id}">日本在庫へ</button>
+            <button type="button" class="btn btn-outline-secondary" data-action="exclude" data-id="${row.staging_id}">除外</button>
+            <button type="button" class="btn btn-outline-warning" data-action="return" data-id="${row.staging_id}">EMSに戻す</button>
+          </div>
+        `;
+      };
 
-  <div class="select-toolbar">
-    <label><input type="checkbox" id="chk-all-japan" onchange="toggleAllRows('japan', this.checked)"> 全選択</label>
-    <button type="button" onclick="clearAllRows('japan')">全解除</button>
-    <span class="sel-count" id="sel-count-japan">0件選択中</span>
-  </div>
+      InventoryApp.createGrid({
+        selector: "#japan-grid",
+        data: {{ stock_rows|tojson }},
+        selectionLabelSelector: "#japan-selection-count",
+        columns: [
+          InventoryApp.selectionColumn(),
+          { title: "EMS番号", field: "ems_number", frozen: true, headerFilter: "input", minWidth: 150 },
+          { title: "入荷日", field: "arrived_at", headerFilter: "input", minWidth: 132 },
+          {
+            title: "商品コード",
+            field: "product_code",
+            headerFilter: "input",
+            minWidth: 180,
+            editor: "input",
+            editConfig: { entity: "japan_stock", idField: "staging_id", field: "product_code" },
+          },
+          {
+            title: "数量",
+            field: "quantity",
+            headerFilter: "input",
+            hozAlign: "center",
+            width: 92,
+            editor: "number",
+            editConfig: { entity: "japan_stock", idField: "staging_id", field: "quantity" },
+          },
+          {
+            title: "仕分けステータス",
+            field: "status",
+            formatter: InventoryApp.choiceBadgeFormatter(statusChoices),
+            headerFilter: "list",
+            headerFilterParams: { values: InventoryApp.choiceValues(statusChoices), clearable: true },
+            editor: "list",
+            editorParams: { values: InventoryApp.choiceValues(statusChoices) },
+            minWidth: 170,
+            editConfig: { entity: "japan_stock", idField: "staging_id", field: "status" },
+          },
+          {
+            title: "引当先受注明細ID",
+            field: "assigned_order_item_id",
+            headerFilter: "input",
+            minWidth: 150,
+            editor: "number",
+            editConfig: { entity: "japan_stock", idField: "staging_id", field: "assigned_order_item_id" },
+          },
+          {
+            title: "操作",
+            field: "actions",
+            headerSort: false,
+            formatter: actionButtons,
+            minWidth: 360,
+            cellClick: async (event, cell) => {
+              const button = event.target.closest("button[data-action]");
+              if (!button) {
+                return;
+              }
 
-  <div class="table-wrap">
-    <table class="simple-table">
-      <thead>
-        <tr>
-          <th style="width:32px;"></th>
-          <th>EMS番号</th>
-          <th>入荷日</th>
-          <th>商品コード</th>
-          <th>数量</th>
-          <th>仕分けステータス</th>
-          <th>引当先受注明細ID</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in rows %}
-          <tr>
-            <td><input type="checkbox" class="row-chk-japan" onchange="updateCheckedRows('japan')"></td>
-            <td>{{ row.ems_item.ems.ems_number }}</td>
-            <td>{{ row.ems_item.ems.arrived_at or '-' }}</td>
-            <td>{{ row.product_code }}{% if row.product_sub_code %}/{{ row.product_sub_code }}{% endif %}</td>
-            <td>{{ row.quantity }}</td>
-            <td>{{ japan_staging_status_labels[row.status] }}</td>
-            <td>{{ row.assigned_order_item_id or '-' }}</td>
-            <td>
-              <div class="action-btns">
-                <form method="post" action="{{ url_for('main.japan_stock_update', staging_id=row.id) }}">
-                  <input type="hidden" name="action" value="assign">
-                  <input class="action-id-input" type="number" name="assigned_order_item_id" placeholder="受注明細ID">
-                  <button type="submit" class="btn-order">受注に当てる</button>
-                </form>
-                <form method="post" action="{{ url_for('main.japan_stock_update', staging_id=row.id) }}">
-                  <input type="hidden" name="action" value="stock">
-                  <button type="submit" class="btn-japan">日本在庫へ</button>
-                </form>
-                <form method="post" action="{{ url_for('main.japan_stock_update', staging_id=row.id) }}">
-                  <input type="hidden" name="action" value="exclude">
-                  <input class="action-id-input" name="excluded_reason" placeholder="除外理由">
-                  <button type="submit" class="btn-exclude">除外</button>
-                </form>
-                <form method="post" action="{{ url_for('main.japan_stock_update', staging_id=row.id) }}">
-                  <input type="hidden" name="action" value="return">
-                  <button type="submit" class="btn-ems">EMSに戻す</button>
-                </form>
-              </div>
-            </td>
-          </tr>
-        {% else %}
-          <tr>
-            <td colspan="8" class="empty-line">仕分け待ちデータがありません。</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
+              const row = cell.getRow().getData();
+              const url = `/japan-stock/${row.staging_id}/update`;
+              const action = button.dataset.action;
+              const payload = { action };
 
-<section class="panel">
-  <div class="section-heading">受注明細ID 参照</div>
-  <div class="table-wrap">
-    <table class="simple-table compact-table">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>受注番号</th>
-          <th>商品コード</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in order_items %}
-          <tr>
-            <td>{{ item.id }}</td>
-            <td>{{ item.order.yahoo_order_id }}</td>
-            <td>{{ item.product_code }}{% if item.product_sub_code %}/{{ item.product_sub_code }}{% endif %}</td>
-          </tr>
-        {% else %}
-          <tr>
-            <td colspan="3" class="empty-line">受注明細がありません。</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
+              if (action === "assign") {
+                const assignedId = window.prompt("割り当てる受注明細IDを入力してください。", row.assigned_order_item_id || "");
+                if (assignedId === null || assignedId === "") {
+                  return;
+                }
+                payload.assigned_order_item_id = assignedId;
+              }
+
+              if (action === "exclude") {
+                const reason = window.prompt("除外理由を入力してください。", row.excluded_reason || "");
+                if (reason === null) {
+                  return;
+                }
+                payload.excluded_reason = reason;
+              }
+
+              try {
+                await InventoryApp.postFormAction(url, payload);
+                window.location.reload();
+              } catch (error) {
+                InventoryApp.showToast(error.message || "更新に失敗しました。", "error");
+              }
+            },
+          },
+        ],
+      });
+    });
+  </script>
 {% endblock %}

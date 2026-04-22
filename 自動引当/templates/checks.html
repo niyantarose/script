@@ -1,39 +1,49 @@
 {% extends "base.html" %}
 {% block title %}漏れチェック | 自動引当ツール{% endblock %}
 {% block page_title %}4段階漏れチェック{% endblock %}
+{% block page_subtitle %}<div class="page-subtitle">発注漏れ・韓国発送漏れ・日本入荷漏れ・発送漏れを一つのグリッドで確認します。</div>{% endblock %}
+{% block page_actions %}
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    data-export-url="{{ url_for('main.export', kind='checks') }}"
+    data-export-filename="checks.csv"
+  >
+    CSV出力
+  </button>
+{% endblock %}
 {% block content %}
-<section class="panel panel-wide">
-  <div class="panel-header">
-    <div>
-      <h3>チェック一覧</h3>
-      <p>発注漏れ、韓国発送漏れ、日本入荷漏れ、発送漏れ、在庫不足、遅延を一括で確認します。</p>
+  <section class="surface-card grid-card">
+    <div class="grid-toolbar">
+      <div class="grid-toolbar-meta">
+        <span class="metric-chip">未解決 {{ check_rows|length }} 件</span>
+        <span id="checks-selection-count">0件選択中</span>
+      </div>
     </div>
-    <a class="button ghost" href="{{ url_for('main.export', kind='checks') }}">CSV出力</a>
-  </div>
-  <div class="check-grid">
-    {% for key, alerts in grouped_alerts.items() %}
-      <article class="panel nested">
-        <div class="panel-header">
-          <div>
-            <h3>{{ alert_type_labels[key] }}</h3>
-            <p>{{ alerts|length }} 件</p>
-          </div>
-        </div>
-        <div class="stack-list compact-list">
-          {% for alert in alerts %}
-            <article class="list-card">
-              <div class="list-card-header">
-                <span>{{ alert.order.yahoo_order_id if alert.order else '共通' }}</span>
-                <span>{{ alert.product_code or '-' }}</span>
-              </div>
-              <p>{{ alert.message }}</p>
-            </article>
-          {% else %}
-            <p class="muted">該当なし</p>
-          {% endfor %}
-        </div>
-      </article>
-    {% endfor %}
-  </div>
-</section>
+    <div class="grid-container">
+      <div id="checks-grid"></div>
+    </div>
+  </section>
+{% endblock %}
+{% block page_scripts %}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      InventoryApp.createGrid({
+        selector: "#checks-grid",
+        data: {{ check_rows|tojson }},
+        selectionLabelSelector: "#checks-selection-count",
+        groupBy: "alert_type_label",
+        groupHeader: (value, count) => `${InventoryApp.escapeHtml(value)} <span class="ms-2 text-white-50">${count}件</span>`,
+        rowFormatter: InventoryApp.tintRowByField("level", "alert-band"),
+        columns: [
+          InventoryApp.selectionColumn(),
+          { title: "種別", field: "alert_type_label", headerFilter: "input", minWidth: 150 },
+          { title: "受注番号", field: "order_number", headerFilter: "input", minWidth: 140 },
+          { title: "商品コード", field: "product_code", headerFilter: "input", minWidth: 150 },
+          { title: "内容", field: "message", headerFilter: "input", minWidth: 360 },
+          { title: "登録日時", field: "created_at", headerFilter: "input", minWidth: 160 },
+        ],
+      });
+    });
+  </script>
 {% endblock %}

@@ -1,3 +1,22 @@
+SOURCE_TYPE_LABELS = {
+    "daniel": "ダニエル",
+    "tegu": "テグ",
+}
+
+PURCHASE_STATUS_LABELS = {
+    "pending_order": "未発注",
+    "ordered": "発注済",
+    "arrived": "入荷済",
+    "shipped": "発送済",
+}
+
+EMS_STATUS_LABELS = {
+    "in_transit": "輸送中",
+    "arrived": "入荷済",
+    "allocated": "引当済",
+    "completed": "発送完了",
+}
+
 ORDER_ITEM_STATUS_LABELS = {
     "pending": "引当待ち",
     "provisional_allocated": "お取り寄せ引当済み（仮）",

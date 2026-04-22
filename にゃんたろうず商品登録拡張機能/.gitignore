@@ -1,5 +1,6 @@
 # 拡張機能テスト用の数万件のゴミフォルダ（絶対除外！）
 tmp-*
+.tmp-*
 .claude/
 .remote_edit/
 

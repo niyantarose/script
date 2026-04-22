@@ -1,129 +1,228 @@
 {% extends "base.html" %}
-{% block title %}発注リスト | 自動引当ツール{% endblock %}
-{% block page_title %}発注リスト{% endblock %}
+{% block title %}{{ page_title }} | 自動引当ツール{% endblock %}
+{% block page_title %}{{ page_title }}{% endblock %}
+{% block page_subtitle %}<div class="page-subtitle">発注行をスプレッドシート風に編集できます。手動入力はモーダルから実行します。</div>{% endblock %}
+{% block page_actions %}
+  <form method="post" action="{{ url_for('main.import_data_route', kind=import_kind) }}" class="d-inline-flex">
+    <button type="submit" class="btn btn-outline-secondary btn-sm">データ取込</button>
+  </form>
+  <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#purchaseModal">発注入力</button>
+  <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#manualAllocationModal">手動引当</button>
+  <form method="post" action="{{ url_for('main.recalculate_route') }}" class="d-inline-flex">
+    <button type="submit" class="btn btn-success btn-sm">引当実行</button>
+  </form>
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    data-export-url="{{ url_for('main.export', kind=import_kind) }}"
+    data-export-filename="{{ import_kind }}.csv"
+  >
+    CSV出力
+  </button>
+{% endblock %}
 {% block content %}
-<section class="panel">
-  <div class="toolbar-row">
-    <div class="section-title">発注リスト</div>
-    <div class="toolbar-actions">
-      <form method="post" action="{{ url_for('main.recalculate_route') }}">
-        <button type="submit" class="success-btn">引当実行</button>
-      </form>
-      <a class="button-link" href="{{ url_for('main.export', kind='allocations') }}">CSV出力</a>
+  <section class="surface-card grid-card">
+    <div class="grid-toolbar">
+      <div class="grid-toolbar-meta">
+        <span class="metric-chip">{{ source_type_labels[source_type] }}</span>
+        <span>ヘッダーで絞り込み、セルクリックで編集</span>
+        <span id="purchase-selection-count">0件選択中</span>
+      </div>
+    </div>
+    <div class="grid-container">
+      <div id="purchase-grid"></div>
+    </div>
+  </section>
+{% endblock %}
+{% block modal_stack %}
+  <div class="modal fade" id="purchaseModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('main.create_purchase_route') }}">
+          <input type="hidden" name="source_type" value="{{ source_type }}">
+          <div class="modal-header">
+            <h5 class="modal-title">発注入力</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+          </div>
+          <div class="modal-body">
+            <div class="modal-form-grid two">
+              <div>
+                <label class="form-label">受注明細ID</label>
+                <input class="form-control" type="number" name="order_item_id" required>
+              </div>
+              <div>
+                <label class="form-label">発注日</label>
+                <input class="form-control" type="date" name="ordered_at" required>
+              </div>
+              <div>
+                <label class="form-label">数量</label>
+                <input class="form-control" type="number" min="1" name="quantity" required>
+              </div>
+              <div>
+                <label class="form-label">発注先</label>
+                <input class="form-control" name="shop_name">
+              </div>
+              <div>
+                <label class="form-label">ステータス</label>
+                <select class="form-select" name="status">
+                  {% for key, label in purchase_status_labels.items() %}
+                    <option value="{{ key }}" {% if key == 'ordered' %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label class="form-label">メモ</label>
+                <input class="form-control" name="memo">
+              </div>
+            </div>
+            <div class="modal-hint mt-3">通常画面ではフォームを隠し、一覧を広く見られるようにしています。</div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-light" data-bs-dismiss="modal">閉じる</button>
+            <button type="submit" class="btn btn-primary">登録</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 
-  <div class="select-toolbar">
-    <label><input type="checkbox" id="chk-all-purchase" onchange="toggleAllRows('purchase', this.checked)"> 全選択</label>
-    <button type="button" onclick="clearAllRows('purchase')">全解除</button>
-    <span class="sel-count" id="sel-count-purchase">0件選択中</span>
+  <div class="modal fade" id="manualAllocationModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('main.manual_allocation_route') }}">
+          <div class="modal-header">
+            <h5 class="modal-title">手動引当</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+          </div>
+          <div class="modal-body">
+            <div class="modal-form-grid two">
+              <div>
+                <label class="form-label">受注明細ID</label>
+                <input class="form-control" type="number" name="order_item_id" required>
+              </div>
+              <div>
+                <label class="form-label">数量</label>
+                <input class="form-control" type="number" min="1" name="quantity" required>
+              </div>
+              <div>
+                <label class="form-label">在庫種別</label>
+                <select class="form-select" name="inventory_type">
+                  <option value="即納">即納</option>
+                  <option value="お取り寄せ">お取り寄せ</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label">実行者</label>
+                <input class="form-control" name="allocated_by">
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-light" data-bs-dismiss="modal">閉じる</button>
+            <button type="submit" class="btn btn-primary">実行</button>
+          </div>
+        </form>
+      </div>
+    </div>
   </div>
-
-  <div class="inline-entry-grid">
-    <form class="inline-entry-form" method="post" action="{{ url_for('main.create_purchase_route') }}">
-      <span class="entry-title">発注入力</span>
-      <input type="number" name="order_item_id" placeholder="受注明細ID" required>
-      <input type="date" name="ordered_at" required>
-      <input type="number" name="quantity" min="1" placeholder="数量" required>
-      <input name="shop_name" placeholder="発注先">
-      <select name="status">
-        <option value="ordered">発注済</option>
-        <option value="arrived">入荷済</option>
-      </select>
-      <input name="memo" placeholder="メモ">
-      <button type="submit">登録</button>
-    </form>
-
-    <form class="inline-entry-form" method="post" action="{{ url_for('main.manual_allocation_route') }}">
-      <span class="entry-title">手動引当</span>
-      <input type="number" name="order_item_id" placeholder="受注明細ID" required>
-      <input type="number" name="quantity" min="1" placeholder="数量" required>
-      <select name="inventory_type">
-        <option value="即納">即納</option>
-        <option value="お取り寄せ">お取り寄せ</option>
-      </select>
-      <input name="allocated_by" placeholder="実行者">
-      <button type="submit">実行</button>
-    </form>
-  </div>
-
-  <div class="table-wrap">
-    <table class="simple-table">
-      <thead>
-        <tr>
-          <th style="width:32px;"></th>
-          <th>発注NO</th>
-          <th>受注番号</th>
-          <th>商品コード</th>
-          <th>オプション</th>
-          <th>数量</th>
-          <th>発注先</th>
-          <th>発注日</th>
-          <th>ステータス</th>
-          <th>現在の引当状況</th>
-          <th>メモ</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for purchase in purchases %}
-          <tr>
-            <td><input type="checkbox" class="row-chk-purchase" onchange="updateCheckedRows('purchase')"></td>
-            <td>PO-{{ "%05d"|format(purchase.id) }}</td>
-            <td class="strong-text">{{ purchase.order_item.order.yahoo_order_id }}</td>
-            <td>{{ purchase.product_code }}</td>
-            <td>{{ purchase.product_sub_code or '-' }}</td>
-            <td>{{ purchase.quantity }}</td>
-            <td>{{ purchase.shop_name or '-' }}</td>
-            <td>{{ purchase.ordered_at }}</td>
-            <td>{{ '入荷済' if purchase.status == 'arrived' else '発注済' }}</td>
-            <td>{{ order_item_status_labels[purchase.order_item.status] }}</td>
-            <td>{{ purchase.memo or '-' }}</td>
-          </tr>
-        {% else %}
-          <tr>
-            <td colspan="11" class="empty-line">まだ発注データがありません。</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<section class="panel">
-  <div class="section-heading">受注明細参照</div>
-  <div class="table-wrap">
-    <table class="simple-table">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>受注番号</th>
-          <th>商品コード</th>
-          <th>オプション</th>
-          <th>数量</th>
-          <th>引当数</th>
-          <th>在庫種別</th>
-          <th>状態</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in items %}
-          <tr>
-            <td>{{ item.id }}</td>
-            <td>{{ item.order.yahoo_order_id }}</td>
-            <td>{{ item.product_code }}</td>
-            <td>{{ item.product_sub_code or '-' }}</td>
-            <td>{{ item.quantity }}</td>
-            <td>{{ item.allocated_qty }}</td>
-            <td>{{ item.inventory_type }}</td>
-            <td>{{ order_item_status_labels[item.status] }}</td>
-          </tr>
-        {% else %}
-          <tr>
-            <td colspan="8" class="empty-line">受注明細がありません。</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
+{% endblock %}
+{% block page_scripts %}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const purchaseChoices = window.inventoryLabels.purchaseStatus;
+      const allocationChoices = window.inventoryLabels.orderItemStatus;
+      InventoryApp.createGrid({
+        selector: "#purchase-grid",
+        data: {{ purchase_rows|tojson }},
+        selectionLabelSelector: "#purchase-selection-count",
+        groupBy: "group_key",
+        groupHeader: (value, count) => `${InventoryApp.escapeHtml(value)} <span class="ms-2 text-white-50">${count}行</span>`,
+        columns: [
+          InventoryApp.selectionColumn(),
+          { title: "受注番号", field: "order_number", frozen: true, headerFilter: "input", minWidth: 140 },
+          { title: "注文点数", field: "line_number", headerFilter: "input", hozAlign: "center", width: 96 },
+          {
+            title: "商品コード",
+            field: "product_code",
+            headerFilter: "input",
+            minWidth: 180,
+            editor: "input",
+            editConfig: {
+              entity: (row) => row.purchase_id ? "purchase" : "order_item",
+              idField: (row) => row.purchase_id || row.order_item_id,
+              field: "product_code",
+            },
+          },
+          {
+            title: "発注先",
+            field: "shop_name",
+            headerFilter: "input",
+            minWidth: 160,
+            editor: "input",
+            editConfig: {
+              entity: "purchase",
+              idField: "purchase_id",
+              field: "shop_name",
+              canEdit: (row) => Boolean(row.purchase_id),
+            },
+          },
+          {
+            title: "発注日",
+            field: "ordered_at",
+            headerFilter: "input",
+            minWidth: 132,
+            editor: "input",
+            editorParams: { elementAttributes: { type: "date" } },
+            editConfig: {
+              entity: "purchase",
+              idField: "purchase_id",
+              field: "ordered_at",
+              canEdit: (row) => Boolean(row.purchase_id),
+            },
+          },
+          {
+            title: "発注ステータス",
+            field: "purchase_status",
+            formatter: (cell) => {
+              const row = cell.getRow().getData();
+              const label = row.purchase_status_label || purchaseChoices[cell.getValue()] || "未発注";
+              return `<span class="grid-badge">${InventoryApp.escapeHtml(label)}</span>`;
+            },
+            headerFilter: "list",
+            headerFilterParams: { values: InventoryApp.choiceValues(purchaseChoices), clearable: true },
+            editor: "list",
+            editorParams: { values: InventoryApp.choiceValues(purchaseChoices) },
+            minWidth: 170,
+            editConfig: {
+              entity: "purchase",
+              idField: "purchase_id",
+              field: "status",
+              canEdit: (row) => Boolean(row.purchase_id),
+            },
+          },
+          {
+            title: "引当状況",
+            field: "allocation_status",
+            formatter: InventoryApp.choiceBadgeFormatter(allocationChoices),
+            headerFilter: "list",
+            headerFilterParams: { values: InventoryApp.choiceValues(allocationChoices), clearable: true },
+            minWidth: 180,
+          },
+          {
+            title: "メモ",
+            field: "memo",
+            headerFilter: "input",
+            minWidth: 220,
+            editor: "input",
+            editConfig: {
+              entity: "purchase",
+              idField: "purchase_id",
+              field: "memo",
+              canEdit: (row) => Boolean(row.purchase_id),
+            },
+          },
+        ],
+      });
+    });
+  </script>
 {% endblock %}

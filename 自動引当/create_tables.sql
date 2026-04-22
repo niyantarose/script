@@ -3,6 +3,7 @@ CREATE TABLE orders (
   yahoo_order_id VARCHAR(50) NOT NULL UNIQUE,
   ordered_at DATETIME NOT NULL,
   desired_delivery_date DATE,
+  customer_code VARCHAR(100),
   customer_name VARCHAR(100),
   priority_ship_flag TINYINT(1) DEFAULT 0,
   yahoo_ship_status VARCHAR(30),
@@ -31,6 +32,7 @@ CREATE TABLE order_items (
 CREATE TABLE purchases (
   id INT AUTO_INCREMENT PRIMARY KEY,
   order_item_id INT NOT NULL,
+  source_type VARCHAR(20) NOT NULL DEFAULT 'daniel',
   product_code VARCHAR(100) NOT NULL,
   product_sub_code VARCHAR(100),
   quantity INT NOT NULL,
@@ -45,6 +47,7 @@ CREATE TABLE purchases (
 
 CREATE TABLE ems (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  source_type VARCHAR(20) NOT NULL DEFAULT 'daniel',
   ems_number VARCHAR(50) NOT NULL UNIQUE,
   shipped_at DATE NOT NULL,
   estimated_arrival DATE NOT NULL,
@@ -119,4 +122,23 @@ CREATE TABLE japan_inventory_staging (
   updated_at DATETIME DEFAULT NOW() ON UPDATE NOW(),
   FOREIGN KEY (ems_item_id) REFERENCES ems_items(id),
   FOREIGN KEY (assigned_order_item_id) REFERENCES order_items(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE imported_files (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  file_name VARCHAR(255) NOT NULL UNIQUE,
+  file_type VARCHAR(50) NOT NULL,
+  imported_at DATETIME DEFAULT NOW(),
+  record_count INT NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE edit_logs (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  table_name VARCHAR(50) NOT NULL,
+  record_id INT NOT NULL,
+  field_name VARCHAR(100) NOT NULL,
+  old_value TEXT,
+  new_value TEXT,
+  edited_by VARCHAR(100),
+  edited_at DATETIME DEFAULT NOW()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

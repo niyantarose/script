@@ -1,97 +1,91 @@
 {% extends "base.html" %}
-{% block title %}受注リスト | 自動引当ツール{% endblock %}
-{% block page_title %}受注リスト{% endblock %}
+{% block title %}Yahoo受注 | 自動引当ツール{% endblock %}
+{% block page_title %}Yahoo受注リスト{% endblock %}
+{% block page_subtitle %}<div class="page-subtitle">注文ごとにグルーピングした受注一覧です。セルをクリックするとその場で編集できます。</div>{% endblock %}
+{% block page_actions %}
+  <form method="post" action="{{ url_for('main.import_data_route', kind='orders') }}" class="d-inline-flex">
+    <button type="submit" class="btn btn-outline-secondary btn-sm">データ取込</button>
+  </form>
+  <form method="post" action="{{ url_for('main.recalculate_route') }}" class="d-inline-flex">
+    <button type="submit" class="btn btn-success btn-sm">引当実行</button>
+  </form>
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    data-export-url="{{ url_for('main.export', kind='orders') }}"
+    data-export-filename="orders.csv"
+  >
+    CSV出力
+  </button>
+{% endblock %}
 {% block content %}
-<section class="panel">
-  <div class="toolbar-row">
-    <div class="section-title">Yahoo受注一覧</div>
-    <div class="toolbar-actions">
-      <form method="post" action="{{ url_for('main.recalculate_route') }}">
-        <button type="submit" class="success-btn">引当実行</button>
-      </form>
-      <a class="button-link" href="{{ url_for('main.export', kind='orders') }}">CSV出力</a>
+  <section class="surface-card grid-card">
+    <div class="grid-toolbar">
+      <div class="grid-toolbar-meta">
+        <span class="metric-chip">Tabulator 表示</span>
+        <span>列ヘッダーで検索・ソート</span>
+        <span id="orders-selection-count">0件選択中</span>
+      </div>
     </div>
-  </div>
-
-  <div class="select-toolbar">
-    <label><input type="checkbox" id="chk-all-orders" onchange="toggleAllRows('orders', this.checked)"> 全選択</label>
-    <button type="button" onclick="clearAllRows('orders')">全解除</button>
-    <span class="sel-count" id="sel-count-orders">0件選択中</span>
-  </div>
-
-  <div class="table-wrap">
-    <table class="simple-table grouped-table">
-      <thead>
-        <tr>
-          <th style="width:32px;"></th>
-          <th>注文日時</th>
-          <th>受注番号</th>
-          <th>顧客名</th>
-          <th>希望日</th>
-          <th>受注状態</th>
-          <th>遅延</th>
-          <th>商品コード</th>
-          <th>オプション</th>
-          <th>数量</th>
-          <th>引当数</th>
-          <th>在庫種別</th>
-          <th>引当状況</th>
-          <th>発送</th>
-          <th>メモ更新</th>
-        </tr>
-      </thead>
-      {% for order in orders %}
-        {% set row_count = order.items|length %}
-        <tbody class="order-group">
-          {% for item in order.items %}
-            <tr class="{% if loop.first %}group-start{% endif %} {% if loop.last %}group-end{% endif %}">
-              <td>
-                <input type="checkbox" class="row-chk-orders" onchange="updateCheckedRows('orders')">
-              </td>
-              {% if loop.first %}
-                <td rowspan="{{ row_count }}" class="group-meta">{{ order.ordered_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                <td rowspan="{{ row_count }}" class="group-meta {% if delay_level_for_order(order) == 'danger' %}text-danger strong-text{% else %}strong-text{% endif %}">{{ order.yahoo_order_id }}</td>
-                <td rowspan="{{ row_count }}" class="group-meta">{{ order.customer_name or '未設定' }}</td>
-                <td rowspan="{{ row_count }}" class="group-meta">{{ order.desired_delivery_date or '未指定' }}</td>
-                <td rowspan="{{ row_count }}" class="group-meta">{{ order_status_labels[order.status] }}</td>
-                <td rowspan="{{ row_count }}" class="group-meta {% if delay_level_for_order(order) == 'danger' %}text-danger{% endif %}">{{ delay_level_labels[delay_level_for_order(order)] }}</td>
-              {% endif %}
-              <td>{{ item.product_code }}</td>
-              <td>{{ item.product_sub_code or '-' }}</td>
-              <td>{{ item.quantity }}</td>
-              <td>{{ item.allocated_qty }}</td>
-              <td>{{ item.inventory_type }}</td>
-              <td>{{ order_item_status_labels[item.status] }}</td>
-              <td>
-                {% if item.status in ['allocated_sokunou', 'fully_allocated'] and not item.shipped_flag %}
-                  <form method="post" action="{{ url_for('main.ship_item', order_item_id=item.id) }}">
-                    <button type="submit">発送完了</button>
-                  </form>
-                {% else %}
-                  {{ '完了' if item.shipped_flag else '待機' }}
-                {% endif %}
-              </td>
-              <td>
-                {% if loop.first %}
-                  <form class="mini-form group-meta" method="post" action="{{ url_for('main.update_order', order_id=order.id) }}">
-                    <textarea name="delay_memo" rows="2" placeholder="遅延理由">{{ order.delay_memo or '' }}</textarea>
-                    <label><input type="checkbox" name="priority_ship_flag" {% if order.priority_ship_flag %}checked{% endif %}> 先送り</label>
-                    <label><input type="checkbox" name="customer_contacted_flag" {% if order.customer_contacted_flag %}checked{% endif %}> 連絡済み</label>
-                    <button type="submit">更新</button>
-                  </form>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      {% else %}
-        <tbody>
-          <tr>
-            <td colspan="15" class="empty-line">受注データがありません。</td>
-          </tr>
-        </tbody>
-      {% endfor %}
-    </table>
-  </div>
-</section>
+    <div class="grid-container">
+      <div id="orders-grid"></div>
+    </div>
+  </section>
+{% endblock %}
+{% block page_scripts %}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const choices = window.inventoryLabels.orderItemStatus;
+      InventoryApp.createGrid({
+        selector: "#orders-grid",
+        data: {{ order_rows|tojson }},
+        selectionLabelSelector: "#orders-selection-count",
+        groupBy: "group_key",
+        groupHeader: (value, count, rows) => {
+          const first = rows[0]?.getData() || {};
+          const name = first.customer_name ? ` / ${InventoryApp.escapeHtml(first.customer_name)}` : "";
+          return `<span>${InventoryApp.escapeHtml(value)}${name}</span><span class="ms-2 text-white-50">${count}行</span>`;
+        },
+        rowFormatter: InventoryApp.tintRowByField("delay_level", "row-level"),
+        columns: [
+          InventoryApp.selectionColumn(),
+          {
+            title: "注文番号",
+            field: "order_number",
+            frozen: true,
+            headerFilter: "input",
+            formatter: (cell) => {
+              const row = cell.getRow().getData();
+              const klass = row.delay_level === "danger" ? "text-danger fw-bold" : "fw-semibold";
+              return `<span class="${klass}">${InventoryApp.escapeHtml(cell.getValue())}</span>`;
+            },
+            editor: "input",
+            editConfig: { entity: "order", idField: "order_id", field: "yahoo_order_id" },
+          },
+          { title: "注文点数", field: "line_number", hozAlign: "center", headerFilter: "input", width: 96 },
+          {
+            title: "商品コード",
+            field: "product_code",
+            headerFilter: "input",
+            editor: "input",
+            editConfig: { entity: "order_item", idField: "order_item_id", field: "product_code" },
+            minWidth: 180,
+          },
+          { title: "配送ステータス", field: "delivery_status", headerFilter: "input", minWidth: 160 },
+          {
+            title: "注文ステータス",
+            field: "item_status",
+            formatter: InventoryApp.choiceBadgeFormatter(choices),
+            headerFilter: "list",
+            headerFilterParams: { values: InventoryApp.choiceValues(choices), clearable: true },
+            editor: "list",
+            editorParams: { values: InventoryApp.choiceValues(choices) },
+            editConfig: { entity: "order_item", idField: "order_item_id", field: "status" },
+            minWidth: 180,
+          },
+          { title: "入荷EMS番号", field: "arrived_ems_number", headerFilter: "input", minWidth: 150 },
+        ],
+      });
+    });
+  </script>
 {% endblock %}

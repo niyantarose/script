@@ -25,6 +25,9 @@
   <div class="toolbar-row">
     <div class="section-title">クイック操作</div>
     <div class="toolbar-actions">
+      <form method="post" action="{{ url_for('main.import_data_route', kind='all') }}">
+        <button type="submit">全データ取込</button>
+      </form>
       <form method="post" action="{{ url_for('main.seed_demo') }}">
         <button type="submit">デモデータ投入</button>
       </form>
@@ -32,6 +35,100 @@
       <a class="button-link" href="{{ url_for('main.export', kind='alerts') }}">アラートCSV</a>
     </div>
   </div>
+</section>
+
+<section class="mini-list-grid">
+  <section class="panel mini-panel">
+    <div class="panel-header">
+      <div>
+        <h3>ダニエル発注リスト</h3>
+        <p>最新5件</p>
+      </div>
+      <a class="button-link tiny" href="{{ url_for('main.daniel_purchases') }}">もっと見る</a>
+    </div>
+    <div class="stack-list compact-list">
+      {% for purchase in purchase_feeds['daniel'] %}
+        <article class="list-card">
+          <div class="list-card-header">
+            <span>{{ purchase.order_item.order.yahoo_order_id }}</span>
+            <span>{{ purchase.ordered_at }}</span>
+          </div>
+          <p>{{ purchase.product_code }} / {{ purchase.shop_name or '-' }} / {{ '入荷済' if purchase.status == 'arrived' else '発注済' }}</p>
+        </article>
+      {% else %}
+        <p class="muted">まだデータがありません。</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel mini-panel">
+    <div class="panel-header">
+      <div>
+        <h3>ダニエルEMSリスト</h3>
+        <p>最新5件</p>
+      </div>
+      <a class="button-link tiny" href="{{ url_for('main.daniel_ems') }}">もっと見る</a>
+    </div>
+    <div class="stack-list compact-list">
+      {% for ems in ems_feeds['daniel'] %}
+        <article class="list-card">
+          <div class="list-card-header">
+            <span>{{ ems.ems_number }}</span>
+            <span>{{ ems.shipped_at }}</span>
+          </div>
+          <p>{{ '入荷済' if ems.arrived_at else '輸送中' }} / {{ ems.memo or '備考なし' }}</p>
+        </article>
+      {% else %}
+        <p class="muted">まだデータがありません。</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel mini-panel">
+    <div class="panel-header">
+      <div>
+        <h3>テグ発注リスト</h3>
+        <p>最新5件</p>
+      </div>
+      <a class="button-link tiny" href="{{ url_for('main.tegu_purchases') }}">もっと見る</a>
+    </div>
+    <div class="stack-list compact-list">
+      {% for purchase in purchase_feeds['tegu'] %}
+        <article class="list-card">
+          <div class="list-card-header">
+            <span>{{ purchase.order_item.order.yahoo_order_id }}</span>
+            <span>{{ purchase.ordered_at }}</span>
+          </div>
+          <p>{{ purchase.product_code }} / {{ purchase.shop_name or '-' }} / {{ '入荷済' if purchase.status == 'arrived' else '発注済' }}</p>
+        </article>
+      {% else %}
+        <p class="muted">まだデータがありません。</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel mini-panel">
+    <div class="panel-header">
+      <div>
+        <h3>テグEMSリスト</h3>
+        <p>最新5件</p>
+      </div>
+      <a class="button-link tiny" href="{{ url_for('main.tegu_ems') }}">もっと見る</a>
+    </div>
+    <div class="stack-list compact-list">
+      {% for ems in ems_feeds['tegu'] %}
+        <article class="list-card">
+          <div class="list-card-header">
+            <span>{{ ems.ems_number }}</span>
+            <span>{{ ems.shipped_at }}</span>
+          </div>
+          <p>{{ '入荷済' if ems.arrived_at else '輸送中' }} / {{ ems.memo or '備考なし' }}</p>
+        </article>
+      {% else %}
+        <p class="muted">まだデータがありません。</p>
+      {% endfor %}
+    </div>
+  </section>
 </section>
 
 <div class="split-layout">
@@ -52,35 +149,49 @@
   </section>
 
   <section class="panel">
-    <div class="section-heading">直近の受注</div>
-    <div class="table-wrap">
-      <table class="simple-table">
-        <thead>
-          <tr>
-            <th>受注番号</th>
-            <th>顧客名</th>
-            <th>状態</th>
-            <th>遅延</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for order in orders %}
-            <tr>
-              <td class="{% if delay_level_for_order(order) == 'danger' %}text-danger{% endif %}">{{ order.yahoo_order_id }}</td>
-              <td>{{ order.customer_name or '未設定' }}</td>
-              <td>{{ order_status_labels[order.status] }}</td>
-              <td>{{ delay_level_labels[delay_level_for_order(order)] }}</td>
-            </tr>
-          {% else %}
-            <tr>
-              <td colspan="4" class="empty-line">受注データがありません。</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <div class="section-heading">注文ステータス</div>
+    <div class="stack-list">
+      {% for row in order_status_summary %}
+        <article class="list-card">
+          <div class="list-card-header">
+            <span>{{ row.label }}</span>
+            <strong>{{ row.count }}件</strong>
+          </div>
+        </article>
+      {% endfor %}
     </div>
   </section>
 </div>
+
+<section class="panel">
+  <div class="section-heading">直近のYahoo受注</div>
+  <div class="table-wrap">
+    <table class="simple-table">
+      <thead>
+        <tr>
+          <th>受注番号</th>
+          <th>顧客名</th>
+          <th>状態</th>
+          <th>遅延</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for order in orders %}
+          <tr>
+            <td class="{% if delay_level_for_order(order) == 'danger' %}text-danger{% endif %}">{{ order.yahoo_order_id }}</td>
+            <td>{{ order.customer_name or '未設定' }}</td>
+            <td>{{ order_status_labels[order.status] }}</td>
+            <td>{{ delay_level_labels[delay_level_for_order(order)] }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="4" class="empty-line">受注データがありません。</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+ </section>
 
 <section class="panel">
   <div class="section-heading">在庫サマリー</div>

@@ -89,7 +89,14 @@ function isMagazineProduct(product) {
   if (/雜誌|杂志|雑誌/u.test(source) || getCategoryValue(product) === '雑誌') return true;
 
   const rawTitle = trimValue(product?.商品名 || product?.ページタイトル || '');
-  if (!rawTitle || !hasMagazineIssueMarker(rawTitle)) return false;
+  if (!rawTitle) return false;
+
+  const knownMagazineBrandPattern = /Marie\s*Claire|VOGUE|ELLE|GQ|BAZAAR|Esquire|L['’]?OFFICIEL|Men['’]?s\s+Health|THE\s+BIG\s+ISSUE/i;
+  if (knownMagazineBrandPattern.test(rawTitle) && /特別版|特辑|特輯|特刊|增刊|別冊|版/u.test(rawTitle)) {
+    return true;
+  }
+
+  if (!hasMagazineIssueMarker(rawTitle)) return false;
 
   const brandName = extractMagazineTitleText(rawTitle);
   return !!brandName && brandName !== rawTitle;
@@ -99,35 +106,41 @@ function buildMagazineSheetRow(product) {
   const code = extractProductCode(product);
   const description = cleanDescription(product?.商品説明 || '');
   const additional = getAdditionalImagesValue(product);
-  const rawTitle = trimValue(product?.商品名 || '');
-  const originalTitle = trimValue(product?.原題タイトル || extractMagazineTitleText(rawTitle));
+  const rawTitle = trimValue(product?.商品名 || product?.ページタイトル || product?.原題商品名 || '');
+  const originalTitleSource = trimValue(product?.原題タイトル || rawTitle);
+  const originalTitle = extractMagazineTitleText(rawTitle || originalTitleSource) ||
+    normalizeMagazineBrandName(originalTitleSource) ||
+    originalTitleSource;
   const issueInfo = extractMagazineIssueParts(rawTitle, product?.発売日 || '');
 
   return {
     '発番発行': '',
     '登録状況': '',
-    '言語': getLanguageCodeValue(product),
-    '雑誌名': '',
+    '商品コード（SKU）': trimValue(product?.SKU || ''),
+    '商品名（出品用）': '',
+    '言語': getLanguageValue(product),
+    '雑誌名': originalTitle,
     '年': issueInfo.year,
     '月': issueInfo.month,
     '号数': issueInfo.issue,
+    '版種': '',
+    'バリエーションコード': '',
     '表紙情報': rawTitle,
     '特典メモ': '',
-    '親コード': trimValue(product?.親コード || ''),
-    '商品名（出品用）': '',
-    '粗利益率': trimValue(product?.粗利益率 || ''),
-    '登録日': resolveTodayString(),
     '売価': trimValue(product?.売価 || ''),
-    '配送パターン': trimValue(product?.配送パターン || ''),
-    '登録者': trimValue(product?.登録者 || ''),
-    '商品説明': description,
     '原価': trimValue(product?.価格 || ''),
+    '粗利益率': trimValue(product?.粗利益率 || ''),
+    '配送パターン': trimValue(product?.配送パターン || ''),
+    '商品説明': description,
     '原題タイトル': originalTitle,
     '原題商品名': rawTitle,
     '博客來商品コード': code,
     '博客來URL': trimValue(product?.URL || ''),
     'メイン画像URL': trimValue(product?.画像URL || ''),
     '追加画像URL': additional,
+    '登録日': resolveTodayString(),
+    '登録者': trimValue(product?.登録者 || ''),
+    '備考': '',
   };
 }
 

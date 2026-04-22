@@ -1,0 +1,1 @@
+0 * * * * cd /home/ubuntu/inventory_tool && . /home/ubuntu/inventory_tool/venv/bin/activate && FLASK_APP=app.py flask import-all >> /home/ubuntu/inventory_tool/logs/import.log 2>&1

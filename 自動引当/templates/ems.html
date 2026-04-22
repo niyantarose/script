@@ -1,115 +1,175 @@
 {% extends "base.html" %}
-{% block title %}EMSリスト | 自動引当ツール{% endblock %}
-{% block page_title %}EMSリスト{% endblock %}
-{% block content %}
-<section class="panel">
-  <div class="toolbar-row">
-    <div class="section-title">EMS登録</div>
-    <div class="toolbar-actions">
-      <a class="button-link" href="{{ url_for('main.export', kind='ems') }}">CSV出力</a>
-    </div>
-  </div>
-
-  <form class="inline-entry-form full-width" method="post" action="{{ url_for('main.create_ems_route') }}">
-    <input name="ems_number" required placeholder="EMS番号">
-    <input type="date" name="shipped_at" required>
-    <input name="memo" placeholder="備考">
-    <textarea name="items_text" rows="2" placeholder="受注明細ID,数量 を1行ずつ入力"></textarea>
-    <button type="submit">EMS登録</button>
+{% block title %}{{ page_title }} | 自動引当ツール{% endblock %}
+{% block page_title %}{{ page_title }}{% endblock %}
+{% block page_subtitle %}<div class="page-subtitle">EMS情報は一覧上で編集でき、登録フォームはモーダルに格納しています。</div>{% endblock %}
+{% block page_actions %}
+  <form method="post" action="{{ url_for('main.import_data_route', kind=import_kind) }}" class="d-inline-flex">
+    <button type="submit" class="btn btn-outline-secondary btn-sm">データ取込</button>
   </form>
-</section>
-
-<section class="panel">
-  <div class="toolbar-row">
-    <div class="section-title">EMS一覧</div>
-    <div class="select-toolbar compact-select">
-      <label><input type="checkbox" id="chk-all-ems" onchange="toggleAllRows('ems', this.checked)"> 全選択</label>
-      <button type="button" onclick="clearAllRows('ems')">全解除</button>
-      <span class="sel-count" id="sel-count-ems">0件選択中</span>
+  <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#emsModal">EMS登録</button>
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    data-export-url="{{ url_for('main.export', kind=import_kind) }}"
+    data-export-filename="{{ import_kind }}.csv"
+  >
+    CSV出力
+  </button>
+{% endblock %}
+{% block content %}
+  <section class="surface-card grid-card">
+    <div class="grid-toolbar">
+      <div class="grid-toolbar-meta">
+        <span class="metric-chip">{{ source_type_labels[source_type] }}</span>
+        <span>EMS番号・発送日・入荷日・ステータスを直接修正できます</span>
+        <span id="ems-selection-count">0件選択中</span>
+      </div>
+    </div>
+    <div class="grid-container">
+      <div id="ems-grid"></div>
+    </div>
+  </section>
+{% endblock %}
+{% block modal_stack %}
+  <div class="modal fade" id="emsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('main.create_ems_route') }}">
+          <input type="hidden" name="source_type" value="{{ source_type }}">
+          <div class="modal-header">
+            <h5 class="modal-title">EMS登録</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+          </div>
+          <div class="modal-body">
+            <div class="modal-form-grid two">
+              <div>
+                <label class="form-label">EMS番号</label>
+                <input class="form-control" name="ems_number" required>
+              </div>
+              <div>
+                <label class="form-label">発送日</label>
+                <input class="form-control" type="date" name="shipped_at" required>
+              </div>
+            </div>
+            <div class="mt-3">
+              <label class="form-label">備考</label>
+              <input class="form-control" name="memo">
+            </div>
+            <div class="mt-3">
+              <label class="form-label">受注明細ID,数量</label>
+              <textarea class="form-control" name="items_text" rows="4" placeholder="例: 12,1&#10;18,2"></textarea>
+            </div>
+            <div class="modal-hint mt-3">1行ごとに `受注明細ID,数量` の形式で入力します。</div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-light" data-bs-dismiss="modal">閉じる</button>
+            <button type="submit" class="btn btn-primary">登録</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
-
-  <div class="table-wrap">
-    <table class="simple-table">
-      <thead>
-        <tr>
-          <th style="width:32px;"></th>
-          <th>EMS番号</th>
-          <th>発送日</th>
-          <th>到着予定日</th>
-          <th>入荷日</th>
-          <th>商品コード</th>
-          <th>数量</th>
-          <th>引当先受注番号</th>
-          <th>ステータス</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for ems in ems_list %}
-          {% set row_count = ems.items|length %}
-          {% for item in ems.items %}
-            <tr>
-              <td><input type="checkbox" class="row-chk-ems" onchange="updateCheckedRows('ems')"></td>
-              {% if loop.first %}
-                <td rowspan="{{ row_count }}">{{ ems.ems_number }}</td>
-                <td rowspan="{{ row_count }}">{{ ems.shipped_at }}</td>
-                <td rowspan="{{ row_count }}">{{ ems.estimated_arrival }}</td>
-                <td rowspan="{{ row_count }}">{{ ems.arrived_at or '-' }}</td>
-              {% endif %}
-              <td>{{ item.product_code }}{% if item.product_sub_code %}/{{ item.product_sub_code }}{% endif %}</td>
-              <td>{{ item.quantity }}</td>
-              <td>{{ item.order_item.order.yahoo_order_id }}</td>
-              <td>{{ '入荷済' if ems.status == 'arrived' else '輸送中' }}</td>
-              <td>
-                {% if loop.first and ems.status != 'arrived' %}
-                  <form class="mini-inline-form" method="post" action="{{ url_for('main.arrive_ems_route', ems_id=ems.id) }}">
-                    <input type="date" name="arrived_at" required>
-                    <button type="submit">入荷登録</button>
-                  </form>
-                {% elif loop.first %}
-                  完了
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        {% else %}
-          <tr>
-            <td colspan="10" class="empty-line">EMSデータがありません。</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-  <div class="helper-box">
-    <div class="section-heading">受注明細ID 参照</div>
-    <div class="table-wrap">
-      <table class="simple-table compact-table">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>受注番号</th>
-            <th>商品コード</th>
-            <th>状態</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in order_items %}
-            <tr>
-              <td>{{ item.id }}</td>
-              <td>{{ item.order.yahoo_order_id }}</td>
-              <td>{{ item.product_code }}{% if item.product_sub_code %}/{{ item.product_sub_code }}{% endif %}</td>
-              <td>{{ order_item_status_labels[item.status] }}</td>
-            </tr>
-          {% else %}
-            <tr>
-              <td colspan="4" class="empty-line">受注明細がありません。</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
+{% endblock %}
+{% block page_scripts %}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const emsChoices = window.inventoryLabels.emsStatus;
+      InventoryApp.createGrid({
+        selector: "#ems-grid",
+        data: {{ ems_rows|tojson }},
+        selectionLabelSelector: "#ems-selection-count",
+        groupBy: "group_key",
+        groupHeader: (value, count) => `${InventoryApp.escapeHtml(value)} <span class="ms-2 text-white-50">${count}行</span>`,
+        columns: [
+          InventoryApp.selectionColumn(),
+          { title: "受注番号", field: "order_number", frozen: true, headerFilter: "input", minWidth: 140 },
+          { title: "注文点数", field: "line_number", headerFilter: "input", hozAlign: "center", width: 96 },
+          {
+            title: "商品コード",
+            field: "product_code",
+            headerFilter: "input",
+            minWidth: 180,
+            editor: "input",
+            editConfig: { entity: "order_item", idField: "order_item_id", field: "product_code" },
+          },
+          { title: "数量", field: "quantity", hozAlign: "center", headerFilter: "input", width: 92 },
+          {
+            title: "EMS番号",
+            field: "ems_number",
+            headerFilter: "input",
+            minWidth: 150,
+            editor: "input",
+            editConfig: {
+              entity: "ems",
+              idField: "ems_id",
+              field: "ems_number",
+              canEdit: (row) => Boolean(row.ems_id),
+            },
+          },
+          {
+            title: "発送日",
+            field: "shipped_at",
+            headerFilter: "input",
+            minWidth: 132,
+            editor: "input",
+            editorParams: { elementAttributes: { type: "date" } },
+            editConfig: {
+              entity: "ems",
+              idField: "ems_id",
+              field: "shipped_at",
+              canEdit: (row) => Boolean(row.ems_id),
+            },
+          },
+          { title: "到着予定日", field: "estimated_arrival", headerFilter: "input", minWidth: 132 },
+          {
+            title: "入荷日",
+            field: "arrived_at",
+            headerFilter: "input",
+            minWidth: 132,
+            editor: "input",
+            editorParams: { elementAttributes: { type: "date" } },
+            editConfig: {
+              entity: "ems",
+              idField: "ems_id",
+              field: "arrived_at",
+              canEdit: (row) => Boolean(row.ems_id),
+            },
+          },
+          {
+            title: "EMSステータス",
+            field: "ems_status",
+            formatter: (cell) => {
+              const row = cell.getRow().getData();
+              const label = row.ems_status_label || emsChoices[cell.getValue()] || "未登録";
+              return `<span class="grid-badge">${InventoryApp.escapeHtml(label)}</span>`;
+            },
+            headerFilter: "list",
+            headerFilterParams: { values: InventoryApp.choiceValues(emsChoices), clearable: true },
+            editor: "list",
+            editorParams: { values: InventoryApp.choiceValues(emsChoices) },
+            minWidth: 170,
+            editConfig: {
+              entity: "ems",
+              idField: "ems_id",
+              field: "status",
+              canEdit: (row) => Boolean(row.ems_id),
+            },
+          },
+          {
+            title: "備考",
+            field: "memo",
+            headerFilter: "input",
+            minWidth: 220,
+            editor: "input",
+            editConfig: {
+              entity: "ems",
+              idField: "ems_id",
+              field: "memo",
+              canEdit: (row) => Boolean(row.ems_id),
+            },
+          },
+        ],
+      });
+    });
+  </script>
 {% endblock %}

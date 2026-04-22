@@ -1,0 +1,17 @@
+[Unit]
+Description=Inventory Allocation Tool
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/inventory_tool
+EnvironmentFile=/home/ubuntu/inventory_tool/.env
+ExecStart=/home/ubuntu/inventory_tool/venv/bin/gunicorn -c /home/ubuntu/inventory_tool/gunicorn.conf.py app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

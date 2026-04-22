@@ -1,56 +1,98 @@
 {% extends "base.html" %}
 {% block title %}アラート一覧 | 自動引当ツール{% endblock %}
 {% block page_title %}アラート一覧{% endblock %}
+{% block page_subtitle %}<div class="page-subtitle">未解決アラートはその場で解決済みにできます。危険度は行色で判別できます。</div>{% endblock %}
+{% block page_actions %}
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    data-export-url="{{ url_for('main.export', kind='alerts') }}"
+    data-export-filename="alerts.csv"
+  >
+    CSV出力
+  </button>
+{% endblock %}
 {% block content %}
-<div class="two-column">
-  <section class="panel">
-    <div class="panel-header">
-      <div>
-        <h3>未解決</h3>
-        <p>ここで解決済みにすると履歴側へ移動します。</p>
+  <div class="panel-grid two">
+    <section class="surface-card grid-card">
+      <div class="grid-card-header">
+        <div>
+          <h2 class="grid-card-title">未解決</h2>
+          <p class="grid-card-note">対応すると履歴側へ移動します。</p>
+        </div>
+        <div id="alerts-open-count" class="metric-chip">0件選択中</div>
       </div>
-      <a class="button ghost" href="{{ url_for('main.export', kind='alerts') }}">CSV出力</a>
-    </div>
-    <div class="stack-list">
-      {% for alert in unresolved %}
-        <article class="list-card">
-          <div class="list-card-header split">
-            <div>
-              <span class="badge danger">{{ alert_type_labels[alert.alert_type] }}</span>
-              <h4>{{ alert.order.yahoo_order_id if alert.order else '共通アラート' }}</h4>
-            </div>
-            <form method="post" action="{{ url_for('main.resolve_alert_route', alert_id=alert.id) }}">
-              <button class="button tiny" type="submit">解決済み</button>
-            </form>
-          </div>
-          <p>{{ alert.message }}</p>
-        </article>
-      {% else %}
-        <p class="muted">未解決アラートはありません。</p>
-      {% endfor %}
-    </div>
-  </section>
+      <div class="grid-container">
+        <div id="alerts-open-grid"></div>
+      </div>
+    </section>
 
-  <section class="panel">
-    <div class="panel-header">
-      <div>
-        <h3>解決済み履歴</h3>
-        <p>対応済みの記録です。</p>
+    <section class="surface-card grid-card">
+      <div class="grid-card-header">
+        <div>
+          <h2 class="grid-card-title">解決済み履歴</h2>
+          <p class="grid-card-note">対応済みのアラート履歴です。</p>
+        </div>
+        <div id="alerts-closed-count" class="metric-chip">0件選択中</div>
       </div>
-    </div>
-    <div class="stack-list">
-      {% for alert in resolved %}
-        <article class="list-card muted-card">
-          <div class="list-card-header">
-            <span class="badge ok">{{ alert_type_labels[alert.alert_type] }}</span>
-            <span>{{ alert.order.yahoo_order_id if alert.order else '共通' }}</span>
-          </div>
-          <p>{{ alert.message }}</p>
-        </article>
-      {% else %}
-        <p class="muted">まだ解決済み履歴はありません。</p>
-      {% endfor %}
-    </div>
-  </section>
-</div>
+      <div class="grid-container">
+        <div id="alerts-closed-grid"></div>
+      </div>
+    </section>
+  </div>
+{% endblock %}
+{% block page_scripts %}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const unresolvedGrid = InventoryApp.createGrid({
+        selector: "#alerts-open-grid",
+        data: {{ unresolved_rows|tojson }},
+        selectionLabelSelector: "#alerts-open-count",
+        rowFormatter: InventoryApp.tintRowByField("level", "alert-band"),
+        columns: [
+          InventoryApp.selectionColumn(),
+          { title: "種別", field: "alert_type_label", headerFilter: "input", minWidth: 150 },
+          { title: "受注番号", field: "order_number", headerFilter: "input", minWidth: 140 },
+          { title: "商品コード", field: "product_code", headerFilter: "input", minWidth: 150 },
+          { title: "内容", field: "message", headerFilter: "input", minWidth: 320 },
+          { title: "登録日時", field: "created_at", headerFilter: "input", minWidth: 160 },
+          {
+            title: "操作",
+            field: "action",
+            headerSort: false,
+            formatter: () => '<button type="button" class="btn btn-outline-primary btn-sm">解決済み</button>',
+            width: 116,
+            cellClick: async (event, cell) => {
+              if (!event.target.closest("button")) {
+                return;
+              }
+              const row = cell.getRow().getData();
+              try {
+                await InventoryApp.postFormAction(`/alerts/${row.alert_id}/resolve`);
+                unresolvedGrid.deleteRow(row.row_id);
+                window.location.reload();
+              } catch (error) {
+                InventoryApp.showToast(error.message || "更新に失敗しました。", "error");
+              }
+            },
+          },
+        ],
+      });
+
+      InventoryApp.createGrid({
+        selector: "#alerts-closed-grid",
+        data: {{ resolved_rows|tojson }},
+        selectionLabelSelector: "#alerts-closed-count",
+        rowFormatter: InventoryApp.tintRowByField("level", "alert-band"),
+        columns: [
+          InventoryApp.selectionColumn(),
+          { title: "種別", field: "alert_type_label", headerFilter: "input", minWidth: 150 },
+          { title: "受注番号", field: "order_number", headerFilter: "input", minWidth: 140 },
+          { title: "商品コード", field: "product_code", headerFilter: "input", minWidth: 150 },
+          { title: "内容", field: "message", headerFilter: "input", minWidth: 320 },
+          { title: "登録日時", field: "created_at", headerFilter: "input", minWidth: 160 },
+        ],
+      });
+    });
+  </script>
 {% endblock %}

@@ -54,6 +54,10 @@
           <span class="badge badge-ems">輸送中 {{ box.days_in_transit }}日目</span>
         {% endif %}
         <span class="ems-item-count">{{ box.rows|length }}件</span>
+        {% if e.purchase_no %}
+        <span style="font-size:11px;font-family:monospace;color:var(--accent-blue);background:rgba(59,130,246,.08);
+                     padding:2px 6px;border-radius:4px;">{{ e.purchase_no }}</span>
+        {% endif %}
       </div>
       <div class="ems-box-dates">
         <span title="発送日">📦 {{ e.shipped_at.strftime('%m/%d') if e.shipped_at else '—' }}</span>
@@ -261,16 +265,13 @@ function toggleBox(id) {
   toggle.classList.toggle('open', open);
 }
 
-// デフォルト: 輸送中の箱は展開、入荷済みは折りたたみ
+// デフォルト: 全件展開
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.ems-box').forEach(box => {
-    // arrived クラスがなければ（= 輸送中か遅延）展開
-    if (!box.classList.contains('ems-box-arrived')) {
-      const m = box.querySelector('.ems-box-header');
-      if (m) {
-        const id = m.getAttribute('onclick').match(/\d+/)[0];
-        toggleBox(id);
-      }
+    const m = box.querySelector('.ems-box-header');
+    if (m) {
+      const id = m.getAttribute('onclick').match(/\d+/)[0];
+      toggleBox(id);
     }
   });
 });

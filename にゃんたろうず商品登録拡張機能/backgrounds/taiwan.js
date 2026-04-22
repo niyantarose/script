@@ -4,12 +4,15 @@ const GAS_SYNC_QUEUE_KEY = 'booksGasSyncQueueV1';
 const GAS_SYNC_STATUS_KEY = 'booksGasSyncStatusV1';
 const GAS_SYNC_RESET_TOKEN_KEY = 'booksGasSyncResetTokenV1';
 const GAS_SYNC_ALARM_NAME = 'booksGasSyncQueueAlarmV1';
-const GAS_SYNC_TIMEOUT_MS = 180000;
+const GAS_SYNC_TIMEOUT_MS = 60000;
 const GAS_SYNC_ALARM_PERIOD_MINUTES = 1;
 const IMAGE_FILENAME_EXT = 'jpg';
 const TAIWAN_IMAGE_MAX_EDGE = 1000;
 const TAIWAN_DOWNLOAD_MARKER = 'nyantarose_tw___-_';
 const pendingTaiwanFilenameByMarker = new Map();
+const TAIWAN_FILENAME_HOOK_TTL_MS = 30000;
+let taiwanFilenameHookCleanupTimer = null;
+let taiwanFilenameHookRegistered = false;
 let gasSyncProcessing = false;
 let gasSyncResetToken = 0;
 
@@ -44,7 +47,6 @@ function buildGasSyncStatus(status) {
   return {
     state: '',
     jobId: '',
-    requestKey: '',
     itemCount: 0,
     queueLength: 0,
     message: '',
@@ -55,24 +57,6 @@ function buildGasSyncStatus(status) {
     finishedAt: '',
     ...status,
   };
-}
-
-function isGasWebAppExecUrl(url) {
-  try {
-    const parsed = new URL(String(url || '').trim());
-    return parsed.protocol === 'https:'
-      && parsed.hostname === 'script.google.com'
-      && /^\/macros\/s\/[^/]+\/exec\/?$/i.test(parsed.pathname);
-  } catch {
-    return false;
-  }
-}
-
-function buildGasHttpErrorMessage(status) {
-  if (status === 401) {
-    return 'GAS が HTTP 401 を返しました。Webアプリの /exec URL と、デプロイのアクセス権（全員）を確認してください';
-  }
-  return `HTTP ${status}`;
 }
 
 function parseIsoTimeMs(value) {
@@ -133,19 +117,6 @@ async function resumeGasSyncQueueIfNeeded(delayMs = 50) {
   return true;
 }
 
-function showGasNotification(id, title, message) {
-  try {
-    chrome.notifications.create(id, {
-      type: 'basic',
-      iconUrl: 'icon48.png',
-      title,
-      message,
-    });
-  } catch {
-    // notifications API unavailable
-  }
-}
-
 async function getGasSyncStatusWithRecovery() {
   const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY, GAS_SYNC_STATUS_KEY]);
   const queue = Array.isArray(stored[GAS_SYNC_QUEUE_KEY]) ? stored[GAS_SYNC_QUEUE_KEY] : [];
@@ -154,7 +125,7 @@ async function getGasSyncStatusWithRecovery() {
   if (!queue.length) {
     clearGasSyncAlarm();
     if (status?.state === 'queued' || status?.state === 'running') {
-      // awaitすることで storage.onChanged が確実に発火し、ポップアップ側が更新される
+      gasSyncProcessing = false;
       await storageSetLocal({ [GAS_SYNC_STATUS_KEY]: null }).catch(() => {});
       return null;
     }
@@ -184,35 +155,28 @@ async function postGasJson(url, bodyText) {
   const timeoutId = setTimeout(() => controller.abort(), GAS_SYNC_TIMEOUT_MS);
 
   try {
-    // GASは script.google.com → script.googleusercontent.com へ302リダイレクトする。
-    // redirect:'follow' だと POST→GET に変換されて 401 になるため、手動でリダイレクトを追う。
-    let currentUrl = url;
-    let response = null;
-    const MAX_REDIRECTS = 5;
-    for (let i = 0; i <= MAX_REDIRECTS; i++) {
-      response = await fetch(currentUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: bodyText,
-        credentials: 'omit',
-        redirect: 'manual',
-        signal: controller.signal,
-      });
-      if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
-        const location = response.headers.get('location');
-        if (location) { currentUrl = location; continue; }
-      }
-      break;
-    }
+    // GAS は POST 受信後 302 リダイレクトでレスポンスを返す。
+    // Service Worker では redirect:'manual' だと Location ヘッダーが読めない
+    // (opaqueredirect) ため status 0 になる。
+    // redirect:'follow' なら 302→GET に変わるが、GAS 側の doPost() は
+    // リダイレクト前に処理済みなので問題ない。
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: bodyText,
+      credentials: 'omit',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
 
     return {
       status: response.status,
       responseText: await response.text(),
-      responseUrl: response.url || currentUrl,
+      responseUrl: response.url || url,
     };
   } catch (error) {
     if (error && error.name === 'AbortError') {
-      throw new Error('GAS request timed out（GAS側の処理に時間がかかりすぎています。再度お試しください）');
+      throw new Error('GAS request timed out');
     }
     throw error;
   } finally {
@@ -221,10 +185,6 @@ async function postGasJson(url, bodyText) {
 }
 
 async function postProductsToGas(url, items) {
-  if (!isGasWebAppExecUrl(url)) {
-    throw new Error('GAS Webアプリの /exec URL を設定してください（/macros/library/... ではなく /macros/s/.../exec）');
-  }
-
   const response = await postGasJson(url, JSON.stringify({
     source: 'books.com.tw-extension',
     appendMode: 'append',
@@ -241,7 +201,7 @@ async function postProductsToGas(url, items) {
   }
 
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(data?.error || buildGasHttpErrorMessage(response.status));
+    throw new Error(data?.error || `HTTP ${response.status}`);
   }
 
   if (!data || typeof data !== 'object') {
@@ -259,32 +219,12 @@ async function postProductsToGas(url, items) {
   return data;
 }
 
-function createGasSyncRequestKey(url, items) {
-  return JSON.stringify({
-    url: String(url || '').trim(),
-    items: Array.isArray(items)
-      ? items.map(item => ({
-          sheetName: String(item?.sheetName || '').trim(),
-          productCode: String(item?.productCode || '').trim(),
-          itemType: String(item?.itemType || '').trim(),
-          headers: Array.isArray(item?.headers) ? item.headers : [],
-          rowData: item?.rowData ?? null,
-        }))
-      : [],
-  });
-}
-
-function getGasSyncJobRequestKey(job) {
-  return String(job?.requestKey || createGasSyncRequestKey(job?.url, job?.items));
-}
-
 function createGasSyncJob(request) {
   return {
     jobId: `gas_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     url: String(request.url || '').trim(),
     items: Array.isArray(request.items) ? request.items : [],
     requestedAt: new Date().toISOString(),
-    requestKey: createGasSyncRequestKey(request.url, request.items),
   };
 }
 
@@ -293,27 +233,13 @@ async function queueGasSyncJob(request) {
   if (!job.url) throw new Error('GAS URL が未設定です');
   if (!job.items.length) throw new Error('送信対象の商品がありません');
 
-  const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY, GAS_SYNC_STATUS_KEY]);
+  const stored = await storageGetLocal([GAS_SYNC_QUEUE_KEY]);
   const queue = Array.isArray(stored[GAS_SYNC_QUEUE_KEY]) ? stored[GAS_SYNC_QUEUE_KEY] : [];
-  const duplicateJob = queue.find(entry => getGasSyncJobRequestKey(entry) === job.requestKey);
-  if (duplicateJob) {
-    return buildGasSyncStatus({
-      ...(stored[GAS_SYNC_STATUS_KEY] || {}),
-      state: stored[GAS_SYNC_STATUS_KEY]?.state || 'queued',
-      jobId: duplicateJob.jobId,
-      requestKey: job.requestKey,
-      itemCount: duplicateJob.items.length,
-      queueLength: queue.length,
-      requestedAt: duplicateJob.requestedAt,
-      message: `⏳ 同じ ${duplicateJob.items.length}件のシート書き込みは送信中です`,
-    });
-  }
   queue.push(job);
 
   const status = buildGasSyncStatus({
     state: 'queued',
     jobId: job.jobId,
-    requestKey: job.requestKey,
     itemCount: job.items.length,
     queueLength: queue.length,
     requestedAt: job.requestedAt,
@@ -352,7 +278,6 @@ async function processGasSyncQueue() {
         [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
           state: 'running',
           jobId: job.jobId,
-          requestKey: getGasSyncJobRequestKey(job),
           itemCount: job.items.length,
           queueLength: queue.length,
           requestedAt: job.requestedAt,
@@ -388,7 +313,6 @@ async function processGasSyncQueue() {
           [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
             state: 'success',
             jobId: job.jobId,
-            requestKey: getGasSyncJobRequestKey(job),
             itemCount: job.items.length,
             queueLength: nextQueue.length,
             requestedAt: job.requestedAt,
@@ -399,27 +323,23 @@ async function processGasSyncQueue() {
             message,
           }),
         });
-        showGasNotification('gas_sync_success', 'GASシート書き込み完了', message);
       } catch (error) {
         const latestResetToken = await getStoredGasSyncResetToken();
         gasSyncResetToken = latestResetToken;
         if (runToken !== latestResetToken) continue;
-        const errorMessage = error?.message || 'GAS write failed';
         await storageSetLocal({
           [GAS_SYNC_QUEUE_KEY]: nextQueue,
           [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
             state: 'error',
             jobId: job.jobId,
-            requestKey: getGasSyncJobRequestKey(job),
             itemCount: job.items.length,
             queueLength: nextQueue.length,
             requestedAt: job.requestedAt,
             finishedAt: new Date().toISOString(),
-            error: errorMessage,
-            message: `❌ ${errorMessage}`,
+            error: error?.message || 'GAS write failed',
+            message: `❌ ${error?.message || 'GAS write failed'}`,
           }),
         });
-        showGasNotification('gas_sync_error', 'GASシート書き込みエラー', errorMessage);
       }
     }
   } finally {
@@ -499,13 +419,62 @@ function inferTaiwanProductCodeFromFilename(filename = '') {
 
 
 
+function getPendingTaiwanFilenameValue(entry) {
+  if (!entry) return '';
+  if (typeof entry === 'string') return entry;
+  return String(entry.filename || '').trim();
+}
+
+function prunePendingTaiwanFilenameMarkers(now = Date.now()) {
+  for (const [markerFilename, entry] of pendingTaiwanFilenameByMarker.entries()) {
+    const createdAt = Number(entry?.createdAt || 0);
+    if (createdAt && now - createdAt > TAIWAN_FILENAME_HOOK_TTL_MS) {
+      pendingTaiwanFilenameByMarker.delete(markerFilename);
+    }
+  }
+}
+
+function releaseTaiwanFilenameHookIfIdle() {
+  prunePendingTaiwanFilenameMarkers();
+  if (pendingTaiwanFilenameByMarker.size > 0) return;
+  if (taiwanFilenameHookCleanupTimer) {
+    clearTimeout(taiwanFilenameHookCleanupTimer);
+    taiwanFilenameHookCleanupTimer = null;
+  }
+  if (taiwanFilenameHookRegistered) {
+    chrome.downloads.onDeterminingFilename.removeListener(handleTaiwanDeterminingFilename);
+    taiwanFilenameHookRegistered = false;
+  }
+}
+
+function scheduleTaiwanFilenameHookCleanup() {
+  if (taiwanFilenameHookCleanupTimer) {
+    clearTimeout(taiwanFilenameHookCleanupTimer);
+  }
+  taiwanFilenameHookCleanupTimer = setTimeout(() => {
+    releaseTaiwanFilenameHookIfIdle();
+  }, TAIWAN_FILENAME_HOOK_TTL_MS);
+}
+
+function ensureTaiwanFilenameHook() {
+  if (!taiwanFilenameHookRegistered) {
+    chrome.downloads.onDeterminingFilename.addListener(handleTaiwanDeterminingFilename);
+    taiwanFilenameHookRegistered = true;
+  }
+  scheduleTaiwanFilenameHookCleanup();
+}
+
 function buildTaiwanMarkerFilename(targetFilename = 'download.bin') {
   const safeTargetFilename = sanitizeRelativePath(targetFilename, 'download.bin');
   const extensionMatch = safeTargetFilename.match(/(\.[a-z0-9]+)$/i);
   const extension = extensionMatch ? extensionMatch[1] : '.bin';
   const token = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const markerFilename = `${TAIWAN_DOWNLOAD_MARKER}${token}${extension}`;
-  pendingTaiwanFilenameByMarker.set(markerFilename, safeTargetFilename);
+  pendingTaiwanFilenameByMarker.set(markerFilename, {
+    filename: safeTargetFilename,
+    createdAt: Date.now(),
+  });
+  ensureTaiwanFilenameHook();
   return markerFilename;
 }
 
@@ -521,19 +490,18 @@ function consumePendingTaiwanFilenameByMarker(itemFilename = '') {
   const direct = pendingTaiwanFilenameByMarker.get(normalized);
   if (direct) {
     pendingTaiwanFilenameByMarker.delete(normalized);
-    return direct;
+    return getPendingTaiwanFilenameValue(direct);
   }
 
-  for (const [markerFilename, desiredFilename] of pendingTaiwanFilenameByMarker.entries()) {
+  for (const [markerFilename, entry] of pendingTaiwanFilenameByMarker.entries()) {
     if (normalized.includes(markerFilename)) {
       pendingTaiwanFilenameByMarker.delete(markerFilename);
-      return desiredFilename;
+      return getPendingTaiwanFilenameValue(entry);
     }
   }
 
   return '';
-}
-function isGoodsLikeTaiwanProductCode(productCode = '') {
+}function isGoodsLikeTaiwanProductCode(productCode = '') {
   return /^[NM]/i.test(String(productCode || '').trim());
 }
 
@@ -583,6 +551,12 @@ function upgradeTaiwanDirectImageVariant(urlText, options = {}) {
   return buildTaiwanDirectImageVariants(urlText, options)[0] || resolveAbsoluteUrl(urlText);
 }
 
+function buildTaiwanBannerWrapperUrl(imageUrl) {
+  const resolved = resolveAbsoluteUrl(String(imageUrl || '').trim());
+  if (!/^https?:\/\/addons\.books\.com\.tw\/G\/ADbanner\//i.test(resolved)) return '';
+  return `https://im1.book.com.tw/image/getImage?i=${encodeURIComponent(resolved)}`;
+}
+
 function unwrapTaiwanImageSource(urlText, options = {}) {
   const raw = String(urlText || '').trim();
   if (!raw) return '';
@@ -593,11 +567,15 @@ function unwrapTaiwanImageSource(urlText, options = {}) {
     if (original) {
       let originalUrl = decodeURIComponent(original);
       if (originalUrl.startsWith('//')) originalUrl = `https:${originalUrl}`;
+      const wrappedBannerUrl = buildTaiwanBannerWrapperUrl(originalUrl);
+      if (wrappedBannerUrl) return wrappedBannerUrl;
       return upgradeTaiwanDirectImageVariant(originalUrl, options);
     }
-    return upgradeTaiwanDirectImageVariant(parsed.href, options);
+    const upgradedUrl = upgradeTaiwanDirectImageVariant(parsed.href, options);
+    return buildTaiwanBannerWrapperUrl(upgradedUrl) || upgradedUrl;
   } catch {
-    return upgradeTaiwanDirectImageVariant(raw, options);
+    const upgradedUrl = upgradeTaiwanDirectImageVariant(raw, options);
+    return buildTaiwanBannerWrapperUrl(upgradedUrl) || upgradedUrl;
   }
 }
 
@@ -701,14 +679,16 @@ function buildTaiwanImageDownloadUrl(url, options = {}) {
 }
 
 
-chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+function handleTaiwanDeterminingFilename(item, suggest) {
+  prunePendingTaiwanFilenameMarkers();
   const desiredFilename = consumePendingTaiwanFilenameByMarker(item?.filename || '');
   if (desiredFilename) {
     suggest({ filename: desiredFilename, conflictAction: 'uniquify' });
-    return;
+  } else {
+    suggest();
   }
-  suggest();
-});
+  releaseTaiwanFilenameHookIfIdle();
+}
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm?.name === GAS_SYNC_ALARM_NAME) {
     processGasSyncQueue().catch(() => {});
@@ -1101,18 +1081,6 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     })
       .then(result => sendResponse({ ok: true, ...result }))
       .catch(error => sendResponse({ ok: false, error: error.message || 'save failed' }));
-    return true;
-  }
-  if (request.action === 'mangaUpdatesApiFetch') {
-    (async () => {
-      try {
-        const resp = await fetch(request.url, request.options || {});
-        const text = await resp.text();
-        sendResponse({ ok: resp.ok, status: resp.status, body: text });
-      } catch (e) {
-        sendResponse({ ok: false, status: 0, body: '', error: e.message });
-      }
-    })();
     return true;
   }
   return false;

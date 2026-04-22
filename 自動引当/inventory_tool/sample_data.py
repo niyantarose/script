@@ -37,6 +37,7 @@ def seed_demo_data() -> None:
         yahoo_order_id="YH-20260413-001",
         ordered_at=datetime.now() - timedelta(days=1),
         desired_delivery_date=date.today() + timedelta(days=6),
+        customer_code="CUS-1001",
         customer_name="田中 花子",
         status="pending",
     )
@@ -48,6 +49,7 @@ def seed_demo_data() -> None:
         yahoo_order_id="YH-20260413-002",
         ordered_at=datetime.now() - timedelta(days=3),
         desired_delivery_date=date.today() + timedelta(days=5),
+        customer_code="CUS-1002",
         customer_name="佐藤 次郎",
         status="pending",
     )
@@ -59,6 +61,7 @@ def seed_demo_data() -> None:
         yahoo_order_id="YH-20260413-003",
         ordered_at=datetime.now() - timedelta(days=7),
         desired_delivery_date=date.today() + timedelta(days=3),
+        customer_code="CUS-1003",
         customer_name="鈴木 一郎",
         status="pending",
         delay_memo="仕入先確認中",
@@ -71,6 +74,7 @@ def seed_demo_data() -> None:
         yahoo_order_id="YH-20260413-004",
         ordered_at=datetime.now() - timedelta(days=4),
         desired_delivery_date=date.today() + timedelta(days=7),
+        customer_code="CUS-1004",
         customer_name="高橋 美咲",
         status="pending",
     )
@@ -83,6 +87,7 @@ def seed_demo_data() -> None:
 
     purchase1 = Purchase(
         order_item=order2.items[0],
+        source_type="daniel",
         product_code="SKU-1002",
         product_sub_code="BLUE",
         quantity=1,
@@ -92,6 +97,7 @@ def seed_demo_data() -> None:
     )
     purchase2 = Purchase(
         order_item=order4.items[0],
+        source_type="tegu",
         product_code="SKU-2001",
         product_sub_code=None,
         quantity=1,
@@ -110,6 +116,7 @@ def seed_demo_data() -> None:
     )
 
     ems = Ems(
+        source_type="daniel",
         ems_number="EMS123456789KR",
         shipped_at=date.today() - timedelta(days=4),
         estimated_arrival=date.today() - timedelta(days=2),

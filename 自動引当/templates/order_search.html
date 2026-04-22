@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}注文検索 | 自動引当ツール{% endblock %}
+{% block page_title %}注文検索{% endblock %}
+{% block page_subtitle %}<div class="page-subtitle">注文番号・お客様番号・商品コードで検索し、そのまま内容を修正できます。</div>{% endblock %}
+{% block page_actions %}
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    data-export-url="{{ url_for('main.export', kind='orders') }}"
+    data-export-filename="order_search.csv"
+  >
+    CSV出力
+  </button>
+{% endblock %}
+{% block content %}
+  <section class="surface-card grid-card">
+    <form class="search-inline-form" method="get" action="{{ url_for('main.order_search') }}">
+      <input class="form-control" name="order_keyword" value="{{ order_keyword }}" placeholder="注文番号で検索">
+      <input class="form-control" name="customer_keyword" value="{{ customer_keyword }}" placeholder="お客様番号・顧客名で検索">
+      <input class="form-control" name="product_keyword" value="{{ product_keyword }}" placeholder="商品コードで検索">
+      <button type="submit" class="btn btn-primary">検索</button>
+      <a class="btn btn-light" href="{{ url_for('main.order_search') }}">条件クリア</a>
+    </form>
+    <div class="grid-toolbar">
+      <div class="grid-toolbar-meta">
+        <span class="metric-chip">{% if has_filters %}検索結果 {{ search_rows|length }} 行{% else %}全受注表示{% endif %}</span>
+        <span id="search-selection-count">0件選択中</span>
+      </div>
+    </div>
+    <div class="grid-container">
+      <div id="search-grid"></div>
+    </div>
+  </section>
+{% endblock %}
+{% block page_scripts %}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const orderChoices = window.inventoryLabels.orderStatus;
+      const itemChoices = window.inventoryLabels.orderItemStatus;
+      const inventoryChoices = window.inventoryLabels.inventoryType;
+      InventoryApp.createGrid({
+        selector: "#search-grid",
+        data: {{ search_rows|tojson }},
+        selectionLabelSelector: "#search-selection-count",
+        groupBy: "group_key",
+        groupHeader: (value, count, rows) => {
+          const first = rows[0]?.getData() || {};
+          const customer = first.customer_name ? ` / ${InventoryApp.escapeHtml(first.customer_name)}` : "";
+          return `${InventoryApp.escapeHtml(value)}${customer} <span class="ms-2 text-white-50">${count}行</span>`;
+        },
+        rowFormatter: InventoryApp.tintRowByField("delay_level", "row-level"),
+        columns: [
+          InventoryApp.selectionColumn(),
+          {
+            title: "注文番号",
+            field: "order_number",
+            frozen: true,
+            headerFilter: "input",
+            minWidth: 140,
+            editor: "input",
+            editConfig: { entity: "order", idField: "order_id", field: "yahoo_order_id" },
+          },
+          { title: "注文日時", field: "ordered_at", headerFilter: "input", minWidth: 150 },
+          {
+            title: "お客様番号",
+            field: "customer_code",
+            headerFilter: "input",
+            minWidth: 140,
+            editor: "input",
+            editConfig: { entity: "order", idField: "order_id", field: "customer_code" },
+          },
+          {
+            title: "顧客名",
+            field: "customer_name",
+            headerFilter: "input",
+            minWidth: 160,
+            editor: "input",
+            editConfig: { entity: "order", idField: "order_id", field: "customer_name" },
+          },
+          {
+            title: "希望日",
+            field: "desired_delivery_date",
+            headerFilter: "input",
+            minWidth: 132,
+            editor: "input",
+            editorParams: { elementAttributes: { type: "date" } },
+            editConfig: { entity: "order", idField: "order_id", field: "desired_delivery_date" },
+          },
+          {
+            title: "受注状態",
+            field: "order_status",
+            formatter: InventoryApp.choiceBadgeFormatter(orderChoices),
+            headerFilter: "list",
+            headerFilterParams: { values: InventoryApp.choiceValues(orderChoices), clearable: true },
+            editor: "list",
+            editorParams: { values: InventoryApp.choiceValues(orderChoices) },
+            minWidth: 150,
+            editConfig: { entity: "order", idField: "order_id", field: "status" },
+          },
+          { title: "遅延", field: "delay_label", headerFilter: "input", width: 96 },
+          {
+            title: "商品コード",
+            field: "product_code",
+            headerFilter: "input",
+            minWidth: 180,
+            editor: "input",
+            editConfig: { entity: "order_item", idField: "order_item_id", field: "product_code" },
+          },
+          {
+            title: "オプション",
+            field: "product_sub_code",
+            headerFilter: "input",
+            minWidth: 150,
+            editor: "input",
+            editConfig: { entity: "order_item", idField: "order_item_id", field: "product_sub_code" },
+          },
+          {
+            title: "数量",
+            field: "quantity",
+            headerFilter: "input",
+            hozAlign: "center",
+            width: 92,
+            editor: "number",
+            editConfig: { entity: "order_item", idField: "order_item_id", field: "quantity" },
+          },
+          {
+            title: "在庫種別",
+            field: "inventory_type",
+            formatter: InventoryApp.choiceBadgeFormatter(inventoryChoices),
+            headerFilter: "list",
+            headerFilterParams: { values: InventoryApp.choiceValues(inventoryChoices), clearable: true },
+            editor: "list",
+            editorParams: { values: InventoryApp.choiceValues(inventoryChoices) },
+            minWidth: 150,
+            editConfig: { entity: "order_item", idField: "order_item_id", field: "inventory_type" },
+          },
+          {
+            title: "引当状況",
+            field: "item_status",
+            formatter: InventoryApp.choiceBadgeFormatter(itemChoices),
+            headerFilter: "list",
+            headerFilterParams: { values: InventoryApp.choiceValues(itemChoices), clearable: true },
+            editor: "list",
+            editorParams: { values: InventoryApp.choiceValues(itemChoices) },
+            minWidth: 180,
+            editConfig: { entity: "order_item", idField: "order_item_id", field: "status" },
+          },
+        ],
+      });
+    });
+  </script>
+{% endblock %}

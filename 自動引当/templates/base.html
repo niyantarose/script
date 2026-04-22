@@ -4,40 +4,63 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}自動引当ツール{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.0/dist/css/tabulator_bootstrap5.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  {% block extra_head %}{% endblock %}
 </head>
-<body>
-  <div class="page-shell">
-    <aside class="sidebar">
-      <div class="sidebar-header">在庫引当ツール</div>
-      <nav class="nav">
-        <a href="{{ url_for('main.dashboard') }}" class="nav-link {% if request.endpoint == 'main.dashboard' %}active{% endif %}">ダッシュボード</a>
-        <a href="{{ url_for('main.allocation') }}" class="nav-link {% if request.endpoint == 'main.allocation' %}active{% endif %}">発注リスト</a>
-        <a href="{{ url_for('main.orders') }}" class="nav-link {% if request.endpoint == 'main.orders' %}active{% endif %}">受注リスト</a>
-        <a href="{{ url_for('main.ems') }}" class="nav-link {% if request.endpoint == 'main.ems' %}active{% endif %}">EMSリスト</a>
-        <a href="{{ url_for('main.japan_stock') }}" class="nav-link {% if request.endpoint == 'main.japan_stock' %}active{% endif %}">日本在庫管理</a>
-        <a href="{{ url_for('main.checks') }}" class="nav-link {% if request.endpoint == 'main.checks' %}active{% endif %}">漏れチェック</a>
-        <a href="{{ url_for('main.alerts') }}" class="nav-link {% if request.endpoint == 'main.alerts' %}active{% endif %}">アラート</a>
+<body data-ui-scale="large">
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <div class="app-brand">
+        <div class="app-brand-mark">AI</div>
+        <div>
+          <div class="app-brand-title">在庫自動引当</div>
+          <div class="app-brand-subtitle">Spreadsheet Admin</div>
+        </div>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="{{ url_for('main.dashboard') }}" class="sidebar-link {% if request.endpoint == 'main.dashboard' %}active{% endif %}">ダッシュボード</a>
+        <a href="{{ url_for('main.daniel_purchases') }}" class="sidebar-link {% if request.endpoint == 'main.daniel_purchases' %}active{% endif %}">ダニエル発注</a>
+        <a href="{{ url_for('main.daniel_ems') }}" class="sidebar-link {% if request.endpoint == 'main.daniel_ems' %}active{% endif %}">ダニエルEMS</a>
+        <a href="{{ url_for('main.tegu_purchases') }}" class="sidebar-link {% if request.endpoint == 'main.tegu_purchases' %}active{% endif %}">テグ発注</a>
+        <a href="{{ url_for('main.tegu_ems') }}" class="sidebar-link {% if request.endpoint == 'main.tegu_ems' %}active{% endif %}">テグEMS</a>
+        <a href="{{ url_for('main.orders') }}" class="sidebar-link {% if request.endpoint == 'main.orders' %}active{% endif %}">Yahoo受注</a>
+        <a href="{{ url_for('main.order_search') }}" class="sidebar-link {% if request.endpoint == 'main.order_search' %}active{% endif %}">注文検索</a>
+        <a href="{{ url_for('main.japan_stock') }}" class="sidebar-link {% if request.endpoint == 'main.japan_stock' %}active{% endif %}">日本在庫</a>
+        <a href="{{ url_for('main.checks') }}" class="sidebar-link {% if request.endpoint == 'main.checks' %}active{% endif %}">漏れチェック</a>
+        <a href="{{ url_for('main.alerts') }}" class="sidebar-link {% if request.endpoint == 'main.alerts' %}active{% endif %}">アラート</a>
       </nav>
     </aside>
 
-    <main class="main">
-      <header class="topbar">
+    <main class="app-main">
+      <header class="app-topbar">
         <div>
-          <div class="page-subtitle">{% block eyebrow %}在庫自動引当・紐付け{% endblock %}</div>
-          <h1 class="page-title">{% block page_title %}Dashboard{% endblock %}</h1>
+          <div class="page-eyebrow">Flask + MySQL Inventory Console</div>
+          <h1 class="page-title">{% block page_title %}ダッシュボード{% endblock %}</h1>
+          {% block page_subtitle %}{% endblock %}
         </div>
         <div class="topbar-actions">
-          <div class="scale-switcher" aria-label="表示サイズ切替">
-            <span class="scale-label">表示</span>
-            <button type="button" class="scale-btn active" data-ui-scale="small">小</button>
-            <button type="button" class="scale-btn" data-ui-scale="medium">中</button>
-            <button type="button" class="scale-btn" data-ui-scale="large">大</button>
+          {% block page_actions %}{% endblock %}
+          <div class="btn-group btn-group-sm scale-switcher" role="group" aria-label="表示サイズ">
+            <button type="button" class="btn btn-outline-secondary scale-btn" data-ui-scale="small">小</button>
+            <button type="button" class="btn btn-outline-secondary scale-btn" data-ui-scale="medium">中</button>
+            <button type="button" class="btn btn-outline-secondary scale-btn active" data-ui-scale="large">大</button>
           </div>
-          <form method="post" action="{{ url_for('main.trigger_checks') }}">
-            <button type="submit">漏れチェック更新</button>
+          <form method="post" action="{{ url_for('main.trigger_checks') }}" class="d-inline-flex">
+            <button type="submit" class="btn btn-outline-secondary btn-sm">漏れチェック更新</button>
           </form>
-          <a class="button-link" href="{{ url_for('main.export', kind='all_tables') }}">全CSV</a>
+          <button
+            type="button"
+            class="btn btn-outline-primary btn-sm"
+            data-export-url="{{ url_for('main.export', kind='all_tables') }}"
+            data-export-filename="all_tables.csv"
+          >
+            全CSV
+          </button>
         </div>
       </header>
 
@@ -51,9 +74,31 @@
         {% endif %}
       {% endwith %}
 
-      {% block content %}{% endblock %}
+      <div class="page-content">
+        {% block content %}{% endblock %}
+      </div>
     </main>
   </div>
+
+  <div id="app-toast-container" class="toast-container position-fixed top-0 end-0 p-3"></div>
+
+  {% block modal_stack %}{% endblock %}
+
+  <script>
+    window.inventoryLabels = {
+      orderItemStatus: {{ order_item_status_labels|tojson }},
+      orderStatus: {{ order_status_labels|tojson }},
+      purchaseStatus: {{ purchase_status_labels|tojson }},
+      emsStatus: {{ ems_status_labels|tojson }},
+      japanStatus: {{ japan_staging_status_labels|tojson }},
+      inventoryType: {{ inventory_type_labels|tojson }},
+      alertType: {{ alert_type_labels|tojson }},
+      delayLevel: {{ delay_level_labels|tojson }}
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  {% block page_scripts %}{% endblock %}
 </body>
 </html>

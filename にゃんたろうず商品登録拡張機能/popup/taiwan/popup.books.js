@@ -55,6 +55,10 @@ function buildBookSheetDescription(product) {
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean);
+  const bonusLines = cleanDescription(product?.特典情報 || product?.補足項目 || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
 
   const metadataLines = [
     trimValue(product?.著者 || product?.作者 || '') ? '作者：' + trimValue(product?.著者 || product?.作者 || '') : '',
@@ -68,6 +72,9 @@ function buildBookSheetDescription(product) {
   for (const line of metadataLines) {
     if (!lines.includes(line)) lines.push(line);
   }
+  for (const line of bonusLines) {
+    if (!lines.includes(line)) lines.push(line);
+  }
 
   return lines.join('\n');
 }
@@ -77,7 +84,7 @@ function buildCommonBookSheetRow(product, overrides = {}) {
   const memo = buildBookMemo(product);
   const additional = getAdditionalImagesValue(product);
   const rawTitle = trimValue((overrides.rawTitle ?? product?.商品名) || '');
-  const originalTitle = trimValue((overrides.originalTitle ?? product?.原題タイトル) || extractOriginalTitleText(rawTitle));
+  const originalTitle = extractOriginalTitleText((overrides.originalTitle ?? product?.原題タイトル) || rawTitle);
   const category = trimValue(overrides.category || getBookGenreLabel(product));
 
   return {
@@ -103,7 +110,7 @@ function buildCommonBookSheetRow(product, overrides = {}) {
     'カテゴリ': category,
     '形態（通常/初回限定/特装）': detectEditionType(product),
     '配送パターン': trimValue(product?.配送パターン || ''),
-    '特典メモ': extractBonusMemo(product),
+    '特典メモ': '',
     '商品説明': description,
     ' メモ': memo,
     'メイン画像': trimValue(product?.画像URL || ''),
