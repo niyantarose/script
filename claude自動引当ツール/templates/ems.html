@@ -11,6 +11,7 @@
     {% else %}
     <button onclick="importData('/import/google_ems','テグEMS取込')">データ取込</button>
     {% endif %}
+    <button class="btn" id="btn-toggle-all" onclick="toggleAll()">全展開</button>
     <a href="{{ url_for('ems.export_csv') }}?agent={{ agent }}" class="btn">CSV出力</a>
   </div>
 </div>
@@ -265,9 +266,9 @@ function toggleBox(id) {
   toggle.classList.toggle('open', open);
 }
 
-// デフォルト: 全件展開
+// デフォルト: 輸送中のみ展開（入荷済は折りたたみ）
 document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('.ems-box').forEach(box => {
+  document.querySelectorAll('.ems-box:not(.ems-box-arrived)').forEach(box => {
     const m = box.querySelector('.ems-box-header');
     if (m) {
       const id = m.getAttribute('onclick').match(/\d+/)[0];
@@ -275,6 +276,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// 全展開 / 全折りたたみ
+let _allOpen = false;
+function toggleAll() {
+  _allOpen = !_allOpen;
+  document.getElementById('btn-toggle-all').textContent = _allOpen ? '全折りたたみ' : '全展開';
+  document.querySelectorAll('.ems-box').forEach(box => {
+    const m = box.querySelector('.ems-box-header');
+    if (!m) return;
+    const id = m.getAttribute('onclick').match(/\d+/)[0];
+    const items  = document.getElementById('box-' + id);
+    const toggle = document.getElementById('toggle-' + id);
+    if (!items || !toggle) return;
+    if (_allOpen) {
+      items.classList.add('open');
+      toggle.classList.add('open');
+    } else {
+      items.classList.remove('open');
+      toggle.classList.remove('open');
+    }
+  });
+}
 
 // ── EMS フィールド保存 ─────────────────────────────────────
 function saveEmsField(id, field, value) {
