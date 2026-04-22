@@ -54,11 +54,18 @@
         {% else %}
           <span class="badge badge-ems">輸送中 {{ box.days_in_transit }}日目</span>
         {% endif %}
-        <span class="ems-item-count">{{ box.rows|length }}件</span>
         {% if e.purchase_no %}
-        <span style="font-size:11px;font-family:monospace;color:var(--accent-blue);background:rgba(59,130,246,.08);
-                     padding:2px 6px;border-radius:4px;">{{ e.purchase_no }}</span>
+        <span class="ems-pno">{{ e.purchase_no }}</span>
         {% endif %}
+        {# 引当状況サマリー #}
+        {% set total_cnt = box.rows|length %}
+        {% set alloc_cnt = box.rows | selectattr('order') | list | length %}
+        {% set unalloc_cnt = total_cnt - alloc_cnt %}
+        <span class="ems-count-wrap">
+          <span class="ems-count-total">{{ total_cnt }}件</span>
+          {% if alloc_cnt > 0 %}<span class="ems-count-alloc">受注:{{ alloc_cnt }}</span>{% endif %}
+          {% if unalloc_cnt > 0 %}<span class="ems-count-unalloc">未:{{ unalloc_cnt }}</span>{% endif %}
+        </span>
       </div>
       <div class="ems-box-dates">
         <span title="発送日">📦 {{ e.shipped_at.strftime('%m/%d') if e.shipped_at else '—' }}</span>
@@ -81,36 +88,39 @@
       <table class="ems-items-table">
         <thead>
           <tr>
-            <th style="width:110px;">구매日</th>
             <th style="width:130px;">구매番号</th>
-            <th style="width:150px;">商品コード</th>
-            <th style="width:50px;text-align:center;">数量</th>
-            <th>受注番号</th>
+            <th style="width:160px;">商品コード</th>
+            <th style="width:44px;text-align:center;">数量</th>
+            <th>引当状況</th>
           </tr>
         </thead>
         <tbody>
           {% for row in box.rows %}
           {% set ei = row.ems_item %}
+          {% set oi = row.order_item %}
           {% set o  = row.order %}
           <tr>
-            {# ── 구매日 作成日（B列: Wata260418 形式） ── #}
-            <td style="font-family:monospace;font-size:12px;color:var(--text-secondary);">
-              {{ ei.purchase_date if ei and ei.purchase_date else '—' }}
-            </td>
-            {# ── 구매番号（F列: Wata260418_07 形式） ── #}
+            {# ── 구매番号 ── #}
             <td style="font-family:monospace;font-size:12px;font-weight:600;color:var(--accent-blue);">
               {{ ei.purchase_no if ei and ei.purchase_no else '—' }}
             </td>
             <td class="cell-edit" data-url="/ems/update/item" data-field="product_code" data-id="{{ ei.id if ei else '' }}">
-              <span class="cell-val" style="font-family:monospace;font-size:12px;">{{ ei.product_code if ei else '—' }}</span>
+              <span class="cell-val" style="font-family:monospace;font-size:12px;font-weight:600;">{{ ei.product_code if ei else '—' }}</span>
               <input class="cell-input" type="text" value="{{ ei.product_code if ei else '' }}">
             </td>
             <td class="cell-edit" style="text-align:center;" data-url="/ems/update/item" data-field="quantity" data-id="{{ ei.id if ei else '' }}">
-              <span class="cell-val">{{ ei.quantity if ei else '—' }}</span>
+              <span class="cell-val" style="font-weight:600;">{{ ei.quantity if ei else '—' }}</span>
               <input class="cell-input" type="number" min="1" value="{{ ei.quantity if ei else 1 }}" style="width:50px;">
             </td>
-            <td style="font-size:12px;color:var(--text-secondary);">
-              {{ o.yahoo_order_id if o else (e.order_id or '—') }}
+            {# ── 引当状況 ── #}
+            <td>
+              {% if o %}
+                <span class="alloc-tag alloc-order">✓ 受注 {{ o.yahoo_order_id }}</span>
+              {% elif oi %}
+                <span class="alloc-tag alloc-partial">△ 受注紐付</span>
+              {% else %}
+                <span class="alloc-tag alloc-none">— 未引当</span>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}
@@ -221,12 +231,36 @@
 .ems-box-arrived .ems-box-header { background: var(--bg-secondary); }
 .ems-box-overdue .ems-box-header { background: #fef2f2; }
 
-.ems-num { font-family: monospace; font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.ems-item-count { font-size: 12px; color: var(--text-secondary); }
-.ems-box-left  { display: flex; align-items: center; gap: 8px; flex: 1; }
-.ems-box-dates { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); }
-.ems-box-toggle { font-size: 13px; color: var(--text-primary); transition: transform 0.15s; }
+.ems-num { font-family: monospace; font-size: 13px; font-weight: 700; color: var(--text-primary); line-height: 1.4; }
+.ems-box-left  { display: flex; align-items: center; gap: 8px; flex: 1; flex-wrap: wrap; min-width: 0; }
+.ems-box-dates { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); white-space: nowrap; }
+.ems-box-toggle { font-size: 16px; font-weight: 700; color: var(--text-primary); transition: transform 0.2s; padding: 0 4px; }
 .ems-box-toggle.open { transform: rotate(180deg); }
+
+/* 購入番号バッジ */
+.ems-pno {
+  font-size: 11px; font-family: monospace; font-weight: 600;
+  color: var(--accent-blue); background: rgba(59,130,246,.1);
+  padding: 2px 7px; border-radius: 4px; line-height: 1.6;
+}
+
+/* 件数サマリー */
+.ems-count-wrap { display: inline-flex; align-items: center; gap: 4px; }
+.ems-count-total { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.ems-count-alloc {
+  font-size: 10px; padding: 1px 5px; border-radius: 3px;
+  background: rgba(34,197,94,.15); color: #16a34a; font-weight: 600;
+}
+.ems-count-unalloc {
+  font-size: 10px; padding: 1px 5px; border-radius: 3px;
+  background: rgba(156,163,175,.15); color: var(--text-secondary); font-weight: 600;
+}
+
+/* 引当状況タグ */
+.alloc-tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600; white-space: nowrap; }
+.alloc-order  { background: rgba(34,197,94,.12);  color: #15803d; }
+.alloc-partial{ background: rgba(234,179,8,.12);  color: #b45309; }
+.alloc-none   { background: rgba(156,163,175,.1); color: var(--text-secondary); }
 
 .ems-box-items { display: none; }
 .ems-box-items.open { display: block; }

@@ -977,14 +977,29 @@ def _upsert_ems_items(items, agent='daniel'):
                 ems.order_id = order_id
 
         # ── EmsItem のUPSERT ──
+        # キー: ems_id + product_code + purchase_no（purchase_no がある場合は精確に区別）
         if product_code:
-            existing_item = EmsItem.query.filter_by(
-                ems_id=ems.id, product_code=product_code
-            ).first()
+            if purchase_no:
+                existing_item = EmsItem.query.filter_by(
+                    ems_id=ems.id, product_code=product_code, purchase_no=purchase_no
+                ).first()
+                # purchase_no なし（旧データ）で同一product_codeが存在する場合はそちらを更新
+                if not existing_item:
+                    existing_item = EmsItem.query.filter(
+                        EmsItem.ems_id == ems.id,
+                        EmsItem.product_code == product_code,
+                        EmsItem.purchase_no == None,
+                    ).first()
+            else:
+                existing_item = EmsItem.query.filter_by(
+                    ems_id=ems.id, product_code=product_code
+                ).filter(EmsItem.purchase_no == None).first()
+
             if existing_item:
                 existing_item.quantity     = item.get('quantity', existing_item.quantity)
                 existing_item.product_name = item.get('product_name') or existing_item.product_name
-                if purchase_no and not existing_item.purchase_no:
+                existing_item.purchase_date = purchase_date or existing_item.purchase_date
+                if purchase_no:
                     existing_item.purchase_no = purchase_no
                 updated += 1
             else:
