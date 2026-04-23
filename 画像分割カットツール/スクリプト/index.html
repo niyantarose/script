@@ -85,60 +85,7 @@
       padding: 6px 4px;
       cursor: pointer;
     }
-    .api-config {
-      margin-top: 12px;
-      border-top: 1px solid rgba(255, 255, 255, .1);
-      padding-top: 10px;
-    }
-    .api-config input {
-      width: 100%;
-      background: #0f172a;
-      color: #fff;
-      border: 1px solid #475569;
-      border-radius: 6px;
-      padding: 8px;
-      font-size: .8rem;
-      margin-top: 4px;
-    }
-    .api-status {
-      font-size: .74rem;
-      margin-top: 4px;
-      min-height: 1.1em;
-    }
-    .api-status.ok { color: #34d399; }
-    .api-status.ng { color: #f87171; }
-    .translate-box {
-      margin-top: 12px;
-      border-top: 1px solid rgba(255, 255, 255, .1);
-      padding-top: 10px;
-    }
-    .translate-box textarea {
-      width: 100%;
-      min-height: 110px;
-      resize: vertical;
-      background: #0f172a;
-      color: #fff;
-      border: 1px solid #475569;
-      border-radius: 6px;
-      padding: 8px;
-      font-size: .8rem;
-      line-height: 1.4;
-    }
-    .translate-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-top: 8px;
-    }
-    .translate-box select {
-      width: 100%;
-      background: #0f172a;
-      color: #fff;
-      border: 1px solid #475569;
-      border-radius: 6px;
-      padding: 8px;
-      font-size: .8rem;
-    }
+
     .manual {
       margin-top: 12px;
       border-top: 1px solid rgba(255, 255, 255, .1);
@@ -236,6 +183,22 @@
       padding: 8px;
     }
     .result img { width: 100%; border-radius: 4px; margin-bottom: 6px; border: 1px solid #334155; }
+    .translate-panel {
+      margin-top: 12px;
+      border-top: 1px solid rgba(255, 255, 255, .1);
+      padding-top: 10px;
+    }
+    .translate-panel textarea, .translate-panel input, .translate-panel select {
+      width: 100%;
+      background: #0f172a;
+      color: #fff;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 8px;
+      font-size: .82rem;
+    }
+    .translate-panel textarea { min-height: 90px; resize: vertical; }
+    .translate-actions { display:flex; gap:8px; margin-top:8px; }
   </style>
 </head>
 <body>
@@ -259,42 +222,6 @@
           <button class="btn" id="btnChangeFile" type="button">変更</button>
         </div>
 
-        <div class="api-config">
-          <div class="title" style="margin-bottom:6px;">⚙️ API設定</div>
-          <label class="muted">DeepL API Key</label>
-          <input id="deeplApiKey" type="password" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx">
-          <div id="deeplStatus" class="api-status"></div>
-
-          <label class="muted" style="margin-top:8px; display:block;">Gemini API Key</label>
-          <input id="geminiApiKey" type="password" placeholder="AIzaSy...">
-          <div id="geminiStatus" class="api-status"></div>
-
-          <button id="btnSaveApi" class="btn" style="margin-top:8px;">💾 APIキー保存</button>
-        </div>
-
-        <div class="translate-box">
-          <div class="title" style="margin-bottom:6px;">🌐 翻訳（DeepL / Gemini）</div>
-          <textarea id="translateInput" placeholder="翻訳したい文章を貼り付け"></textarea>
-          <div class="translate-row">
-            <select id="translateProvider">
-              <option value="auto">自動（DeepL→Gemini）</option>
-              <option value="deepl">DeepL</option>
-              <option value="gemini">Gemini</option>
-            </select>
-            <select id="translateTarget">
-              <option value="JA">日本語</option>
-              <option value="EN">英語</option>
-              <option value="ZH">中国語</option>
-              <option value="KO">韓国語</option>
-            </select>
-          </div>
-          <div class="row">
-            <button id="btnTranslate" class="btn" type="button">翻訳実行</button>
-            <button id="btnUseTranslatedText" class="btn" type="button">結果を入力へ戻す</button>
-          </div>
-          <textarea id="translateOutput" placeholder="翻訳結果" readonly style="margin-top:8px;"></textarea>
-          <div id="translateStatus" class="api-status"></div>
-        </div>
 
         <div class="mode">
           <div class="title" style="margin-bottom:4px;">表示調整</div>
@@ -334,6 +261,22 @@
         </div>
         <div id="previewEmpty" class="muted">画像を読み込むとここに表示されます。</div>
         <div id="results" class="results"></div>
+
+        <div class="translate-panel">
+          <div class="title">3. 選択範囲を日本語翻訳（修正可）</div>
+          <div class="muted">原文の「選択部分だけ」を翻訳できます（未選択時は全文）。翻訳結果は自由に編集可能です。</div>
+          <label class="muted" style="display:block; margin-top:8px;">Gemini API Key</label>
+          <input id="geminiApiKey" type="password" placeholder="AIzaSy...">
+          <label class="muted" style="display:block; margin-top:8px;">原文</label>
+          <textarea id="sourceText" placeholder="ここに原文を貼り付け。翻訳したい範囲だけ選択してボタンを押してください。"></textarea>
+          <div class="translate-actions">
+            <button id="btnTranslateSelected" class="btn" type="button">選択範囲→日本語翻訳</button>
+            <button id="btnSaveApiKey" class="btn" type="button">APIキー保存</button>
+          </div>
+          <label class="muted" style="display:block; margin-top:8px;">翻訳結果（自由に修正OK）</label>
+          <textarea id="translatedText" placeholder="翻訳結果" style="min-height:120px;"></textarea>
+          <div id="translateInfo" class="muted" style="margin-top:6px;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -360,18 +303,8 @@
     const btnReset = document.getElementById('btnReset');
     const results = document.getElementById('results');
     const btnChangeFile = document.getElementById('btnChangeFile');
-    const deeplApiKey = document.getElementById('deeplApiKey');
     const geminiApiKey = document.getElementById('geminiApiKey');
-    const deeplStatus = document.getElementById('deeplStatus');
-    const geminiStatus = document.getElementById('geminiStatus');
-    const btnSaveApi = document.getElementById('btnSaveApi');
-    const translateInput = document.getElementById('translateInput');
-    const translateOutput = document.getElementById('translateOutput');
-    const translateProvider = document.getElementById('translateProvider');
-    const translateTarget = document.getElementById('translateTarget');
-    const btnTranslate = document.getElementById('btnTranslate');
-    const btnUseTranslatedText = document.getElementById('btnUseTranslatedText');
-    const translateStatus = document.getElementById('translateStatus');
+
 
     let originalImage = null;
     let objectUrl = null;
@@ -386,55 +319,71 @@
     let dragScrollDir = 0;
     let cutPolicy = 'auto';
     let windowDragCounter = 0;
-
-    const STORAGE_KEYS = {
-      deepl: 'deeplApiKey',
-      gemini: 'geminiApiKey'
-    };
+    const STORAGE_GEMINI_KEY = 'imageCutterGeminiApiKey';
 
     function isImageFile(file) {
       return !!(file && file.type && file.type.startsWith('image/'));
     }
 
-    function updateApiStatus() {
-      const hasDeepL = !!(deeplApiKey.value || '').trim();
-      const hasGemini = !!(geminiApiKey.value || '').trim();
-      deeplStatus.textContent = hasDeepL ? '✓ 設定済み' : '✗ 未設定';
-      deeplStatus.className = `api-status ${hasDeepL ? 'ok' : 'ng'}`;
-      geminiStatus.textContent = hasGemini ? '✓ 設定済み' : '✗ 未設定';
-      geminiStatus.className = `api-status ${hasGemini ? 'ok' : 'ng'}`;
-    }
-
-    function loadApiKeys() {
+    function loadGeminiApiKey() {
       try {
-        deeplApiKey.value = localStorage.getItem(STORAGE_KEYS.deepl) || '';
-        geminiApiKey.value = localStorage.getItem(STORAGE_KEYS.gemini) || '';
+        geminiApiKey.value = localStorage.getItem(STORAGE_GEMINI_KEY) || '';
       } catch (_) {
-        deeplApiKey.value = '';
         geminiApiKey.value = '';
       }
-      updateApiStatus();
     }
 
-    function saveApiKeys() {
+    function saveGeminiApiKey() {
       try {
-        localStorage.setItem(STORAGE_KEYS.deepl, deeplApiKey.value || '');
-        localStorage.setItem(STORAGE_KEYS.gemini, geminiApiKey.value || '');
-        updateApiStatus();
-        alert('APIキーを保存しました');
-      } catch (e) {
-        updateApiStatus();
-        alert('APIキーを保存できませんでした（ブラウザの制限）');
+        localStorage.setItem(STORAGE_GEMINI_KEY, (geminiApiKey.value || '').trim());
+        translateInfo.textContent = 'APIキーを保存しました。';
+      } catch (_) {
+        translateInfo.textContent = 'APIキー保存に失敗しました。';
       }
     }
 
-    function getApiConfig() {
-      return {
-        deeplApiKey: (deeplApiKey.value || '').trim(),
-        geminiApiKey: (geminiApiKey.value || '').trim()
-      };
+    async function translateToJapaneseWithGemini(text) {
+      const apiKey = (geminiApiKey.value || '').trim();
+      if (!apiKey) throw new Error('Gemini API Keyを入力してください');
+
+      const prompt = `次の文章を自然な日本語に翻訳してください。翻訳結果のみ返してください。\\n\\n${text}`;
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.2 }
+        })
+      });
+      if (!res.ok) throw new Error(`翻訳APIエラー: ${res.status}`);
+      const json = await res.json();
+      const out = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (!out) throw new Error('翻訳結果が空でした');
+      return out;
     }
-    window.getApiConfig = getApiConfig;
+
+    async function translateSelectedRange() {
+      const text = sourceText.value || '';
+      if (!text.trim()) {
+        translateInfo.textContent = '原文テキストを入力してください。';
+        return;
+      }
+      const start = sourceText.selectionStart ?? 0;
+      const end = sourceText.selectionEnd ?? 0;
+      const selected = start !== end ? text.slice(start, end) : text;
+
+      btnTranslateSelected.disabled = true;
+      translateInfo.textContent = start !== end ? `選択範囲（${end - start}文字）を翻訳中...` : '全文を翻訳中...';
+      try {
+        const ja = await translateToJapaneseWithGemini(selected);
+        translatedText.value = ja;
+        translateInfo.textContent = '翻訳完了。必要に応じて結果を直接編集してください。';
+      } catch (e) {
+        translateInfo.textContent = `翻訳失敗: ${e?.message || e}`;
+      } finally {
+        btnTranslateSelected.disabled = false;
+      }
+    }
 
     function setTranslateStatus(msg, ok = true) {
       translateStatus.textContent = msg || '';
@@ -903,15 +852,6 @@
     }
 
     function bindEvents() {
-      btnSaveApi.addEventListener('click', saveApiKeys);
-      deeplApiKey.addEventListener('input', updateApiStatus);
-      geminiApiKey.addEventListener('input', updateApiStatus);
-      btnTranslate.addEventListener('click', runTranslate);
-      btnUseTranslatedText.addEventListener('click', () => {
-        if (!translateOutput.value) return;
-        translateInput.value = translateOutput.value;
-        setTranslateStatus('翻訳結果を入力欄へ反映しました');
-      });
 
       dropZone.addEventListener('click', () => fileInput.click());
       dropZone.addEventListener('keydown', (e) => {
@@ -1013,7 +953,7 @@
       });
     }
 
-    loadApiKeys();
+    loadGeminiApiKey();
     setupDnD();
     bindEvents();
   </script>
