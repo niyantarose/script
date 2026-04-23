@@ -99,6 +99,44 @@ button:hover, .btn:hover { background: var(--bg-secondary); }
 .btn-warning:hover { background: var(--accent-yellow-bg); }
 .btn-sm { font-size: 11px; padding: 4px 8px; }
 
+/* Order Status Tabs */
+.os-tabs {
+  display: flex; flex-wrap: wrap; gap: 0;
+  border-bottom: 2px solid var(--border);
+  background: var(--bg-secondary);
+  padding: 0 16px;
+  overflow-x: auto;
+}
+.os-tab {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 9px 14px;
+  font-size: 12px; font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.os-tab:hover { color: var(--text-primary); }
+.os-tab.active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+}
+.os-cnt {
+  display: inline-block;
+  background: var(--border);
+  color: var(--text-secondary);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px; font-weight: 600;
+  min-width: 20px; text-align: center;
+}
+.os-tab.active .os-cnt {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
 /* Toolbar */
 .toolbar {
   padding: 8px 20px;
@@ -181,10 +219,14 @@ input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color:
   white-space: nowrap;
 }
 .badge-sokunou { background: var(--accent-green-bg); color: var(--accent-green); }
-.badge-tori { background: var(--accent-yellow-bg); color: var(--accent-yellow); }
-.badge-ems { background: var(--accent-blue-bg); color: var(--accent-blue); }
-.badge-alert { background: var(--accent-red-bg); color: var(--accent-red); }
-.badge-done { background: var(--accent-gray-bg); color: var(--text-secondary); }
+.badge-tori    { background: var(--accent-yellow-bg); color: var(--accent-yellow); }
+.badge-ems     { background: var(--accent-blue-bg); color: var(--accent-blue); }
+.badge-alert   { background: var(--accent-red-bg); color: var(--accent-red); }
+.badge-done    { background: var(--accent-gray-bg); color: var(--text-secondary); }
+.badge-blue    { background: #dbeafe; color: #1d4ed8; }
+.badge-green   { background: #dcfce7; color: #15803d; }
+.badge-orange  { background: #fef3c7; color: #b45309; }
+.badge-gray    { background: #f3f4f6; color: #6b7280; }
 
 /* Dashboard */
 .dash-grid {

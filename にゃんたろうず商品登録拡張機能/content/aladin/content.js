@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = '2026-03-11-a';
+  const VERSION = '2026-04-23-a';
   if (globalThis.__ALADIN_SCRAPER__?.version === VERSION) {
     return;
   }
@@ -15,8 +15,14 @@
 
   const SHARED_IMAGE_SELECTORS = [
     '#swiper-container-cover .swiper-slide img',
+    '#swiper-container-cover .swiper-slide [data-src]',
+    '#swiper-container-cover .swiper-slide [style*="background"]',
     '.pContent[id$="_Introduce"] img',
+    '.pContent[id$="_Introduce"] [data-src]',
+    '.pContent[id$="_Introduce"] [style*="background"]',
     '.Ere_prod_mconts_box img',
+    '.Ere_prod_mconts_box [data-src]',
+    '.Ere_prod_mconts_box [style*="background"]',
     '#bookDescriptionToggle img',
     '#productImageContainer img',
     '#productDescription img',
@@ -96,29 +102,70 @@
       waitSelectors: ['.pContent[id$="_Introduce"] img'],
       imagePlans: [
         {
+          kind: 'coverViewer',
+          selectors: [
+            '#CoverMainImage',
+            '#swiper-container-cover .swiper-slide img',
+            '#swiper-container-cover .swiper-slide [data-src]',
+            '#swiper-container-cover .swiper-slide [style*="background"]'
+          ],
+          interactCarousel: true,
+          clickSelectors: ['.prev_box [onclick]', '.prev_box button', '.prev_box [role="button"]', '.prev_box a[href^="javascript"]', '.swiper-button-next', '.cover [class*="next"]'],
+          maxClicks: 50,
+          clickDelayMs: 200,
+          maxCount: 50
+        },
+        {
           kind: 'coverSlides',
           selectors: ['#swiper-container-cover .swiper-slide img'],
-          allowPathPatterns: [/\/letslook\//i],
           preferLast: true,
-          maxCount: 1
+          maxCount: 50
         },
         {
           kind: 'introduce',
-          selectors: ['.pContent[id$="_Introduce"] img'],
-          maxCount: 2
+          selectors: [
+            '.pContent[id$="_Introduce"] img',
+            '.pContent[id$="_Introduce"] [data-src]',
+            '.pContent[id$="_Introduce"] [style*="background"]'
+          ],
+          maxCount: 50
         },
         {
           kind: 'section',
-          selectors: ['#bookDescriptionToggle img', '#productDescription img', '.Ere_prod_mconts_box img'],
-          includeSectionLabels: [/소개/i, /책소개/i, /출판사/i],
+          selectors: [
+            '#bookDescriptionToggle img',
+            '#bookDescriptionToggle [data-src]',
+            '#bookDescriptionToggle [style*="background"]',
+            '#productDescription img',
+            '#productDescription [data-src]',
+            '#productDescription [style*="background"]',
+            '.Ere_prod_mconts_box img',
+            '.Ere_prod_mconts_box [data-src]',
+            '.Ere_prod_mconts_box [style*="background"]',
+            '.swiper-slide img',
+            '.swiper-slide [data-src]',
+            '.swiper-slide [style*="background"]'
+          ],
+          interactCarousel: true,
+          clickSelectors: [
+            '.Ere_prod_mconts_box .swiper-button-next',
+            '.Ere_prod_mconts_box [class*="next"]',
+            '.Ere_prod_mconts_box button[aria-label*="Next" i]',
+            '.pContent[id$="_Introduce"] .swiper-button-next',
+            '.pContent[id$="_Introduce"] [class*="next"]',
+            '#productDescription .swiper-button-next',
+            '#productDescription [class*="next"]'
+          ],
+          maxClicks: 50,
+          clickDelayMs: 200,
           excludeSectionLabels: DEFAULT_EXCLUDE_SECTION_LABELS,
-          maxCount: 2
+          maxCount: 50
         }
       ],
       excludeAncestorSelectors: SHARED_IMAGE_EXCLUDE_ANCESTORS,
       excludeSectionLabels: DEFAULT_EXCLUDE_SECTION_LABELS,
       allowGenericFallback: true,
-      fallbackMaxCount: 3
+      fallbackMaxCount: 50
     },
     マンガ: {
       descriptionSelectors: [
@@ -371,12 +418,8 @@
     // cover500.jpg → cover.jpg  (ファイル名のサイズ指定を統一)
     normalized = normalized.replace(/cover\d+(?=\.)/gi, 'cover');
 
-    // アラジン画像のバリエーションを統一:
-    // K692137983_01.jpg / K692137983_f.jpg / k692137983_1.jpg → k692137983.jpg
-    // cover/ ディレクトリ内の画像のみ対象（letslook等のページ連番は保持）
     if (/(?:image|cdnimage)\.aladin\.co\.kr/i.test(normalized)) {
-      normalized = normalized.toLowerCase()
-        .replace(/(\/cover\/[a-z]\d+)_[a-z0-9]+(\.\w+)$/, '$1$2');
+      normalized = normalized.toLowerCase();
     }
 
     return normalized;
@@ -541,10 +584,11 @@
   function getImageSize(image) {
     const attrWidth = Number.parseInt(image.getAttribute('width') || '', 10);
     const attrHeight = Number.parseInt(image.getAttribute('height') || '', 10);
+    const rect = image.getBoundingClientRect?.() || { width: 0, height: 0 };
 
     return {
-      width: image.naturalWidth || image.width || attrWidth || 0,
-      height: image.naturalHeight || image.height || attrHeight || 0
+      width: image.naturalWidth || image.width || attrWidth || rect.width || 0,
+      height: image.naturalHeight || image.height || attrHeight || rect.height || 0
     };
   }
 
@@ -670,6 +714,64 @@
     };
   }
 
+  function parseSrcsetUrls(srcset) {
+    return String(srcset || '')
+      .split(',')
+      .map(part => part.trim().split(/\s+/)[0])
+      .filter(Boolean);
+  }
+
+  function parseCssImageUrls(text) {
+    const urls = [];
+    const pattern = /url\((['"]?)(.*?)\1\)/gi;
+    let match;
+    while ((match = pattern.exec(String(text || '')))) {
+      if (match[2]) {
+        urls.push(match[2]);
+      }
+    }
+    return urls;
+  }
+
+  function getCandidateImageUrls(element) {
+    const urls = [];
+    const push = value => {
+      const text = String(value || '').trim();
+      if (text && !urls.includes(text)) {
+        urls.push(text);
+      }
+    };
+
+    push(element.currentSrc);
+    push(element.src);
+    push(element.dataset?.src);
+    push(element.dataset?.original);
+    push(element.dataset?.lazy);
+    push(element.dataset?.image);
+    push(element.dataset?.url);
+    push(element.dataset?.background);
+    push(element.getAttribute?.('data-src'));
+    push(element.getAttribute?.('data-original'));
+    push(element.getAttribute?.('data-lazy'));
+    push(element.getAttribute?.('data-image'));
+    push(element.getAttribute?.('data-url'));
+    push(element.getAttribute?.('data-background'));
+    push(element.getAttribute?.('src'));
+
+    parseSrcsetUrls(element.srcset || element.getAttribute?.('srcset')).forEach(push);
+    parseSrcsetUrls(element.getAttribute?.('data-srcset')).forEach(push);
+
+    const inlineStyle = element.getAttribute?.('style') || '';
+    parseCssImageUrls(inlineStyle).forEach(push);
+    try {
+      parseCssImageUrls(globalThis.getComputedStyle(element).backgroundImage).forEach(push);
+    } catch (_error) {
+      // ignore style lookup errors
+    }
+
+    return urls;
+  }
+
   function filterImageElements(elements, options, seenUrls) {
     const accepted = [];
 
@@ -692,30 +794,34 @@
         continue;
       }
 
-      const rawUrl = image.currentSrc || image.src || image.dataset.src || image.getAttribute('data-src') || image.getAttribute('src') || '';
-      const absoluteUrl = toAbsoluteUrl(rawUrl);
-      if (!absoluteUrl || !isAladinDetailImage(absoluteUrl)) {
-        continue;
-      }
-      if (/icon|btn|blank|loading|arrow|logo|spacer|check_off|check_on/i.test(absoluteUrl)) {
-        continue;
-      }
-      if (options.allowPathPatterns.length && !options.allowPathPatterns.some(pattern => pattern.test(absoluteUrl))) {
-        continue;
-      }
-
-      const normalizedUrl = normalizeImageUrl(absoluteUrl);
-      if (!normalizedUrl || seenUrls.has(normalizedUrl)) {
-        continue;
-      }
-
       const { width, height } = getImageSize(image);
       if ((width && width < 50) || (height && height < 50)) {
         continue;
       }
 
-      seenUrls.add(normalizedUrl);
-      accepted.push(absoluteUrl);
+      for (const rawUrl of getCandidateImageUrls(image)) {
+        const absoluteUrl = toAbsoluteUrl(rawUrl);
+        if (!absoluteUrl || !isAladinDetailImage(absoluteUrl)) {
+          continue;
+        }
+        if (/icon|btn|blank|loading|arrow|logo|spacer|check_off|check_on/i.test(absoluteUrl)) {
+          continue;
+        }
+        if (options.allowPathPatterns.length && !options.allowPathPatterns.some(pattern => pattern.test(absoluteUrl))) {
+          continue;
+        }
+
+        const normalizedUrl = normalizeImageUrl(absoluteUrl);
+        if (!normalizedUrl || seenUrls.has(normalizedUrl)) {
+          continue;
+        }
+
+        seenUrls.add(normalizedUrl);
+        accepted.push(absoluteUrl);
+        if (accepted.length >= options.maxCount) {
+          break;
+        }
+      }
     }
 
     return accepted;
@@ -846,5 +952,3 @@
     scrapePage
   };
 })();
-
-

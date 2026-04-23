@@ -191,26 +191,16 @@ async function syncNow(type) {
   const btn = document.getElementById('btn-sync-now-' + type);
   if (btn) { btn.disabled = true; btn.textContent = '⟳ 取込中…'; }
   try {
-    // ① ローカル同期エージェント（port 5050）を試みる
-    let ok = false;
-    try {
-      const r = await fetch('http://127.0.0.1:5050/sync', {
-        method: 'POST',
-        signal: AbortSignal.timeout(90000),
-      });
-      const d = await r.json();
-      showToast(d.ok ? '✓ ' + d.message : '⚠ ' + d.message, !d.ok);
-      if (d.ok && (d.purchase > 0 || d.ems > 0)) setTimeout(() => location.reload(), 1200);
-      ok = true;
-    } catch (_) {}
-
-    // ② フォールバック: VPS側フォルダスキャン（ローカル実行時）
-    if (!ok) {
-      const r = await fetch('/import/from_folder?type=' + type, { method: 'POST' });
-      const d = await r.json();
-      showToast(d.message || '完了');
-      if ((d.imported || 0) > 0) setTimeout(() => location.reload(), 1200);
-    }
+    const endpoint = type === 'ems' ? '/import/gdrive_ems' : '/import/gdrive_purchase';
+    showToast('Google Driveから取込中…');
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      signal: AbortSignal.timeout(120000),
+    });
+    const d = await r.json();
+    const msg = d.message || (d.imported != null ? d.imported + '件取込みました' : '完了');
+    showToast(d.status === 'error' ? '⚠ ' + msg : '✓ ' + msg, d.status === 'error');
+    if (d.status !== 'error') setTimeout(() => location.reload(), 1500);
   } catch(e) {
     showToast('エラー: ' + e.message, true);
   } finally {

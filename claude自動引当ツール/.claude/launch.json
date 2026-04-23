@@ -4,8 +4,8 @@
     {
       "name": "Flask Dev Server",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["app.py"],
-      "port": 5000
+      "runtimeArgs": ["C:\\Users\\Owner\\Desktop\\script\\claude自動引当ツール\\start_server.py"],
+      "port": 5001
     }
   ]
 }

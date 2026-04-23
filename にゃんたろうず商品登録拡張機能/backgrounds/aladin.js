@@ -5,8 +5,13 @@ const STORAGE_KEY = 'aladin_products';
 const BACKGROUND_STATUS_STORAGE = 'aladin_background_status';
 const JOB_QUEUE_STORAGE = 'aladin_job_queue';
 const JOB_ALARM_NAME = 'aladin-job-queue';
+const ALADIN_DOWNLOAD_MARKER = 'nyantarose_aladin___-_';
+const pendingAladinFilenameByMarker = new Map();
+const ALADIN_FILENAME_HOOK_TTL_MS = 30000;
 
 let isProcessingQueue = false;
+let aladinFilenameHookCleanupTimer = null;
+let aladinFilenameHookRegistered = false;
 
 
 function storageGet(keys) {
@@ -71,6 +76,141 @@ function bytesToBase64(bytes) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+function getPendingAladinFilenameValue(entry) {
+  if (!entry) return '';
+  if (typeof entry === 'string') return entry;
+  return String(entry.filename || '').trim();
+}
+
+function prunePendingAladinFilenameMarkers(now = Date.now()) {
+  for (const [markerFilename, entry] of pendingAladinFilenameByMarker.entries()) {
+    const createdAt = Number(entry?.createdAt || 0);
+    if (createdAt && now - createdAt > ALADIN_FILENAME_HOOK_TTL_MS) {
+      pendingAladinFilenameByMarker.delete(markerFilename);
+    }
+  }
+}
+
+function releaseAladinFilenameHookIfIdle() {
+  prunePendingAladinFilenameMarkers();
+  if (pendingAladinFilenameByMarker.size > 0) return;
+  if (aladinFilenameHookCleanupTimer) {
+    clearTimeout(aladinFilenameHookCleanupTimer);
+    aladinFilenameHookCleanupTimer = null;
+  }
+  if (aladinFilenameHookRegistered) {
+    chrome.downloads.onDeterminingFilename.removeListener(handleAladinDeterminingFilename);
+    aladinFilenameHookRegistered = false;
+  }
+}
+
+function scheduleAladinFilenameHookCleanup() {
+  if (aladinFilenameHookCleanupTimer) {
+    clearTimeout(aladinFilenameHookCleanupTimer);
+  }
+  aladinFilenameHookCleanupTimer = setTimeout(() => {
+    releaseAladinFilenameHookIfIdle();
+  }, ALADIN_FILENAME_HOOK_TTL_MS);
+}
+
+function ensureAladinFilenameHook() {
+  if (!aladinFilenameHookRegistered) {
+    chrome.downloads.onDeterminingFilename.addListener(handleAladinDeterminingFilename);
+    aladinFilenameHookRegistered = true;
+  }
+  scheduleAladinFilenameHookCleanup();
+}
+
+function buildAladinMarkerFilename(targetFilename = 'download.bin') {
+  const safeTargetFilename = sanitizeRelativePath(targetFilename, 'download.bin');
+  const extensionMatch = safeTargetFilename.match(/(\.[a-z0-9]+)$/i);
+  const extension = extensionMatch ? extensionMatch[1] : '.bin';
+  const token = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const markerFilename = `${ALADIN_DOWNLOAD_MARKER}${token}${extension}`;
+  pendingAladinFilenameByMarker.set(markerFilename, {
+    filename: safeTargetFilename,
+    createdAt: Date.now(),
+  });
+  ensureAladinFilenameHook();
+  return markerFilename;
+}
+
+function consumePendingAladinFilenameByMarker(itemFilename = '') {
+  const normalized = String(itemFilename || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map(part => String(part || '').trim())
+    .filter(Boolean)
+    .pop() || '';
+  if (!normalized || !normalized.includes(ALADIN_DOWNLOAD_MARKER)) return '';
+
+  const direct = pendingAladinFilenameByMarker.get(normalized);
+  if (direct) {
+    pendingAladinFilenameByMarker.delete(normalized);
+    return getPendingAladinFilenameValue(direct);
+  }
+
+  for (const [markerFilename, entry] of pendingAladinFilenameByMarker.entries()) {
+    if (normalized.includes(markerFilename)) {
+      pendingAladinFilenameByMarker.delete(markerFilename);
+      return getPendingAladinFilenameValue(entry);
+    }
+  }
+
+  return '';
+}
+
+function handleAladinDeterminingFilename(item, suggest) {
+  prunePendingAladinFilenameMarkers();
+  const desiredFilename = consumePendingAladinFilenameByMarker(item?.filename || '');
+  if (desiredFilename) {
+    suggest({ filename: desiredFilename, conflictAction: 'uniquify' });
+  } else {
+    suggest();
+  }
+  releaseAladinFilenameHookIfIdle();
+}
+
+async function fetchAladinAssetAsDataUrl(url) {
+  const response = await fetch(url, {
+    credentials: 'omit',
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${url}`);
+  }
+  const blob = await response.blob();
+  if (!blob || !blob.size) {
+    throw new Error(`empty blob: ${url}`);
+  }
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const mimeType = blob.type || 'application/octet-stream';
+  return `data:${mimeType};base64,${bytesToBase64(bytes)}`;
+}
+
+async function prepareAladinImageDownload(request) {
+  const url = String(request.url || '').trim();
+  const filename = sanitizeRelativePath(request.filename, '1.jpg');
+  if (!url) {
+    throw new Error('url missing');
+  }
+  const dataUrl = await fetchAladinAssetAsDataUrl(url);
+  const downloadName = buildAladinMarkerFilename(filename);
+  return { ok: true, url: dataUrl, downloadName, filename };
+}
+
+async function prepareAladinCsvDownload(request) {
+  const csvText = String(request.csvText || '');
+  const filename = sanitizeRelativePath(request.filename, 'export.csv');
+  if (!csvText) {
+    throw new Error('csv text missing');
+  }
+  const csvBytes = new TextEncoder().encode(csvText);
+  const dataUrl = `data:text/csv;charset=utf-8;base64,${bytesToBase64(csvBytes)}`;
+  const downloadName = buildAladinMarkerFilename(filename);
+  return { ok: true, url: dataUrl, downloadName, filename };
 }
 
 function startDownload({ url, filename, saveAs }, sendResponse) {
@@ -159,6 +299,109 @@ function detectGenre(item) {
   return '書籍';
 }
 
+function detectKoreanBookCategory(source) {
+  const categoryName = String(source?.categoryName || '').trim();
+  const title = String(source?.title || '').trim();
+  const basicInfo = String(source?.basicInfo || '').trim();
+  const description = String(source?.description || source?.fulldescription || '').trim();
+  const mainText = [categoryName, title, basicInfo].join(' ').toLowerCase();
+  const combined = [mainText, description].join(' ').toLowerCase();
+
+  if (!combined) return '';
+  if (/sticker|스티커/.test(combined)) return 'ステッカー';
+  if (/seal|씰/.test(combined)) return 'シール';
+  if (/dvd/.test(combined)) return 'DVD';
+  if (/blu[-\s]?ray|블루레이/.test(combined)) return 'Blu-ray';
+  if (/\blp\b|vinyl/.test(combined)) return 'LP';
+  if (/\bcd\b|음반/.test(combined)) return 'CD';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(combined)) return 'OST';
+  if (/scenario|시나리오/.test(combined)) return 'シナリオ集';
+  if (/script|screenplay|대본/.test(combined)) return '台本';
+  if (/picture\s*book|그림책|絵本/.test(combined)) return '絵本';
+  if (/papercraft|paper\s*art|cut\s*out|切り絵|종이공예|종이접기/.test(combined)) return '切り絵';
+  if (/handcraft|craft|자수|뜨개|수예|手芸/.test(combined)) return '手芸';
+  if (/essay|에세이|산문/.test(mainText)) return 'エッセイ';
+  if (/참고서|수험서|문제집|기출|모의고사|수능|내신|검정고시|자격증|공무원|고시|임용|편입|leet|meet|deet|psat|ncs|toeic|toefl|ielts|teps|jlpt|hsk|topik|参考書|問題集|過去問|受験|資格/.test(mainText)) return '参考書';
+  if (/교재|학습지|학습서|워크북|work\s*book|workbook|text\s*book|textbook|student\s*book|activity\s*book|teacher'?s\s*book|course\s*book|教材|教科書/.test(mainText)) return '教材';
+  if (/setting|guide\s*book|guidebook|fan\s*book|fanbook|character\s*book|official\s*guide|設定集|설정집|가이드북|팬북|캐릭터북|자료집/.test(combined)) return '設定集';
+  if (/art\s*book|artbook|아트북|illustration|illust|画集|화보|원화|작화집|포토북|컨셉북|예체능|미술|디자인|사진/.test(combined)) return 'アートブック';
+  if (/magazine|잡지|매거진/.test(combined)) return '雑誌';
+  if (/goods|gift|굿즈/.test(combined)) return 'グッズ';
+  if (/comic|comics|만화|코믹|webtoon/.test(combined)) return 'まんが';
+  if (/novel|소설|라이트노벨|ライトノベル|light\s*novel|문학|시집/.test(combined)) return '小説';
+  return '';
+}
+
+function detectKoreanMangaCategory(source) {
+  const categoryName = String(source?.categoryName || '').trim();
+  const title = String(source?.title || '').trim();
+  const subtitle = String(source?.subInfo?.subTitle || '').trim();
+  const combined = [categoryName, title, subtitle].join(' ').toLowerCase();
+
+  if (!combined) return '';
+  if (/sticker|스티커/.test(combined)) return 'ステッカー';
+  if (/seal|씰/.test(combined)) return 'シール';
+  if (/dvd/.test(combined)) return 'DVD';
+  if (/blu[-\s]?ray|블루레이/.test(combined)) return 'Blu-ray';
+  if (/\blp\b|vinyl/.test(combined)) return 'LP';
+  if (/\bcd\b|음반/.test(combined)) return 'CD';
+  if (/scenario|시나리오/.test(combined)) return 'シナリオ集';
+  if (/script|screenplay|대본/.test(combined)) return '台本';
+  if (/picture\s*book|그림책|絵本/.test(combined)) return '絵本';
+  if (/papercraft|paper\s*art|cut\s*out|切り絵|종이공예|종이접기/.test(combined)) return '切り絵';
+  if (/handcraft|craft|자수|뜨개|수예|手芸/.test(combined)) return '手芸';
+  if (/magazine|잡지|매거진/.test(combined)) return '雑誌';
+  if (/essay|에세이/.test(combined)) return 'エッセイ';
+  if (/comic|comics|만화|코믹|webtoon/.test(combined)) return 'まんが';
+  if (/setting|guide\s*book|guidebook|fan\s*book|fanbook|character\s*book|official\s*guide|設定集|설정집|가이드북|팬북|캐릭터북|자료집/.test(combined)) return '設定集';
+  if (/art\s*book|artbook|아트북|illustration|illust|画集|화보|원화|작화집|포토북|컨셉북/.test(combined)) return 'アートブック';
+  if (/goods|gift|굿즈/.test(combined)) return 'グッズ';
+  if (/novel|소설|라이트노ベル|ライトノベル|light\s*novel/.test(combined)) return '小説';
+  return 'まんが';
+}
+
+function detectKoreanMediaCategory(source) {
+  const categoryName = String(source?.categoryName || '').trim();
+  const title = String(source?.title || '').trim();
+  const basicInfo = String(source?.basicInfo || '').trim();
+  const description = String(source?.description || '').trim();
+  const titleAndCategory = [title, categoryName].join(' ').toLowerCase();
+  const combined = [title, categoryName, basicInfo, description].join(' ').toLowerCase();
+
+  if (!combined) return '';
+  if (/\bdvd\b|\[dvd\]|dvd\//.test(titleAndCategory)) return 'DVD';
+  if (/blu[-\s]?ray|blue\s*ray|블루레이/.test(titleAndCategory)) return 'Blu-ray';
+  if (/\blp\b|vinyl|record|레코드/.test(titleAndCategory)) return 'LP';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(titleAndCategory)) return 'OST';
+  if (/\bcd\b|음반|album|single|mini\s*album|ep\b/.test(titleAndCategory)) return 'CD';
+  if (/\bdvd\b|\[dvd\]|dvd\//.test(combined)) return 'DVD';
+  if (/blu[-\s]?ray|blue\s*ray|블루레이/.test(combined)) return 'Blu-ray';
+  if (/\blp\b|vinyl|record|레코드/.test(combined)) return 'LP';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(combined)) return 'OST';
+  if (/\bcd\b|음반|album|single|mini\s*album|ep\b/.test(combined)) return 'CD';
+  return '';
+}
+
+function detectSheetCategory(genre, item, scrapeResult = {}) {
+  const source = {
+    ...item,
+    basicInfo: scrapeResult?.basicInfo || '',
+    description: scrapeResult?.description || item?.fulldescription || item?.description || '',
+  };
+  if (genre === '書籍') return detectKoreanBookCategory(source);
+  if (genre === 'マンガ') return detectKoreanMangaCategory(source);
+  if (genre === '音楽映像') return detectKoreanMediaCategory(source);
+  if (genre === '雑誌') return '雑誌';
+  if (genre === 'グッズ') return 'グッズ';
+  return '';
+}
+
+function getProductSheetCategory(product) {
+  return product?.sheetCategory
+    || product?.登録カテゴリ
+    || detectSheetCategory(product?.ジャンル || detectGenre(product), product, product);
+}
+
 const MAGAZINE_NAME_PATTERNS = [
   { name: 'DAZED & CONFUSED', pattern: /dazed\s*&\s*confused/i },
   { name: "HARPER'S BAZAAR", pattern: /harper'?s\s*bazaar/i },
@@ -215,12 +458,13 @@ function buildCsvContent(product) {
   const genre = product.ジャンル;
   const additional = product.追加画像URL || '';
   const description = product.description || '';
+  const sheetCategory = getProductSheetCategory(product) || product.categoryName || '';
 
   if (genre === '音楽映像') {
     return toCsv(
       ['商品名（原題）', 'アーティスト', 'レーベル', '発売日', '原価', 'ジャンル分類', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
       [product.title, product.author, product.publisher, product.pubDate,
-       product.priceSales, product.categoryName, product.cover, additional,
+       product.priceSales, sheetCategory, product.cover, additional,
        description, product.pageUrl]
     );
   }
@@ -236,14 +480,14 @@ function buildCsvContent(product) {
     return toCsv(
       ['商品名（原題）', '著者', '出版社', '発売日', '原価', 'ジャンル分類', 'ISBN', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
       [product.title, product.author, product.publisher, product.pubDate,
-       product.priceSales, product.categoryName, product.isbn13,
+       product.priceSales, sheetCategory, product.isbn13,
        product.cover, additional, description, product.pageUrl]
     );
   }
   if (genre === 'グッズ') {
     return toCsv(
       ['商品名（原題）', '発売日', '原価', 'ジャンル分類', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
-      [product.title, product.pubDate, product.priceSales, product.categoryName,
+      [product.title, product.pubDate, product.priceSales, sheetCategory,
        product.cover, additional, description, product.pageUrl]
     );
   }
@@ -251,7 +495,7 @@ function buildCsvContent(product) {
   return toCsv(
     ['商品名（原題）', '著者', '出版社', '発売日', '原価', 'ジャンル分類', 'ISBN', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
     [product.title, product.author, product.publisher, product.pubDate,
-     product.priceSales, product.categoryName, product.isbn13,
+     product.priceSales, sheetCategory, product.isbn13,
      product.cover, additional, description, product.pageUrl]
   );
 }
@@ -371,12 +615,18 @@ function buildProductRecord({ item, itemId, pageUrl, genre, scrapeResult }) {
   const apiDescription = String(item?.fulldescription || item?.description || '').trim();
   const pageDescription = String(scrapeResult?.description || '').trim();
   const magazineName = genre === '雑誌' ? extractMagazineName(item) : '';
+  const sheetCategory = detectSheetCategory(genre, item, {
+    ...scrapeResult,
+    description: pageDescription || apiDescription,
+  });
 
   return {
     ...item,
     itemId,
     pageUrl,
     ジャンル: genre,
+    登録カテゴリ: sheetCategory,
+    sheetCategory,
     magazineName,
     追加画像URL: scrapeResult?.additionalImagesJoined || '',
     additionalImages: scrapeResult?.additionalImages || [],
@@ -385,6 +635,53 @@ function buildProductRecord({ item, itemId, pageUrl, genre, scrapeResult }) {
     pageDescription,
     basicInfo: scrapeResult?.basicInfo || ''
   };
+}
+
+function buildSheetPayload(product, fallbackGenre) {
+  const genre = fallbackGenre || product.ジャンル || detectGenre(product);
+  return {
+    action: 'updateAladinData',
+    itemId: product.itemId,
+    genre,
+    title: product.title || '',
+    magazineName: product.magazineName || '',
+    author: product.author || '',
+    publisher: product.publisher || '',
+    pubDate: product.pubDate || '',
+    priceSales: product.priceSales || '',
+    cover: product.cover || '',
+    isbn13: product.isbn13 || '',
+    pageUrl: product.pageUrl || '',
+    additionalImages: product.追加画像URL || '',
+    description: product.description || product.pageDescription || '',
+    basicInfo: product.basicInfo || '',
+    categoryName: product.categoryName || '',
+    sheetCategory: getProductSheetCategory(product) || '',
+    normalizedCategory: getProductSheetCategory(product) || '',
+    mallType: product.mallType || ''
+  };
+}
+
+function normalizeProductIsbn(value) {
+  return String(value || '').replace(/[^\dXx]/g, '').toUpperCase();
+}
+
+async function postProductToSheet(gasUrl, product, fallbackGenre) {
+  const response = await fetch(gasUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(buildSheetPayload(product, fallbackGenre))
+  });
+
+  if (!response.ok) {
+    throw new Error(`GAS HTTP ${response.status}`);
+  }
+
+  const json = await response.json();
+  if (!json.success) {
+    throw new Error(json.error || '書き込み失敗');
+  }
+  return json;
 }
 
 async function processWriteCurrentPageJob(job) {
@@ -424,38 +721,7 @@ async function processWriteCurrentPageJob(job) {
   const mode = await upsertStoredProduct(product);
   await setBackgroundStatus(`画像${product.additionalImages.length}枚取得 / ${genre} → 送信中...`, '');
 
-  const response = await fetch(gasUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({
-      action: 'updateAladinData',
-      itemId: product.itemId,
-      genre,
-      title: product.title || '',
-      magazineName: product.magazineName || '',
-      author: product.author || '',
-      publisher: product.publisher || '',
-      pubDate: product.pubDate || '',
-      priceSales: product.priceSales || '',
-      cover: product.cover || '',
-      isbn13: product.isbn13 || '',
-      pageUrl: product.pageUrl || '',
-      additionalImages: product.追加画像URL,
-      description: product.description,
-      basicInfo: product.basicInfo,
-      categoryName: product.categoryName || '',
-      mallType: product.mallType || ''
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`GAS HTTP ${response.status}`);
-  }
-
-  const json = await response.json();
-  if (!json.success) {
-    throw new Error(json.error || '書き込み失敗');
-  }
+  const json = await postProductToSheet(gasUrl, product, genre);
 
   const sheetActionLabel = json.mode === 'created'
     ? '追加'
@@ -466,6 +732,69 @@ async function processWriteCurrentPageJob(job) {
   const resolvedGenre = json.resolvedGenre || genre;
   const idLabel = json.spreadsheetId ? ` / ID:${String(json.spreadsheetId).slice(0, 8)}...` : ' / 旧GAS応答の可能性';
   await setBackgroundStatus(`✅ ${resolvedGenre} / シート${sheetActionLabel} / ${spreadsheetLabel} / ${json.sheet} 行${json.row}${idLabel}`, 'success');
+}
+
+async function processWriteProductsToSheetJob(job) {
+  const products = Array.isArray(job.products) ? job.products : [];
+  const gasUrl = String(job.gasUrl || '').trim();
+  if (!gasUrl) throw new Error('GASのURLを保存してください');
+  if (!products.length) throw new Error('シート書込対象の商品がありません');
+
+  let success = 0;
+  let failed = 0;
+  let skippedDuplicates = 0;
+  const errors = [];
+  let lastResult = null;
+  const seenProductKeys = new Set();
+
+  for (let index = 0; index < products.length; index += 1) {
+    const product = products[index] || {};
+    const label = product.title || product.itemId || `${index + 1}件目`;
+    const itemId = String(product.itemId || '').trim();
+    const isbn = normalizeProductIsbn(product.isbn13 || product.isbn);
+
+    if (!itemId) {
+      failed += 1;
+      errors.push(`${label}: itemId missing`);
+      continue;
+    }
+
+    const productKeys = [
+      itemId ? `item:${itemId}` : '',
+      isbn ? `isbn:${isbn}` : ''
+    ].filter(Boolean);
+
+    if (productKeys.some(key => seenProductKeys.has(key))) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    productKeys.forEach(key => seenProductKeys.add(key));
+
+    await setBackgroundStatus(`⏳ シート書込中 ${index + 1}/${products.length}: ${label}`, '');
+
+    try {
+      const result = await postProductToSheet(gasUrl, product, product.ジャンル || detectGenre(product));
+      success += 1;
+      lastResult = result;
+    } catch (error) {
+      failed += 1;
+      errors.push(`${label}: ${error.message || error}`);
+    }
+  }
+
+  const type = failed > 0 ? 'error' : 'success';
+  const lastSheet = lastResult?.sheet ? ` / 最後:${lastResult.sheet} 行${lastResult.row}` : '';
+  const duplicateLabel = skippedDuplicates ? ` / 重複スキップ:${skippedDuplicates}件` : '';
+  await setBackgroundStatus(`✅ シート書込 ${success}/${products.length}件${duplicateLabel}${failed ? ` / 失敗:${failed}件` : ''}${lastSheet}`, type);
+
+  return {
+    productCount: products.length,
+    success,
+    failed,
+    skippedDuplicates,
+    errors,
+    lastResult,
+  };
 }
 
 async function processSaveProductsAssetsJob(job) {
@@ -545,6 +874,8 @@ async function processJobQueue() {
       try {
         if (job.type === 'writeCurrentPageToSheet') {
           await processWriteCurrentPageJob(job);
+        } else if (job.type === 'writeProductsToSheet') {
+          await processWriteProductsToSheetJob(job);
         } else if (job.type === 'saveProductsAssets') {
           await processSaveProductsAssetsJob(job);
         } else {
@@ -577,6 +908,20 @@ chrome.runtime.onInstalled?.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  if (request.action === 'prepareAladinImageDownload') {
+    prepareAladinImageDownload(request)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ ok: false, error: error.message || 'download prepare failed' }));
+    return true;
+  }
+
+  if (request.action === 'prepareAladinCsvDownload') {
+    prepareAladinCsvDownload(request)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ ok: false, error: error.message || 'csv prepare failed' }));
+    return true;
+  }
+
   if (request.action === 'downloadImage') {
     handleImageDownload(request, sendResponse);
     return true;
@@ -597,6 +942,22 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     }).then(jobId => {
       setBackgroundStatus('⏳ バックグラウンドで書込を開始しました。タブ切替OKです', '').catch(() => {});
       sendResponse({ ok: true, jobId });
+      chrome.alarms.create(JOB_ALARM_NAME, { when: Date.now() + 100 });
+    }).catch(error => {
+      sendResponse({ ok: false, error: error.message || 'enqueue failed' });
+    });
+    return true;
+  }
+
+  if (request.action === 'enqueueWriteProductsToSheet') {
+    const products = Array.isArray(request.products) ? request.products : [];
+    enqueueJob({
+      type: 'writeProductsToSheet',
+      products,
+      gasUrl: request.gasUrl
+    }).then(jobId => {
+      setBackgroundStatus(`⏳ バックグラウンドで${products.length}件のシート書込を開始しました`, '').catch(() => {});
+      sendResponse({ ok: true, jobId, productCount: products.length });
       chrome.alarms.create(JOB_ALARM_NAME, { when: Date.now() + 100 });
     }).catch(error => {
       sendResponse({ ok: false, error: error.message || 'enqueue failed' });

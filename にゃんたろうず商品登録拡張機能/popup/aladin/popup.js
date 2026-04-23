@@ -70,6 +70,109 @@ function detectGenre(item) {
   return '書籍';
 }
 
+function detectKoreanBookCategory(source) {
+  const categoryName = String(source?.categoryName || '').trim();
+  const title = String(source?.title || '').trim();
+  const basicInfo = String(source?.basicInfo || '').trim();
+  const description = String(source?.description || source?.fulldescription || '').trim();
+  const mainText = [categoryName, title, basicInfo].join(' ').toLowerCase();
+  const combined = [mainText, description].join(' ').toLowerCase();
+
+  if (!combined) return '';
+  if (/sticker|스티커/.test(combined)) return 'ステッカー';
+  if (/seal|씰/.test(combined)) return 'シール';
+  if (/dvd/.test(combined)) return 'DVD';
+  if (/blu[-\s]?ray|블루레이/.test(combined)) return 'Blu-ray';
+  if (/\blp\b|vinyl/.test(combined)) return 'LP';
+  if (/\bcd\b|음반/.test(combined)) return 'CD';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(combined)) return 'OST';
+  if (/scenario|시나리오/.test(combined)) return 'シナリオ集';
+  if (/script|screenplay|대본/.test(combined)) return '台本';
+  if (/picture\s*book|그림책|絵本/.test(combined)) return '絵本';
+  if (/papercraft|paper\s*art|cut\s*out|切り絵|종이공예|종이접기/.test(combined)) return '切り絵';
+  if (/handcraft|craft|자수|뜨개|수예|手芸/.test(combined)) return '手芸';
+  if (/essay|에세이|산문/.test(mainText)) return 'エッセイ';
+  if (/참고서|수험서|문제집|기출|모의고사|수능|내신|검정고시|자격증|공무원|고시|임용|편입|leet|meet|deet|psat|ncs|toeic|toefl|ielts|teps|jlpt|hsk|topik|参考書|問題集|過去問|受験|資格/.test(mainText)) return '参考書';
+  if (/교재|학습지|학습서|워크북|work\s*book|workbook|text\s*book|textbook|student\s*book|activity\s*book|teacher'?s\s*book|course\s*book|教材|教科書/.test(mainText)) return '教材';
+  if (/setting|guide\s*book|guidebook|fan\s*book|fanbook|character\s*book|official\s*guide|設定集|설정집|가이드북|팬북|캐릭터북|자료집/.test(combined)) return '設定集';
+  if (/art\s*book|artbook|아트북|illustration|illust|画集|화보|원화|작화집|포토북|컨셉북|예체능|미술|디자인|사진/.test(combined)) return 'アートブック';
+  if (/magazine|잡지|매거진/.test(combined)) return '雑誌';
+  if (/goods|gift|굿즈/.test(combined)) return 'グッズ';
+  if (/comic|comics|만화|코믹|webtoon/.test(combined)) return 'まんが';
+  if (/novel|소설|라이트노벨|ライトノベル|light\s*novel|문학|시집/.test(combined)) return '小説';
+  return '';
+}
+
+function detectKoreanMangaCategory(source) {
+  const categoryName = String(source?.categoryName || '').trim();
+  const title = String(source?.title || '').trim();
+  const subtitle = String(source?.subInfo?.subTitle || '').trim();
+  const combined = [categoryName, title, subtitle].join(' ').toLowerCase();
+
+  if (!combined) return '';
+  if (/sticker|스티커/.test(combined)) return 'ステッカー';
+  if (/seal|씰/.test(combined)) return 'シール';
+  if (/dvd/.test(combined)) return 'DVD';
+  if (/blu[-\s]?ray|블루레이/.test(combined)) return 'Blu-ray';
+  if (/\blp\b|vinyl/.test(combined)) return 'LP';
+  if (/\bcd\b|음반/.test(combined)) return 'CD';
+  if (/scenario|시나리오/.test(combined)) return 'シナリオ集';
+  if (/script|screenplay|대본/.test(combined)) return '台本';
+  if (/picture\s*book|그림책|絵本/.test(combined)) return '絵本';
+  if (/papercraft|paper\s*art|cut\s*out|切り絵|종이공예|종이접기/.test(combined)) return '切り絵';
+  if (/handcraft|craft|자수|뜨개|수예|手芸/.test(combined)) return '手芸';
+  if (/magazine|잡지|매거진/.test(combined)) return '雑誌';
+  if (/essay|에세이/.test(combined)) return 'エッセイ';
+  if (/comic|comics|만화|코믹|webtoon/.test(combined)) return 'まんが';
+  if (/setting|guide\s*book|guidebook|fan\s*book|fanbook|character\s*book|official\s*guide|設定集|설정집|가이드북|팬북|캐릭터북|자료집/.test(combined)) return '設定集';
+  if (/art\s*book|artbook|아트북|illustration|illust|画集|화보|원화|작화집|포토북|컨셉북/.test(combined)) return 'アートブック';
+  if (/goods|gift|굿즈/.test(combined)) return 'グッズ';
+  if (/novel|소설|라이트노벨|ライトノベル|light\s*novel/.test(combined)) return '小説';
+  return 'まんが';
+}
+
+function detectKoreanMediaCategory(source) {
+  const categoryName = String(source?.categoryName || '').trim();
+  const title = String(source?.title || '').trim();
+  const basicInfo = String(source?.basicInfo || '').trim();
+  const description = String(source?.description || '').trim();
+  const titleAndCategory = [title, categoryName].join(' ').toLowerCase();
+  const combined = [title, categoryName, basicInfo, description].join(' ').toLowerCase();
+
+  if (!combined) return '';
+  if (/\bdvd\b|\[dvd\]|dvd\//.test(titleAndCategory)) return 'DVD';
+  if (/blu[-\s]?ray|blue\s*ray|블루레이/.test(titleAndCategory)) return 'Blu-ray';
+  if (/\blp\b|vinyl|record|레코드/.test(titleAndCategory)) return 'LP';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(titleAndCategory)) return 'OST';
+  if (/\bcd\b|음반|album|single|mini\s*album|ep\b/.test(titleAndCategory)) return 'CD';
+  if (/\bdvd\b|\[dvd\]|dvd\//.test(combined)) return 'DVD';
+  if (/blu[-\s]?ray|blue\s*ray|블루레이/.test(combined)) return 'Blu-ray';
+  if (/\blp\b|vinyl|record|레코드/.test(combined)) return 'LP';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(combined)) return 'OST';
+  if (/\bcd\b|음반|album|single|mini\s*album|ep\b/.test(combined)) return 'CD';
+  return '';
+}
+
+function detectSheetCategory(genre, item, scrapeResult = {}) {
+  const source = {
+    ...item,
+    basicInfo: scrapeResult?.basicInfo || '',
+    description: scrapeResult?.description || item?.fulldescription || item?.description || '',
+  };
+  if (genre === '書籍') return detectKoreanBookCategory(source);
+  if (genre === 'マンガ') return detectKoreanMangaCategory(source);
+  if (genre === '音楽映像') return detectKoreanMediaCategory(source);
+  if (genre === '雑誌') return '雑誌';
+  if (genre === 'グッズ') return 'グッズ';
+  return '';
+}
+
+function getProductSheetCategory(product) {
+  return product?.sheetCategory
+    || product?.登録カテゴリ
+    || detectSheetCategory(product?.ジャンル || detectGenre(product), product, product);
+}
+
 const MAGAZINE_NAME_PATTERNS = [
   { name: 'DAZED & CONFUSED', pattern: /dazed\s*&\s*confused/i },
   { name: "HARPER'S BAZAAR", pattern: /harper'?s\s*bazaar/i },
@@ -146,7 +249,6 @@ async function init() {
   }
   renderList();
   updateUI();
-  await refreshDirectSaveFolderStatus();
 
   const backgroundStatus = stored[BACKGROUND_STATUS_STORAGE];
   if (backgroundStatus?.message) {
@@ -165,7 +267,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     products = Array.isArray(changes[STORAGE_KEY].newValue) ? changes[STORAGE_KEY].newValue : [];
     renderList();
     updateUI();
-    refreshDirectSaveFolderStatus().catch(() => {});
   }
 
   if (changes[BACKGROUND_STATUS_STORAGE]) {
@@ -205,6 +306,7 @@ function renderList() {
   container.innerHTML = products.map((product, index) => {
     const title = escapeHtml(product.title || '（タイトルなし）');
     const genre = escapeHtml(product.ジャンル || '書籍');
+    const sheetCategory = escapeHtml(getProductSheetCategory(product));
     const price = escapeHtml(product.priceSales || '-');
     const itemId = escapeHtml(product.itemId || '');
     const cover = escapeHtml(product.cover || '');
@@ -218,6 +320,7 @@ function renderList() {
           <div class="product-name" title="${title}">${title}</div>
           <div class="product-meta">
             <span class="badge ${getGenreBadgeClass(product.ジャンル)}">${genre}</span>
+            ${sheetCategory ? `<span class="badge badge-category">${sheetCategory}</span>` : ''}
             <span class="price">₩${price}</span>
             <span class="item-id">${itemId}</span>
           </div>
@@ -233,7 +336,6 @@ function renderList() {
       save();
       renderList();
       updateUI();
-      refreshDirectSaveFolderStatus().catch(() => {});
     });
   });
 }
@@ -248,103 +350,6 @@ function save() {
   storageSet({ [STORAGE_KEY]: products }).catch(() => {});
 }
 
-function isDirectFolderSaveAvailable() {
-  return typeof window.showDirectoryPicker === 'function'
-    && typeof pickAndSaveFolder === 'function'
-    && typeof getSavedFolderHandle === 'function'
-    && typeof getSavedFolderName === 'function'
-    && typeof ensureFolderPermission === 'function'
-    && typeof saveTextFileToFolder === 'function'
-    && typeof saveImagesToFolder === 'function';
-}
-
-async function refreshDirectSaveFolderStatus() {
-  const input = document.getElementById('folder-status');
-  if (!input) return;
-
-  if (!isDirectFolderSaveAvailable()) {
-    input.value = 'このブラウザでは直接保存を使えません';
-    return;
-  }
-
-  const folderName = await getSavedFolderName().catch(() => '');
-  input.value = folderName || '未選択';
-}
-
-function normalizeDirectSaveError(error) {
-  if (error?.name === 'AbortError') {
-    return new Error('保存先フォルダの選択をキャンセルしました');
-  }
-  return error instanceof Error
-    ? error
-    : new Error(String(error || '保存先フォルダを準備できませんでした'));
-}
-
-async function prepareDirectSaveContext(options = {}) {
-  if (!isDirectFolderSaveAvailable()) {
-    return null;
-  }
-
-  const promptIfMissing = options.promptIfMissing === true;
-  let rootHandle = await getSavedFolderHandle().catch(() => null);
-  let folderName = await getSavedFolderName().catch(() => '');
-
-  if (!promptIfMissing) {
-    if (!rootHandle && !folderName) {
-      return null;
-    }
-    return {
-      rootHandle: null,
-      folderName: folderName || rootHandle?.name || '',
-    };
-  }
-
-  if (rootHandle) {
-    const granted = await ensureFolderPermission(rootHandle).catch(() => false);
-    if (granted) {
-      return {
-        rootHandle,
-        folderName: folderName || rootHandle.name || '',
-      };
-    }
-  }
-
-  try {
-    folderName = await pickAndSaveFolder();
-  } catch (error) {
-    throw normalizeDirectSaveError(error);
-  }
-
-  rootHandle = await getSavedFolderHandle().catch(() => null);
-  if (!rootHandle) {
-    throw new Error('保存先フォルダを取得できませんでした');
-  }
-
-  const granted = await ensureFolderPermission(rootHandle).catch(() => false);
-  if (!granted) {
-    throw new Error('保存先フォルダへの書き込み権限がありません');
-  }
-
-  await refreshDirectSaveFolderStatus();
-  return {
-    rootHandle,
-    folderName: folderName || rootHandle.name || '',
-  };
-}
-
-async function chooseDirectSaveFolder() {
-  const directSaveContext = await prepareDirectSaveContext({ promptIfMissing: true });
-  await refreshDirectSaveFolderStatus();
-  return directSaveContext?.folderName || '';
-}
-
-function describeSaveDestination(directSaveContext, fallbackLabel = 'Downloads') {
-  if (directSaveContext?.rootHandle) {
-    return `直接保存:${directSaveContext.folderName || '選択フォルダ'}`;
-  }
-  return fallbackLabel;
-}
-
 function sanitizeDownloadSegment(segment) {
   return String(segment || '')
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
@@ -353,7 +358,7 @@ function sanitizeDownloadSegment(segment) {
     .replace(/[. ]+$/g, '') || 'item';
 }
 
-function buildCsvContentForDirectSave(product) {
+function buildAladinCsvContent(product) {
   const toCsv = (headers, row) =>
     '\uFEFF' + [headers, row]
       .map(record => record.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
@@ -362,12 +367,13 @@ function buildCsvContentForDirectSave(product) {
   const genre = product.ジャンル;
   const additional = product.追加画像URL || '';
   const description = product.description || '';
+  const sheetCategory = getProductSheetCategory(product) || product.categoryName || '';
 
   if (genre === '音楽映像') {
     return toCsv(
       ['商品名（原題）', 'アーティスト', 'レーベル', '発売日', '原価', 'ジャンル分類', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
       [product.title, product.author, product.publisher, product.pubDate,
-       product.priceSales, product.categoryName, product.cover, additional,
+       product.priceSales, sheetCategory, product.cover, additional,
        description, product.pageUrl]
     );
   }
@@ -383,14 +389,14 @@ function buildCsvContentForDirectSave(product) {
     return toCsv(
       ['商品名（原題）', '著者', '出版社', '発売日', '原価', 'ジャンル分類', 'ISBN', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
       [product.title, product.author, product.publisher, product.pubDate,
-       product.priceSales, product.categoryName, product.isbn13,
+       product.priceSales, sheetCategory, product.isbn13,
        product.cover, additional, description, product.pageUrl]
     );
   }
   if (genre === 'グッズ') {
     return toCsv(
       ['商品名（原題）', '発売日', '原価', 'ジャンル分類', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
-      [product.title, product.pubDate, product.priceSales, product.categoryName,
+      [product.title, product.pubDate, product.priceSales, sheetCategory,
        product.cover, additional, description, product.pageUrl]
     );
   }
@@ -398,24 +404,24 @@ function buildCsvContentForDirectSave(product) {
   return toCsv(
     ['商品名（原題）', '著者', '出版社', '発売日', '原価', 'ジャンル分類', 'ISBN', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
     [product.title, product.author, product.publisher, product.pubDate,
-     product.priceSales, product.categoryName, product.isbn13,
+     product.priceSales, sheetCategory, product.isbn13,
      product.cover, additional, description, product.pageUrl]
   );
 }
 
-function guessDirectImageExt(url) {
+function guessAladinImageExt(url) {
   const ext = (String(url || '').split('.').pop() || '').split('?')[0].toLowerCase();
   if (ext === 'jpeg') return 'jpg';
   return ['jpg', 'png', 'webp', 'gif'].includes(ext) ? ext : 'jpg';
 }
 
-function getDirectSaveDownloadCode(product) {
+function getAladinDownloadCode(product) {
   const itemId = String(product?.itemId || '').trim();
   if (/^\d+$/.test(itemId)) return itemId;
   return sanitizeDownloadSegment(product?.title || 'item');
 }
 
-function collectDirectSaveImageUrls(product) {
+function collectAladinImageUrls(product) {
   const urls = [
     String(product?.cover || '').trim(),
     ...String(product?.追加画像URL || '')
@@ -427,33 +433,66 @@ function collectDirectSaveImageUrls(product) {
   return [...new Set(urls)];
 }
 
-async function saveProductsDirect(productsToSave, mode, directSaveContext) {
-  const products = Array.isArray(productsToSave) ? productsToSave : [];
-  if (!directSaveContext?.rootHandle) {
-    throw new Error('保存先フォルダを準備できませんでした');
-  }
+function triggerAladinAnchorDownload(downloadName, url) {
+  const anchor = document.createElement('a');
+  anchor.href = String(url || '').trim();
+  anchor.download = String(downloadName || '').trim() || 'download.bin';
+  anchor.rel = 'noopener';
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
 
+function waitForQueuedDownloadTick(delayMs = 150) {
+  return new Promise(resolve => {
+    window.setTimeout(resolve, Math.max(0, Number(delayMs) || 0));
+  });
+}
+
+async function downloadPreparedCsv(csvText, filename) {
+  const response = await sendRuntimeMessage({ action: 'prepareAladinCsvDownload', csvText, filename });
+  if (!response?.ok || !response.url || !response.downloadName) {
+    return false;
+  }
+  triggerAladinAnchorDownload(response.downloadName, response.url);
+  await waitForQueuedDownloadTick();
+  return true;
+}
+
+async function downloadPreparedImage(imageUrl, filename) {
+  const response = await sendRuntimeMessage({ action: 'prepareAladinImageDownload', url: imageUrl, filename });
+  if (!response?.ok || !response.url || !response.downloadName) {
+    return false;
+  }
+  triggerAladinAnchorDownload(response.downloadName, response.url);
+  await waitForQueuedDownloadTick();
+  return true;
+}
+
+async function saveProductsWithDownloadFlow(productsToSave, mode) {
+  const products = Array.isArray(productsToSave) ? productsToSave : [];
   let totalImages = 0;
   let successImages = 0;
   let csvCount = 0;
 
   for (const product of products) {
-    const downloadCode = getDirectSaveDownloadCode(product);
-    const rootedFolder = downloadCode;
+    const downloadCode = getAladinDownloadCode(product);
 
     if (mode === 'csv_and_images') {
-      const csvContent = buildCsvContentForDirectSave(product);
-      await saveTextFileToFolder(directSaveContext.rootHandle, `${downloadCode}.csv`, csvContent);
-      csvCount += 1;
+      const csvContent = buildAladinCsvContent(product);
+      const csvOk = await downloadPreparedCsv(csvContent, `${downloadCode}.csv`);
+      if (csvOk) csvCount += 1;
     }
 
-    const imageUrls = collectDirectSaveImageUrls(product);
-    if (imageUrls.length > 0) {
-      const saveResult = await saveImagesToFolder(directSaveContext.rootHandle, rootedFolder, imageUrls, null, {
-        forceJpeg: false,
-      });
-      totalImages += saveResult.total;
-      successImages += saveResult.success;
+    const imageUrls = collectAladinImageUrls(product);
+    let sequence = 1;
+    for (const imageUrl of imageUrls) {
+      totalImages += 1;
+      const ext = guessAladinImageExt(imageUrl);
+      const ok = await downloadPreparedImage(imageUrl, `${downloadCode}/${sequence}.${ext}`);
+      if (ok) successImages += 1;
+      sequence += 1;
     }
   }
 
@@ -464,8 +503,6 @@ async function saveProductsDirect(productsToSave, mode, directSaveContext) {
     successImages,
     failedImages: Math.max(0, totalImages - successImages),
     csvCount,
-    folderName: directSaveContext.folderName || '',
-    imageExtensionMode: 'keep-original',
   };
 }
 
@@ -540,12 +577,18 @@ async function scrapePageDetails(tabId, options) {
 function buildProductRecord({ item, itemId, pageUrl, genre, scrapeResult }) {
   const pageDescription = String(scrapeResult?.description || '').trim();
   const magazineName = genre === '雑誌' ? extractMagazineName(item) : '';
+  const sheetCategory = detectSheetCategory(genre, item, {
+    ...scrapeResult,
+    description: pageDescription,
+  });
 
   return {
     ...item,
     itemId,
     pageUrl,
     ジャンル: genre,
+    登録カテゴリ: sheetCategory,
+    sheetCategory,
     magazineName,
     追加画像URL: scrapeResult?.additionalImagesJoined || '',
     additionalImages: scrapeResult?.additionalImages || [],
@@ -641,8 +684,7 @@ document.getElementById('btn-add').addEventListener('click', async () => {
     upsertProduct(product);
     save();
     renderList();
-  updateUI();
-  await refreshDirectSaveFolderStatus();
+    updateUI();
     setStatus(`✅ ${product.ジャンル} として追加`, 'success');
   } catch (error) {
     setStatus(`❌ ${error.message}`, 'error');
@@ -654,25 +696,11 @@ document.getElementById('btn-add').addEventListener('click', async () => {
 // ============================================================
 document.getElementById('btn-download').addEventListener('click', async () => {
   if (products.length === 0) return;
-  setStatus('⏳ 保存先を確認中...', '');
+  setStatus('⏳ CSV+画像を出力中...', '');
 
   try {
-    const directSaveContext = await prepareDirectSaveContext({ promptIfMissing: true });
-    setStatus('⏳ CSV+画像を保存中...', '');
-
-    const result = directSaveContext?.rootHandle
-      ? await saveProductsDirect(products, 'csv_and_images', directSaveContext)
-      : await sendRuntimeMessage({
-          action: 'enqueueSaveProductsAssets',
-          products,
-          mode: 'csv_and_images',
-          saveAs: true,
-        });
-    if (!directSaveContext?.rootHandle && !result?.ok) {
-      throw new Error(result?.error || 'CSV+画像保存に失敗しました');
-    }
-
-    const destinationLabel = describeSaveDestination(directSaveContext, 'Downloads');
+    const result = await saveProductsWithDownloadFlow(products, 'csv_and_images');
+    const destinationLabel = '手動保存ダイアログ';
     setStatus(
       `✅ ${destinationLabel} に CSV:${result.csvCount}/${products.length}件 / 画像:${result.successImages}/${result.totalImages}枚保存 / 商品フォルダ:${result.productCount}` +
         (result.failedImages > 0 ? `（失敗:${result.failedImages}）` : ''),
@@ -685,25 +713,11 @@ document.getElementById('btn-download').addEventListener('click', async () => {
 
 document.getElementById('btn-download-images').addEventListener('click', async () => {
   if (products.length === 0) return;
-  setStatus('⏳ 保存先を確認中...', '');
+  setStatus('⏳ 画像を出力中...', '');
 
   try {
-    const directSaveContext = await prepareDirectSaveContext({ promptIfMissing: true });
-    setStatus('⏳ 画像を保存中...', '');
-
-    const result = directSaveContext?.rootHandle
-      ? await saveProductsDirect(products, 'images_only', directSaveContext)
-      : await sendRuntimeMessage({
-          action: 'enqueueSaveProductsAssets',
-          products,
-          mode: 'images_only',
-          saveAs: true,
-        });
-    if (!directSaveContext?.rootHandle && !result?.ok) {
-      throw new Error(result?.error || '画像保存に失敗しました');
-    }
-
-    const destinationLabel = describeSaveDestination(directSaveContext, 'Downloads');
+    const result = await saveProductsWithDownloadFlow(products, 'images_only');
+    const destinationLabel = '手動保存ダイアログ';
     setStatus(
       `✅ ${destinationLabel} に画像:${result.successImages}/${result.totalImages}枚保存 / 商品フォルダ:${result.productCount}` +
         (result.failedImages > 0 ? `（失敗:${result.failedImages}）` : ''),
@@ -724,7 +738,6 @@ document.getElementById('btn-clear').addEventListener('click', () => {
   save();
   renderList();
   updateUI();
-  refreshDirectSaveFolderStatus().catch(() => {});
   setStatus('リストをクリアしました', '');
 });
 
@@ -743,24 +756,26 @@ document.getElementById('btn-send-to-sheet')?.addEventListener('click', async ()
     setStatus('⚠ TTBキーを入力・保存してください', 'error');
     return;
   }
+  if (products.length === 0) {
+    setStatus('⚠ 先に商品を追加してください', 'error');
+    return;
+  }
 
-  setStatus('⏳ バックグラウンドで書込を開始しています...', '');
+  setStatus(`⏳ バックグラウンドで${products.length}件の書込を開始しています...`, '');
 
   try {
-    const tab = await getActiveAladinTab();
     const response = await sendRuntimeMessage({
-      action: 'enqueueWriteCurrentPageToSheet',
-      tabId: tab.id,
-      tabUrl: tab.url,
-      ttbKey,
-      gasUrl
+      action: 'enqueueWriteProductsToSheet',
+      products,
+      gasUrl,
+      ttbKey
     });
 
     if (!response?.ok) {
       throw new Error(response?.error || '書込ジョブを開始できませんでした');
     }
 
-    setStatus('⏳ バックグラウンドで書込開始。タブ切替OKです', '');
+    setStatus(`⏳ ${products.length}件のシート書込開始。タブ切替OKです`, '');
   } catch (error) {
     setStatus(`❌ ${error.message}`, 'error');
   }

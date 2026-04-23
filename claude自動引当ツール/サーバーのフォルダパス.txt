@@ -1,0 +1,6 @@
+C:\Users\Owner\.claude\projects\C--Users-Owner-Desktop-script\memory\MEMORY.md
+
+
+C:\Users\Owner\Desktop\script\claude自動引当ツール の在庫引当ツールを続けてほしい。VPS（133.167.89.53）に Flask アプリをデプロイ済み。Yahoo受注APIの取込、Cloudike経由のExcel取込などを実装中。まず現状のコードを確認して」
+
+http://133.167.89.53:5000

@@ -36,62 +36,69 @@
 </div>
 
 <!-- EMSボックスリスト -->
-<div class="table-wrap" style="padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
+<div class="table-wrap" style="padding:12px 16px;display:flex;flex-direction:column;gap:8px;">
 
   {% for box in boxes %}
   {% set e = box.ems %}
+  {% set total_cnt = box.rows|length %}
+  {% set alloc_cnt = box.rows | selectattr('order') | list | length %}
+  {% set unalloc_cnt = total_cnt - alloc_cnt %}
+  {% set bar_cls = 'bar-alloc' if (total_cnt > 0 and unalloc_cnt == 0) else ('bar-partial' if unalloc_cnt > 0 else 'bar-none') %}
 
-  <div class="ems-box {{ 'ems-box-overdue' if box.is_overdue else ('ems-box-arrived' if e.status=='arrived' else '') }}">
+  <div class="ems-box {{ 'ems-overdue' if box.is_overdue else ('ems-arrived' if e.status=='arrived' else 'ems-transit') }} {{ bar_cls }}">
 
-    <!-- ヘッダー行（クリックで展開/折りたたみ） -->
-    <div class="ems-box-header" onclick="toggleBox({{ e.id }})">
-      <div class="ems-box-left">
+    <!-- ヘッダー -->
+    <div class="ems-hd" onclick="toggleBox({{ e.id }})">
+
+      <!-- 左：EMS番号 + ステータス -->
+      <div class="ems-hd-id">
         <span class="ems-num">{{ e.ems_number }}</span>
         {% if e.status == 'arrived' %}
           <span class="badge badge-done">入荷済</span>
         {% elif box.is_overdue %}
-          <span class="badge badge-alert">⚠ 遅延{{ box.days_in_transit }}日</span>
+          <span class="badge badge-alert">⚠ 遅延 {{ box.days_in_transit }}日</span>
         {% else %}
           <span class="badge badge-ems">輸送中 {{ box.days_in_transit }}日目</span>
         {% endif %}
         {% if e.purchase_no %}
-        <span class="ems-pno">{{ e.purchase_no }}</span>
+          <span class="ems-pno">{{ e.purchase_no }}</span>
         {% endif %}
-        {# 引当状況サマリー #}
-        {% set total_cnt = box.rows|length %}
-        {% set alloc_cnt = box.rows | selectattr('order') | list | length %}
-        {% set unalloc_cnt = total_cnt - alloc_cnt %}
-        <span class="ems-count-wrap">
-          <span class="ems-count-total">{{ total_cnt }}件</span>
-          {% if alloc_cnt > 0 %}<span class="ems-count-alloc">受注:{{ alloc_cnt }}</span>{% endif %}
-          {% if unalloc_cnt > 0 %}<span class="ems-count-unalloc">未:{{ unalloc_cnt }}</span>{% endif %}
-        </span>
       </div>
-      <div class="ems-box-dates">
-        <span title="発送日">📦 {{ e.shipped_at.strftime('%m/%d') if e.shipped_at else '—' }}</span>
-        <span style="color:var(--text-secondary);">→</span>
-        <span title="到着予定日" class="{{ 'overdue-date' if box.is_overdue else '' }}">
-          🎯 {{ e.estimated_arrival.strftime('%m/%d') if e.estimated_arrival else '—' }}
-        </span>
+
+      <!-- 中央：件数サマリー（大きく） -->
+      <div class="ems-hd-counts">
+        <span class="cnt-total">{{ total_cnt }}件</span>
+        {% if alloc_cnt > 0 %}
+          <span class="cnt-alloc">受注 {{ alloc_cnt }}</span>
+        {% endif %}
+        {% if unalloc_cnt > 0 %}
+          <span class="cnt-unalloc">未引当 {{ unalloc_cnt }}</span>
+        {% endif %}
+      </div>
+
+      <!-- 右：日付 -->
+      <div class="ems-hd-dates">
+        <span>{{ e.shipped_at.strftime('%m/%d') if e.shipped_at else '—' }}</span>
+        <span class="date-arrow">→</span>
+        <span class="{{ 'date-overdue' if box.is_overdue else '' }}">{{ e.estimated_arrival.strftime('%m/%d') if e.estimated_arrival else '—' }}</span>
         {% if e.arrived_at %}
-        <span title="入荷日" style="color:var(--accent-green);">
-          ✓ {{ e.arrived_at.strftime('%m/%d') }}
-        </span>
+          <span class="date-arrived">✓ {{ e.arrived_at.strftime('%m/%d') }}</span>
         {% endif %}
+        <span class="ems-toggle" id="toggle-{{ e.id }}">▼</span>
       </div>
-      <div class="ems-box-toggle" id="toggle-{{ e.id }}">▼</div>
+
     </div>
 
-    <!-- アイテム一覧（展開部分） -->
-    <div class="ems-box-items" id="box-{{ e.id }}">
+    <!-- 展開エリア -->
+    <div class="ems-body" id="box-{{ e.id }}">
       {% if box.rows %}
-      <table class="ems-items-table">
+      <table class="ems-tbl">
         <thead>
           <tr>
-            <th style="width:130px;">구매番号</th>
-            <th style="width:160px;">商品コード</th>
-            <th style="width:44px;text-align:center;">数量</th>
-            <th>引当状況</th>
+            <th class="col-pno">발주番号</th>
+            <th class="col-code">商品コード</th>
+            <th class="col-qty">数量</th>
+            <th class="col-alloc">引当状況</th>
           </tr>
         </thead>
         <tbody>
@@ -99,27 +106,23 @@
           {% set ei = row.ems_item %}
           {% set oi = row.order_item %}
           {% set o  = row.order %}
-          <tr>
-            {# ── 구매番号 ── #}
-            <td style="font-family:monospace;font-size:12px;font-weight:600;color:var(--accent-blue);">
-              {{ ei.purchase_no if ei and ei.purchase_no else '—' }}
-            </td>
-            <td class="cell-edit" data-url="/ems/update/item" data-field="product_code" data-id="{{ ei.id if ei else '' }}">
-              <span class="cell-val" style="font-family:monospace;font-size:12px;font-weight:600;">{{ ei.product_code if ei else '—' }}</span>
+          <tr class="{{ 'row-alloc' if o else ('row-partial' if oi else 'row-none') }}">
+            <td class="mono">{{ ei.purchase_no if ei and ei.purchase_no else '—' }}</td>
+            <td class="cell-edit mono" data-url="/ems/update/item" data-field="product_code" data-id="{{ ei.id if ei else '' }}">
+              <span class="cell-val">{{ ei.product_code if ei else '—' }}</span>
               <input class="cell-input" type="text" value="{{ ei.product_code if ei else '' }}">
             </td>
-            <td class="cell-edit" style="text-align:center;" data-url="/ems/update/item" data-field="quantity" data-id="{{ ei.id if ei else '' }}">
-              <span class="cell-val" style="font-weight:600;">{{ ei.quantity if ei else '—' }}</span>
+            <td class="cell-edit center" data-url="/ems/update/item" data-field="quantity" data-id="{{ ei.id if ei else '' }}">
+              <span class="cell-val">{{ ei.quantity if ei else '—' }}</span>
               <input class="cell-input" type="number" min="1" value="{{ ei.quantity if ei else 1 }}" style="width:50px;">
             </td>
-            {# ── 引当状況 ── #}
             <td>
               {% if o %}
-                <span class="alloc-tag alloc-order">✓ 受注 {{ o.yahoo_order_id }}</span>
+                <span class="at at-order">✓ {{ o.yahoo_order_id }}</span>
               {% elif oi %}
-                <span class="alloc-tag alloc-partial">△ 受注紐付</span>
+                <span class="at at-partial">△ 受注紐付</span>
               {% else %}
-                <span class="alloc-tag alloc-none">— 未引当</span>
+                <span class="at at-none">— 未引当</span>
               {% endif %}
             </td>
           </tr>
@@ -127,10 +130,10 @@
         </tbody>
       </table>
       {% else %}
-      <div style="padding:8px 16px;font-size:12px;color:var(--text-secondary);">商品未紐付け</div>
+      <p class="no-items">商品未紐付け</p>
       {% endif %}
 
-      <!-- EMS編集フォーム（折りたたみ内下部） -->
+      <!-- 日付編集 -->
       <div class="ems-edit-row">
         <label>発送日
           <input type="date" value="{{ e.shipped_at.strftime('%Y-%m-%d') if e.shipped_at else '' }}"
@@ -209,103 +212,149 @@
 
 {% block scripts %}
 <style>
-/* ── EMS箱スタイル ── */
+/* ── EMS ボックス ─────────────────────────────────── */
 .ems-box {
   border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-primary);
   overflow: hidden;
 }
-.ems-box-overdue  { border-color: #fca5a5; }
-.ems-box-arrived  { border-color: var(--border-light); }
+/* 左端の色 = 引当状況 */
+.bar-alloc   { border-left-color: #22c55e; }   /* 全引当済 → 緑 */
+.bar-partial { border-left-color: #f59e0b; }   /* 一部未引当 → 橙 */
+.bar-none    { border-left-color: #d1d5db; }   /* 未引当 → グレー */
 
-.ems-box-header {
-  display: flex; align-items: center; gap: 12px;
+.ems-overdue .ems-hd  { background: #fef2f2; }
+.ems-transit .ems-hd  { background: #eff6ff; }
+.ems-arrived .ems-hd  { background: #fff; }
+
+/* 未引当ありの入荷済みは少しオレンジ色 */
+.ems-arrived.bar-partial .ems-hd { background: #fffbf0; }
+
+/* ── ヘッダー ─────────────────────────────────────── */
+.ems-hd {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
   padding: 10px 14px;
   cursor: pointer;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-light);
   user-select: none;
+  border-bottom: 1px solid transparent;
 }
-.ems-box-header:hover { background: var(--bg-primary); }
-.ems-box-arrived .ems-box-header { background: var(--bg-secondary); }
-.ems-box-overdue .ems-box-header { background: #fef2f2; }
+.ems-hd:hover { filter: brightness(0.97); }
+.ems-body.open ~ * .ems-hd,
+.ems-box:has(.ems-body.open) .ems-hd {
+  border-bottom-color: var(--border-light);
+}
 
-.ems-num { font-family: monospace; font-size: 13px; font-weight: 700; color: var(--text-primary); line-height: 1.4; }
-.ems-box-left  { display: flex; align-items: center; gap: 8px; flex: 1; flex-wrap: wrap; min-width: 0; }
-.ems-box-dates { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); white-space: nowrap; }
-.ems-box-toggle { font-size: 16px; font-weight: 700; color: var(--text-primary); transition: transform 0.2s; padding: 0 4px; }
-.ems-box-toggle.open { transform: rotate(180deg); }
-
-/* 購入番号バッジ */
+/* 左列 */
+.ems-hd-id {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: nowrap; overflow: hidden; min-width: 0;
+}
+.ems-num {
+  font-family: monospace; font-size: 14px; font-weight: 700;
+  color: var(--text-primary); white-space: nowrap;
+}
 .ems-pno {
-  font-size: 11px; font-family: monospace; font-weight: 600;
+  font-size: 12px; font-family: monospace; font-weight: 600;
   color: var(--accent-blue); background: rgba(59,130,246,.1);
-  padding: 2px 7px; border-radius: 4px; line-height: 1.6;
+  padding: 2px 8px; border-radius: 4px;
 }
 
-/* 件数サマリー */
-.ems-count-wrap { display: inline-flex; align-items: center; gap: 4px; }
-.ems-count-total { font-size: 12px; font-weight: 600; color: var(--text-primary); }
-.ems-count-alloc {
-  font-size: 10px; padding: 1px 5px; border-radius: 3px;
-  background: rgba(34,197,94,.15); color: #16a34a; font-weight: 600;
+/* 中央列 – 件数 */
+.ems-hd-counts {
+  display: flex; align-items: center; gap: 8px; white-space: nowrap;
 }
-.ems-count-unalloc {
-  font-size: 10px; padding: 1px 5px; border-radius: 3px;
-  background: rgba(156,163,175,.15); color: var(--text-secondary); font-weight: 600;
+.cnt-total   { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.cnt-alloc   {
+  font-size: 13px; font-weight: 600; color: #15803d;
+  background: rgba(34,197,94,.12); padding: 2px 10px; border-radius: 5px;
+}
+.cnt-unalloc {
+  font-size: 13px; font-weight: 700; color: #b45309;
+  background: rgba(245,158,11,.13); padding: 2px 10px; border-radius: 5px;
 }
 
-/* 引当状況タグ */
-.alloc-tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600; white-space: nowrap; }
-.alloc-order  { background: rgba(34,197,94,.12);  color: #15803d; }
-.alloc-partial{ background: rgba(234,179,8,.12);  color: #b45309; }
-.alloc-none   { background: rgba(156,163,175,.1); color: var(--text-secondary); }
-
-.ems-box-items { display: none; }
-.ems-box-items.open { display: block; }
-
-.ems-items-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.ems-items-table th {
-  padding: 6px 14px; text-align: left; font-size: 12px;
-  font-weight: 500; color: var(--text-secondary);
-  background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+/* 右列 – 日付 + トグル */
+.ems-hd-dates {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-secondary); white-space: nowrap;
 }
-.ems-items-table td {
-  padding: 7px 14px;
-  border-bottom: 1px solid var(--border-light);
+.date-arrow  { color: var(--border); }
+.date-overdue{ color: #dc2626; font-weight: 700; }
+.date-arrived{ color: #16a34a; font-weight: 600; }
+.ems-toggle  {
+  font-size: 14px; font-weight: 700; color: var(--text-secondary);
+  margin-left: 6px; transition: transform 0.2s;
 }
-.ems-items-table tr:last-child td { border-bottom: none; }
-.ems-items-table tr:hover td { background: var(--bg-secondary); }
+.ems-toggle.open { transform: rotate(180deg); }
 
+/* ── 展開エリア ───────────────────────────────────── */
+.ems-body { display: none; }
+.ems-body.open { display: block; }
+
+/* テーブル */
+.ems-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ems-tbl th {
+  padding: 6px 14px; text-align: left; font-size: 12px; font-weight: 600;
+  color: var(--text-secondary); background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.col-pno   { width: 130px; }
+.col-code  { width: 160px; }
+.col-qty   { width: 52px; }
+.ems-tbl td { padding: 7px 14px; border-bottom: 1px solid var(--border-light); vertical-align: middle; }
+.ems-tbl tr:last-child td { border-bottom: none; }
+.ems-tbl tr:hover td { background: rgba(0,0,0,.02); }
+
+/* 行の左端色 */
+.row-alloc   td:first-child { border-left: 3px solid #22c55e; }
+.row-partial td:first-child { border-left: 3px solid #fbbf24; }
+.row-none    td:first-child { border-left: 3px solid #d1d5db; }
+
+.mono { font-family: monospace; font-weight: 600; }
+.center { text-align: center; }
+
+/* 引当タグ */
+.at { display:inline-block; font-size:12px; padding:2px 10px; border-radius:4px; font-weight:600; white-space:nowrap; }
+.at-order   { background:rgba(34,197,94,.12);  color:#15803d; }
+.at-partial { background:rgba(251,191,36,.15); color:#92400e; }
+.at-none    { background:rgba(156,163,175,.1); color:var(--text-secondary); }
+
+.no-items { padding:8px 14px; font-size:12px; color:var(--text-secondary); margin:0; }
+
+/* 日付編集行 */
 .ems-edit-row {
-  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
-  padding: 8px 14px;
-  background: var(--bg-secondary);
-  border-top: 1px solid var(--border-light);
-  font-size: 12px;
+  display:flex; gap:16px; align-items:center; flex-wrap:wrap;
+  padding:8px 14px; background:var(--bg-secondary);
+  border-top:1px solid var(--border-light); font-size:12px;
 }
-.ems-edit-row label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
-.ems-edit-row input[type=date], .ems-edit-row select {
-  font-size: 12px; padding: 3px 6px;
+.ems-edit-row label {
+  display:flex; flex-direction:column; gap:2px;
+  font-size:11px; color:var(--text-secondary);
 }
+.ems-edit-row input[type=date],
+.ems-edit-row select { font-size:12px; padding:3px 6px; }
 </style>
 
 <script>
-// ── 展開/折りたたみ ──────────────────────────────────────────
+// 展開 / 折りたたみ
 function toggleBox(id) {
-  const items  = document.getElementById('box-' + id);
+  const body   = document.getElementById('box-' + id);
   const toggle = document.getElementById('toggle-' + id);
-  const open   = items.classList.toggle('open');
+  const open   = body.classList.toggle('open');
   toggle.classList.toggle('open', open);
 }
 
-// デフォルト: 輸送中のみ展開（入荷済は折りたたみ）
+// デフォルト: 輸送中のみ展開
 document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('.ems-box:not(.ems-box-arrived)').forEach(box => {
-    const m = box.querySelector('.ems-box-header');
-    if (m) {
-      const id = m.getAttribute('onclick').match(/\d+/)[0];
+  document.querySelectorAll('.ems-transit').forEach(box => {
+    const hd = box.querySelector('.ems-hd');
+    if (hd) {
+      const id = hd.getAttribute('onclick').match(/\d+/)[0];
       toggleBox(id);
     }
   });
@@ -316,24 +365,17 @@ let _allOpen = false;
 function toggleAll() {
   _allOpen = !_allOpen;
   document.getElementById('btn-toggle-all').textContent = _allOpen ? '全折りたたみ' : '全展開';
-  document.querySelectorAll('.ems-box').forEach(box => {
-    const m = box.querySelector('.ems-box-header');
-    if (!m) return;
-    const id = m.getAttribute('onclick').match(/\d+/)[0];
-    const items  = document.getElementById('box-' + id);
+  document.querySelectorAll('.ems-hd').forEach(hd => {
+    const id = hd.getAttribute('onclick').match(/\d+/)[0];
+    const body   = document.getElementById('box-' + id);
     const toggle = document.getElementById('toggle-' + id);
-    if (!items || !toggle) return;
-    if (_allOpen) {
-      items.classList.add('open');
-      toggle.classList.add('open');
-    } else {
-      items.classList.remove('open');
-      toggle.classList.remove('open');
-    }
+    if (!body || !toggle) return;
+    body.classList.toggle('open', _allOpen);
+    toggle.classList.toggle('open', _allOpen);
   });
 }
 
-// ── EMS フィールド保存 ─────────────────────────────────────
+// EMS フィールド保存
 function saveEmsField(id, field, value) {
   fetch('/ems/update/ems/' + id, {
     method: 'POST',
@@ -345,31 +387,18 @@ function saveEmsField(id, field, value) {
   });
 }
 
-// ── 今すぐ取込（ローカル同期エージェント経由） ──────────────
+// 今すぐ取込（Google Drive → VPS rclone）
 async function syncNow(type) {
   const btn = document.getElementById('btn-sync-now-' + type);
   if (btn) { btn.disabled = true; btn.textContent = '⟳ 取込中…'; }
   try {
-    // ① ローカル同期エージェント（port 5050）を試みる
-    let ok = false;
-    try {
-      const r = await fetch('http://127.0.0.1:5050/sync', {
-        method: 'POST',
-        signal: AbortSignal.timeout(90000),
-      });
-      const d = await r.json();
-      showToast(d.ok ? '✓ ' + d.message : '⚠ ' + d.message, !d.ok);
-      if (d.ok && (d.purchase > 0 || d.ems > 0)) setTimeout(() => location.reload(), 1200);
-      ok = true;
-    } catch (_) {}
-
-    // ② フォールバック: VPS側フォルダスキャン（ローカル実行時）
-    if (!ok) {
-      const r = await fetch('/import/from_folder?type=' + type, { method: 'POST' });
-      const d = await r.json();
-      showToast(d.message || '完了');
-      if ((d.imported || 0) > 0) setTimeout(() => location.reload(), 1200);
-    }
+    const endpoint = type === 'ems' ? '/import/gdrive_ems' : '/import/gdrive_purchase';
+    showToast('Google Driveから取込中…');
+    const r = await fetch(endpoint, { method: 'POST', signal: AbortSignal.timeout(120000) });
+    const d = await r.json();
+    const msg = d.message || (d.imported != null ? d.imported + '件取込みました' : '完了');
+    showToast(d.status === 'error' ? '⚠ ' + msg : '✓ ' + msg, d.status === 'error');
+    if (d.status !== 'error') setTimeout(() => location.reload(), 1500);
   } catch(e) {
     showToast('エラー: ' + e.message, true);
   } finally {
@@ -377,6 +406,7 @@ async function syncNow(type) {
   }
 }
 
+// ファイルアップロード
 let emsSelectedFile = null;
 function showEmsUploadModal() {
   emsSelectedFile = null;
@@ -388,7 +418,7 @@ function showEmsUploadModal() {
 function closeEmsUploadModal() { document.getElementById('ems-upload-modal').classList.remove('active'); }
 function emsDropOver(e)  { e.preventDefault(); }
 function emsDropLeave(e) {}
-function emsDrop(e) { e.preventDefault(); const f=e.dataTransfer.files[0]; if(f) emsFileSelected(f); }
+function emsDrop(e) { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) emsFileSelected(f); }
 function emsFileSelected(file) {
   emsSelectedFile = file;
   document.getElementById('ems-drop-label').textContent = '✓ ' + file.name;
@@ -399,17 +429,17 @@ function emsExecuteUpload() {
   fd.append('file', emsSelectedFile);
   document.getElementById('ems-upload-status').textContent = '取込中...';
   document.getElementById('ems-btn-upload').disabled = true;
-  fetch('/import/upload/daniel_ems',{method:'POST',body:fd})
-    .then(r=>r.json()).then(data=>{
+  fetch('/import/upload/daniel_ems', { method: 'POST', body: fd })
+    .then(r => r.json()).then(data => {
       document.getElementById('ems-btn-upload').disabled = false;
-      if (data.status==='error') {
-        document.getElementById('ems-upload-status').textContent = 'エラー: '+data.message;
+      if (data.status === 'error') {
+        document.getElementById('ems-upload-status').textContent = 'エラー: ' + data.message;
       } else {
-        showToast(data.message||data.imported+'件取込みました');
+        showToast(data.message || data.imported + '件取込みました');
         closeEmsUploadModal();
-        setTimeout(()=>location.reload(),1000);
+        setTimeout(() => location.reload(), 1000);
       }
-    }).catch(()=>{ document.getElementById('ems-btn-upload').disabled=false; });
+    }).catch(() => { document.getElementById('ems-btn-upload').disabled = false; });
 }
 </script>
 {% endblock %}

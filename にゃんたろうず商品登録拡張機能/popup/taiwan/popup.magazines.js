@@ -125,7 +125,7 @@ function buildMagazineSheetRow(product) {
     '号数': issueInfo.issue,
     '版種': '',
     'バリエーションコード': '',
-    '表紙情報': rawTitle,
+    '原題商品タイトル': rawTitle,
     '特典メモ': '',
     '売価': trimValue(product?.売価 || ''),
     '原価': trimValue(product?.価格 || ''),

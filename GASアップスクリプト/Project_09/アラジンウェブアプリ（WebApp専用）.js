@@ -35,6 +35,18 @@ const ALADIN_GENRE_SHEET_MAP = {
   'グッズ': ['韓国グッズ']
 };
 
+const ALADIN_APPEND_VALUE_HEADERS = [
+  'アラジン商品コード', 'サイト商品コード', 'ItemId',
+  'アラジンURL', '購入URL', 'リンク',
+  'ISBN', 'JANコード',
+  '商品名(日本語)', '商品名（日本語）', '日本語タイトル',
+  '商品名(原題)', '商品名（原題）', '作品名（原題）', '原題タイトル', '原題商品タイトル',
+  '雑誌名', '著者', '作者', '出版社', 'アーティスト名', 'アーティスト', '事務所/レーベル',
+  '発売日', '原価', 'メイン画像URL', 'メイン画像', '追加画像URL', '追加画像',
+  '商品説明', '備考', 'カテゴリ', 'ジャンル分類', '特典メモ', '付録情報',
+  '表紙情報', '年', '月', '号数'
+];
+
 function doPost(e) {
   try {
     const raw = e && e.postData && e.postData.contents ? e.postData.contents : '{}';
@@ -105,7 +117,7 @@ function アラジンデータを更新_(data) {
 
   const createSheet = createTarget.sheet;
   const context = シートコンテキストを取得_(createSheet);
-  const row = 追加対象行を決める_(createSheet);
+  const row = 追加対象行を決める_(createSheet, context);
 
   if (row > createSheet.getMaxRows()) {
     createSheet.insertRowsAfter(createSheet.getMaxRows(), row - createSheet.getMaxRows());
@@ -275,7 +287,39 @@ function 韓国マンガカテゴリを補正_(source) {
   if (/art\s*book|artbook|아트북|illustration|illust|画集|화보|원화|작화집|포토북|컨셉북/.test(combined)) return 'アートブック';
   if (/goods|gift|굿즈/.test(combined)) return 'グッズ';
   if (/comic|comics|만화|코믹|webtoon/.test(combined)) return 'まんが';
-  return categoryName || '';
+  return 'まんが';
+}
+
+function 韓国書籍カテゴリを補正_(source) {
+  const categoryName = String(source && source.categoryName || '').trim();
+  const title = String(source && source.title || '').trim();
+  const basicInfo = String(source && source.basicInfo || '').trim();
+  const description = String(source && source.description || '').trim();
+  const combined = [categoryName, title, basicInfo, description].join(' ').toLowerCase();
+
+  if (!combined) return '';
+  if (/sticker|스티커/.test(combined)) return 'ステッカー';
+  if (/seal|씰/.test(combined)) return 'シール';
+  if (/dvd/.test(combined)) return 'DVD';
+  if (/blu[-\s]?ray|블루레이/.test(combined)) return 'Blu-ray';
+  if (/\blp\b|vinyl/.test(combined)) return 'LP';
+  if (/\bcd\b|음반/.test(combined)) return 'CD';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트ラック/.test(combined)) return 'OST';
+  if (/scenario|시나리오/.test(combined)) return 'シナリオ集';
+  if (/script|screenplay|대본/.test(combined)) return '台本';
+  if (/picture\s*book|그림책|絵本/.test(combined)) return '絵本';
+  if (/papercraft|paper\s*art|cut\s*out|切り絵|종이공예|종이접기/.test(combined)) return '切り絵';
+  if (/handcraft|craft|자수|뜨개|수예|手芸/.test(combined)) return '手芸';
+  if (/참고서|수험서|문제집|기출|모의고사|수능|내신|검정고시|자격증|공무원|고시|임용|편입|leet|meet|deet|psat|ncs|toeic|toefl|ielts|teps|jlpt|hsk|topik|参考書|問題集|過去問|受験|資格/.test(combined)) return '参考書';
+  if (/교재|학습지|학습서|워크북|work\s*book|workbook|text\s*book|textbook|student\s*book|activity\s*book|teacher'?s\s*book|course\s*book|教材|教科書/.test(combined)) return '教材';
+  if (/essay|에세이|산문/.test(combined)) return 'エッセイ';
+  if (/setting|guide\s*book|guidebook|fan\s*book|fanbook|character\s*book|official\s*guide|設定集|설정집|가이드북|팬북|캐릭터북|자료집/.test(combined)) return '設定集';
+  if (/art\s*book|artbook|아트북|illustration|illust|画集|화보|원화|작화집|포토북|컨셉북|예체능|미술|디자인|사진/.test(combined)) return 'アートブック';
+  if (/magazine|잡지|매거진/.test(combined)) return '雑誌';
+  if (/goods|gift|굿즈/.test(combined)) return 'グッズ';
+  if (/comic|comics|만화|코믹|webtoon/.test(combined)) return 'まんが';
+  if (/novel|소설|라이트노벨|light\s*novel|문학|시집/.test(combined)) return '小説';
+  return '';
 }
 
 function 韓国音楽映像カテゴリを補正_(source) {
@@ -302,6 +346,9 @@ function 韓国音楽映像カテゴリを補正_(source) {
 }
 
 function カテゴリ入力値を補正_(sheetName, source) {
+  if (sheetName === '韓国書籍') {
+    return 韓国書籍カテゴリを補正_(source);
+  }
   if (sheetName === '韓国マンガ') {
     return 韓国マンガカテゴリを補正_(source);
   }
@@ -388,66 +435,66 @@ function シートコンテキストを取得_(sh) {
 
   const fallbackMap = {
     '韓国書籍': {
-      url: 'アラジンURL',
+      url: ['リンク', 'アラジンURL', '購入URL'],
       isbn: 'ISBN',
-      title: ['作品名（原題）', '商品名（原題）', '商品名(原題)'],
-      author: '著者',
+      title: ['原題商品タイトル', '原題タイトル', '作品名（原題）', '商品名（原題）', '商品名(原題)'],
+      author: ['作者', '著者'],
       publisher: '出版社',
       pubDate: '発売日',
       price: '原価',
-      cover: 'メイン画像URL',
-      additionalImages: '追加画像URL',
+      cover: ['メイン画像', 'メイン画像URL'],
+      additionalImages: ['追加画像', '追加画像URL'],
       description: ['商品説明', '備考'],
       categoryName: ['カテゴリ', 'ジャンル分類'],
-      itemId: ['アラジン商品コード']
+      itemId: ['サイト商品コード', 'アラジン商品コード']
     },
     '韓国マンガ': {
-      url: 'アラジンURL',
+      url: ['リンク', 'アラジンURL', '購入URL'],
       isbn: 'ISBN',
-      title: ['作品名（原題）', '商品名（原題）', '商品名(原題)'],
-      author: '著者',
+      title: ['原題商品タイトル', '原題タイトル', '作品名（原題）', '商品名（原題）', '商品名(原題)'],
+      author: ['作者', '著者'],
       publisher: '出版社',
       pubDate: '発売日',
       price: '原価',
-      cover: 'メイン画像URL',
-      additionalImages: '追加画像URL',
+      cover: ['メイン画像', 'メイン画像URL'],
+      additionalImages: ['追加画像', '追加画像URL'],
       description: ['商品説明', '備考'],
       categoryName: ['カテゴリ', 'ジャンル分類'],
-      itemId: ['アラジン商品コード']
+      itemId: ['サイト商品コード', 'アラジン商品コード']
     },
     '韓国音楽映像': {
-      url: 'アラジンURL',
+      url: ['リンク', 'アラジンURL', '購入URL'],
       isbn: 'JANコード',
-      title: ['作品名（原題）', '商品名（原題）', '商品名(原題)'],
+      title: ['原題商品タイトル', '原題タイトル', '作品名（原題）', '商品名（原題）', '商品名(原題)'],
       author: ['アーティスト名', 'アーティスト'],
       pubDate: '発売日',
       price: '原価',
-      cover: 'メイン画像URL',
-      additionalImages: '追加画像URL',
+      cover: ['メイン画像', 'メイン画像URL'],
+      additionalImages: ['追加画像', '追加画像URL'],
       description: ['商品説明', '備考'],
       categoryName: ['カテゴリ', 'ジャンル分類'],
-      itemId: ['アラジン商品コード']
+      itemId: ['サイト商品コード', 'アラジン商品コード']
     },
     '韓国グッズ': {
-      url: ['購入URL', 'アラジンURL'],
-      title: ['作品名（原題）', '商品名（原題）', '商品名(原題)'],
+      url: ['リンク', '購入URL', 'アラジンURL'],
+      title: ['原題商品タイトル', '原題タイトル', '作品名（原題）', '商品名（原題）', '商品名(原題)'],
       pubDate: '発売日',
       price: '原価',
-      cover: 'メイン画像URL',
-      additionalImages: '追加画像URL',
+      cover: ['メイン画像', 'メイン画像URL'],
+      additionalImages: ['追加画像', '追加画像URL'],
       description: ['商品説明', '備考'],
-      itemId: ['アラジン商品コード']
+      itemId: ['サイト商品コード', 'アラジン商品コード']
     },
     '韓国雑誌': {
-      url: ['アラジンURL', '購入URL'],
-      title: ['原題商品名', '原題タイトル', '商品名（原題）', '商品名(原題)'],
+      url: ['リンク', 'アラジンURL', '購入URL'],
+      title: ['原題商品タイトル', '原題商品名', '原題タイトル', '商品名（原題）', '商品名(原題)'],
       magazineName: '雑誌名',
       pubDate: '発売日',
       price: '原価',
-      cover: 'メイン画像URL',
-      additionalImages: '追加画像URL',
+      cover: ['メイン画像', 'メイン画像URL'],
+      additionalImages: ['追加画像', '追加画像URL'],
       description: ['商品説明', '備考'],
-      itemId: ['アラジン商品コード']
+      itemId: ['サイト商品コード', 'アラジン商品コード']
     }
   };
 
@@ -459,7 +506,7 @@ function シートコンテキストを取得_(sh) {
     headers,
     列,
     colMap: columnMapSource,
-    idCol: 最初に見つかった列番号を返す_(列, ['アラジン商品コード'])
+    idCol: 最初に見つかった列番号を返す_(列, ['サイト商品コード', 'アラジン商品コード', 'ItemId'])
   };
 }
 
@@ -476,14 +523,27 @@ function 最初に見つかったヘッダー名を返す_(列, headerNames) {
   return names.find(name => name && 列[name]) || null;
 }
 
-function 追加対象行を決める_(sh) {
+function 追加対象行を決める_(sh, context) {
   const lastColumn = Math.max(sh.getLastColumn(), 1);
   const lastRow = Math.max(sh.getLastRow(), 1);
   if (lastRow < 2) return 2;
 
+  const headers = context && Array.isArray(context.headers)
+    ? context.headers.map(header => String(header || '').trim())
+    : sh.getRange(1, 1, 1, lastColumn).getValues()[0].map(header => String(header || '').trim());
+  const appendTargetIndexes = headers
+    .map((header, index) => ALADIN_APPEND_VALUE_HEADERS.includes(header) ? index : -1)
+    .filter(index => index >= 0);
+  const indexes = appendTargetIndexes.length
+    ? appendTargetIndexes
+    : Array.from({ length: lastColumn }, (_, index) => index);
+
   const values = sh.getRange(2, 1, lastRow - 1, lastColumn).getDisplayValues();
   for (let i = values.length - 1; i >= 0; i--) {
-    const hasVisibleValue = values[i].some(value => String(value).trim() !== '');
+    const hasVisibleValue = indexes.some(index => {
+      const value = String(values[i][index] || '').trim();
+      return value !== '' && value !== 'FALSE';
+    });
     if (hasVisibleValue) {
       return i + 3;
     }
@@ -590,8 +650,6 @@ function 行表示を整える_(sh, row) {
   range.setVerticalAlignment('middle');
   sh.setRowHeight(row, 21);
 }
-
-
 
 
 

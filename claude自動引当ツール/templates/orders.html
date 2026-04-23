@@ -12,6 +12,20 @@
   </div>
 </div>
 
+<!-- Yahoo注文ステータスタブ -->
+<div class="os-tabs">
+  <a class="os-tab {{ 'active' if not os_filter }}" href="{{ url_for('orders.index') }}{% if q %}?q={{ q }}{% endif %}">
+    全て<span class="os-cnt">{{ total_count }}</span>
+  </a>
+  {% for code, label in order_status_labels.items() %}
+  {% set cnt = os_counts.get(code, 0) %}
+  <a class="os-tab {{ 'active' if os_filter == code }}"
+     href="{{ url_for('orders.index') }}?os={{ code }}{% if q %}&q={{ q }}{% endif %}">
+    {{ label }}<span class="os-cnt">{{ cnt }}</span>
+  </a>
+  {% endfor %}
+</div>
+
 <div class="toolbar">
   <input type="checkbox" id="chk-all-o" onchange="toggleAll('o', this.checked)">
   <label for="chk-all-o">全選択</label>
@@ -19,9 +33,10 @@
   <span class="sel-count" id="sel-count-o">0件選択中</span>
   <div style="margin-left:auto;">
     <form method="get" style="display:flex;gap:6px;align-items:center;">
-      <input type="text" name="q" value="{{ q }}" placeholder="注文番号・お客様名・商品コード" style="width:240px;">
+      {% if os_filter %}<input type="hidden" name="os" value="{{ os_filter }}">{% endif %}
+      <input type="text" name="q" value="{{ q }}" placeholder="注文番号・お客様名・商品コード" style="width:220px;">
       <select name="status">
-        <option value="">全ステータス</option>
+        <option value="">全引当ステータス</option>
         <option value="pending"               {{ 'selected' if status_filter=='pending'               }}>引当待ち</option>
         <option value="provisional_allocated" {{ 'selected' if status_filter=='provisional_allocated' }}>仮引当済</option>
         <option value="allocated_sokunou"     {{ 'selected' if status_filter=='allocated_sokunou'     }}>即納引当済</option>
@@ -31,9 +46,20 @@
         <option value="shipped"               {{ 'selected' if status_filter=='shipped'               }}>発送完了</option>
       </select>
       <button type="submit">検索</button>
-      {% if q or status_filter %}<a href="{{ url_for('orders.index') }}" class="btn">クリア</a>{% endif %}
+      {% if q or status_filter or os_filter %}<a href="{{ url_for('orders.index') }}" class="btn">クリア</a>{% endif %}
     </form>
   </div>
+</div>
+
+<!-- ページ情報 -->
+<div style="padding:6px 20px;font-size:11px;color:var(--text-secondary);background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
+  <span>{{ filtered_total }}件中 {{ (page-1)*per_page+1 }}–{{ [page*per_page, filtered_total]|min }}件表示</span>
+  {% if total_pages > 1 %}
+  <span>｜</span>
+  {% if page > 1 %}<a href="?{{ request.query_string.decode().replace('page='+page|string,'page='+(page-1)|string) if 'page=' in request.query_string.decode() else request.query_string.decode()+'&page='+(page-1)|string }}" class="btn btn-sm">‹ 前へ</a>{% endif %}
+  <span style="font-weight:600;">{{ page }} / {{ total_pages }}ページ</span>
+  {% if page < total_pages %}<a href="?{{ request.query_string.decode().replace('page='+page|string,'page='+(page+1)|string) if 'page=' in request.query_string.decode() else (request.query_string.decode()+'&page='+(page+1)|string) }}" class="btn btn-sm">次へ ›</a>{% endif %}
+  {% endif %}
 </div>
 
 <div class="table-wrap">
@@ -44,13 +70,14 @@
         <th>注文番号</th>
         <th>注文日</th>
         <th>お客様名</th>
-        <th style="width:50px;text-align:center;">No.</th>
+        <th style="width:36px;text-align:center;">#</th>
         <th>商品コード</th>
-        <th style="width:60px;text-align:center;">数量</th>
-        <th>配送ステータス</th>
-        <th>注文ステータス</th>
-        <th>入荷EMS番号</th>
-        <th>経過日数</th>
+        <th>商品名</th>
+        <th style="width:50px;text-align:center;">数量</th>
+        <th style="width:80px;">注文ステータス</th>
+        <th>引当ステータス</th>
+        <th>入荷EMS</th>
+        <th style="width:55px;">経過</th>
       </tr>
     </thead>
     <tbody>
@@ -67,10 +94,10 @@
           <td><input type="checkbox" class="row-chk-o" data-id="{{ item.id }}" onchange="updateCount('o')"></td>
 
           <td {% if o.days_elapsed >= 10 %}style="color:var(--accent-red);font-weight:600;"{% endif %}>
-            {% if loop.first %}{{ o.yahoo_order_id }}{% endif %}
+            {% if loop.first %}<a href="https://odorder.yahoo.co.jp/od/order/detail?oid={{ o.yahoo_order_id }}" target="_blank" style="color:inherit;text-decoration:none;">{{ o.yahoo_order_id }}</a>{% endif %}
           </td>
 
-          <td>{% if loop.first %}{{ o.ordered_at.strftime('%Y/%m/%d') }}{% endif %}</td>
+          <td style="white-space:nowrap;">{% if loop.first %}{{ o.ordered_at.strftime('%m/%d') }}{% endif %}</td>
 
           {% if loop.first %}
           <td class="cell-edit" data-url="/orders/update/order" data-field="customer_name" data-id="{{ o.id }}">
@@ -81,22 +108,28 @@
           <td></td>
           {% endif %}
 
-          <td style="text-align:center;color:var(--text-secondary);">{{ loop.index }}</td>
+          <td style="text-align:center;color:var(--text-secondary);font-size:11px;">{{ loop.index }}</td>
 
           <td class="cell-edit" data-url="/orders/update/item" data-field="product_code" data-id="{{ item.id }}">
-            <span class="cell-val">{{ item.product_code }}</span>
+            <span class="cell-val" style="font-weight:600;">{{ item.product_code }}</span>
             <input class="cell-input" type="text" value="{{ item.product_code }}">
           </td>
 
-          <td class="cell-edit" style="text-align:center;" data-url="/orders/update/item" data-field="quantity" data-id="{{ item.id }}">
-            <span class="cell-val">{{ item.quantity }}</span>
-            <input class="cell-input" type="number" min="1" value="{{ item.quantity }}" style="width:50px;">
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary);font-size:11px;" title="{{ item.product_name or '' }}">
+            {{ item.product_name or '—' }}
           </td>
 
+          <td style="text-align:center;font-weight:700;">{{ item.quantity }}</td>
+
           {% if loop.first %}
-          <td class="cell-edit" data-url="/orders/update/order" data-field="yahoo_ship_status" data-id="{{ o.id }}">
-            <span class="cell-val">{{ o.yahoo_ship_status or '—' }}</span>
-            <input class="cell-input" type="text" value="{{ o.yahoo_ship_status or '' }}">
+          <td style="text-align:center;">
+            {% set os = o.yahoo_order_status or '' %}
+            {% if os == '1' %}<span class="badge badge-blue">予約</span>
+            {% elif os == '2' %}<span class="badge badge-orange">新規注文</span>
+            {% elif os == '3' %}<span class="badge badge-gray">保留</span>
+            {% elif os == '4' %}<span class="badge badge-green">出荷待ち</span>
+            {% elif os == '5' %}<span class="badge badge-gray">完了</span>
+            {% else %}<span class="badge badge-gray">—</span>{% endif %}
           </td>
           {% else %}
           <td></td>
@@ -115,21 +148,50 @@
             </select>
           </td>
 
-          <td>{% if loop.first %}{{ ems_nums or '—' }}{% endif %}</td>
+          <td style="font-size:11px;">{% if loop.first %}{{ ems_nums or '—' }}{% endif %}</td>
 
-          <td>{% if loop.first %}{{ o.days_elapsed }}日{% endif %}</td>
+          <td style="text-align:center;white-space:nowrap;">
+            {% if loop.first %}
+              <span style="font-size:11px;{% if o.days_elapsed >= 10 %}color:var(--accent-red);font-weight:700;{% elif o.days_elapsed >= 7 %}color:var(--accent-orange);{% endif %}">
+                {{ o.days_elapsed }}日
+              </span>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
         {% if not loop.last %}
-        <tr class="order-divider"><td colspan="11"></td></tr>
+        <tr class="order-divider"><td colspan="12"></td></tr>
         {% endif %}
       {% endfor %}
       {% if not grouped %}
-      <tr><td colspan="11" class="empty-state">受注データがありません</td></tr>
+      <tr><td colspan="12" class="empty-state">受注データがありません</td></tr>
       {% endif %}
     </tbody>
   </table>
 </div>
+
+<!-- 下部ページネーション -->
+{% if total_pages > 1 %}
+<div style="padding:8px 20px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;background:var(--bg-secondary);flex-shrink:0;">
+  {% set qs = request.query_string.decode() %}
+  {% if page > 1 %}
+  <a href="?{{ qs.replace('page='+page|string,'page='+(page-1)|string) if 'page=' in qs else qs+'&page='+(page-1)|string }}" class="btn btn-sm">‹ 前へ</a>
+  {% endif %}
+  {% for p in range(1, total_pages+1) %}
+    {% if p == page %}
+    <span class="btn btn-sm" style="background:var(--text-primary);color:#fff;border-color:var(--text-primary);">{{ p }}</span>
+    {% elif p == 1 or p == total_pages or (p >= page-2 and p <= page+2) %}
+    <a href="?{{ qs.replace('page='+page|string,'page='+p|string) if 'page=' in qs else qs+'&page='+p|string }}" class="btn btn-sm">{{ p }}</a>
+    {% elif p == 2 or p == total_pages-1 %}
+    <span style="color:var(--text-secondary);padding:0 2px;">…</span>
+    {% endif %}
+  {% endfor %}
+  {% if page < total_pages %}
+  <a href="?{{ qs.replace('page='+page|string,'page='+(page+1)|string) if 'page=' in qs else qs+'&page='+(page+1)|string }}" class="btn btn-sm">次へ ›</a>
+  {% endif %}
+  <span style="font-size:11px;color:var(--text-secondary);margin-left:4px;">{{ page }}/{{ total_pages }}ページ（全{{ filtered_total }}件）</span>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
