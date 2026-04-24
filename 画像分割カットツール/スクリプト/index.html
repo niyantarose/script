@@ -166,6 +166,14 @@
       box-shadow: 0 0 10px rgba(239, 68, 68, .8);
     }
     .cut-line.selected::before { background: #38bdf8; box-shadow: 0 0 12px rgba(56, 189, 248, .9); }
+    .select-rect {
+      position: absolute;
+      border: 2px dashed #22d3ee;
+      background: rgba(34, 211, 238, .18);
+      pointer-events: none;
+      display: none;
+      z-index: 40;
+    }
     #globalDropOverlay {
       position: fixed;
       inset: 0;
@@ -222,7 +230,7 @@
       <button id="tabTranslateMode" class="tab-btn" type="button">🌐 翻訳モード</button>
     </div>
 
-    <div class="layout">
+    <div id="layoutRoot" class="layout">
       <div id="cutPanel" class="panel">
         <div class="title">1. 画像をアップロード</div>
         <div id="dropZone" class="drop-zone" tabindex="0" role="button">
@@ -270,6 +278,7 @@
                 <img id="previewImage" alt="preview">
                 <canvas id="overlayCanvas"></canvas>
                 <div id="cutLinesLayer"></div>
+                <div id="selectRect" class="select-rect"></div>
               </div>
             </div>
           </div>
@@ -309,6 +318,7 @@
     const previewImage = document.getElementById('previewImage');
     const overlayCanvas = document.getElementById('overlayCanvas');
     const cutLinesLayer = document.getElementById('cutLinesLayer');
+    const selectRect = document.getElementById('selectRect');
     const octx = overlayCanvas.getContext('2d');
     const manualList = document.getElementById('manualList');
     const zoomSlider = document.getElementById('zoomSlider');
@@ -329,6 +339,7 @@
     const cutPanel = document.getElementById('cutPanel');
     const previewWorkspace = document.getElementById('previewWorkspace');
     const translatePanel = document.getElementById('translatePanel');
+    const layoutRoot = document.getElementById('layoutRoot');
 
     let originalImage = null;
     let objectUrl = null;
@@ -343,6 +354,9 @@
     let dragScrollDir = 0;
     let cutPolicy = 'auto';
     let windowDragCounter = 0;
+    let currentMode = 'cut';
+    let selectingRange = false;
+    let selectStart = null;
     const STORAGE_GEMINI_KEY = 'imageCutterGeminiApiKey';
 
     function isImageFile(file) {
@@ -350,10 +364,12 @@
     }
 
     function switchMode(mode) {
+      currentMode = mode;
       const isCut = mode === 'cut';
       cutPanel.style.display = isCut ? 'block' : 'none';
-      previewWorkspace.style.display = isCut ? 'block' : 'none';
+      previewWorkspace.style.display = 'block';
       translatePanel.style.display = isCut ? 'none' : 'block';
+      layoutRoot.style.gridTemplateColumns = isCut ? '360px 1fr' : '1fr';
       tabCutMode.classList.toggle('active', isCut);
       tabTranslateMode.classList.toggle('active', !isCut);
     }
@@ -416,6 +432,57 @@
       } finally {
         btnTranslateSelected.disabled = false;
       }
+    }
+
+    function beginSelection(clientX, clientY) {
+      if (!originalImage || currentMode !== 'translate') return;
+      const rect = previewStage.getBoundingClientRect();
+      selectStart = {
+        x: Math.max(0, Math.min(rect.width, clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, clientY - rect.top))
+      };
+      selectingRange = true;
+      selectRect.style.display = 'block';
+      selectRect.style.left = `${selectStart.x}px`;
+      selectRect.style.top = `${selectStart.y}px`;
+      selectRect.style.width = '0px';
+      selectRect.style.height = '0px';
+    }
+
+    function updateSelection(clientX, clientY) {
+      if (!selectingRange || !selectStart) return;
+      const rect = previewStage.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+      const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+      const left = Math.min(selectStart.x, x);
+      const top = Math.min(selectStart.y, y);
+      const width = Math.abs(x - selectStart.x);
+      const height = Math.abs(y - selectStart.y);
+      selectRect.style.left = `${left}px`;
+      selectRect.style.top = `${top}px`;
+      selectRect.style.width = `${width}px`;
+      selectRect.style.height = `${height}px`;
+    }
+
+    function finalizeSelection() {
+      if (!selectingRange || !originalImage) return;
+      selectingRange = false;
+      const vw = parseFloat(selectRect.style.width) || 0;
+      const vh = parseFloat(selectRect.style.height) || 0;
+      if (vw < 8 || vh < 8) {
+        translateInfo.textContent = '選択範囲が小さいためキャンセルしました。';
+        return;
+      }
+      const vx = parseFloat(selectRect.style.left) || 0;
+      const vy = parseFloat(selectRect.style.top) || 0;
+      const displayRect = previewImage.getBoundingClientRect();
+      const scaleX = originalImage.width / displayRect.width;
+      const scaleY = originalImage.height / displayRect.height;
+      const ix = Math.round(vx * scaleX);
+      const iy = Math.round(vy * scaleY);
+      const iw = Math.round(vw * scaleX);
+      const ih = Math.round(vh * scaleY);
+      translateInfo.textContent = `選択範囲: x=${ix}, y=${iy}, w=${iw}, h=${ih}（画像を見ながら範囲指定OK）`;
     }
 
     function clearDropUi() {
@@ -669,10 +736,6 @@
       zoomValue.textContent = `${zoomPercent}%`;
       if (!originalImage) return;
 
-      const oldWidth = previewImage.getBoundingClientRect().width || 1;
-      const oldCenterX = previewWrapper.scrollLeft + (previewWrapper.clientWidth / 2);
-      const centerRatio = oldCenterX / oldWidth;
-
       const baseWidth = getBaseDisplayWidth();
       const displayWidth = Math.round(baseWidth * (zoomPercent / 100));
       previewImage.style.width = `${displayWidth}px`;
@@ -682,15 +745,12 @@
       syncOverlaySize();
       renderCutLines();
 
-      // 拡大縮小で右にズレる問題の対策: ビューポート中心を維持
+      // 拡大縮小後は常に中央寄せ
       requestAnimationFrame(() => {
         const newWidth = previewImage.getBoundingClientRect().width || displayWidth;
-        if (newWidth <= previewWrapper.clientWidth) {
-          previewWrapper.scrollLeft = 0;
-          return;
-        }
-        const target = (centerRatio * newWidth) - (previewWrapper.clientWidth / 2);
-        previewWrapper.scrollLeft = Math.max(0, Math.min(target, newWidth - previewWrapper.clientWidth));
+        const newHeight = previewImage.getBoundingClientRect().height || (newWidth * (originalImage.height / originalImage.width));
+        previewWrapper.scrollLeft = Math.max(0, (newWidth - previewWrapper.clientWidth) / 2);
+        previewWrapper.scrollTop = Math.max(0, (newHeight - previewWrapper.clientHeight) / 2);
       });
     }
 
@@ -838,11 +898,22 @@
       previewWrapper.addEventListener('dblclick', (e) => {
         // ダブルクリック追加を一箇所に統一
         if (!originalImage) return;
+        if (currentMode !== 'cut') return;
         if (e.target.closest('.cut-line')) return;
         addCutLineAtClientY(e.clientY);
       });
 
+      previewStage.addEventListener('mousedown', (e) => {
+        if (currentMode !== 'translate') return;
+        if (!originalImage) return;
+        if (e.target.closest('.cut-line')) return;
+        beginSelection(e.clientX, e.clientY);
+      });
+
       document.addEventListener('mousemove', (e) => {
+        if (selectingRange) {
+          updateSelection(e.clientX, e.clientY);
+        }
         if (!isDraggingLine || draggingIndex < 0 || !originalImage) return;
         e.preventDefault();
         dragLastClientY = e.clientY;
@@ -863,6 +934,7 @@
       });
 
       document.addEventListener('mouseup', () => {
+        if (selectingRange) finalizeSelection();
         if (!isDraggingLine) return;
         isDraggingLine = false;
         draggingIndex = -1;
