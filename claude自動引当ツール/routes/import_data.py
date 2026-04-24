@@ -503,6 +503,97 @@ def import_cloudike_ems():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+# ─── Google Drive（rclone 経由）────────────────────────────────────────────
+
+GDRIVE_PURCHASE_FOLDER = 'gdrive:在庫引当/05.와타나베/01.와타나베주문'
+GDRIVE_EMS_FOLDER      = 'gdrive:在庫引当/05.와타나베/02.와타나베발송리스트'
+
+
+def _rclone_download_latest(remote_folder, pattern_re, suffix):
+    """rclone で remote_folder の最新ファイルを tmp にダウンロードして返す。"""
+    import subprocess, tempfile, re, os
+    result = subprocess.run(
+        ['/usr/bin/rclone', 'ls', remote_folder],
+        capture_output=True, text=True, timeout=30
+    )
+    files = []
+    for line in result.stdout.strip().splitlines():
+        m = re.search(pattern_re, line)
+        if m:
+            files.append(m.group(0))
+    if not files:
+        return None, None
+    latest = sorted(files)[-1]
+    remote_path = remote_folder + '/' + latest
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    subprocess.run(['/usr/bin/rclone', 'copyto', remote_path, tmp_path],
+                   capture_output=True, timeout=90, check=True)
+    return tmp_path, latest
+
+
+@bp.route('/gdrive_purchase', methods=['POST'])
+def import_gdrive_purchase():
+    """Google Drive から rclone で Watanabe_list_*.xlsm をダウンロードして取込"""
+    import os
+    try:
+        tmp_path, filename = _rclone_download_latest(
+            GDRIVE_PURCHASE_FOLDER,
+            r'Watanabe_list_\d{6}.*\.xlsm?$',
+            '.xlsm'
+        )
+        if not tmp_path:
+            return jsonify({'status': 'ok', 'message': '発注ファイルが見つかりませんでした', 'imported': 0})
+
+        from services.purchase_excel_parser import PurchaseExcelParser
+        rows = PurchaseExcelParser().parse(tmp_path)
+        imported = _upsert_purchases_from_excel(rows, agent='daniel')
+
+        log = ImportLog.query.filter_by(filename=filename).first()
+        if log:
+            log.record_count = imported; log.imported_at = datetime.now()
+        else:
+            db.session.add(ImportLog(filename=filename, file_type='purchase_daniel', record_count=imported))
+        db.session.commit()
+        os.unlink(tmp_path)
+        return jsonify({'status': 'ok', 'imported': imported, 'filename': filename,
+                        'message': f'{filename} から {imported}件取込みました'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@bp.route('/gdrive_ems', methods=['POST'])
+def import_gdrive_ems():
+    """Google Drive から rclone で EMS発送リスト_*.xlsx をダウンロードして取込"""
+    import os
+    try:
+        tmp_path, filename = _rclone_download_latest(
+            GDRIVE_EMS_FOLDER,
+            r'EMS(?:発送リスト|발송리스트)_\d{6}.*\.xlsx?$',
+            '.xlsx'
+        )
+        if not tmp_path:
+            return jsonify({'status': 'ok', 'message': 'EMSファイルが見つかりませんでした', 'imported': 0})
+
+        from services.ems_excel_parser import EmsExcelParser
+        items = EmsExcelParser().parse(tmp_path)
+        imported = _upsert_ems_items(items, agent='daniel')
+
+        log = ImportLog.query.filter_by(filename=filename).first()
+        if log:
+            log.record_count = imported; log.imported_at = datetime.now()
+        else:
+            db.session.add(ImportLog(filename=filename, file_type='ems_daniel', record_count=imported))
+        db.session.commit()
+        os.unlink(tmp_path)
+        return jsonify({'status': 'ok', 'imported': imported, 'filename': filename,
+                        'message': f'{filename} から {imported}件取込みました'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 # ─── フォルダ監視取込（Google Drive / OneDrive 等） ──────────────────────────
 
 PURCHASE_PATTERN_RE = r'Watanabe_list_\d{6}.*\.xlsm?$'
@@ -740,36 +831,50 @@ def import_all():
 # ─── 内部ヘルパー ─────────────────────────────────────────────────────────────
 
 def _upsert_yahoo_order(order_raw: dict):
-    """Yahoo受注1件を Order + OrderItem に upsert する。
-    取込対象: 新規注文・出荷待ち・予約中・保留（出荷済み・完了は除外）
-    戻り値: (新規受注数, 新規明細数, 新規明細IDリスト)"""
-    # ── フィールド抽出（APIレスポンスの構造差異を吸収） ──
+    """Yahoo受注1件を Order + OrderItem に upsert する。"""
     order_id_str = (order_raw.get('OrderId') or order_raw.get('order_id', '')).strip()
     if not order_id_str:
-        return 0, 0
+        return 0, 0, []
 
-    # ── 配送ステータス（ShipStatus）でフィルタ ──
-    # 0=未出荷, 1=出荷処理中, 2=出荷済み, 3=完了
-    # 取込対象: 0(新規注文/出荷待ち/予約中/保留) のみ
-    ship_status = str(order_raw.get('ShipStatus', order_raw.get('ship_status', '0')))
-    if ship_status in ('2', '3'):
-        return 0, 0, []  # 出荷済み・完了は取込スキップ
-
-    # 既存チェック
-    existing = Order.query.filter_by(yahoo_order_id=order_id_str).first()
+    ship_status  = str(order_raw.get('ShipStatus',  order_raw.get('ship_status',  '0')))
+    order_status = str(order_raw.get('OrderStatus', order_raw.get('order_status', '')))
 
     # 顧客名
-    buyer = order_raw.get('BuyerInfo', order_raw.get('Ship', {}))
-    customer_name = (
-        buyer.get('Name1', '') + ' ' + buyer.get('Name2', '')
-    ).strip() or order_raw.get('ShipName', '')
+    buyer = (order_raw.get('BuyerInfo') or order_raw.get('Ship') or {})
+    customer_name = (buyer.get('Name1', '') + ' ' + buyer.get('Name2', '')).strip() or order_raw.get('ShipName', '')
 
-    # 受注日時
-    order_time_str = order_raw.get('OrderTime', order_raw.get('order_time', ''))
-    try:
-        ordered_at = datetime.strptime(str(order_time_str)[:14], '%Y%m%d%H%M%S')
-    except Exception:
-        ordered_at = datetime.now()
+    # 受注日時（ISO8601 / YYYYMMDDHHmmss 両対応）
+    order_time_str = str(order_raw.get('OrderTime', order_raw.get('order_time', '')))
+    ordered_at = None
+    for fmt in ('%Y-%m-%dT%H:%M:%S+09:00', '%Y-%m-%dT%H:%M:%S', '%Y%m%d%H%M%S'):
+        try:
+            ordered_at = datetime.strptime(order_time_str[:len(fmt)], fmt)
+            break
+        except Exception:
+            continue
+    if not ordered_at:
+        try:
+            ordered_at = datetime.fromisoformat(order_time_str.replace('+09:00', ''))
+        except Exception:
+            ordered_at = datetime.now()
+
+    existing = Order.query.filter_by(yahoo_order_id=order_id_str).first()
+
+    if ship_status in ('2', '3'):
+        # 出荷済み・完了: Orderレコードのみ更新/作成（明細はスキップ）
+        if existing:
+            existing.yahoo_ship_status  = ship_status
+            existing.yahoo_order_status = order_status
+        else:
+            db.session.add(Order(
+                yahoo_order_id=order_id_str,
+                customer_name=customer_name,
+                yahoo_ship_status=ship_status,
+                yahoo_order_status=order_status,
+                ordered_at=ordered_at,
+                status='shipped',
+            ))
+        return 0, 0, []
 
     new_order = 0
     if not existing:
@@ -777,6 +882,7 @@ def _upsert_yahoo_order(order_raw: dict):
             yahoo_order_id=order_id_str,
             customer_name=customer_name,
             yahoo_ship_status=ship_status,
+            yahoo_order_status=order_status,
             ordered_at=ordered_at,
             status='pending',
         )
@@ -784,10 +890,13 @@ def _upsert_yahoo_order(order_raw: dict):
         db.session.flush()
         new_order = 1
     else:
-        # ステータス・顧客名は更新
-        existing.yahoo_ship_status = ship_status
+        existing.yahoo_ship_status  = ship_status
+        existing.yahoo_order_status = order_status
         if customer_name:
             existing.customer_name = customer_name
+        # ordered_atが壊れている（datetime.now()）場合のみ正しい値で上書き
+        if ordered_at and abs((existing.ordered_at - ordered_at).days) > 1:
+            existing.ordered_at = ordered_at
 
     # ── 明細 (OrderItem) ──
     items_raw = order_raw.get('ItemInfo', order_raw.get('Item', []))
@@ -795,34 +904,30 @@ def _upsert_yahoo_order(order_raw: dict):
         items_raw = [items_raw]
 
     new_items    = 0
-    new_item_ids = []   # 自動引当用
+    new_item_ids = []
     for item_raw in (items_raw or []):
-        product_code = (
-            item_raw.get('ItemId') or item_raw.get('item_id', '')
-        ).strip()
+        product_code = (item_raw.get('ItemId') or item_raw.get('item_id', '')).strip()
         if not product_code:
             continue
-
         existing_item = OrderItem.query.filter_by(
             order_id=existing.id, product_code=product_code
         ).first()
         if existing_item:
             continue
-
         try:
             qty = int(float(item_raw.get('Quantity', item_raw.get('quantity', 1))))
         except Exception:
             qty = 1
-
         oi = OrderItem(
             order_id=existing.id,
             product_code=product_code,
             product_name=item_raw.get('Title', item_raw.get('title', '')),
             quantity=qty,
+            inventory_type='pending',
             status='pending',
         )
         db.session.add(oi)
-        db.session.flush()   # ID を確定させる
+        db.session.flush()
         new_item_ids.append(oi.id)
         new_items += 1
 
