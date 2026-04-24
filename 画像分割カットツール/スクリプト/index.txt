@@ -15,6 +15,17 @@
     .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
     h1 { font-size: 1.8rem; margin-bottom: 4px; }
     .sub { color: #94a3b8; font-size: .85rem; margin-bottom: 16px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .tab-btn {
+      border: 1px solid rgba(148, 163, 184, .3);
+      background: rgba(15, 23, 42, .6);
+      color: #cbd5e1;
+      border-radius: 8px;
+      padding: 8px 14px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .tab-btn.active { color:#fff; border-color:#818cf8; background: rgba(99, 102, 241, .28); }
     .layout { display: grid; grid-template-columns: 360px 1fr; gap: 16px; }
     @media (max-width: 1024px) { .layout { grid-template-columns: 1fr; } }
     .panel {
@@ -155,6 +166,14 @@
       box-shadow: 0 0 10px rgba(239, 68, 68, .8);
     }
     .cut-line.selected::before { background: #38bdf8; box-shadow: 0 0 12px rgba(56, 189, 248, .9); }
+    .select-rect {
+      position: absolute;
+      border: 2px dashed #22d3ee;
+      background: rgba(34, 211, 238, .18);
+      pointer-events: none;
+      display: none;
+      z-index: 40;
+    }
     #globalDropOverlay {
       position: fixed;
       inset: 0;
@@ -182,6 +201,22 @@
       padding: 8px;
     }
     .result img { width: 100%; border-radius: 4px; margin-bottom: 6px; border: 1px solid #334155; }
+    .translate-panel {
+      margin-top: 12px;
+      border-top: 1px solid rgba(255, 255, 255, .1);
+      padding-top: 10px;
+    }
+    .translate-panel textarea, .translate-panel input, .translate-panel select {
+      width: 100%;
+      background: #0f172a;
+      color: #fff;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 8px;
+      font-size: .82rem;
+    }
+    .translate-panel textarea { min-height: 90px; resize: vertical; }
+    .translate-actions { display:flex; gap:8px; margin-top:8px; }
   </style>
 </head>
 <body>
@@ -190,9 +225,13 @@
   <div class="container">
     <h1>画像カットツール V49</h1>
     <p class="sub">画像取込み修正 / ダブルクリックで線追加修正 / 右側欠け修正</p>
+    <div class="tabs">
+      <button id="tabCutMode" class="tab-btn active" type="button">✂ カットモード</button>
+      <button id="tabTranslateMode" class="tab-btn" type="button">🌐 翻訳モード</button>
+    </div>
 
-    <div class="layout">
-      <div class="panel">
+    <div id="layoutRoot" class="layout">
+      <div id="cutPanel" class="panel">
         <div class="title">1. 画像をアップロード</div>
         <div id="dropZone" class="drop-zone" tabindex="0" role="button">
           <div class="icon">📁</div>
@@ -230,19 +269,38 @@
         <button id="btnReset" class="btn" style="width:100%; margin-top:8px;">🗑️ 線をリセット</button>
       </div>
 
-      <div class="panel">
-        <div class="title">2. プレビュー（ダブルクリックでカット線追加）</div>
-        <div id="previewContainer" style="display:none;">
-          <div id="previewWrapper" class="preview-wrap">
-            <div id="previewStage">
-              <img id="previewImage" alt="preview">
-              <canvas id="overlayCanvas"></canvas>
-              <div id="cutLinesLayer"></div>
+      <div id="previewPanel" class="panel">
+        <div id="previewWorkspace">
+          <div class="title">2. プレビュー（ダブルクリックでカット線追加）</div>
+          <div id="previewContainer" style="display:none;">
+            <div id="previewWrapper" class="preview-wrap">
+              <div id="previewStage">
+                <img id="previewImage" alt="preview">
+                <canvas id="overlayCanvas"></canvas>
+                <div id="cutLinesLayer"></div>
+                <div id="selectRect" class="select-rect"></div>
+              </div>
             </div>
           </div>
+          <div id="previewEmpty" class="muted">画像を読み込むとここに表示されます。</div>
+          <div id="results" class="results"></div>
         </div>
-        <div id="previewEmpty" class="muted">画像を読み込むとここに表示されます。</div>
-        <div id="results" class="results"></div>
+
+        <div id="translatePanel" class="translate-panel" style="display:none;">
+          <div class="title">翻訳モード（選択範囲を日本語化・編集可）</div>
+          <div class="muted">原文の「選択部分だけ」を翻訳できます（未選択時は全文）。翻訳結果は自由に編集可能です。</div>
+          <label class="muted" style="display:block; margin-top:8px;">Gemini API Key</label>
+          <input id="geminiApiKey" type="password" placeholder="AIzaSy...">
+          <label class="muted" style="display:block; margin-top:8px;">原文</label>
+          <textarea id="sourceText" placeholder="ここに原文を貼り付け。翻訳したい範囲だけ選択してボタンを押してください。"></textarea>
+          <div class="translate-actions">
+            <button id="btnTranslateSelected" class="btn" type="button">選択範囲→日本語翻訳</button>
+            <button id="btnSaveApiKey" class="btn" type="button">APIキー保存</button>
+          </div>
+          <label class="muted" style="display:block; margin-top:8px;">翻訳結果（自由に修正OK）</label>
+          <textarea id="translatedText" placeholder="翻訳結果" style="min-height:220px;"></textarea>
+          <div id="translateInfo" class="muted" style="margin-top:6px;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -260,6 +318,7 @@
     const previewImage = document.getElementById('previewImage');
     const overlayCanvas = document.getElementById('overlayCanvas');
     const cutLinesLayer = document.getElementById('cutLinesLayer');
+    const selectRect = document.getElementById('selectRect');
     const octx = overlayCanvas.getContext('2d');
     const manualList = document.getElementById('manualList');
     const zoomSlider = document.getElementById('zoomSlider');
@@ -269,6 +328,18 @@
     const btnReset = document.getElementById('btnReset');
     const results = document.getElementById('results');
     const btnChangeFile = document.getElementById('btnChangeFile');
+    const geminiApiKey = document.getElementById('geminiApiKey');
+    const sourceText = document.getElementById('sourceText');
+    const translatedText = document.getElementById('translatedText');
+    const btnTranslateSelected = document.getElementById('btnTranslateSelected');
+    const btnSaveApiKey = document.getElementById('btnSaveApiKey');
+    const translateInfo = document.getElementById('translateInfo');
+    const tabCutMode = document.getElementById('tabCutMode');
+    const tabTranslateMode = document.getElementById('tabTranslateMode');
+    const cutPanel = document.getElementById('cutPanel');
+    const previewWorkspace = document.getElementById('previewWorkspace');
+    const translatePanel = document.getElementById('translatePanel');
+    const layoutRoot = document.getElementById('layoutRoot');
 
     let originalImage = null;
     let objectUrl = null;
@@ -283,9 +354,135 @@
     let dragScrollDir = 0;
     let cutPolicy = 'auto';
     let windowDragCounter = 0;
+    let currentMode = 'cut';
+    let selectingRange = false;
+    let selectStart = null;
+    const STORAGE_GEMINI_KEY = 'imageCutterGeminiApiKey';
 
     function isImageFile(file) {
       return !!(file && file.type && file.type.startsWith('image/'));
+    }
+
+    function switchMode(mode) {
+      currentMode = mode;
+      const isCut = mode === 'cut';
+      cutPanel.style.display = isCut ? 'block' : 'none';
+      previewWorkspace.style.display = 'block';
+      translatePanel.style.display = isCut ? 'none' : 'block';
+      layoutRoot.style.gridTemplateColumns = isCut ? '360px 1fr' : '1fr';
+      tabCutMode.classList.toggle('active', isCut);
+      tabTranslateMode.classList.toggle('active', !isCut);
+    }
+
+    function loadGeminiApiKey() {
+      try {
+        geminiApiKey.value = localStorage.getItem(STORAGE_GEMINI_KEY) || '';
+      } catch (_) {
+        geminiApiKey.value = '';
+      }
+    }
+
+    function saveGeminiApiKey() {
+      try {
+        localStorage.setItem(STORAGE_GEMINI_KEY, (geminiApiKey.value || '').trim());
+        translateInfo.textContent = 'APIキーを保存しました。';
+      } catch (_) {
+        translateInfo.textContent = 'APIキー保存に失敗しました。';
+      }
+    }
+
+    async function translateToJapaneseWithGemini(text) {
+      const apiKey = (geminiApiKey.value || '').trim();
+      if (!apiKey) throw new Error('Gemini API Keyを入力してください');
+
+      const prompt = `次の文章を自然な日本語に翻訳してください。翻訳結果のみ返してください。\\n\\n${text}`;
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.2 }
+        })
+      });
+      if (!res.ok) throw new Error(`翻訳APIエラー: ${res.status}`);
+      const json = await res.json();
+      const out = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (!out) throw new Error('翻訳結果が空でした');
+      return out;
+    }
+
+    async function translateSelectedRange() {
+      const text = sourceText.value || '';
+      if (!text.trim()) {
+        translateInfo.textContent = '原文テキストを入力してください。';
+        return;
+      }
+      const start = sourceText.selectionStart ?? 0;
+      const end = sourceText.selectionEnd ?? 0;
+      const selected = start !== end ? text.slice(start, end) : text;
+
+      btnTranslateSelected.disabled = true;
+      translateInfo.textContent = start !== end ? `選択範囲（${end - start}文字）を翻訳中...` : '全文を翻訳中...';
+      try {
+        const ja = await translateToJapaneseWithGemini(selected);
+        translatedText.value = ja;
+        translateInfo.textContent = '翻訳完了。必要に応じて結果を直接編集してください。';
+      } catch (e) {
+        translateInfo.textContent = `翻訳失敗: ${e?.message || e}`;
+      } finally {
+        btnTranslateSelected.disabled = false;
+      }
+    }
+
+    function beginSelection(clientX, clientY) {
+      if (!originalImage || currentMode !== 'translate') return;
+      const rect = previewStage.getBoundingClientRect();
+      selectStart = {
+        x: Math.max(0, Math.min(rect.width, clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, clientY - rect.top))
+      };
+      selectingRange = true;
+      selectRect.style.display = 'block';
+      selectRect.style.left = `${selectStart.x}px`;
+      selectRect.style.top = `${selectStart.y}px`;
+      selectRect.style.width = '0px';
+      selectRect.style.height = '0px';
+    }
+
+    function updateSelection(clientX, clientY) {
+      if (!selectingRange || !selectStart) return;
+      const rect = previewStage.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+      const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+      const left = Math.min(selectStart.x, x);
+      const top = Math.min(selectStart.y, y);
+      const width = Math.abs(x - selectStart.x);
+      const height = Math.abs(y - selectStart.y);
+      selectRect.style.left = `${left}px`;
+      selectRect.style.top = `${top}px`;
+      selectRect.style.width = `${width}px`;
+      selectRect.style.height = `${height}px`;
+    }
+
+    function finalizeSelection() {
+      if (!selectingRange || !originalImage) return;
+      selectingRange = false;
+      const vw = parseFloat(selectRect.style.width) || 0;
+      const vh = parseFloat(selectRect.style.height) || 0;
+      if (vw < 8 || vh < 8) {
+        translateInfo.textContent = '選択範囲が小さいためキャンセルしました。';
+        return;
+      }
+      const vx = parseFloat(selectRect.style.left) || 0;
+      const vy = parseFloat(selectRect.style.top) || 0;
+      const displayRect = previewImage.getBoundingClientRect();
+      const scaleX = originalImage.width / displayRect.width;
+      const scaleY = originalImage.height / displayRect.height;
+      const ix = Math.round(vx * scaleX);
+      const iy = Math.round(vy * scaleY);
+      const iw = Math.round(vw * scaleX);
+      const ih = Math.round(vh * scaleY);
+      translateInfo.textContent = `選択範囲: x=${ix}, y=${iy}, w=${iw}, h=${ih}（画像を見ながら範囲指定OK）`;
     }
 
     function clearDropUi() {
@@ -539,9 +736,15 @@
       zoomValue.textContent = `${zoomPercent}%`;
       if (!originalImage) return;
 
-      const oldWidth = previewImage.getBoundingClientRect().width || 1;
-      const oldCenterX = previewWrapper.scrollLeft + (previewWrapper.clientWidth / 2);
-      const centerRatio = oldCenterX / oldWidth;
+      const beforeRect = previewImage.getBoundingClientRect();
+      const beforeWidth = beforeRect.width || 0;
+      const beforeHeight = beforeRect.height || 0;
+      const keepRatioX = beforeWidth > 0
+        ? (previewWrapper.scrollLeft + (previewWrapper.clientWidth / 2)) / beforeWidth
+        : 0.5;
+      const keepRatioY = beforeHeight > 0
+        ? (previewWrapper.scrollTop + (previewWrapper.clientHeight / 2)) / beforeHeight
+        : 0.5;
 
       const baseWidth = getBaseDisplayWidth();
       const displayWidth = Math.round(baseWidth * (zoomPercent / 100));
@@ -552,15 +755,16 @@
       syncOverlaySize();
       renderCutLines();
 
-      // 拡大縮小で右にズレる問題の対策: ビューポート中心を維持
+      // 拡大縮小後も「見ていた中心位置」をできるだけ維持
       requestAnimationFrame(() => {
         const newWidth = previewImage.getBoundingClientRect().width || displayWidth;
-        if (newWidth <= previewWrapper.clientWidth) {
-          previewWrapper.scrollLeft = 0;
-          return;
-        }
-        const target = (centerRatio * newWidth) - (previewWrapper.clientWidth / 2);
-        previewWrapper.scrollLeft = Math.max(0, Math.min(target, newWidth - previewWrapper.clientWidth));
+        const newHeight = previewImage.getBoundingClientRect().height || (newWidth * (originalImage.height / originalImage.width));
+        const ratioX = Number.isFinite(keepRatioX) ? keepRatioX : 0.5;
+        const ratioY = Number.isFinite(keepRatioY) ? keepRatioY : 0.5;
+        const targetLeft = (ratioX * newWidth) - (previewWrapper.clientWidth / 2);
+        const targetTop = (ratioY * newHeight) - (previewWrapper.clientHeight / 2);
+        previewWrapper.scrollLeft = Math.max(0, Math.min(targetLeft, Math.max(0, newWidth - previewWrapper.clientWidth)));
+        previewWrapper.scrollTop = Math.max(0, Math.min(targetTop, Math.max(0, newHeight - previewWrapper.clientHeight)));
       });
     }
 
@@ -661,6 +865,10 @@
     }
 
     function bindEvents() {
+      btnSaveApiKey.addEventListener('click', saveGeminiApiKey);
+      btnTranslateSelected.addEventListener('click', translateSelectedRange);
+      tabCutMode.addEventListener('click', () => switchMode('cut'));
+      tabTranslateMode.addEventListener('click', () => switchMode('translate'));
       dropZone.addEventListener('click', () => fileInput.click());
       dropZone.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -704,11 +912,22 @@
       previewWrapper.addEventListener('dblclick', (e) => {
         // ダブルクリック追加を一箇所に統一
         if (!originalImage) return;
+        if (currentMode !== 'cut') return;
         if (e.target.closest('.cut-line')) return;
         addCutLineAtClientY(e.clientY);
       });
 
+      previewStage.addEventListener('mousedown', (e) => {
+        if (currentMode !== 'translate') return;
+        if (!originalImage) return;
+        if (e.target.closest('.cut-line')) return;
+        beginSelection(e.clientX, e.clientY);
+      });
+
       document.addEventListener('mousemove', (e) => {
+        if (selectingRange) {
+          updateSelection(e.clientX, e.clientY);
+        }
         if (!isDraggingLine || draggingIndex < 0 || !originalImage) return;
         e.preventDefault();
         dragLastClientY = e.clientY;
@@ -729,6 +948,7 @@
       });
 
       document.addEventListener('mouseup', () => {
+        if (selectingRange) finalizeSelection();
         if (!isDraggingLine) return;
         isDraggingLine = false;
         draggingIndex = -1;
@@ -761,6 +981,7 @@
       });
     }
 
+    loadGeminiApiKey();
     setupDnD();
     bindEvents();
   </script>
