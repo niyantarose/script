@@ -13,10 +13,31 @@ from sqlalchemy import or_
 bp = Blueprint('orders', __name__, url_prefix='/orders')
 
 
+# Yahoo OrderStatus → 表示ラベルのマッピング
+ORDER_STATUS_LABELS = {
+    '1': '予約',
+    '2': '新規注文',
+    '3': '保留',
+    '4': '出荷待ち',
+    '5': '注文完了',
+}
+
 @bp.route('/')
 def index():
-    q = request.args.get('q', '').strip()
-    status_filter = request.args.get('status', '')
+    q              = request.args.get('q', '').strip()
+    status_filter  = request.args.get('status', '')   # item status（内部引当）
+    os_filter      = request.args.get('os', '')       # yahoo_order_status
+
+    # ステータス集計（タブ用）
+    from sqlalchemy import func
+    os_counts_raw = (
+        db.session.query(Order.yahoo_order_status, func.count(Order.id))
+        .group_by(Order.yahoo_order_status)
+        .all()
+    )
+    os_counts = {(row[0] or ''): row[1] for row in os_counts_raw}
+    total_count = sum(os_counts.values())
+
     # 商品コードで絞る場合は order_items から引く
     if q:
         item_order_ids = [
@@ -38,24 +59,55 @@ def index():
             OrderItem.query.filter_by(status=status_filter).all()
         ]
         query = query.filter(Order.id.in_(item_order_ids))
-    orders = query.order_by(Order.ordered_at.desc()).all()
+    if os_filter:
+        query = query.filter(Order.yahoo_order_status == os_filter)
 
-    # order単位でグルーピング（注文ごとに枠線を出すため）
+    # ページネーション
+    page      = int(request.args.get('page', 1))
+    per_page  = 100
+    total     = query.count()
+    orders    = (query
+        .order_by(Order.ordered_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+    total_pages = (total + per_page - 1) // per_page
+
+    # 明細を一括フェッチ（N+1回避）
+    order_ids   = [o.id for o in orders]
+    items_bulk  = OrderItem.query.filter(OrderItem.order_id.in_(order_ids)).all() if order_ids else []
+    items_by_order = {}
+    for it in items_bulk:
+        items_by_order.setdefault(it.order_id, []).append(it)
+    all_item_ids = [it.id for it in items_bulk]
+    ems_by_item = {}  # item_id → set of ems_number
+    if all_item_ids:
+        from models.ems_item import EmsItem as EI
+        eis = EI.query.filter(EI.order_item_id.in_(all_item_ids)).all()
+        for ei in eis:
+            ems_by_item.setdefault(ei.order_item_id, set()).add(ei.ems.ems_number)
+
+    # グルーピング
     grouped = []
     for o in orders:
-        items = OrderItem.query.filter_by(order_id=o.id).all()
-        # EMS番号を収集
+        items = items_by_order.get(o.id, [])
         ems_nums = set()
-        for item in items:
-            for ei in EmsItem.query.filter_by(order_item_id=item.id).all():
-                ems_nums.add(ei.ems.ems_number)
+        for it in items:
+            ems_nums |= ems_by_item.get(it.id, set())
         grouped.append({
             'order': o,
             'order_items': items,
             'ems_numbers': '、'.join(sorted(ems_nums)) if ems_nums else '',
         })
 
-    return render_template('orders.html', grouped=grouped, q=q, status_filter=status_filter)
+    return render_template('orders.html',
+        grouped=grouped, q=q, status_filter=status_filter,
+        os_filter=os_filter, os_counts=os_counts,
+        total_count=total_count, total_pages=total_pages,
+        page=page, per_page=per_page, filtered_total=total,
+        order_status_labels=ORDER_STATUS_LABELS,
+    )
 
 
 @bp.route('/allocate', methods=['POST'])

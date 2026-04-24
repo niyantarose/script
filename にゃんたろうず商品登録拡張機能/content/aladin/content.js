@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = '2026-04-23-a';
+  const VERSION = '2026-04-23-b';
   if (globalThis.__ALADIN_SCRAPER__?.version === VERSION) {
     return;
   }
@@ -51,7 +51,15 @@
     '#np_series',
     '.series_wrap',
     '.seriesStartAnchor',
-    '.seriesEndAnchor'
+    '.seriesEndAnchor',
+    '[class*="recommend"]',
+    '[id*="recommend"]',
+    '[class*="Recommend"]',
+    '[id*="Recommend"]',
+    '[class*="relation"]',
+    '[id*="relation"]',
+    '[class*="Relation"]',
+    '[id*="Relation"]'
   ];
 
   const DEFAULT_EXCLUDE_SECTION_LABELS = [
@@ -59,7 +67,8 @@
     /기본정보/i,
     /시리즈/i,
     /주제 분류/i,
-    /관련상품/i
+    /관련상품/i,
+    /오구독/i
   ];
 
   const DESCRIPTION_EXCLUDE_SECTION_LABELS = [
@@ -141,10 +150,7 @@
             '#productDescription [style*="background"]',
             '.Ere_prod_mconts_box img',
             '.Ere_prod_mconts_box [data-src]',
-            '.Ere_prod_mconts_box [style*="background"]',
-            '.swiper-slide img',
-            '.swiper-slide [data-src]',
-            '.swiper-slide [style*="background"]'
+            '.Ere_prod_mconts_box [style*="background"]'
           ],
           interactCarousel: true,
           clickSelectors: [
@@ -429,6 +435,19 @@
     return /(?:image|cdnimage)\.aladin\.co\.kr/i.test(url);
   }
 
+  function isCoverThumbnailUrl(url) {
+    return /\/cover(?:\d+)?\//i.test(String(url || ''));
+  }
+
+  function extractItemIdFromUrl(url) {
+    try {
+      const itemId = new URL(String(url || ''), location.href).searchParams.get('ItemId') || '';
+      return /^\d+$/.test(itemId) ? itemId : '';
+    } catch (_error) {
+      return '';
+    }
+  }
+
   function getElementText(element) {
     if (!element) {
       return '';
@@ -679,7 +698,23 @@
   }
 
   function isExcludedByAncestor(node, selectors) {
-    return selectors.some(selector => node.closest(selector));
+    return selectors.some(selector => {
+      try {
+        return Boolean(node.closest(selector));
+      } catch (_error) {
+        return false;
+      }
+    });
+  }
+
+  function isLinkedToDifferentProduct(node, currentItemId) {
+    if (!currentItemId) {
+      return false;
+    }
+
+    const closestLink = node.closest('a[href]');
+    const linkedItemId = closestLink ? extractItemIdFromUrl(closestLink.getAttribute('href') || '') : '';
+    return Boolean(linkedItemId && linkedItemId !== currentItemId);
   }
 
   function shouldIncludeBySection(node, options) {
@@ -710,7 +745,9 @@
       excludeAncestorSelectors: uniqueItems(rule.excludeAncestorSelectors || [], plan.excludeAncestorSelectors || []),
       allowPathPatterns: plan.allowPathPatterns || [],
       maxCount: Number.isFinite(plan.maxCount) ? plan.maxCount : Infinity,
-      preferLast: Boolean(plan.preferLast)
+      preferLast: Boolean(plan.preferLast),
+      currentItemId: extractItemIdFromLocation(),
+      kind: plan.kind || ''
     };
   }
 
@@ -784,6 +821,10 @@
         continue;
       }
 
+      if (isLinkedToDifferentProduct(image, options.currentItemId)) {
+        continue;
+      }
+
       const closestLink = image.closest('a[href]');
       const href = closestLink ? toAbsoluteUrl(closestLink.getAttribute('href') || '') : '';
       if (/\/events\//i.test(href)) {
@@ -802,6 +843,9 @@
       for (const rawUrl of getCandidateImageUrls(image)) {
         const absoluteUrl = toAbsoluteUrl(rawUrl);
         if (!absoluteUrl || !isAladinDetailImage(absoluteUrl)) {
+          continue;
+        }
+        if (!/^cover(?:Viewer|Slides)$/.test(options.kind) && isCoverThumbnailUrl(absoluteUrl)) {
           continue;
         }
         if (/icon|btn|blank|loading|arrow|logo|spacer|check_off|check_on/i.test(absoluteUrl)) {
