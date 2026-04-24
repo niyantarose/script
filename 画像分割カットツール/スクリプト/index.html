@@ -237,7 +237,7 @@
           <div class="icon">📁</div>
           <div>画像を選択</div>
           <div class="muted">またはドラッグ＆ドロップ</div>
-          <input id="fileInput" type="file" accept="image/*" style="position:absolute; inset:0; opacity:0; cursor:pointer; z-index:2;">
+          <input id="fileInput" type="file" accept="image/*" style="display:none;">
         </div>
         <div id="fileInfo" class="row" style="display:none;">
           <div id="fileNameEl" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#818cf8;"></div>
@@ -355,6 +355,7 @@
     let cutPolicy = 'auto';
     let windowDragCounter = 0;
     let currentMode = 'cut';
+    let filePickerPending = false;
     let selectingRange = false;
     let selectStart = null;
     const STORAGE_GEMINI_KEY = 'imageCutterGeminiApiKey';
@@ -864,16 +865,22 @@
       }
     }
 
+    function openFilePicker() {
+      if (filePickerPending) return;
+      filePickerPending = true;
+      fileInput.click();
+    }
+
     function bindEvents() {
       btnSaveApiKey.addEventListener('click', saveGeminiApiKey);
       btnTranslateSelected.addEventListener('click', translateSelectedRange);
       tabCutMode.addEventListener('click', () => switchMode('cut'));
       tabTranslateMode.addEventListener('click', () => switchMode('translate'));
-      dropZone.addEventListener('click', () => fileInput.click());
+      dropZone.addEventListener('click', () => openFilePicker());
       dropZone.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          fileInput.click();
+          openFilePicker();
         }
       });
       dropZone.addEventListener('dragover', (e) => {
@@ -891,17 +898,19 @@
         if (file) loadImage(file);
       });
       fileInput.addEventListener('change', (e) => {
+        filePickerPending = false;
         const file = e.target.files && e.target.files[0];
         if (file) loadImage(file);
         fileInput.value = '';
       });
-      // 透明inputにドラッグした場合もハイライト解除を保証
-      fileInput.addEventListener('dragenter', () => dropZone.classList.add('dragover'));
-      fileInput.addEventListener('dragover', () => dropZone.classList.add('dragover'));
-      fileInput.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-      fileInput.addEventListener('drop', () => clearDropUi());
+      window.addEventListener('focus', () => {
+        // キャンセル時(change未発火)でも次回クリックできるように戻す
+        setTimeout(() => {
+          filePickerPending = false;
+        }, 0);
+      });
       if (btnChangeFile) {
-        btnChangeFile.addEventListener('click', () => fileInput.click());
+        btnChangeFile.addEventListener('click', () => openFilePicker());
       }
 
       previewImage.addEventListener('load', () => {
