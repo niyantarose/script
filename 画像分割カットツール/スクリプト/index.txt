@@ -736,6 +736,16 @@
       zoomValue.textContent = `${zoomPercent}%`;
       if (!originalImage) return;
 
+      const beforeRect = previewImage.getBoundingClientRect();
+      const beforeWidth = beforeRect.width || 0;
+      const beforeHeight = beforeRect.height || 0;
+      const keepRatioX = beforeWidth > 0
+        ? (previewWrapper.scrollLeft + (previewWrapper.clientWidth / 2)) / beforeWidth
+        : 0.5;
+      const keepRatioY = beforeHeight > 0
+        ? (previewWrapper.scrollTop + (previewWrapper.clientHeight / 2)) / beforeHeight
+        : 0.5;
+
       const baseWidth = getBaseDisplayWidth();
       const displayWidth = Math.round(baseWidth * (zoomPercent / 100));
       previewImage.style.width = `${displayWidth}px`;
@@ -745,12 +755,16 @@
       syncOverlaySize();
       renderCutLines();
 
-      // 拡大縮小後は常に中央寄せ
+      // 拡大縮小後も「見ていた中心位置」をできるだけ維持
       requestAnimationFrame(() => {
         const newWidth = previewImage.getBoundingClientRect().width || displayWidth;
         const newHeight = previewImage.getBoundingClientRect().height || (newWidth * (originalImage.height / originalImage.width));
-        previewWrapper.scrollLeft = Math.max(0, (newWidth - previewWrapper.clientWidth) / 2);
-        previewWrapper.scrollTop = Math.max(0, (newHeight - previewWrapper.clientHeight) / 2);
+        const ratioX = Number.isFinite(keepRatioX) ? keepRatioX : 0.5;
+        const ratioY = Number.isFinite(keepRatioY) ? keepRatioY : 0.5;
+        const targetLeft = (ratioX * newWidth) - (previewWrapper.clientWidth / 2);
+        const targetTop = (ratioY * newHeight) - (previewWrapper.clientHeight / 2);
+        previewWrapper.scrollLeft = Math.max(0, Math.min(targetLeft, Math.max(0, newWidth - previewWrapper.clientWidth)));
+        previewWrapper.scrollTop = Math.max(0, Math.min(targetTop, Math.max(0, newHeight - previewWrapper.clientHeight)));
       });
     }
 
