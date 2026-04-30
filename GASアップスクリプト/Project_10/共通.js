@@ -30,13 +30,91 @@ function 列番号を取得(sh) {
   return map;
 }
 
+function 列番号安全取得_(列マップ, 名前) {
+  if (!名前) return 0;
+  return 列マップ[ヘッダー正規化_(名前)] || 0;
+}
+
+function 値取得_(行データ, 列マップ, 名前) {
+  const col = 列番号安全取得_(列マップ, 名前);
+  if (!col) return '';
+  return 正規化(行データ[col - 1]);
+}
+
+function カテゴリコードを解決_(カテゴリマップ, カテゴリ) {
+  const value = String(カテゴリ || '').trim();
+  if (!value) return '';
+  if (カテゴリマップ[value]) return カテゴリマップ[value];
+  const fallback = {
+    'CD': 'CD',
+    'LP': 'LP',
+    'OST': 'OST',
+    'DVD': 'DVD',
+    'Blu-ray': 'BD',
+    'Blu ray': 'BD',
+    'ブルーレイ': 'BD',
+    '映像': 'DVD',
+    '音楽': 'CD'
+  };
+  return fallback[value] || 'XX';
+}
+
+function 作品原題比較用正規化_(v) {
+  let s = 原題を正規化(v || '');
+  if (!s) return '';
+  s = s.toLowerCase();
+  const hasOst = /\bost\b|o\.s\.t|오리지널\s*사운드트랙|사운드트랙/.test(s);
+  s = s
+    .replace(/^[^-–—―]{1,50}\s*[-–—―]\s*(?=(정규|미니)\s*\d+\s*집|\b(the\s*)?\d+(st|nd|rd|th)?\s*(mini|full)\s*album\b)/gi, ' ')
+    .replace(/\bo\.s\.t\.?\b/gi, ' ost ')
+    .replace(/\b(original soundtrack)\b/gi, ' ost ')
+    .replace(/\b(the\s*)?\d+(st|nd|rd|th)?\s*(mini|full)\s*album\b/gi, ' ')
+    .replace(/\b(regular|mini)\s*\d+\s*(album)?\b/gi, ' ')
+    .replace(/(정규|미니)\s*\d+\s*집/gi, ' ')
+    .replace(/\[([^\]]*(한정|ver|lp|cd|dvd|블루레이|blu-ray|픽처|180g)[^\]]*)\]/gi, ' ')
+    .replace(/\b(blu-ray|blu ray|dvd|lp|ep|cd|kit|kihno|platform|digipack|steelbook)\b/gi, ' ')
+    .replace(/\b(4k uhd|uhd|ubd|bd|2d)\b/gi, ' ')
+    .replace(/\b(full slip|slipcase|photocard|poster|booklet|photobook|pouch|mini cd|nfc)\b/gi, ' ')
+    .replace(/\b(album ver\.?|mubeat album ver\.?|limited edition|special edition|normal edition)\b/gi, ' ')
+    .replace(/\b([a-z]\s*ver\.?|ver\.?\s*[a-z0-9]+|version\s*[a-z0-9]+)\b/gi, ' ')
+    .replace(/\b(set|box set|box|package)\b/gi, ' ')
+    .replace(/\b([1-9]\d*\s*disc|[1-9]\d*\s*p|180g|white marble vinyl|picture disc)\b/gi, ' ')
+    .replace(/\(([^)]*(disc|cd|dvd|blu-ray|uhd|lp|ver|version|steelbook|photocard|poster|booklet|photobook|pouch|nfc|파우치|포토카드|포토북|소책자|미니\s*cd)[^)]*)\)/gi, ' ')
+    .replace(/\[([^\]]*(disc|cd|dvd|blu-ray|uhd|lp|ver|version|steelbook|photocard|poster|booklet|photobook|pouch|nfc|파우치|포토카드|포토북|소책자|미니\s*cd)[^\]]*)\]/gi, ' ')
+    .replace(/\s*[-–—―]\s*(게이트폴드|파우치|미니\s*cd|포토카드|포토북|무선|소책자|booklet|poster|photocard|바이닐).*/gi, ' ')
+    .replace(/\b(포토카드|포토북|북릿|북클릿|미니\s*cd|파우치|스틸북|풀슬립|한정판|한정반|특별판|게이트폴드|바이닐|픽처\s*lp)\b/gi, ' ')
+    .replace(/(블루레이|스틸북|풀슬립|소책자|한정판|한정반|게이트폴드|바이닐|픽처\s*lp)/gi, ' ')
+    .replace(/[『』「"'`]/g, ' ')
+    .replace(/[‐−–—―]/g, '-')
+    .replace(/\s*:\s*[():+0-9a-z\s]*$/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (hasOst && !/\bost\b/.test(s)) s = (s + ' ost').trim();
+  return s;
+}
+
+function 作品人物比較用正規化_(v) {
+  return キー用正規化_(v || '').replace(/ost/g, '').trim();
+}
+
 /* ============================================================
  * WorksKey生成（原題優先）
  * ============================================================ */
-function WorksKeyを作る(日本語タイトル, 作者, 原題 = '') {
+function WorksKeyを作る(日本語タイトル, 作者, 原題 = '', cfg = null) {
   const 正規化原題 = キー用正規化_(原題);
+  const 正規化作者 = キー用正規化_(作者);
+  const 正規化日本語タイトル = キー用正規化_(日本語タイトル);
+
+  if (cfg && cfg.WorksKey方式 === '原題作者') {
+    const 比較用原題 = キー用正規化_(作品原題比較用正規化_(原題));
+    const 比較用作者 = キー用正規化_(作品人物比較用正規化_(作者));
+    if (比較用原題 && 比較用作者) return '原題作者||' + 比較用原題 + '||' + 比較用作者;
+    if (正規化日本語タイトル && 比較用作者) return '日本語作者||' + 正規化日本語タイトル + '||' + 比較用作者;
+    return 比較用原題 || 正規化日本語タイトル || 比較用作者 || '';
+  }
+
   if (正規化原題) return '原題||' + 正規化原題;
-  return キー用正規化_(日本語タイトル) + '||' + キー用正規化_(作者);
+  return 正規化日本語タイトル + '||' + 正規化作者;
 }
 
 /* ============================================================
@@ -152,7 +230,8 @@ function onEdit処理を実行(e, sh, cfg, 列マップ, 開始行, 行数) {
     const 取得 = (名前) => 正規化(行データ[(列マップ[名前] || 1) - 1]);
     const 取得生 = (名前) => 行データ[(列マップ[名前] || 1) - 1];
 
-    const 日本語タイトル = 取得(cn.日本語タイトル);
+    const 表示タイトル = 取得(cn.日本語タイトル);
+    const 日本語タイトル = (cn.Worksタイトル ? 取得(cn.Worksタイトル) : '') || 表示タイトル;
     let 作者 = 取得(cn.作者);
     let 原題 = 取得(cn.原題);
     const 言語 = 取得(cn.言語);
@@ -173,7 +252,7 @@ function onEdit処理を実行(e, sh, cfg, 列マップ, 開始行, 行数) {
       continue;
     }
 
-    const worksKey = WorksKeyを作る(日本語タイトル, 作者, 原題);
+    const worksKey = WorksKeyを作る(日本語タイトル, 作者, 原題, cfg);
     const 全条件揃い = !!(日本語タイトル && 作者 && 言語 && カテゴリ);
     let 作品ID = '', 同名警告 = '';
 
@@ -234,10 +313,10 @@ function onEdit処理を実行(e, sh, cfg, 列マップ, 開始行, 行数) {
     }
 
     const 言語コード = 言語 ? (言語マップ[言語] || 'XX') : '';
-    const カテゴリコード = カテゴリ ? (カテゴリマップ[カテゴリ] || 'XX') : '';
+    const カテゴリコード = カテゴリコードを解決_(カテゴリマップ, カテゴリ);
     const 形態コード = 形態 ? (形態マップ.コード[形態] || '') : '';
     const SKU = SKUを段階生成(言語コード, 形態コード, 作品ID, カテゴリコード, 単巻数, セット開始, セット終了);
-    const タイトル = 同名警告 + 巻数警告 + タイトルを段階生成(cfg, 言語, カテゴリ, 形態, 日本語タイトル, 単巻数, セット開始, セット終了, 作者, 原題, 特典メモ, 形態マップ);
+    const タイトル = 同名警告 + 巻数警告 + タイトルを段階生成(cfg, 言語, カテゴリ, 形態, 表示タイトル || 日本語タイトル, 単巻数, セット開始, セット終了, 作者, 原題, 特典メモ, 形態マップ);
 
     let ステータス = '';
     if (同名警告) ステータス = 同名警告;
@@ -374,7 +453,7 @@ function WorksKey再正規化を実行(作品シート, cfg) {
     const r = データ[i];
     const t = 正規化(r[2] || ''), a = 正規化(r[3] || ''), o = 正規化(r[4] || '');
     if (!t && !a) continue;
-    const key = WorksKeyを作る(t, a, o);
+    const key = WorksKeyを作る(t, a, o, cfg);
     const 元key = String(r[0] || '').trim();
     if (!keyMap.has(key)) keyMap.set(key, []);
     keyMap.get(key).push({ 行: i + 2, データ: r, 元key, キー変更: 元key !== key });
@@ -457,7 +536,7 @@ function Works重複を検出(作品シート, cfg) {
   for (let i = 0; i < データ.length; i++) {
     const t = 正規化(データ[i][2]), a = 正規化(データ[i][3]), o = 正規化(データ[i][4]);
     if (!t || !a) continue;
-    const key = WorksKeyを作る(t, a, o);
+    const key = WorksKeyを作る(t, a, o, cfg);
     if (!keyMap.has(key)) keyMap.set(key, []);
     keyMap.get(key).push({ 行: i + 2, データ: データ[i] });
   }
@@ -480,7 +559,7 @@ function Works孤立エントリーを削除(作品シート, マスターシー
       const a = 正規化(r[(列マップ[cn.作者] || 1) - 1]);
       const o = 正規化(r[(列マップ[cn.原題] || 1) - 1]);
       if (t && a) {
-        使用中Keys.add(WorksKeyを作る(t, a, o));
+        使用中Keys.add(WorksKeyを作る(t, a, o, cfg));
         使用中Keys.add(キー用正規化_(t) + '||' + キー用正規化_(a));
       }
     }
@@ -490,7 +569,7 @@ function Works孤立エントリーを削除(作品シート, マスターシー
   for (let i = 0; i < worksData.length; i++) {
     const t = 正規化(worksData[i][2] || ''), a = 正規化(worksData[i][3] || ''), o = 正規化(worksData[i][4] || '');
     if (!t && !a) { 削除行.push(i + 2); continue; }
-    const computedKey = WorksKeyを作る(t, a, o);
+    const computedKey = WorksKeyを作る(t, a, o, cfg);
     const storedKey = String(worksData[i][0] || '').trim();
     const oldKey = キー用正規化_(t) + '||' + キー用正規化_(a);
     if (!使用中Keys.has(computedKey) && !使用中Keys.has(storedKey) && !使用中Keys.has(oldKey)) {
@@ -534,7 +613,7 @@ function 全作品データを読み込み(作品シート, cfg) {
     const idStr = String(r[1] == null ? '' : r[1]).trim();
     if (!idStr) continue;
     const t = 正規化(r[2] || ''), a = 正規化(r[3] || ''), o = 正規化(r[4] || '');
-    let key = (t && a) ? WorksKeyを作る(t, a, o) : String(r[0] || '').trim();
+    let key = (t && a) ? WorksKeyを作る(t, a, o, cfg) : String(r[0] || '').trim();
     if (!key) continue;
     const 保存済みKey = String(r[0] || '').trim();
     if (保存済みKey !== key) result.keyUpdates.push({ 行: i + 2, key });
@@ -606,9 +685,9 @@ function 確定発行を実行(cfg) {
         out商品コード.push([取得生(cn.商品コード) || '']); outタイトル.push([取得生(cn.タイトル) || '']);
         outステータス.push(['入力中...']); continue;
       }
-      const 言語コード = 言語マップ[言語] || 'XX', カテゴリコード = カテゴリマップ[カテゴリ] || 'XX';
+      const 言語コード = 言語マップ[言語] || 'XX', カテゴリコード = カテゴリコードを解決_(カテゴリマップ, カテゴリ);
       const 形態コード = 形態 ? (形態マップ.コード[形態] || '') : '';
-      const worksKey = WorksKeyを作る(日本語タイトル, 作者, 原題);
+      const worksKey = WorksKeyを作る(日本語タイトル, 作者, 原題, cfg);
       let 作品ID = 作品データ.keyToId[worksKey];
       const 既存 = 作品データ.keyToData[worksKey];
       if (既存 && !原題 && 既存.原題) 原題 = 正規化(既存.原題);
@@ -636,7 +715,7 @@ function 確定発行を実行(cfg) {
         for (let v = セット開始巻; v <= セット終了巻; v++) 作品データ.keyToVols[worksKey].add(v);
       }
       const SKU = SKUを生成(言語コード, 形態コード, 作品ID, カテゴリコード, 取得生(cn.単巻数), 取得生(cn.セット開始), 取得生(cn.セット終了));
-      const タイトル = タイトルを段階生成(cfg, 言語, カテゴリ, 形態, 日本語タイトル, 取得生(cn.単巻数), 取得生(cn.セット開始), 取得生(cn.セット終了), 作者, 原題, 取得(cn.特典メモ), 形態マップ);
+      const タイトル = タイトルを段階生成(cfg, 言語, カテゴリ, 形態, 表示タイトル || 日本語タイトル, 取得生(cn.単巻数), 取得生(cn.セット開始), 取得生(cn.セット終了), 作者, 原題, 取得(cn.特典メモ), 形態マップ);
       out作品ID.push([作品ID]); outSKU.push([SKU]); out商品コード.push([SKU]);
       outタイトル.push([タイトル]); outステータス.push(['商品コード(発行済み確定)']);
       発行数++;
@@ -706,7 +785,8 @@ function 一括更新を実行(cfg) {
       const r = 全データ[i];
       const 取得 = (名前) => 正規化(r[(列マップ[名前] || 1) - 1]);
       const 取得生 = (名前) => r[(列マップ[名前] || 1) - 1];
-      const 日本語タイトル = 取得(cn.日本語タイトル);
+      const 表示タイトル = 取得(cn.日本語タイトル);
+    const 日本語タイトル = (cn.Worksタイトル ? 取得(cn.Worksタイトル) : '') || 表示タイトル;
       const 言語 = 取得(cn.言語), カテゴリ = 取得(cn.カテゴリ);
       let 作者 = 取得(cn.作者), 原題 = 取得(cn.原題);
       const 形態 = 取得(cn.形態);
@@ -715,7 +795,7 @@ function 一括更新を実行(cfg) {
 
       if (確定行) {
         if (日本語タイトル && 作者) {
-          const worksKey = WorksKeyを作る(日本語タイトル, 作者, 原題);
+          const worksKey = WorksKeyを作る(日本語タイトル, 作者, 原題, cfg);
           const 既存 = 作品データ.keyToData[worksKey];
           if (既存 && !原題 && 既存.原題) 原題 = 正規化(既存.原題);
           const 巻数 = 数値変換(取得生(cn.単巻数));
@@ -740,11 +820,11 @@ function 一括更新を実行(cfg) {
         continue;
       }
 
-      const 言語コード = 言語マップ[言語] || 'XX', カテゴリコード = カテゴリマップ[カテゴリ] || 'XX';
+      const 言語コード = 言語マップ[言語] || 'XX', カテゴリコード = カテゴリコードを解決_(カテゴリマップ, カテゴリ);
       const 形態コード = 形態 ? (形態マップ.コード[形態] || '') : '';
       let 作品ID = '';
       if (日本語タイトル && 作者) {
-        const worksKey = WorksKeyを作る(日本語タイトル, 作者, 原題);
+        const worksKey = WorksKeyを作る(日本語タイトル, 作者, 原題, cfg);
         const 既存 = 作品データ.keyToData[worksKey];
         if (既存) { if (!作者 && 既存.作者) 作者 = 正規化(既存.作者); if (!原題 && 既存.原題) 原題 = 正規化(既存.原題); }
         作品ID = 作品データ.keyToId[worksKey];
@@ -765,7 +845,7 @@ function 一括更新を実行(cfg) {
       }
 
       const SKU = SKUを段階生成(言語コード, 形態コード, 作品ID, カテゴリコード, 取得生(cn.単巻数), 取得生(cn.セット開始), 取得生(cn.セット終了));
-      const タイトル = タイトルを段階生成(cfg, 言語, カテゴリ, 形態, 日本語タイトル, 取得生(cn.単巻数), 取得生(cn.セット開始), 取得生(cn.セット終了), 作者, 原題, 取得(cn.特典メモ), 形態マップ);
+      const タイトル = タイトルを段階生成(cfg, 言語, カテゴリ, 形態, 表示タイトル || 日本語タイトル, 取得生(cn.単巻数), 取得生(cn.セット開始), 取得生(cn.セット終了), 作者, 原題, 取得(cn.特典メモ), 形態マップ);
       out作品ID.push([作品ID]); outSKU.push([SKU]); out商品コード.push([SKU]); outタイトル.push([タイトル]);
       outステータス.push([(日本語タイトル && 作者 && 言語 && カテゴリ) ? '商品コード(予約)' : '入力中...']);
       out作者.push([作者 || '']); out原題.push([原題 || '']);
@@ -1010,11 +1090,26 @@ function 正規化(v) { return String(v || '').replace(/\u3000/g, ' ').replace(/
 function 数値変換(v) { const n = parseInt(String(v || '').trim(), 10); return Number.isFinite(n) ? n : null; }
 
 function データがある最終行を取得(sh, 列マップ, cn) {
-  const 基準列 = 列マップ[cn.日本語タイトル] || 1;
   const 最大行 = sh.getLastRow();
   if (最大行 <= 1) return 1;
-  const data = sh.getRange(2, 基準列, 最大行 - 1, 1).getValues();
-  for (let i = data.length - 1; i >= 0; i--) { if (data[i][0] !== '' && data[i][0] !== null && data[i][0] !== undefined) return i + 2; }
+
+  const 候補列 = [
+    cn.Worksタイトル,
+    cn.日本語タイトル,
+    cn.作者,
+    cn.原題,
+    cn.商品コード,
+    cn.作品ID
+  ].map(name => 列番号安全取得_(列マップ, name)).filter(Boolean);
+
+  if (候補列.length === 0) return 最大行;
+
+  const data = sh.getRange(2, 1, 最大行 - 1, sh.getLastColumn()).getValues();
+  for (let i = data.length - 1; i >= 0; i--) {
+    for (const c of 候補列) {
+      if (String(data[i][c - 1] || '').trim() !== '') return i + 2;
+    }
+  }
   return 1;
 }
 
@@ -1025,6 +1120,7 @@ function キー用正規化_(v) {
     .replace(/[・･]/g, ' ').replace(/[～〜~]/g, '').replace(/[：:]/g, '').replace(/[、,]/g, '')
     .replace(/[。\.]/g, '').replace(/[！!]/g, '').replace(/[？?]/g, '').replace(/[『』「」]/g, '').replace(/["'"]/g, '')
     .replace(/[‐−–—―]/g, '-')
+    .replace(/\s*:\s*[():+0-9a-z\s]*$/gi, ' ')
     .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
     .replace(/[Ａ-Ｚａ-ｚ]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
     .replace(/\s*[\/／]\s*/g, ' / ').replace(/\s+/g, ' ').replace(/-+/g, '-').trim();
@@ -1075,3 +1171,7 @@ function 自己更新を終了_() {
   props.deleteProperty('__SELF_EDIT_LOCK__');
   props.deleteProperty('__SELF_EDIT_TS__');
 }
+
+
+
+

@@ -38,6 +38,20 @@
       </div>
     </div>
     <div class="main">
+      <div style="padding:6px 12px;border-bottom:1px solid #e5e7eb;background:#fafafa;font-size:12px;">
+        {% if yahoo_refresh_status == 'ok' and yahoo_refresh_days_left is not none %}
+          <span style="color:#2e7d32;">Yahoo認証: 残り {{ '%.1f'|format(yahoo_refresh_days_left) }} 日</span>
+          <span style="color:#666;">（目安期限 {{ yahoo_refresh_expires_at }}）</span>
+        {% elif yahoo_refresh_status in ('warn', 'danger', 'expired') and yahoo_refresh_days_left is not none %}
+          <span style="color:#b26a00;font-weight:600;">Yahoo認証期限が近いです: 残り {{ '%.1f'|format(yahoo_refresh_days_left) }} 日</span>
+          <span style="color:#666;">（目安期限 {{ yahoo_refresh_expires_at }}）</span>
+          <a href="/oauth/quiet?next={{ request.full_path|urlencode }}" style="margin-left:8px;">SMSなし再認証</a>
+          <a href="/oauth/start?next={{ request.full_path|urlencode }}" style="margin-left:6px;">通常認証</a>
+        {% else %}
+          <span style="color:#666;">Yahoo認証期限: 未確認</span>
+          <a href="/oauth/quiet?next={{ request.full_path|urlencode }}" style="margin-left:8px;">SMSなし再認証</a>
+        {% endif %}
+      </div>
       {% block content %}{% endblock %}
     </div>
   </div>

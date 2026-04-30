@@ -224,7 +224,9 @@ function メニュー_マスター作成() {
   const カテゴリ初期値 = [
     ['コミック', 'CM', '#fff2cc'], ['まんが', 'CM', '#fff2cc'], ['小説', 'NV', '#d9ead3'],
     ['グッズ', 'GD', '#cfe2f3'], ['設定集', 'ART', '#f4cccc'], ['アートブック', 'ART', '#f4cccc'],
-    ['雑誌', 'MZ', '#d9d2e9']
+    ['雑誌', 'MZ', '#d9d2e9'],
+    ['CD', 'CD', '#fce5cd'], ['LP', 'LP', '#fce5cd'], ['OST', 'OST', '#fce5cd'],
+    ['DVD', 'DVD', '#d9ead3'], ['Blu-ray', 'BD', '#d9ead3']
   ];
 
   if (!ss.getSheetByName(cfg.言語マスター名)) {

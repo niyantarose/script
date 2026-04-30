@@ -1,5 +1,7 @@
 from flask import Flask
 from datetime import datetime
+import os
+import time
 from config import Config
 from models import db
 
@@ -40,7 +42,40 @@ def create_app():
     # テンプレートにnowを渡す
     @app.context_processor
     def inject_now():
-        return {'now': datetime.now().strftime('%Y/%m/%d')}
+        now_ts = int(time.time())
+        env_path = os.path.join(os.path.dirname(__file__), '.env')
+        env_map = {}
+        try:
+            with open(env_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if '=' in line and not line.lstrip().startswith('#'):
+                        key, value = line.strip().split('=', 1)
+                        env_map[key] = value
+        except Exception:
+            env_map = {}
+
+        expires_at = int(env_map.get('YAHOO_REFRESH_EXPECTED_EXPIRES_AT', '0') or 0)
+        refresh_days_left = None
+        refresh_expires_at_text = ''
+        refresh_status = 'unknown'
+        if expires_at > 0:
+            refresh_days_left = (expires_at - now_ts) / 86400
+            refresh_expires_at_text = datetime.fromtimestamp(expires_at).strftime('%Y/%m/%d %H:%M')
+            if refresh_days_left < 0:
+                refresh_status = 'expired'
+            elif refresh_days_left <= 1:
+                refresh_status = 'danger'
+            elif refresh_days_left <= 3:
+                refresh_status = 'warn'
+            else:
+                refresh_status = 'ok'
+
+        return {
+            'now': datetime.now().strftime('%Y/%m/%d'),
+            'yahoo_refresh_days_left': refresh_days_left,
+            'yahoo_refresh_expires_at': refresh_expires_at_text,
+            'yahoo_refresh_status': refresh_status,
+        }
 
     # DB初期化
     with app.app_context():
