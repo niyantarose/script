@@ -81,8 +81,8 @@ def create_app():
     with app.app_context():
         db.create_all()
 
-    # 1時間ごとの自動取込スケジューラ
-    if _APScheduler:
+    # Flask内APSchedulerは明示有効化時のみ起動（Gunicorn worker重複を防ぐ）
+    if _APScheduler and app.config.get('APSCHEDULER_ENABLED', False):
         from routes.import_data import run_all_imports_job
         scheduler = _APScheduler(daemon=True)
         scheduler.add_job(
@@ -98,6 +98,8 @@ def create_app():
             app.logger.info('APScheduler started: auto-import every 1 hour')
         except Exception as e:
             app.logger.warning(f'Scheduler start failed: {e}')
+    else:
+        app.logger.info('APScheduler disabled in Flask app process')
 
     return app
 

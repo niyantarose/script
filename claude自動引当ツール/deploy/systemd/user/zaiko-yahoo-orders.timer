@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Zaiko Yahoo orders import every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Persistent=true
+Unit=zaiko-yahoo-orders.service
+
+[Install]
+WantedBy=timers.target

@@ -6,6 +6,9 @@ load_dotenv()
 
 class Config:
     SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key')
+    APSCHEDULER_ENABLED = (
+        os.getenv('ENABLE_APSCHEDULER', os.getenv('APSCHEDULER_ENABLED', 'false')).lower() == 'true'
+    )
 
     if os.getenv('USE_SQLITE', 'true').lower() == 'true':
         SQLALCHEMY_DATABASE_URI = 'sqlite:///inventory.db'

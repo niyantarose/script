@@ -1,0 +1,9 @@
+[Unit]
+Description=Zaiko Yahoo stock diff import
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/zaiko-tool/app
+EnvironmentFile=/home/ubuntu/zaiko-tool/app/.env
+ExecStart=/home/ubuntu/zaiko-tool/app/scripts/job_yahoo_stock_diff.sh

@@ -1,0 +1,9 @@
+[Unit]
+Description=Zaiko run_all_imports_job
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/zaiko-tool/app
+EnvironmentFile=/home/ubuntu/zaiko-tool/app/.env
+ExecStart=/home/ubuntu/zaiko-tool/app/scripts/job_run_all_imports.sh

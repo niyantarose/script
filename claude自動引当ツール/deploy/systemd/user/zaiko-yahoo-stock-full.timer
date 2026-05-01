@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Zaiko Yahoo stock full import daily
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=zaiko-yahoo-stock-full.service
+
+[Install]
+WantedBy=timers.target

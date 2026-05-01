@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Zaiko run_all_imports_job every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=zaiko-run-all-imports.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Zaiko Yahoo stock diff import every 10 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/10:00
+Persistent=true
+Unit=zaiko-yahoo-stock-diff.service
+
+[Install]
+WantedBy=timers.target
