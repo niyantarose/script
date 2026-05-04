@@ -186,6 +186,110 @@ def import_yahoo_stock_diff():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+def run_yahoo_stock_full_import():
+    """Yahoo在庫フル同期の本体。`/import/yahoo_stock` と CLI から利用する。
+
+    Returns:
+        dict: HTTP の JSON と同形の結果（status, message, 件数, alloc など）
+
+    Raises:
+        Exception: DB / API 等の失敗時（呼び出し側で rollback / exit code 処理）
+    """
+    from services.yahoo_api import YahooAPI
+    api = YahooAPI()
+
+    # ① 在庫CSV取得（type=2）
+    stock_items = api.download_inventory_csv()
+    if not stock_items:
+        return {'status': 'ok', 'message': '在庫データがありませんでした', 'updated': 0}
+
+    # ② 商品CSV取得（type=1）→ code をキーにした辞書を作成
+    try:
+        item_list = api.download_item_csv()
+        item_names = {i['code']: i for i in item_list}
+    except Exception as e:
+        current_app.logger.warning(f'商品CSV取得失敗（在庫のみ更新）: {e}')
+        item_names = {}
+
+    imported = 0
+    updated = 0
+    now = datetime.now()
+
+    for item in stock_items:
+        code = item['code']
+        sub_code = item['sub_code'] or None
+        qty = item['quantity']
+        if not code or qty is None:
+            continue  # コードなし or 在庫無限大はスキップ
+
+        # サブコード末尾が 'b' → お取り寄せ、それ以外 → 即納
+        is_immediate = _is_immediate(sub_code)
+
+        # 商品名・価格（商品CSV から補完）
+        item_info = item_names.get(code, {})
+        product_name = item_info.get('name', '')
+        price = item_info.get('price', 0)
+
+        existing = Inventory.query.filter_by(
+            product_code=code,
+            product_sub_code=sub_code,
+            inventory_type='yahoo',
+        ).first()
+
+        if existing:
+            existing.yahoo_stock = qty
+            existing.quantity = qty
+            existing.is_immediate = is_immediate
+            existing.available_qty = max(0, qty - (existing.reserved_qty or 0))
+            existing.last_synced_at = now
+            if product_name:
+                existing.product_name = product_name
+            if price:
+                existing.price = price
+            updated += 1
+        else:
+            db.session.add(Inventory(
+                product_code=code,
+                product_sub_code=sub_code,
+                product_name=product_name,
+                inventory_type='yahoo',
+                quantity=qty,
+                yahoo_stock=qty,
+                available_qty=qty,
+                price=price,
+                is_immediate=is_immediate,
+                last_synced_at=now,
+            ))
+            imported += 1
+
+        if (imported + updated) % 500 == 0:
+            db.session.flush()
+
+    db.session.commit()
+
+    # ── フル同期後も pending/shortage 明細を再引当 ──
+    from services.allocation import run_auto_allocation
+    alloc_stats = run_auto_allocation()
+    db.session.commit()
+
+    total = len(stock_items)
+    immediate_cnt = sum(1 for i in stock_items if _is_immediate(i.get('sub_code', '')))
+    return {
+        'status': 'ok',
+        'imported': imported,
+        'updated': updated,
+        'total': total,
+        'immediate': immediate_cnt,
+        'alloc': alloc_stats,
+        'message': (f'Yahoo在庫同期完了: {imported}件新規 / {updated}件更新（計{total}件）'
+                      f' | 即納:{immediate_cnt}件'
+                      f' | 引当: 即納{alloc_stats["fully_allocated"]}件'
+                      f' / 部分{alloc_stats["partial"]}件'
+                      f' / お取り寄せ{alloc_stats["tori"]}件'
+                      f' / 不足{alloc_stats["shortage"]}件'),
+    }
+
+
 @bp.route('/yahoo_stock', methods=['POST'])
 def import_yahoo_stock():
     """【初回・フル同期】Yahoo在庫＋商品名を一括取得して Inventory を差分更新。
@@ -195,99 +299,8 @@ def import_yahoo_stock():
     - allow_overdraft=1 → is_immediate=False（お取り寄せ）
     """
     try:
-        from services.yahoo_api import YahooAPI
-        api = YahooAPI()
-
-        # ① 在庫CSV取得（type=2）
-        stock_items = api.download_inventory_csv()
-        if not stock_items:
-            return jsonify({'status': 'ok', 'message': '在庫データがありませんでした', 'updated': 0})
-
-        # ② 商品CSV取得（type=1）→ code をキーにした辞書を作成
-        try:
-            item_list  = api.download_item_csv()
-            item_names = {i['code']: i for i in item_list}
-        except Exception as e:
-            current_app.logger.warning(f'商品CSV取得失敗（在庫のみ更新）: {e}')
-            item_names = {}
-
-        imported = 0
-        updated  = 0
-        now      = datetime.now()
-
-        for item in stock_items:
-            code     = item['code']
-            sub_code = item['sub_code'] or None
-            qty      = item['quantity']
-            if not code or qty is None:
-                continue  # コードなし or 在庫無限大はスキップ
-
-            # サブコード末尾が 'b' → お取り寄せ、それ以外 → 即納
-            is_immediate = _is_immediate(sub_code)
-
-            # 商品名・価格（商品CSV から補完）
-            item_info    = item_names.get(code, {})
-            product_name = item_info.get('name', '')
-            price        = item_info.get('price', 0)
-
-            existing = Inventory.query.filter_by(
-                product_code=code,
-                product_sub_code=sub_code,
-                inventory_type='yahoo',
-            ).first()
-
-            if existing:
-                existing.yahoo_stock    = qty
-                existing.quantity       = qty
-                existing.is_immediate   = is_immediate
-                existing.available_qty  = max(0, qty - (existing.reserved_qty or 0))
-                existing.last_synced_at = now
-                if product_name:
-                    existing.product_name = product_name
-                if price:
-                    existing.price = price
-                updated += 1
-            else:
-                db.session.add(Inventory(
-                    product_code=code,
-                    product_sub_code=sub_code,
-                    product_name=product_name,
-                    inventory_type='yahoo',
-                    quantity=qty,
-                    yahoo_stock=qty,
-                    available_qty=qty,
-                    price=price,
-                    is_immediate=is_immediate,
-                    last_synced_at=now,
-                ))
-                imported += 1
-
-            if (imported + updated) % 500 == 0:
-                db.session.flush()
-
-        db.session.commit()
-
-        # ── フル同期後も pending/shortage 明細を再引当 ──
-        from services.allocation import run_auto_allocation
-        alloc_stats = run_auto_allocation()
-        db.session.commit()
-
-        total = len(stock_items)
-        immediate_cnt = sum(1 for i in stock_items if _is_immediate(i.get('sub_code', '')))
-        return jsonify({
-            'status':    'ok',
-            'imported':  imported,
-            'updated':   updated,
-            'total':     total,
-            'immediate': immediate_cnt,
-            'alloc':     alloc_stats,
-            'message':   (f'Yahoo在庫同期完了: {imported}件新規 / {updated}件更新（計{total}件）'
-                          f' | 即納:{immediate_cnt}件'
-                          f' | 引当: 即納{alloc_stats["fully_allocated"]}件'
-                          f' / 部分{alloc_stats["partial"]}件'
-                          f' / お取り寄せ{alloc_stats["tori"]}件'
-                          f' / 不足{alloc_stats["shortage"]}件'),
-        })
+        result = run_yahoo_stock_full_import()
+        return jsonify(result)
     except Exception as e:
         db.session.rollback()
         return jsonify({'status': 'error', 'message': str(e)}), 500
