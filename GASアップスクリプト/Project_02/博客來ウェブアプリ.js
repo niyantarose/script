@@ -27,6 +27,12 @@ const MAGAZINE_MASTER_CANDIDATE_SHEET = '雑誌マスター候補（共通）';
 const MAGAZINE_EDITION_RULE_SHEET = '版種ルール（雑誌共通）';
 const MAGAZINE_TYPE_RULE_SHEET = 'タイプルール（雑誌共通）';
 const JAPANESE_TITLE_DICTIONARY_SHEET_NAME = '日本語タイトル辞書';
+/**
+ * 共通マスター（MASTER_SPREADSHEET_ID）内の「作品タイトル」蓄積シート。
+ * ブラウザURLの gid= と同じ数値。1行目ヘッダは「日本語タイトル辞書」と同一推奨:
+ * 言語 / カテゴリ / 原題タイトル / 日本語タイトル / 著者（任意） / 別名（任意・区切りは改行・;・, など）
+ */
+const WORK_TITLE_MASTER_SHEET_GID = 1630833397;
 
 const UNKNOWN_MAGAZINE_WRITE_MODE = 'candidate';
 const ALLOW_PROVISIONAL_MAGAZINE_CODE = true;
@@ -39,22 +45,162 @@ const FAST_DUPLICATE_CHECK_ITEM_LIMIT = 3;
 const LOOKUP_WRITEBACK_HEADERS = [
   '日本語タイトル',
   '作品名（日本語）',
-  '作品名日本語',
-  '商品名（日本語）',
-  '商品名(日本語)',
   '日本語タイトル照会結果',
   '日本語タイトル照会元',
   '日本語タイトル照会ログ',
   '検索用正規化タイトル'
 ];
-const BUILTIN_TITLE_ALIAS_DICTIONARY = [
-  { language: '台湾', categories: ['まんが', 'グッズ'], aliases: ['排球少年'], japaneseTitle: 'ハイキュー!!' },
-  { language: '韓国', categories: ['まんが', 'グッズ'], aliases: ['나의 히어로 아카데미아'], japaneseTitle: '僕のヒーローアカデミア' },
-  { language: '台湾', categories: ['書籍', 'まんが'], aliases: ['葬送的芙莉蓮'], japaneseTitle: '葬送のフリーレン' },
-];
+const BUILTIN_TITLE_ALIAS_DICTIONARY = {
+  '台湾|まんが|排球少年': 'ハイキュー!!',
+  '台湾|グッズ|排球少年': 'ハイキュー!!',
+  '台湾|まんが|我的英雄學院': '僕のヒーローアカデミア',
+  '台湾|グッズ|我的英雄學院': '僕のヒーローアカデミア',
+  '台湾|まんが|咒術迴戰': '呪術廻戦',
+  '台湾|グッズ|咒術迴戰': '呪術廻戦',
+  '台湾|まんが|葬送的芙莉蓮': '葬送のフリーレン',
+  '台湾|書籍|葬送的芙莉蓮': '葬送のフリーレン',
+  '台湾|まんが|我獨自升級': '俺だけレベルアップな件',
+  '台湾|書籍|我獨自升級': '俺だけレベルアップな件',
+  '台湾|グッズ|我獨自升級': '俺だけレベルアップな件',
+  /** Roses and Champagne（英題・MU）— GAS から MU が 403 のときのフォールバック */
+  '台湾|まんが|薔薇與香檳': '薔薇とシャンパン',
+  '台湾|グッズ|薔薇與香檳': '薔薇とシャンパン',
+  '台湾|まんが|rosesandchampagne': '薔薇とシャンパン',
+  '台湾|グッズ|rosesandchampagne': '薔薇とシャンパン',
+  /** Saving My Sweetheart（MU associated に日本語あり） */
+  '台湾|書籍|只想守護溫柔的你': '優しいあなたを守る方法',
+  '台湾|まんが|只想守護溫柔的你': '優しいあなたを守る方法',
+  '台湾|グッズ|只想守護溫柔的你': '優しいあなたを守る方法',
+  '台湾|書籍|savingmysweetheart': '優しいあなたを守る方法',
+  '台湾|まんが|savingmysweetheart': '優しいあなたを守る方法'
+};
+const TITLE_LOOKUP_PROVIDERS = {
+  workTitleMaster: {
+    label: '作品タイトルマスター（共通シート）',
+    role: 'マスターSP（gid）に登録した別名・原題から日本語正式題への変換',
+    priority: 'highest',
+    implemented: true
+  },
+  titleAliasDictionary: {
+    label: '自社タイトル別名辞書',
+    role: '内蔵辞書＋「日本語タイトル辞書」シートから日本語タイトルへの確定変換',
+    priority: 'highest',
+    implemented: true
+  },
+  chilchil: {
+    label: 'ちるちる',
+    role: 'BL漫画・BL小説の日本語タイトル確認',
+    itemTypes: ['bl_manga', 'bl_novel'],
+    implemented: true,
+    failSoft: true
+  },
+  mangaUpdates: {
+    label: 'MangaUpdates',
+    role: '漫画・manhwa・manhuaの原題/英題/別名/シリーズ確認',
+    itemTypes: ['manga', 'bl_manga', 'goods', 'light_novel'],
+    implemented: true,
+    failSoft: true,
+    /** GoogleのIPはMU側で恒久ブロックされるため、GASでは実行せずブラウザ拡張に委譲 */
+    delegatedToExtension: true
+  },
+  aniList: {
+    label: 'AniList',
+    role: 'アニメ・漫画・メディアミックス作品のタイトル確認',
+    itemTypes: ['manga', 'bl_manga', 'goods', 'light_novel'],
+    implemented: true,
+    failSoft: true
+  },
+  myAnimeList: {
+    label: 'MyAnimeList',
+    role: 'アニメ・漫画系タイトル補助',
+    itemTypes: ['manga', 'goods', 'light_novel'],
+    optional: true,
+    implemented: false
+  },
+  mangaDex: {
+    label: 'MangaDex',
+    role: '多言語タイトル・別名補助',
+    itemTypes: ['manga', 'goods'],
+    optional: true,
+    implemented: false
+  },
+  bookWalker: {
+    label: 'BOOK☆WALKER',
+    role: '日本語漫画・ラノベ・電子書籍タイトル確認',
+    itemTypes: ['manga', 'light_novel', 'novel_book', 'bl_manga'],
+    implemented: true,
+    failSoft: true
+  },
+  amazon: {
+    label: 'Amazon JP',
+    role: '書籍・ラノベ・グッズ・一般書籍の日本語タイトル補助',
+    itemTypes: ['manga', 'bl_manga', 'light_novel', 'novel_book', 'goods'],
+    implemented: true,
+    failSoft: true
+  },
+  googleBooks: {
+    label: 'Google Books API',
+    role: '書籍・雑誌メタデータ補助',
+    itemTypes: ['novel_book', 'light_novel', 'magazine'],
+    implemented: false
+  },
+  openBD: {
+    label: 'openBD',
+    role: '日本のISBN書誌確認',
+    itemTypes: ['novel_book', 'light_novel', 'manga'],
+    implemented: false
+  },
+  ndlSearch: {
+    label: '国立国会図書館サーチ',
+    role: '日本の書誌情報確認',
+    itemTypes: ['novel_book', 'light_novel', 'manga'],
+    optional: true,
+    implemented: false
+  },
+  magazineMaster: {
+    label: '自社雑誌マスター',
+    role: '雑誌名・年月・号数の正規化',
+    itemTypes: ['magazine'],
+    implemented: false
+  }
+};
+const PROVIDER_ORDER_BY_ITEM_TYPE = {
+  manga: ['workTitleMaster', 'titleAliasDictionary', 'mangaUpdates', 'aniList', 'bookWalker', 'amazon', 'myAnimeList', 'mangaDex'],
+  bl_manga: ['workTitleMaster', 'titleAliasDictionary', 'chilchil', 'mangaUpdates', 'aniList', 'bookWalker', 'amazon'],
+  light_novel: ['workTitleMaster', 'titleAliasDictionary', 'bookWalker', 'amazon', 'googleBooks', 'openBD', 'aniList', 'mangaUpdates'],
+  novel_book: ['workTitleMaster', 'titleAliasDictionary', 'bookWalker', 'amazon', 'googleBooks', 'openBD', 'ndlSearch'],
+  goods: ['workTitleMaster', 'titleAliasDictionary', 'aniList', 'mangaUpdates', 'bookWalker', 'amazon'],
+  magazine: ['workTitleMaster', 'magazineMaster', 'googleBooks', 'amazon', 'bookWalker'],
+  music_video: ['workTitleMaster', 'titleAliasDictionary', 'amazon'],
+  unknown: ['workTitleMaster', 'titleAliasDictionary', 'bookWalker', 'amazon', 'googleBooks']
+};
+const PROVIDER_ID_ALIASES = {
+  worktitlemaster: 'workTitleMaster',
+  work_title_master: 'workTitleMaster',
+  workmaster: 'workTitleMaster',
+  作品マスター: 'workTitleMaster',
+  dictionary: 'titleAliasDictionary',
+  titleDictionary: 'titleAliasDictionary',
+  title_alias_dictionary: 'titleAliasDictionary',
+  mangaupdates: 'mangaUpdates',
+  manga_updates: 'mangaUpdates',
+  anilist: 'aniList',
+  bookwalker: 'bookWalker',
+  book_walker: 'bookWalker',
+  magazine_master: 'magazineMaster',
+  myanimelist: 'myAnimeList',
+  my_anime_list: 'myAnimeList',
+  mangadex: 'mangaDex',
+  manga_dex: 'mangaDex',
+  googlebooks: 'googleBooks',
+  google_books: 'googleBooks',
+  ndl: 'ndlSearch',
+  ndl_search: 'ndlSearch'
+};
 
 let _masterSpreadsheetCache = null;
 let _japaneseTitleDictionaryCache = null;
+let _workTitleMasterCache = null;
 
 function getMasterSpreadsheet_() {
   if (_masterSpreadsheetCache) return _masterSpreadsheetCache;
@@ -62,65 +208,124 @@ function getMasterSpreadsheet_() {
   return _masterSpreadsheetCache;
 }
 
+function buildJapaneseTitleDictionaryMapFromSheet_(sheet) {
+  const byKey = {};
+  if (!sheet) return byKey;
+
+  const lastRow = sheet.getLastRow();
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  if (lastRow < 2) return byKey;
+
+  const values = sheet.getRange(1, 1, lastRow, lastColumn).getDisplayValues();
+  const headerMap = {};
+  values[0].forEach(function(header, idx) {
+    const normalized = normalizeHeader_(header);
+    if (normalized) headerMap[normalized] = idx;
+  });
+
+  const languageIdx = headerMap[normalizeHeader_('言語')];
+  const categoryIdx = headerMap[normalizeHeader_('カテゴリ')];
+  const originalTitleIdx = headerMap[normalizeHeader_('原題タイトル')];
+  const japaneseTitleIdx = headerMap[normalizeHeader_('日本語タイトル')];
+  const authorIdx = headerMap[normalizeHeader_('著者')];
+  const aliasIdx = headerMap[normalizeHeader_('別名')];
+
+  if (languageIdx === undefined || categoryIdx === undefined || originalTitleIdx === undefined || japaneseTitleIdx === undefined) {
+    return byKey;
+  }
+
+  for (let rowIndex = 1; rowIndex < values.length; rowIndex += 1) {
+    const row = values[rowIndex];
+    const language = normalizeDictionaryLanguage_(row[languageIdx] || '');
+    const category = normalizeDictionaryCategory_(row[categoryIdx] || '');
+    const japaneseTitle = String(row[japaneseTitleIdx] || '').trim();
+    const authorKey = authorIdx !== undefined ? normalizeDictionaryAuthorKey_(row[authorIdx] || '') : '';
+    const titleCandidates = [row[originalTitleIdx] || ''].concat(parseDictionaryAliases_(aliasIdx >= 0 ? row[aliasIdx] : ''));
+
+    if (!language || !category || !japaneseTitle) continue;
+
+    titleCandidates.forEach(function(titleCandidate, candidateIndex) {
+      const titleKey = normalizeDictionaryTitleKey_(titleCandidate);
+      if (!titleKey) return;
+
+      const key = buildJapaneseTitleDictionaryKey_(language, category, titleKey);
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push({
+        japaneseTitle: japaneseTitle,
+        authorKey: authorKey,
+        isAlias: candidateIndex > 0,
+      });
+    });
+  }
+
+  return byKey;
+}
+
 function getJapaneseTitleDictionaryIndex_() {
   if (_japaneseTitleDictionaryCache) return _japaneseTitleDictionaryCache;
 
   const master = getMasterSpreadsheet_();
   const sheet = master.getSheetByName(JAPANESE_TITLE_DICTIONARY_SHEET_NAME);
-  const byKey = {};
-
-  if (!sheet) {
-    _japaneseTitleDictionaryCache = { available: false, byKey: byKey };
-    return _japaneseTitleDictionaryCache;
-  }
-
-  const lastRow = sheet.getLastRow();
-  const lastColumn = Math.max(sheet.getLastColumn(), 1);
-  if (lastRow >= 2) {
-    const values = sheet.getRange(1, 1, lastRow, lastColumn).getDisplayValues();
-    const headerMap = {};
-    values[0].forEach(function(header, idx) {
-      const normalized = normalizeHeader_(header);
-      if (normalized) headerMap[normalized] = idx;
-    });
-
-    const languageIdx = headerMap[normalizeHeader_('言語')];
-    const categoryIdx = headerMap[normalizeHeader_('カテゴリ')];
-    const originalTitleIdx = headerMap[normalizeHeader_('原題タイトル')];
-    const japaneseTitleIdx = headerMap[normalizeHeader_('日本語タイトル')];
-    const authorIdx = headerMap[normalizeHeader_('著者')];
-    const aliasIdx = headerMap[normalizeHeader_('別名')];
-
-    for (let rowIndex = 1; rowIndex < values.length; rowIndex += 1) {
-      const row = values[rowIndex];
-      const language = normalizeDictionaryLanguage_(row[languageIdx] || '');
-      const category = normalizeDictionaryCategory_(row[categoryIdx] || '');
-      const japaneseTitle = String(row[japaneseTitleIdx] || '').trim();
-      const authorKey = normalizeDictionaryAuthorKey_(row[authorIdx] || '');
-      const titleCandidates = [row[originalTitleIdx] || ''].concat(parseDictionaryAliases_(aliasIdx >= 0 ? row[aliasIdx] : ''));
-
-      if (!language || !category || !japaneseTitle) continue;
-
-      titleCandidates.forEach(function(titleCandidate, candidateIndex) {
-        const titleKey = normalizeDictionaryTitleKey_(titleCandidate);
-        if (!titleKey) return;
-
-        const key = buildJapaneseTitleDictionaryKey_(language, category, titleKey);
-        if (!byKey[key]) byKey[key] = [];
-        byKey[key].push({
-          japaneseTitle: japaneseTitle,
-          authorKey: authorKey,
-          isAlias: candidateIndex > 0,
-        });
-      });
-    }
-  }
+  const byKey = buildJapaneseTitleDictionaryMapFromSheet_(sheet);
 
   _japaneseTitleDictionaryCache = {
-    available: true,
+    available: !!sheet,
     byKey: byKey,
   };
   return _japaneseTitleDictionaryCache;
+}
+
+function getWorkTitleMasterIndex_() {
+  if (_workTitleMasterCache) return _workTitleMasterCache;
+
+  var sheet = null;
+  try {
+    sheet = getMasterSpreadsheet_().getSheetById(WORK_TITLE_MASTER_SHEET_GID);
+  } catch (e) {
+    sheet = null;
+  }
+
+  const byKey = buildJapaneseTitleDictionaryMapFromSheet_(sheet);
+  _workTitleMasterCache = {
+    available: !!sheet,
+    byKey: byKey,
+  };
+  return _workTitleMasterCache;
+}
+
+function findTitleInDictionaryByKeyMap_(byKeyMap, language, category, originalTitle, author, originalProductTitle) {
+  const normalizedLanguage = normalizeDictionaryLanguage_(language);
+  const normalizedCategory = normalizeDictionaryCategory_(category);
+  const titleKeys = buildDictionaryTitleKeys_(originalTitle, normalizedLanguage, normalizedCategory, originalProductTitle);
+  if (!normalizedLanguage || !normalizedCategory || !titleKeys.length || !byKeyMap) return '';
+
+  const authorKey = normalizeDictionaryAuthorKey_(author);
+  const seen = {};
+  const candidates = [];
+  titleKeys.forEach(function(titleKey) {
+    const bucket = byKeyMap[buildJapaneseTitleDictionaryKey_(normalizedLanguage, normalizedCategory, titleKey)] || [];
+    bucket.forEach(function(candidate) {
+      const dedupeKey = [
+        String((candidate && candidate.japaneseTitle) || '').trim(),
+        String((candidate && candidate.authorKey) || '').trim(),
+        candidate && candidate.isAlias ? '1' : '0',
+      ].join('::');
+      if (!dedupeKey || seen[dedupeKey]) return;
+      seen[dedupeKey] = true;
+      candidates.push(candidate);
+    });
+  });
+  if (!candidates.length) {
+    return '';
+  }
+
+  const ranked = candidates.slice().sort(function(left, right) {
+    const leftScore = (authorKey && left.authorKey === authorKey ? 100 : 0) + (left.isAlias ? 0 : 10);
+    const rightScore = (authorKey && right.authorKey === authorKey ? 100 : 0) + (right.isAlias ? 0 : 10);
+    return rightScore - leftScore;
+  });
+
+  return String((ranked[0] && ranked[0].japaneseTitle) || '').trim();
 }
 
 function buildJapaneseTitleDictionaryKey_(language, category, titleKey) {
@@ -268,32 +473,13 @@ function findTitleFromDictionary_(language, category, originalTitle, author, ori
   const titleKeys = buildDictionaryTitleKeys_(originalTitle, normalizedLanguage, normalizedCategory, originalProductTitle);
   if (!normalizedLanguage || !normalizedCategory || !titleKeys.length) return '';
 
+  for (let i = 0; i < titleKeys.length; i += 1) {
+    const builtin = BUILTIN_TITLE_ALIAS_DICTIONARY[[normalizedLanguage, normalizedCategory, titleKeys[i]].join('|')];
+    if (builtin) return builtin;
+  }
+
   const dictionary = getJapaneseTitleDictionaryIndex_();
-  const authorKey = normalizeDictionaryAuthorKey_(author);
-  const seen = {};
-  const candidates = [];
-  titleKeys.forEach(function(titleKey) {
-    const bucket = dictionary.byKey[buildJapaneseTitleDictionaryKey_(normalizedLanguage, normalizedCategory, titleKey)] || [];
-    bucket.forEach(function(candidate) {
-      const dedupeKey = [
-        String((candidate && candidate.japaneseTitle) || '').trim(),
-        String((candidate && candidate.authorKey) || '').trim(),
-        candidate && candidate.isAlias ? '1' : '0',
-      ].join('::');
-      if (!dedupeKey || seen[dedupeKey]) return;
-      seen[dedupeKey] = true;
-      candidates.push(candidate);
-    });
-  });
-  if (!candidates.length) return '';
-
-  const ranked = candidates.slice().sort(function(left, right) {
-    const leftScore = (authorKey && left.authorKey === authorKey ? 100 : 0) + (left.isAlias ? 0 : 10);
-    const rightScore = (authorKey && right.authorKey === authorKey ? 100 : 0) + (right.isAlias ? 0 : 10);
-    return rightScore - leftScore;
-  });
-
-  return String((ranked[0] && ranked[0].japaneseTitle) || '').trim();
+  return findTitleInDictionaryByKeyMap_(dictionary.byKey, language, category, originalTitle, author, originalProductTitle);
 }
 
 function isJapaneseTitleLookupStatusValue_(value) {
@@ -374,7 +560,8 @@ function convertJapaneseTitle_(item) {
     const originalRowData = extractRowData_(item);
     const existingJapaneseTitle = String(originalRowData['日本語タイトル'] || '').trim();
     if (existingJapaneseTitle && !isJapaneseTitleLookupStatusValue_(existingJapaneseTitle)) {
-      return item;
+      const rowData = finalizeSheetWorkTitleColumns_(Object.assign({}, originalRowData));
+      return Object.assign({}, item, { rowData: rowData });
     }
 
     const lookupFieldsList = resolveJapaneseTitleLookupFields_(item);
@@ -428,7 +615,7 @@ function convertJapaneseTitle_(item) {
       }
     }
 
-    return Object.assign({}, item, { rowData: rowData });
+    return Object.assign({}, item, { rowData: finalizeSheetWorkTitleColumns_(rowData) });
   } catch (error) {
     Logger.log('Japanese title dictionary conversion failed: ' + (error && error.message ? error.message : error));
     const fallbackRowData = Object.assign({}, extractRowData_(item), {
@@ -448,103 +635,214 @@ function convertJapaneseTitle_(item) {
 // 強い候補が見つかった時点で即終了
 // ==========================================
 
-function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, author, originalProductTitle) {
+function normalizeProviderId_(providerId) {
+  const text = String(providerId || '').trim();
+  if (!text) return '';
+  if (TITLE_LOOKUP_PROVIDERS[text]) return text;
+  const key = text.replace(/[\s_\-]/g, '').toLowerCase();
+  return PROVIDER_ID_ALIASES[key] || text;
+}
+
+function normalizeProviderOrder_(providerOrder) {
+  return uniqNonEmptyTitles_((providerOrder || []).map(function(providerId) {
+    return normalizeProviderId_(providerId);
+  })).filter(function(providerId) {
+    return !!providerId;
+  });
+}
+
+function inferLookupItemType_(itemType, category, originalTitle, author) {
+  const explicit = String(itemType || '').trim();
+  if (explicit) return explicit;
+  const normalizedCategory = normalizeDictionaryCategory_(category);
+  if (isBLLike_(originalTitle, category, author)) return 'bl_manga';
+  if (normalizedCategory === 'グッズ') return 'goods';
+  if (normalizedCategory === '雑誌') return 'magazine';
+  if (normalizedCategory === '書籍') return 'novel_book';
+  if (normalizedCategory === 'まんが') return 'manga';
+  return 'unknown';
+}
+
+function providerOrderForLookup_(itemType, category, originalTitle, author, providerHint) {
+  const inferredItemType = inferLookupItemType_(itemType, category, originalTitle, author);
+  const hinted = providerHint && Array.isArray(providerHint.preferredOrder)
+    ? normalizeProviderOrder_(providerHint.preferredOrder)
+    : [];
+  if (hinted.length) return hinted;
+  return PROVIDER_ORDER_BY_ITEM_TYPE[inferredItemType] || PROVIDER_ORDER_BY_ITEM_TYPE.unknown;
+}
+
+function isProviderApplicableForItemType_(providerId, itemType) {
+  if (providerId === 'workTitleMaster' || providerId === 'titleAliasDictionary') return true;
+  const provider = TITLE_LOOKUP_PROVIDERS[providerId];
+  if (!provider || !Array.isArray(provider.itemTypes) || !provider.itemTypes.length) return true;
+  return provider.itemTypes.indexOf(itemType) >= 0;
+}
+
+function runTitleLookupProvider_(providerId, context) {
+  switch (providerId) {
+    case 'workTitleMaster': {
+      const index = getWorkTitleMasterIndex_();
+      if (!index.available) {
+        return { japaneseTitle: '', candidates: [], skippedReason: 'sheet_missing' };
+      }
+      const japaneseTitle = findTitleInDictionaryByKeyMap_(
+        index.byKey,
+        context.language,
+        context.category,
+        context.originalTitle,
+        context.author,
+        context.originalProductTitle
+      );
+      return { japaneseTitle: japaneseTitle, candidates: [] };
+    }
+    case 'titleAliasDictionary': {
+      const japaneseTitle = findTitleFromDictionary_(
+        context.language,
+        context.category,
+        context.originalTitle,
+        context.author,
+        context.originalProductTitle
+      );
+      return { japaneseTitle: japaneseTitle, candidates: [] };
+    }
+    case 'chilchil': {
+      if (!isBLLike_(context.originalTitle, context.category, context.author)) {
+        return { japaneseTitle: '', candidates: [], skippedReason: 'not_applicable' };
+      }
+      const japaneseTitle = searchBLSites_(context.originalTitle, context.candidates || []);
+      return { japaneseTitle: japaneseTitle || '', candidates: [] };
+    }
+    case 'mangaUpdates':
+      return searchMangaUpdatesCandidates_(
+        context.originalTitle,
+        context.language,
+        context.category,
+        context.originalProductTitle
+      );
+    case 'aniList':
+      return searchAniListCandidates_(
+        context.originalTitle,
+        context.language,
+        context.category,
+        context.originalProductTitle
+      );
+    case 'bookWalker': {
+      const japaneseTitle = confirmOnBookWalker_(
+        context.originalTitle,
+        context.candidates || [],
+        context.language,
+        context.category,
+        context.originalProductTitle
+      );
+      return { japaneseTitle: japaneseTitle || '', candidates: [] };
+    }
+    case 'amazon': {
+      const japaneseTitle = confirmOnAmazonJp_(
+        context.originalTitle,
+        context.candidates || [],
+        context.language,
+        context.category,
+        context.originalProductTitle
+      );
+      return { japaneseTitle: japaneseTitle || '', candidates: [] };
+    }
+    default:
+      return { japaneseTitle: '', candidates: [], skippedReason: 'not_implemented' };
+  }
+}
+
+function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, author, originalProductTitle, itemType, providerHint) {
   const result = {
     japaneseTitle: '',
     source: '',
     checkedSources: [],
     failedSources: [],
     candidates: [],
+    skippedSources: [],
+    trace: [],
+    errors: [],
   };
   if (!originalTitle) return result;
 
-  result.checkedSources.push('辞書');
-  const dictResult = findTitleFromDictionary_(language, category, originalTitle, author, originalProductTitle);
-  if (dictResult) {
-    result.japaneseTitle = dictResult;
-    result.source = '辞書';
-    return result;
-  }
+  const lookupItemType = inferLookupItemType_(itemType, category, originalTitle, author);
+  const providerOrder = providerOrderForLookup_(lookupItemType, category, originalTitle, author, providerHint);
+  const context = {
+    language: language,
+    category: category,
+    originalTitle: originalTitle,
+    author: author,
+    originalProductTitle: originalProductTitle,
+    itemType: lookupItemType,
+    candidates: []
+  };
 
-  let muCandidates = [];
-  result.checkedSources.push('MangaUpdates');
-  try {
-    const muResult = searchMangaUpdatesCandidates_(originalTitle, language, category, originalProductTitle);
-    result.candidates = result.candidates.concat(muResult.candidates || []);
-    muCandidates = muResult.candidates || [];
-    if (muResult.japaneseTitle) {
-      result.japaneseTitle = muResult.japaneseTitle;
-      result.source = 'MangaUpdates';
-      return result;
+  for (let i = 0; i < providerOrder.length; i += 1) {
+    const providerId = normalizeProviderId_(providerOrder[i]);
+    const provider = TITLE_LOOKUP_PROVIDERS[providerId];
+    if (!provider) {
+      result.skippedSources.push(providerId || 'unknown');
+      result.trace.push((providerId || 'unknown') + ':skipped(unknown_provider)');
+      continue;
     }
-  } catch (e) {
-    result.failedSources.push(inferLookupFailureSource_(e));
-    Logger.log('MangaUpdates cascade error: ' + e.message);
-  }
-
-  let alCandidates = [];
-  result.checkedSources.push('AniList');
-  try {
-    const alResult = searchAniListCandidates_(originalTitle, language, category, originalProductTitle);
-    result.candidates = result.candidates.concat(alResult.candidates || []);
-    alCandidates = alResult.candidates || [];
-    if (alResult.japaneseTitle) {
-      result.japaneseTitle = alResult.japaneseTitle;
-      result.source = 'AniList';
-      return result;
+    if (!provider.implemented) {
+      result.skippedSources.push(providerId);
+      result.trace.push(providerId + ':skipped(not_implemented)');
+      continue;
     }
-  } catch (e) {
-    result.failedSources.push('AniList');
-    Logger.log('AniList cascade error: ' + e.message);
-  }
-
-  const allCandidates = uniqNonEmptyTitles_(muCandidates.concat(alCandidates));
-  result.candidates = uniqNonEmptyTitles_(result.candidates.concat(allCandidates));
-
-  result.checkedSources.push('BookWalker');
-  try {
-    const bwTitle = confirmOnBookWalker_(originalTitle, allCandidates, language, category, originalProductTitle);
-    if (bwTitle) {
-      result.japaneseTitle = bwTitle;
-      result.source = 'BookWalker';
-      return result;
+    if (provider.delegatedToExtension) {
+      result.skippedSources.push(providerId);
+      result.trace.push(providerId + ':delegated_to_extension');
+      continue;
     }
-  } catch (e) {
-    result.failedSources.push('BookWalker');
-    Logger.log('BookWalker cascade error: ' + e.message);
-  }
-  result.checkedSources.push('Amazon');
-  try {
-    const amzTitle = confirmOnAmazonJp_(originalTitle, allCandidates, language, category, originalProductTitle);
-    if (amzTitle) {
-      result.japaneseTitle = amzTitle;
-      result.source = 'Amazon';
-      return result;
+    if (!isProviderApplicableForItemType_(providerId, lookupItemType)) {
+      result.skippedSources.push(providerId);
+      result.trace.push(providerId + ':skipped(not_applicable)');
+      continue;
     }
-  } catch (e) {
-    result.failedSources.push('Amazon');
-    Logger.log('Amazon cascade error: ' + e.message);
-  }
 
-  if (isBLLike_(originalTitle, category, author)) {
-    result.checkedSources.push('BL補助');
+    result.checkedSources.push(providerId);
     try {
-      const blTitle = searchBLSites_(originalTitle, allCandidates);
-      if (blTitle) {
-        result.japaneseTitle = blTitle;
-        result.source = 'BL補助';
+      const providerResult = runTitleLookupProvider_(providerId, context) || {};
+      if (providerResult.skippedReason) {
+        result.skippedSources.push(providerId);
+        result.trace.push(providerId + ':skipped(' + providerResult.skippedReason + ')');
+        continue;
+      }
+
+      const providerCandidates = uniqNonEmptyTitles_(providerResult.candidates || []);
+      if (providerCandidates.length) {
+        result.candidates = uniqNonEmptyTitles_(result.candidates.concat(providerCandidates));
+        context.candidates = uniqNonEmptyTitles_(context.candidates.concat(providerCandidates));
+      }
+
+      if (providerResult.japaneseTitle) {
+        result.japaneseTitle = providerResult.japaneseTitle;
+        result.source = providerId;
+        result.trace.push(providerId + ':hit');
         return result;
       }
+
+      result.trace.push(providerCandidates.length
+        ? providerId + ':miss(candidates=' + providerCandidates.slice(0, 3).join('/') + ')'
+        : providerId + ':miss');
     } catch (e) {
-      result.failedSources.push('BL補助');
-      Logger.log('BL sites cascade error: ' + e.message);
+      const message = e && e.message ? e.message : String(e || 'unknown error');
+      const failedSource = inferLookupFailureSource_(e) || providerId;
+      result.failedSources.push(providerId);
+      result.errors.push(providerId + ':' + message);
+      result.trace.push(providerId + ':failed(' + failedSource + ')');
+      Logger.log(providerId + ' cascade error: ' + message);
+      if (!provider.failSoft) continue;
     }
   }
 
-  const bestCandidate = pickBestCandidate_(allCandidates) || '';
+  result.candidates = uniqNonEmptyTitles_(result.candidates);
+  const bestCandidate = pickBestCandidate_(result.candidates) || '';
   if (bestCandidate) {
     result.japaneseTitle = bestCandidate;
     result.source = '候補';
+    result.trace.push('candidate:hit');
   }
 
   return result;
@@ -656,12 +954,13 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
     result.candidates = uniqNonEmptyTitles_(result.candidates);
     return result;
   }
-  if (siteFallback.failed && siteFallback.error) {
-    throw new Error(siteFallback.error);
-  }
   result.candidates = uniqNonEmptyTitles_(result.candidates);
-  if (!result.japaneseTitle && lastApiError) {
+  if (!result.japaneseTitle && lastApiError && !result.candidates.length) {
     throw lastApiError;
+  }
+  if (!result.japaneseTitle && siteFallback.failed && siteFallback.error && !result.candidates.length
+      && !/\b403\b/.test(siteFallback.error)) {
+    throw new Error(siteFallback.error);
   }
   if (!result.japaneseTitle) {
     cache.put('mu_' + cacheKey, MANGA_UPDATES_EMPTY_CACHE_VALUE, MANGA_UPDATES_CACHE_TTL_SECONDS);
@@ -671,45 +970,56 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
 
 function searchMangaUpdatesSiteCandidates_(queries, query, language, category, originalProductTitle) {
   const result = { japaneseTitle: '', candidates: [], failed: false, error: '' };
-  const searchQueries = uniqNonEmptyTitles_(queries || []).slice(0, 5);
+  const searchQueries = uniqNonEmptyTitles_(queries || []).slice(0, 4);
   if (!searchQueries.length) return result;
 
   const queryKeys = buildMangaUpdatesTitleKeys_(query, language, category, originalProductTitle);
   let hadResponse = false;
   let lastError = '';
 
-  for (let i = 0; i < searchQueries.length; i += 1) {
+  // fetchAll で全クエリを並列実行
+  const requests = searchQueries.map(function(sq) {
+    return {
+      url: MANGA_UPDATES_SITE_SEARCH_BASE + encodeURIComponent(sq),
+      method: 'GET',
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ja,en;q=0.9,en-US;q=0.8,zh-TW;q=0.6',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        Origin: 'https://www.mangaupdates.com',
+        Referer: 'https://www.mangaupdates.com/',
+      },
+    };
+  });
+
+  let responses;
+  try {
+    responses = UrlFetchApp.fetchAll(requests);
+  } catch (error) {
+    const detail = error && error.message ? error.message : String(error || 'unknown error');
+    result.failed = true;
+    result.error = 'MangaUpdates site search error: ' + detail;
+    return result;
+  }
+
+  for (let i = 0; i < responses.length; i += 1) {
     try {
-      const response = UrlFetchApp.fetch(MANGA_UPDATES_SITE_SEARCH_BASE + encodeURIComponent(searchQueries[i]), {
-        method: 'GET',
-        muteHttpExceptions: true,
-        followRedirects: true,
-        headers: {
-          Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'ja,en;q=0.9,en-US;q=0.8,zh-TW;q=0.6',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          Origin: 'https://www.mangaupdates.com',
-          Referer: 'https://www.mangaupdates.com/',
-        },
-      });
-      const status = response.getResponseCode();
+      const status = responses[i].getResponseCode();
       if (status < 200 || status >= 300) {
         lastError = 'MangaUpdates site search error: ' + status;
         continue;
       }
 
       hadResponse = true;
-      const titles = extractMangaUpdatesSiteSeriesTitles_(response.getContentText() || '');
+      const titles = extractMangaUpdatesSiteSeriesTitles_(responses[i].getContentText() || '');
       if (!titles.length) continue;
 
       result.candidates = result.candidates.concat(titles);
       if (!result.japaneseTitle) {
         const japaneseTitle = pickMatchingMangaUpdatesSiteJapaneseTitle_(
-          titles,
-          queryKeys,
-          language,
-          category,
-          originalProductTitle
+          titles, queryKeys, language, category, originalProductTitle
         );
         if (japaneseTitle) {
           result.japaneseTitle = japaneseTitle;
@@ -804,7 +1114,12 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
     ? ['MANGA', 'NOVEL']
     : ['MANGA'];
 
-  const searchQueries = buildMangaUpdatesSearchQueries_(query, language, category, originalProductTitle).slice(0, 8);
+  // クエリ数を削減して高速化（8→4）
+  const searchQueries = buildMangaUpdatesSearchQueries_(query, language, category, originalProductTitle).slice(0, 4);
+
+  // fetchAll で全クエリ×メディアタイプを並列実行
+  const requests = [];
+  const requestMeta = [];
   for (let q = 0; q < searchQueries.length; q += 1) {
     for (let t = 0; t < mediaTypes.length; t += 1) {
       const graphqlQuery = '{ Page(page: 1, perPage: 5) { media(search: ' + JSON.stringify(searchQueries[q])
@@ -812,42 +1127,49 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
         + 'title { romaji english native userPreferred } '
         + 'synonyms '
         + '} } }';
-
-      const response = UrlFetchApp.fetch(ANILIST_API_URL, {
+      requests.push({
+        url: ANILIST_API_URL,
         method: 'POST',
         contentType: 'application/json',
         payload: JSON.stringify({ query: graphqlQuery }),
         muteHttpExceptions: true,
       });
+      requestMeta.push({ queryIndex: q, mediaType: mediaTypes[t] });
+    }
+  }
 
-      if (response.getResponseCode() !== 200) continue;
+  if (!requests.length) return result;
 
-      const data = JSON.parse(response.getContentText() || '{}');
-      const page = data && data.data ? data.data.Page : null;
-      const mediaList = page && Array.isArray(page.media) ? page.media : [];
-      if (!mediaList.length) continue;
+  const responses = UrlFetchApp.fetchAll(requests);
+  for (let r = 0; r < responses.length; r += 1) {
+    const response = responses[r];
+    if (response.getResponseCode() !== 200) continue;
 
-      for (let mi = 0; mi < mediaList.length; mi += 1) {
-        const media = mediaList[mi];
-        if (!media) continue;
+    const data = JSON.parse(response.getContentText() || '{}');
+    const page = data && data.data ? data.data.Page : null;
+    const mediaList = page && Array.isArray(page.media) ? page.media : [];
+    if (!mediaList.length) continue;
 
-        const title = media.title || {};
-        const titleValues = [title.native, title.romaji, title.english, title.userPreferred];
-        const synonyms = Array.isArray(media.synonyms) ? media.synonyms : [];
-        const allTitles = uniqNonEmptyTitles_(titleValues.concat(synonyms));
-        result.candidates = uniqNonEmptyTitles_(result.candidates.concat(allTitles));
+    for (let mi = 0; mi < mediaList.length; mi += 1) {
+      const media = mediaList[mi];
+      if (!media) continue;
 
-        const nativeTitle = String(title.native || '').trim();
-        if (nativeTitle && hasJapaneseTitleSignal_(nativeTitle)) {
-          result.japaneseTitle = nativeTitle;
+      const title = media.title || {};
+      const titleValues = [title.native, title.romaji, title.english, title.userPreferred];
+      const synonyms = Array.isArray(media.synonyms) ? media.synonyms : [];
+      const allTitles = uniqNonEmptyTitles_(titleValues.concat(synonyms));
+      result.candidates = uniqNonEmptyTitles_(result.candidates.concat(allTitles));
+
+      const nativeTitle = String(title.native || '').trim();
+      if (nativeTitle && hasJapaneseTitleSignal_(nativeTitle)) {
+        result.japaneseTitle = nativeTitle;
+        return result;
+      }
+
+      for (let i = 0; i < allTitles.length; i += 1) {
+        if (hasJapaneseTitleSignal_(allTitles[i])) {
+          result.japaneseTitle = allTitles[i];
           return result;
-        }
-
-        for (let i = 0; i < allTitles.length; i += 1) {
-          if (hasJapaneseTitleSignal_(allTitles[i])) {
-            result.japaneseTitle = allTitles[i];
-            return result;
-          }
         }
       }
     }
@@ -856,37 +1178,66 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
   return result;
 }
 
+function isWesternLatinTitleQuery_(value) {
+  const s = String(value || '').trim();
+  if (s.length < 4 || s.length > 160) return false;
+  if (!/[a-zA-Z]/.test(s)) return false;
+  if (hasJapaneseTitleSignal_(s)) return false;
+  if (/[\u4E00-\u9FFF\u3400-\u4DBF\u3040-\u30FF]/.test(s)) return false;
+  if (/[가-힣]/.test(s)) return false;
+  return true;
+}
+
 function confirmOnBookWalker_(originalQuery, candidates, language, category, originalProductTitle) {
   const japanCandidates = candidates.filter(function(c) { return hasJapaneseTitleSignal_(c); });
+  const latinCandidates = uniqNonEmptyTitles_((candidates || []).filter(function(c) {
+    return isWesternLatinTitleQuery_(c);
+  }));
   const searchTerms = uniqNonEmptyTitles_(
     japanCandidates.concat(
+      latinCandidates.slice(0, 4),
       buildMangaUpdatesSearchQueries_(originalQuery, language, category, originalProductTitle),
       [originalQuery]
     )
-  );
+  ).slice(0, 8);
 
-  for (let i = 0; i < Math.min(searchTerms.length, 5); i += 1) {
-    const term = searchTerms[i];
+  // fetchAll で全検索語を並列実行
+  const requests = searchTerms.map(function(term) {
+    return {
+      url: 'https://bookwalker.jp/search/?word=' + encodeURIComponent(term) + '&order=score',
+      method: 'GET',
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ja,en;q=0.8',
+        Referer: 'https://bookwalker.jp/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      },
+    };
+  });
+  if (!requests.length) return '';
+
+  let responses;
+  try {
+    responses = UrlFetchApp.fetchAll(requests);
+  } catch (e) {
+    Logger.log('BookWalker fetchAll error: ' + e.message);
+    return '';
+  }
+
+  for (let i = 0; i < responses.length; i += 1) {
     try {
-      const url = 'https://bookwalker.jp/search/?word=' + encodeURIComponent(term) + '&order=score';
-      const response = UrlFetchApp.fetch(url, {
-        method: 'GET',
-        muteHttpExceptions: true,
-        followRedirects: true,
+      if (responses[i].getResponseCode() !== 200) continue;
+      const html = responses[i].getContentText() || '';
+      const bwTitles = extractBookWalkerJapaneseTitlesFromHtml_(html).filter(function(t) {
+        return hasJapaneseTitleSignal_(t);
       });
-      if (response.getResponseCode() !== 200) continue;
-
-      const html = response.getContentText() || '';
-      const titleMatches = html.match(/class="[^"]*item[Tt]itle[^"]*"[^>]*>([^<]+)</g) || [];
-      for (let j = 0; j < Math.min(titleMatches.length, 5); j += 1) {
-        const match = titleMatches[j].match(/>([^<]+)$/);
-        if (!match) continue;
-        const bwTitle = String(match[1]).trim();
-        if (!hasJapaneseTitleSignal_(bwTitle)) continue;
-
-        if (!japanCandidates.length) {
-          return bwTitle;
-        }
+      for (let j = 0; j < Math.min(bwTitles.length, 12); j += 1) {
+        const bwTitle = bwTitles[j];
+        // 日本語候補が無い状態で検索結果の先頭を採用すると、
+        // 無関係な作品（例: 週刊ダイヤモンド）を誤って resolved にしてしまう。
+        if (!japanCandidates.length) continue;
 
         const bwKeys = buildMangaUpdatesTitleKeys_(bwTitle);
         for (let k = 0; k < japanCandidates.length; k += 1) {
@@ -899,9 +1250,7 @@ function confirmOnBookWalker_(originalQuery, candidates, language, category, ori
                 || (candKey.length >= 4 && bwKey.length >= 4 && (bwKey.indexOf(candKey) >= 0 || candKey.indexOf(bwKey) >= 0));
             });
           });
-          if (matched) {
-            return candidate;
-          }
+          if (matched) return candidate;
         }
       }
     } catch (e) {
@@ -909,6 +1258,38 @@ function confirmOnBookWalker_(originalQuery, candidates, language, category, ori
     }
   }
   return '';
+}
+
+function extractBookWalkerJapaneseTitlesFromHtml_(html) {
+  const h = String(html || '');
+  const titles = [];
+  const seen = {};
+
+  function addTitle_(value) {
+    const t = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!t || t.length < 2 || seen[t]) return;
+    seen[t] = true;
+    titles.push(t);
+  }
+
+  const reTitleAttr = /<a\b[^>]*\bclass="[^"]*m-book-item__title[^"]*"[^>]*\btitle="([^"]+)"/gi;
+  let m;
+  while ((m = reTitleAttr.exec(h)) !== null) {
+    addTitle_(m[1]);
+  }
+
+  const reInner = /<a\b[^>]*\bclass="[^"]*m-book-item__title[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+  while ((m = reInner.exec(h)) !== null) {
+    addTitle_(String(m[1] || '').replace(/<[^>]+>/g, ' '));
+  }
+
+  const legacyMatches = h.match(/class="[^"]*item[Tt]itle[^"]*"[^>]*>([^<]+)</g) || [];
+  for (let i = 0; i < legacyMatches.length; i += 1) {
+    const inner = legacyMatches[i].match(/>([^<]+)$/);
+    if (inner) addTitle_(inner[1]);
+  }
+
+  return titles;
 }
 
 // ==========================================
@@ -923,56 +1304,61 @@ function confirmOnAmazonJp_(originalQuery, candidates, language, category, origi
       buildMangaUpdatesSearchQueries_(originalQuery, language, category, originalProductTitle),
       [originalQuery]
     )
-  );
+  ).slice(0, 3);
 
-  for (var i = 0; i < Math.min(searchTerms.length, 3); i += 1) {
-    var term = searchTerms[i];
+  // fetchAll で全検索語を並列実行
+  const requests = searchTerms.map(function(term) {
+    return {
+      url: 'https://www.amazon.co.jp/s?k=' + encodeURIComponent(term) + '&i=stripbooks',
+      method: 'GET',
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        'Accept-Language': 'ja',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      },
+    };
+  });
+  if (!requests.length) return '';
+
+  let responses;
+  try {
+    responses = UrlFetchApp.fetchAll(requests);
+  } catch (e) {
+    Logger.log('Amazon fetchAll error: ' + e.message);
+    return '';
+  }
+
+  for (let i = 0; i < responses.length; i += 1) {
     try {
-      var url = 'https://www.amazon.co.jp/s?k=' + encodeURIComponent(term) + '&i=stripbooks';
-      var response = UrlFetchApp.fetch(url, {
-        method: 'GET',
-        muteHttpExceptions: true,
-        followRedirects: true,
-        headers: {
-          'Accept-Language': 'ja',
-          'User-Agent': 'Mozilla/5.0 (compatible; GAS)',
-        },
-      });
-      if (response.getResponseCode() !== 200) continue;
-
-      var html = response.getContentText() || '';
-      // Amazon検索結果のタイトルを抽出
-      var titleMatches = html.match(/class="[^"]*a-size-medium[^"]*"[^>]*>([^<]+)</g) || [];
+      if (responses[i].getResponseCode() !== 200) continue;
+      const html = responses[i].getContentText() || '';
+      let titleMatches = html.match(/class="[^"]*a-size-medium[^"]*"[^>]*>([^<]+)</g) || [];
       if (!titleMatches.length) {
         titleMatches = html.match(/class="[^"]*a-text-normal[^"]*"[^>]*>([^<]+)</g) || [];
       }
 
-      for (var j = 0; j < Math.min(titleMatches.length, 5); j += 1) {
-        var match = titleMatches[j].match(/>([^<]+)$/);
+      for (let j = 0; j < Math.min(titleMatches.length, 5); j += 1) {
+        const match = titleMatches[j].match(/>([^<]+)$/);
         if (!match) continue;
-        var amzTitle = String(match[1]).trim();
+        const amzTitle = String(match[1]).trim();
         if (!hasJapaneseTitleSignal_(amzTitle)) continue;
 
-        // 候補がなければAmazonのタイトルをそのまま返す
-        if (!japanCandidates.length) {
-          return amzTitle;
-        }
+        // 日本語候補が無い状態では、検索結果の先頭を確定タイトルとして採用しない。
+        if (!japanCandidates.length) continue;
 
-        // 候補との照合
-        var amzKeys = buildMangaUpdatesTitleKeys_(amzTitle);
-        for (var k = 0; k < japanCandidates.length; k += 1) {
-          var candidate = japanCandidates[k];
-          var candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
-          var matched = candidateKeys.some(function(candKey) {
+        const amzKeys = buildMangaUpdatesTitleKeys_(amzTitle);
+        for (let k = 0; k < japanCandidates.length; k += 1) {
+          const candidate = japanCandidates[k];
+          const candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
+          const matched = candidateKeys.some(function(candKey) {
             return amzKeys.some(function(aKey) {
               if (!candKey || !aKey) return false;
               return candKey === aKey
                 || (candKey.length >= 4 && aKey.length >= 4 && (aKey.indexOf(candKey) >= 0 || candKey.indexOf(aKey) >= 0));
             });
           });
-          if (matched) {
-            return candidate;
-          }
+          if (matched) return candidate;
         }
       }
     } catch (e) {
@@ -983,49 +1369,60 @@ function confirmOnAmazonJp_(originalQuery, candidates, language, category, origi
 }
 
 function searchBLSites_(originalTitle, existingCandidates) {
-  // 既存候補の中に日本語があればそれを各サイトで確認
   const japanCandidates = existingCandidates.filter(function(c) { return hasJapaneseTitleSignal_(c); });
   const searchTerms = uniqNonEmptyTitles_(japanCandidates.concat([originalTitle])).slice(0, 2);
 
-  // DLsite → Renta! → ちるちる の順
   const blSites = [
     { name: 'DLsite', buildUrl: function(q) { return 'https://www.dlsite.com/bl-pro/fsr/=/keyword/' + encodeURIComponent(q); } },
     { name: 'Renta', buildUrl: function(q) { return 'https://renta.papy.co.jp/renta/sc/frm/search?word=' + encodeURIComponent(q); } },
     { name: 'Chil-chil', buildUrl: function(q) { return 'https://www.chil-chil.net/goodsList/find/?keyword=' + encodeURIComponent(q); } },
   ];
 
+  // fetchAll で全サイト×全検索語を並列実行
+  const requests = [];
+  const requestMeta = [];
   for (let s = 0; s < blSites.length; s += 1) {
     for (let i = 0; i < searchTerms.length; i += 1) {
-      try {
-        const url = blSites[s].buildUrl(searchTerms[i]);
-        const response = UrlFetchApp.fetch(url, {
-          method: 'GET',
-          muteHttpExceptions: true,
-          followRedirects: true,
-        });
-        if (response.getResponseCode() !== 200) continue;
+      requests.push({
+        url: blSites[s].buildUrl(searchTerms[i]),
+        method: 'GET',
+        muteHttpExceptions: true,
+        followRedirects: true,
+      });
+      requestMeta.push({ siteName: blSites[s].name });
+    }
+  }
+  if (!requests.length) return '';
 
-        const html = response.getContentText() || '';
-        // タイトルっぽい要素を抽出
-        const matches = html.match(/<(?:h[1-4]|a|span)[^>]*class="[^"]*(?:title|name|item)[^"]*"[^>]*>([^<]{2,80})</gi) || [];
-        for (let j = 0; j < Math.min(matches.length, 5); j += 1) {
-          const m = matches[j].match(/>([^<]+)$/);
-          if (!m) continue;
-          const blTitle = String(m[1]).trim();
-          if (!hasJapaneseTitleSignal_(blTitle)) continue;
+  let responses;
+  try {
+    responses = UrlFetchApp.fetchAll(requests);
+  } catch (e) {
+    Logger.log('BL sites fetchAll error: ' + e.message);
+    return '';
+  }
 
-          // 既存候補との照合
-          const blKey = normalizeMangaUpdatesTitleKey_(blTitle);
-          for (let k = 0; k < japanCandidates.length; k += 1) {
-            const candKey = normalizeMangaUpdatesTitleKey_(japanCandidates[k]);
-            if (candKey && blKey && (blKey.indexOf(candKey) >= 0 || candKey.indexOf(blKey) >= 0)) {
-              return japanCandidates[k];
-            }
+  for (let r = 0; r < responses.length; r += 1) {
+    try {
+      if (responses[r].getResponseCode() !== 200) continue;
+      const html = responses[r].getContentText() || '';
+      const matches = html.match(/<(?:h[1-4]|a|span)[^>]*class="[^"]*(?:title|name|item)[^"]*"[^>]*>([^<]{2,80})</gi) || [];
+      for (let j = 0; j < Math.min(matches.length, 5); j += 1) {
+        const m = matches[j].match(/>([^<]+)$/);
+        if (!m) continue;
+        const blTitle = String(m[1]).trim();
+        if (!hasJapaneseTitleSignal_(blTitle)) continue;
+
+        const blKey = normalizeMangaUpdatesTitleKey_(blTitle);
+        for (let k = 0; k < japanCandidates.length; k += 1) {
+          const candKey = normalizeMangaUpdatesTitleKey_(japanCandidates[k]);
+          if (candKey && blKey && (blKey.indexOf(candKey) >= 0 || candKey.indexOf(blKey) >= 0)) {
+            return japanCandidates[k];
           }
         }
-      } catch (e) {
-        Logger.log(blSites[s].name + ' search error: ' + e.message);
       }
+    } catch (e) {
+      Logger.log(requestMeta[r].siteName + ' search error: ' + e.message);
     }
   }
   return '';
@@ -1069,42 +1466,57 @@ const MANGA_UPDATES_CACHE_TTL_SECONDS = 21600;
 const MANGA_UPDATES_EMPTY_CACHE_VALUE = '__EMPTY__';
 const MANGA_UPDATES_SESSION_CACHE_KEY = 'mu_session_token_v1';
 const MANGA_UPDATES_SESSION_CACHE_TTL_SECONDS = 21600;
+/** 推奨: スクリプトプロパティ MANGA_UPDATES_USERNAME / MANGA_UPDATES_PASSWORD を設定 */
 const MANGA_UPDATES_USERNAME = 'niyantarose';
 const MANGA_UPDATES_PASSWORD = 'niyantarose';
 
+function getMangaUpdatesCredentials_() {
+  const props = PropertiesService.getScriptProperties();
+  const username = String(props.getProperty('MANGA_UPDATES_USERNAME') || MANGA_UPDATES_USERNAME || '').trim();
+  const password = String(props.getProperty('MANGA_UPDATES_PASSWORD') || MANGA_UPDATES_PASSWORD || '').trim();
+  return { username: username, password: password };
+}
+
+/** 実行中に MU login が 403 で失敗したら以降のリクエストをスキップするフラグ（GoogleのIPブロック回避用） */
+var __mangaUpdatesBlockedForRun = false;
+function isMangaUpdatesBlockedForRun_() { return __mangaUpdatesBlockedForRun; }
+function markMangaUpdatesBlockedForRun_() { __mangaUpdatesBlockedForRun = true; }
+
+
 function handleMangaUpdatesLookupPost_(payload) {
-  const queries = uniqNonEmptyTitles_(
-    Array.isArray(payload && payload.queries) ? payload.queries : [payload && payload.query]
-  );
-  const language = String((payload && payload.language) || '台湾').trim();
-  const category = String((payload && payload.category) || '').trim();
-  const originalProductTitle = String((payload && payload.originalProductTitle) || '').trim();
-
-  let japaneseTitle = '';
-  let matchedQuery = '';
-
-  for (let i = 0; i < queries.length; i += 1) {
-    const cascadeResult = cascadeLookupJapaneseTitleResult_(
-      language,
-      category,
-      queries[i],
-      '',
-      originalProductTitle
-    );
-    if (cascadeResult.japaneseTitle) {
-      japaneseTitle = cascadeResult.japaneseTitle;
-      matchedQuery = queries[i];
-      break;
-    }
+  const queries = payload && Array.isArray(payload.queries) ? payload.queries : [];
+  const source = payload && payload.source ? payload.source : 'unknown';
+  if (!queries.length) {
+    return jsonResponse_({
+      ok: false,
+      error: 'queries required',
+      japaneseTitle: '',
+      matchedQuery: '',
+      via: 'mangaupdates_api',
+      source: source,
+    });
   }
-
-  return jsonResponse_({
-    ok: true,
-    japaneseTitle: japaneseTitle,
-    matchedQuery: matchedQuery,
-    via: 'cascade_proxy',
-    source: payload && payload.source ? payload.source : 'unknown',
-  });
+  try {
+    const resolved = lookupJapaneseTitleViaMangaUpdatesQueries_(queries);
+    return jsonResponse_({
+      ok: true,
+      japaneseTitle: resolved.japaneseTitle || '',
+      matchedQuery: resolved.matchedQuery || '',
+      via: 'mangaupdates_api',
+      source: source,
+    });
+  } catch (e) {
+    const message = e && e.message ? e.message : String(e || 'unknown error');
+    Logger.log('handleMangaUpdatesLookupPost_ error: ' + message);
+    return jsonResponse_({
+      ok: false,
+      error: message,
+      japaneseTitle: '',
+      matchedQuery: '',
+      via: 'mangaupdates_api',
+      source: source,
+    });
+  }
 }
 
 function lookupJapaneseTitleViaMangaUpdatesQueries_(queries) {
@@ -1138,7 +1550,12 @@ function lookupJapaneseTitleViaMangaUpdates_(query) {
 
   const searchResponse = fetchMangaUpdatesJson_('/series/search', {
     method: 'post',
-    payload: { search: query },
+    payload: {
+      search: query,
+      stype: 'title',
+      page: 1,
+      perpage: 5,
+    },
   });
   const results = Array.isArray(searchResponse && searchResponse.results)
     ? searchResponse.results.slice(0, 3)
@@ -1169,40 +1586,83 @@ function lookupJapaneseTitleViaMangaUpdates_(query) {
 }
 
 function fetchMangaUpdatesJson_(endpoint, options) {
-  const sessionToken = getMangaUpdatesSessionToken_(
-    options && options.forceRefreshToken === true
-  );
   const endpointLabel = endpoint === '/series/search'
     ? 'search'
     : (/^\/series\/[^\/]+$/i.test(String(endpoint || ''))
         ? 'detail'
         : (String(endpoint || '').replace(/^\//, '') || 'unknown'));
-  const requestOptions = {
-    method: String((options && options.method) || 'get').toUpperCase(),
-    muteHttpExceptions: true,
-    headers: {
-      Accept: 'application/json',
-      Authorization: 'Bearer ' + sessionToken,
-    },
-  };
+  const method = String((options && options.method) || 'get').toUpperCase();
+  const hasPayload = options && Object.prototype.hasOwnProperty.call(options, 'payload');
+  const payloadObj = hasPayload ? (options.payload || {}) : null;
+  const isLoginEndpoint = String(endpoint || '') === '/account/login';
 
-  if (options && Object.prototype.hasOwnProperty.call(options, 'payload')) {
-    requestOptions.contentType = 'application/json; charset=utf-8';
-    requestOptions.payload = JSON.stringify(options.payload || {});
+  function buildRequestOpts(bearerToken) {
+    const headers = { Accept: 'application/json' };
+    if (bearerToken) {
+      headers.Authorization = 'Bearer ' + bearerToken;
+    }
+    const ro = {
+      method: method,
+      muteHttpExceptions: true,
+      headers: headers,
+    };
+    if (payloadObj !== null) {
+      ro.contentType = 'application/json; charset=utf-8';
+      ro.payload = JSON.stringify(payloadObj);
+    }
+    return ro;
   }
 
-  const response = UrlFetchApp.fetch(MANGA_UPDATES_API_BASE + endpoint, requestOptions);
-  const status = response.getResponseCode();
-  const responseText = response.getContentText() || '';
-  if ((status === 401 || status === 403) && !(options && options.forceRefreshToken === true)) {
-    clearMangaUpdatesSessionTokenCache_();
-    return fetchMangaUpdatesJson_(
-      endpoint,
-      Object.assign({}, options || {}, { forceRefreshToken: true })
-    );
+  function doFetch_(bearerToken) {
+    return UrlFetchApp.fetch(MANGA_UPDATES_API_BASE + endpoint, buildRequestOpts(bearerToken));
+  }
+
+  if (!isLoginEndpoint && isMangaUpdatesBlockedForRun_()) {
+    throw new Error('MangaUpdates API ' + endpointLabel + ' error: 403 (skipped: blocked for this run)');
+  }
+
+  var response;
+  var authRetryNote = '';
+
+  if (isLoginEndpoint) {
+    try {
+      response = doFetch_(null);
+    } catch (e) {
+      Logger.log('MangaUpdates API ' + endpointLabel + ' fetch error: ' + e.message);
+      throw new Error('MangaUpdates API ' + endpointLabel + ' fetch error: ' + e.message);
+    }
+  } else {
+    try {
+      var bearer = getMangaUpdatesSessionToken_(false);
+      response = doFetch_(bearer);
+      authRetryNote = ' with bearer';
+    } catch (e) {
+      Logger.log('MangaUpdates API ' + endpointLabel + ' auth fetch error: ' + e.message);
+      throw new Error('MangaUpdates API ' + endpointLabel + ' fetch error: ' + e.message);
+    }
+    var status = response.getResponseCode();
+    if (status === 401 || status === 403) {
+      try {
+        clearMangaUpdatesSessionTokenCache_();
+        var bearerFresh = getMangaUpdatesSessionToken_(true);
+        response = doFetch_(bearerFresh);
+        authRetryNote = ' after bearer refresh';
+      } catch (authErr) {
+        authRetryNote = ' after bearer refresh failed: ' + authErr.message;
+        Logger.log('MangaUpdates API ' + endpointLabel + ' bearer refresh failed: ' + authErr.message);
+      }
+    }
+  }
+
+  var status = response.getResponseCode();
+  var responseText = response.getContentText() || '';
+
+  if (status === 403) {
+    Logger.log('MangaUpdates API ' + endpointLabel + ' blocked (403)' + authRetryNote);
+    throw new Error('MangaUpdates API ' + endpointLabel + ' error: 403' + authRetryNote);
   }
   if (status < 200 || status >= 300) {
-    throw new Error('MangaUpdates API ' + endpointLabel + ' error: ' + status);
+    throw new Error('MangaUpdates API ' + endpointLabel + ' error: ' + status + authRetryNote);
   }
 
   try {
@@ -1219,22 +1679,26 @@ function getMangaUpdatesSessionToken_(forceRefresh) {
     if (cachedToken) return cachedToken;
   }
 
+  const creds = getMangaUpdatesCredentials_();
+  if (!creds.username || !creds.password) {
+    throw new Error('MangaUpdates credentials missing (set script properties or constants)');
+  }
+
   const response = UrlFetchApp.fetch(MANGA_UPDATES_API_BASE + '/account/login', {
     method: 'put',
     muteHttpExceptions: true,
     contentType: 'application/json; charset=utf-8',
-    headers: {
-      Accept: 'application/json',
-    },
+    headers: { Accept: 'application/json' },
     payload: JSON.stringify({
-      username: MANGA_UPDATES_USERNAME,
-      password: MANGA_UPDATES_PASSWORD,
+      username: creds.username,
+      password: creds.password,
     }),
   });
 
   const status = response.getResponseCode();
   const responseText = response.getContentText() || '';
   if (status < 200 || status >= 300) {
+    if (status === 403) markMangaUpdatesBlockedForRun_();
     throw new Error('MangaUpdates login error: ' + status);
   }
 
@@ -1284,6 +1748,8 @@ function buildTitleSearchCandidates_(language, category, originalTitle, original
       stripLanguageSpecificTitleNoise_(current, normalizedLanguage),
       stripCategorySpecificTitleNoise_(current, normalizedCategory),
       stripMangaUpdatesTitleNoise_(current, normalizedLanguage, normalizedCategory),
+      stripLookupVolumeNoise_(current),
+      normalizeLookupWorkTitle_(current),
       stripInlineEditionBrackets_(current),
       collapseSubtitleDelimiter_(current),
       stripMangaUpdatesEditionSuffix_(current),
@@ -1358,7 +1824,7 @@ function stripCategorySpecificTitleNoise_(value, category) {
   switch (normalizeDictionaryCategory_(category)) {
     case 'グッズ':
       text = text
-        .replace(/\s+(?:全棉托特袋|托特袋|帆布袋|手提袋|壓克力(?:牌|立牌|磚|砖)?|压克力(?:牌|立牌|磚|砖)?|アクリル(?:スタンド|キーホルダー|プレート|ブロック)?|立牌|海報|海报|掛軸|挂轴|徽章|胸章|缶バッジ|卡片|貼紙|贴纸|ステッカー|シール|明信片|ポストカード|抱枕|滑鼠墊|鼠標墊|鼠标垫|マウスパッド|桌墊|桌垫|吊飾|吊饰|鑰匙圈|钥匙圈|キーホルダー|杯墊|杯垫|コースター|色紙|色纸|套組|套装|セット|福袋|拼圖|拼图|パズル|公仔|フィギュア|玩偶|ぬいぐるみ|資料夾|资料夹|文件夾|文件夹|クリアファイル|T恤|Ｔシャツ|毛巾|タオル|桌曆|桌历|年曆|年历|壓克力磁鐵|压克力磁铁|手機殼|手机壳)(?:\s+[A-Z0-9]+)?$/u, '')
+        .replace(/\s*(?:全棉托特袋|托特袋|帆布袋|手提袋|壓克力(?:牌|立牌|磚|砖)?|压克力(?:牌|立牌|磚|砖)?|アクリル(?:スタンド|キーホルダー|プレート|ブロック)?|立牌|海報|海报|掛軸|挂轴|徽章|胸章|缶バッジ|卡片|貼紙|贴纸|ステッカー|シール|明信片|ポストカード|抱枕|滑鼠墊|鼠標墊|鼠标垫|マウスパッド|桌墊|桌垫|吊飾|吊饰|鑰匙圈|钥匙圈|キーホルダー|杯墊|杯垫|コースター|色紙|色纸|套組|套装|セット|福袋|拼圖|拼图|パズル|公仔|フィギュア|玩偶|ぬいぐるみ|資料夾|资料夹|文件夾|文件夹|クリアファイル|T恤|Ｔシャツ|毛巾|タオル|桌曆|桌历|年曆|年历|壓克力磁鐵|压克力磁铁|手機殼|手机壳)(?:\s+[A-Z0-9]+|\s*[\d０-９]{1,4}\s*入)?$/u, '')
         .trim();
       break;
     case '雑誌':
@@ -1403,7 +1869,87 @@ function stripMangaUpdatesEditionSuffix_(value) {
   return normalizeTitleSearchCandidateSpacing_(String(value || '')
     .replace(/\s*[（(]?(?:首刷限定版?|首刷限定|限定版?|特裝版?|特装版?|豪華版|豪华版|通常版|套書|套組|套装|附錄版|附录版|特典版|贈品版|初回限定?|台灣版|臺灣版|台湾版|韓版|韩版)[）)]?\s*$/u, '')
     .replace(/\s*(?:vol\.?\s*\d+|no\.?\s*\d+)\s*$/iu, '')
-    .replace(/\s*[（(]?(?:第?\d+\s*(?:巻|卷|卷册|冊|册|集|期)|\d+)[）)]?\s*$/u, ''));
+    .replace(/\s*[（(]?(?:第?\d+\s*(?:巻|卷|卷册|冊|册|集|期|話|号|號|漫畫|漫画|コミック|單行本|单行本)|\d+)[）)]?\s*$/u, ''));
+}
+
+function stripLookupWorkTitleDecoration_(value) {
+  return normalizeTitleSearchCandidateSpacing_(String(value || '')
+    .replace(/\s*[!！?？]{1,4}\s*$/u, ''));
+}
+
+function stripLookupVolumeNoise_(value) {
+  var text = normalizeTitleSearchCandidateSpacing_(String(value || ''));
+  if (!text) return '';
+  var rules = [
+    /\s*(?:vol\.?|v\.?|第)\s*[0-9０-９]{1,4}\s*(?:巻|卷|集|冊|話|回|期|号|號)?\s*$/iu,
+    /\s*[#＃]?\s*[0-9０-９]{1,4}\s*$/u,
+    /\s*(?:第)?\s*[0-9０-９]{1,4}\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*$/u,
+    /\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*(?:第)?\s*[0-9０-９]{1,4}\s*$/u,
+    /\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*$/u
+  ];
+  for (var i = 0; i < 4; i += 1) {
+    var prev = text;
+    for (var r = 0; r < rules.length; r += 1) {
+      text = text.replace(rules[r], '').trim();
+    }
+    if (text === prev) break;
+  }
+  return normalizeTitleSearchCandidateSpacing_(text);
+}
+
+/** シート出力·日本語タイトル列: (TV) 等のメディア表記を落とす（照会ステータス文字列は触れない） */
+function sanitizeWorkNameJapaneseForSheet_(value) {
+  var text = normalizeTitleSearchCandidateSpacing_(String(value || '').trim());
+  if (!text) return '';
+  if (isJapaneseTitleLookupStatusValue_(text)) return text;
+  var i;
+  for (i = 0; i < 8; i += 1) {
+    var prev = text;
+    text = text
+      .replace(/\s*[\[(（〈【]\s*(?:TV|T\.V\.|OVA|OAD|ONA|SP|映画|電影|劇場版|剧场版|アニメ(?:版|ーション)?|ドラマ(?:版)?|真人版|Web\s*アニメ|Anime|Movie|Film)\s*[\])）〉】]/giu, '')
+      .replace(/\s*[\[\(]\s*[Tt][Vv]\s*[\]\)]\s*$/u, '')
+      .trim();
+    text = normalizeTitleSearchCandidateSpacing_(text);
+    if (text === prev) break;
+  }
+  return text;
+}
+
+/**
+ * シート出力·原題タイトル列: 作品名のみ（巻・漫畫語尾・版括弧などを落とす）
+ * ※lookup 用の normalizeLookupWorkTitle_ より控えめ（副題区切りで本編を切り捨てない）
+ */
+function sanitizeWorkNameOriginalForSheet_(value) {
+  var text = normalizeTitleSearchCandidateSpacing_(String(value || '').trim());
+  if (!text) return '';
+  text = stripInlineEditionBrackets_(text);
+  text = String(text || '')
+    .replace(/\s+(?:資料夾|资料夹|文件夾|文件夹)\s*[\d０-９]{0,4}\s*入\s*$/u, '')
+    .trim();
+  text = stripLookupVolumeNoise_(text);
+  text = stripMangaUpdatesEditionSuffix_(text);
+  return normalizeTitleSearchCandidateSpacing_(text);
+}
+
+/** rowData の原題·日本語タイトル系をシート向けに整形 */
+function finalizeSheetWorkTitleColumns_(rowData) {
+  var next = Object.assign({}, rowData || {});
+  var jp = String(next['日本語タイトル'] || '').trim();
+  if (jp && !isJapaneseTitleLookupStatusValue_(jp)) {
+    next['日本語タイトル'] = sanitizeWorkNameJapaneseForSheet_(jp);
+  }
+  ['作品名（日本語）', '作品名日本語', '商品名（日本語）', '商品名(日本語)'].forEach(function(key) {
+    var t = String(next[key] || '').trim();
+    if (t && !isJapaneseTitleLookupStatusValue_(t)) {
+      next[key] = sanitizeWorkNameJapaneseForSheet_(t);
+    }
+  });
+  [  '原題タイトル', '作品名（原題）'].forEach(function(key) {
+    var o = String(next[key] || '').trim();
+    if (o) next[key] = sanitizeWorkNameOriginalForSheet_(o);
+  });
+  /* 雑誌名はマスター入力規則列のためここでは触らない（mag_normalizeMagazineRowForDropdownWrite_ / mag_書込後処理） */
+  return next;
 }
 
 function buildDictionaryTitleKeys_(value, language, category, originalProductTitle) {
@@ -1416,6 +1962,21 @@ function buildMangaUpdatesTitleKeys_(value, language, category, originalProductT
   return uniqNonEmptyTitles_(
     buildTitleSearchCandidates_(language, category, value, originalProductTitle).map(normalizeMangaUpdatesTitleKey_)
   );
+}
+
+function cjkCharOverlap_(a, b) {
+  var charsA = String(a || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
+  var charsB = String(b || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
+  if (!charsA || !charsB) return 0;
+  var setA = {};
+  var setB = {};
+  var sizeA = 0;
+  var sizeB = 0;
+  for (var i = 0; i < charsA.length; i++) { if (!setA[charsA[i]]) { setA[charsA[i]] = true; sizeA++; } }
+  for (var j = 0; j < charsB.length; j++) { if (!setB[charsB[j]]) { setB[charsB[j]] = true; sizeB++; } }
+  var common = 0;
+  for (var ch in setA) { if (setB[ch]) common++; }
+  return common / Math.min(sizeA, sizeB);
 }
 
 function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, category, originalProductTitle) {
@@ -1432,7 +1993,9 @@ function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, categ
   })));
 
   return candidates.some(function(candidate) {
-    const candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
+    // CJK文字の重複率でマッチ判定（繁体字↔簡体字↔日本語対応）
+    if (cjkCharOverlap_(query, candidate) >= 0.5) return true;
+    var candidateKeys = buildMangaUpdatesTitleKeys_(candidate);
     return candidateKeys.some(function(candidateKey) {
       return queryKeys.some(function(queryKey) {
         if (!candidateKey || !queryKey) return false;
@@ -1505,342 +2068,345 @@ function doGet() {
   });
 }
 
-function firstLookupText_() {
-  for (let i = 0; i < arguments.length; i += 1) {
-    const value = String(arguments[i] || '').trim();
-    if (value) return value;
+function doGet(e) {
+  // ウォームアップ用エンドポイント（GASコールドスタート防止）
+  // 拡張機能がポップアップ起動時にここへGETリクエストを送り、
+  // 実際のdoPostが呼ばれる前にGASとスプレッドシートを起動しておく。
+  try {
+    SpreadsheetApp.openById(SPREADSHEET_ID);
+  } catch (_) {}
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, warmed: true }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * 時間トリガー用ウォームアップ関数
+ * GASエディタで「トリガーを追加」→ warmup → 時間ベース → 5分ごと に設定してください。
+ * これによりGASが常にウォームアップ状態を保ち、コールドスタートを防止します。
+ * ※ GASでは末尾に _ がつく関数はプライベート扱いでトリガー登録不可のため warmup_ → warmup に変更
+ */
+function warmup() {
+  try {
+    SpreadsheetApp.openById(SPREADSHEET_ID);
+  } catch (e) {
+    Logger.log('warmup error: ' + e.message);
   }
-  return '';
 }
 
 function lookupProviderName_(source) {
   const text = String(source || '').trim();
-  if (/辞書|dictionary/i.test(text)) return 'titleAliasDictionary';
-  if (/mangaupdates|MU/i.test(text)) return 'mangaUpdates';
-  if (/anilist/i.test(text)) return 'aniList';
-  if (/bookwalker/i.test(text)) return 'bookWalker';
-  if (/amazon/i.test(text)) return 'amazon';
-  if (/ちるちる|chilchil|BL補助/i.test(text)) return 'chilchil';
+  const providerId = normalizeProviderId_(text);
+  if (TITLE_LOOKUP_PROVIDERS[providerId]) return providerId;
+  if (text === '辞書') return 'titleAliasDictionary';
+  if (text === 'BL補助') return 'chilchil';
+  if (text === '候補') return 'candidate';
   return text || '';
 }
 
-function lookupScoreForProvider_(provider) {
-  const key = String(provider || '').trim();
-  if (key === 'titleAliasDictionary') return 1000;
-  if (key === 'bookWalker') return 860;
-  if (key === 'amazon') return 820;
-  if (key === 'mangaUpdates') return 780;
-  if (key === 'aniList') return 760;
-  if (key === 'chilchil') return 740;
-  return 600;
+function japaneseTitleLookupResolvedScore_(source) {
+  const id = normalizeProviderId_(source);
+  if (id === 'workTitleMaster') return 1100;
+  if (id === 'titleAliasDictionary') return 1000;
+  return 800;
 }
 
-function buildJapaneseTitleSearchKeys_(payload) {
-  const analysis = payload && payload.titleAnalysis ? payload.titleAnalysis : {};
-  return uniqNonEmptyTitles_([
+function normalizeLookupWorkTitle_(value) {
+  let text = normalizeTitleSearchCandidateSpacing_(String(value || ''));
+  if (!text) return '';
+
+  text = stripInlineEditionBrackets_(text);
+  text = stripCategorySpecificTitleNoise_(text, 'グッズ');
+  text = stripLookupVolumeNoise_(text);
+  text = stripMangaUpdatesEditionSuffix_(text);
+  text = stripLookupWorkTitleDecoration_(text);
+  text = stripMangaUpdatesSubtitle_(text);
+  text = normalizeTitleSearchCandidateSpacing_(text);
+  return text;
+}
+
+function lookupCategoriesForTitleAnalysis_(titleAnalysis, item) {
+  const analysis = titleAnalysis || {};
+  const itemType = String(analysis.itemType || item && item.itemType || '').trim();
+  const rowData = extractRowData_(item || {});
+  const rawCategory = analysis.category || rowData['カテゴリ'] || '';
+  const categories = [];
+
+  if (itemType === 'manga' || itemType === 'bl_manga') categories.push('まんが');
+  if (itemType === 'goods') categories.push('グッズ', 'まんが');
+  if (itemType === 'light_novel' || itemType === 'novel_book') categories.push('書籍', 'まんが');
+  if (itemType === 'magazine') categories.push('雑誌');
+  const normalized = normalizeDictionaryCategory_(rawCategory);
+  if (normalized) categories.push(normalized);
+  if (!categories.length) categories.push(itemType === 'goods' ? 'グッズ' : '書籍');
+
+  return categories.filter(function(category, index, array) {
+    return category && array.indexOf(category) === index;
+  });
+}
+
+function lookupSearchKeysFromPayload_(payload) {
+  const analysis = payload && payload.titleAnalysis || {};
+  const rawItem = payload && (payload.rawItem || payload) || {};
+  const rowData = extractRowData_(rawItem);
+  const keys = [
     analysis.normalizedSearchTitle,
     analysis.extractedWorkTitle,
     analysis.originalTitle,
     analysis.originalProductTitle,
-    payload && payload.title,
-    payload && payload.rawItem && payload.rawItem.title,
-    payload && payload.rawItem && payload.rawItem['商品名'],
-  ]);
-}
+    rowData['原題タイトル'],
+    rowData['原題商品タイトル'],
+    rowData['原題商品名'],
+    rowData['タイトル'],
+    rawItem.title,
+    payload && payload.title
+  ];
 
-function lookupCategoriesForAnalysis_(analysis) {
-  const itemType = String(analysis && analysis.itemType || '').trim();
-  const rawCategory = String(analysis && (analysis.category || analysis.categoryName) || '').trim();
-  const preferred = [];
-  const normalizedCategory = normalizeDictionaryCategory_(rawCategory);
-  if (normalizedCategory) preferred.push(normalizedCategory);
-  if (itemType === 'goods') preferred.push('まんが', 'グッズ', '書籍');
-  else if (itemType === 'manga' || itemType === 'bl_manga') preferred.push('まんが');
-  else if (itemType === 'light_novel' || itemType === 'novel_book') preferred.push('書籍', 'まんが');
-  else if (itemType === 'magazine') preferred.push('雑誌');
-  else preferred.push('まんが', '書籍', 'グッズ');
-  return uniqNonEmptyTitles_(preferred.map(normalizeDictionaryCategory_).filter(Boolean));
-}
+  const expandedKeys = [];
+  keys.forEach(function(value) {
+    const raw = String(value || '').trim();
+    const pure = normalizeLookupWorkTitle_(raw);
+    if (pure) expandedKeys.push(pure);
+    if (raw) expandedKeys.push(raw);
+  });
 
-function findBuiltinTitleAlias_(language, categories, searchKey) {
-  const normalizedLanguage = normalizeDictionaryLanguage_(language);
-  const titleKey = normalizeDictionaryTitleKey_(searchKey);
-  if (!titleKey) return '';
-
-  for (let i = 0; i < BUILTIN_TITLE_ALIAS_DICTIONARY.length; i += 1) {
-    const entry = BUILTIN_TITLE_ALIAS_DICTIONARY[i];
-    const entryLanguage = normalizeDictionaryLanguage_(entry.language || '');
-    if (entryLanguage && normalizedLanguage && entryLanguage !== normalizedLanguage) continue;
-    const entryCategories = (entry.categories || []).map(normalizeDictionaryCategory_).filter(Boolean);
-    if (entryCategories.length && categories.length && !entryCategories.some(function(category) { return categories.indexOf(category) >= 0; })) continue;
-    const aliases = entry.aliases || [];
-    for (let a = 0; a < aliases.length; a += 1) {
-      if (normalizeDictionaryTitleKey_(aliases[a]) === titleKey) {
-        return String(entry.japaneseTitle || '').trim();
-      }
-    }
-  }
-  return '';
-}
-
-function findTitleAliasDictionaryCandidate_(language, categories, searchKey, author, originalProductTitle) {
-  const normalizedLanguage = normalizeDictionaryLanguage_(language) || '台湾';
-  const normalizedCategories = categories && categories.length ? categories : ['まんが', '書籍', 'グッズ'];
-  for (let i = 0; i < normalizedCategories.length; i += 1) {
-    const category = normalizedCategories[i];
-    let found = '';
-    try {
-      found = findTitleFromDictionary_(normalizedLanguage, category, searchKey, author, originalProductTitle);
-    } catch (error) {
-      if (typeof Logger !== 'undefined') Logger.log('titleAliasDictionary sheet lookup error: ' + (error && error.message ? error.message : error));
-    }
-    if (found) {
-      return {
-        title: found,
-        provider: 'titleAliasDictionary',
-        score: 1000,
-        note: 'sheet dictionary exact match',
-      };
-    }
-  }
-
-  const fallback = findBuiltinTitleAlias_(normalizedLanguage, normalizedCategories, searchKey);
-  if (fallback) {
-    return {
-      title: fallback,
-      provider: 'titleAliasDictionary',
-      score: 995,
-      note: 'built-in alias dictionary exact match',
-    };
-  }
-  return null;
+  return expandedKeys.map(function(value) {
+    return String(value || '').trim();
+  }).filter(function(value, index, array) {
+    return value && array.indexOf(value) === index;
+  });
 }
 
 function normalizeLookupResult_(lookup) {
-  const source = lookup || {};
-  const normalizedSearchTitle = firstLookupText_(source.normalizedSearchTitle, source.extractedWorkTitle, source.originalTitle);
+  const source = lookup && lookup.lookup ? lookup.lookup : lookup;
+  if (!source) return null;
   return {
-    status: String(source.status || '').trim(),
-    japaneseTitle: String(source.japaneseTitle || source.title || '').trim(),
-    provider: String(source.provider || '').trim(),
-    normalizedSearchTitle: normalizedSearchTitle,
-    extractedWorkTitle: String(source.extractedWorkTitle || '').trim(),
-    score: Number(source.score || 0),
-    trace: String(source.trace || source.log || '').trim(),
+    status: source.status || (source.japaneseTitle || source.title ? 'resolved' : 'not_found'),
+    japaneseTitle: source.japaneseTitle || source.title || '',
+    provider: source.provider || source.source || '',
+    normalizedSearchTitle: source.normalizedSearchTitle || '',
+    extractedWorkTitle: source.extractedWorkTitle || '',
+    score: source.score || 0,
+    trace: source.trace || source.log || '',
     candidates: Array.isArray(source.candidates) ? source.candidates : [],
-    errors: Array.isArray(source.errors) ? source.errors : [],
+    errors: Array.isArray(source.errors) ? source.errors : []
   };
 }
 
 function lookupJapaneseTitleFromPayload_(payload) {
-  const analysis = payload && payload.titleAnalysis ? payload.titleAnalysis : {};
-  const rawItem = payload && payload.rawItem ? payload.rawItem : {};
-  const itemType = String(analysis.itemType || '').trim();
-  const searchKeys = buildJapaneseTitleSearchKeys_(payload);
-  const primaryKey = searchKeys[0] || '';
-  const language = normalizeDictionaryLanguage_(analysis.language || rawItem.language || rawItem['言語'] || '台湾') || '台湾';
-  const author = firstLookupText_(analysis.author, rawItem.author, rawItem['著者'], rawItem['作者']);
-  const originalProductTitle = firstLookupText_(analysis.originalProductTitle, rawItem.title, rawItem['商品名']);
-  const categories = lookupCategoriesForAnalysis_(analysis);
+  const analysis = payload && payload.titleAnalysis || {};
+  const rawItem = payload && (payload.rawItem || payload) || {};
+  const rowData = extractRowData_(rawItem);
+  const language = normalizeDictionaryLanguage_(analysis.language || rowData['言語'] || '台湾') || '台湾';
+  const categories = lookupCategoriesForTitleAnalysis_(analysis, rawItem);
+  const searchKeys = lookupSearchKeysFromPayload_(payload);
+  const author = String(analysis.author || rowData['著者'] || rowData['作者'] || '').trim();
+  const originalProductTitle = String(analysis.originalProductTitle || rowData['原題商品タイトル'] || rowData['原題商品名'] || rawItem.title || '').trim();
   const trace = [];
   const errors = [];
-  const candidates = [];
+  let aggregate = {
+    checkedSources: [],
+    failedSources: [],
+    skippedSources: [],
+    candidates: [],
+    errors: []
+  };
 
-  if (!searchKeys.length) {
-    return {
-      status: 'skipped',
-      japaneseTitle: '',
-      provider: '',
-      normalizedSearchTitle: '',
-      extractedWorkTitle: String(analysis.extractedWorkTitle || '').trim(),
-      score: 0,
-      trace: 'lookup:skipped(no_search_key)',
-      candidates: [],
-      errors: [],
-    };
-  }
-
-  if (itemType === 'magazine') {
-    return {
-      status: 'skipped',
-      japaneseTitle: '',
-      provider: 'magazine_master',
-      normalizedSearchTitle: primaryKey,
-      extractedWorkTitle: String(analysis.extractedWorkTitle || '').trim(),
-      score: 0,
-      trace: 'magazine:skip_title_provider',
-      candidates: [],
-      errors: [],
-    };
-  }
-
-  for (let k = 0; k < searchKeys.length; k += 1) {
-    const searchKey = searchKeys[k];
-    const dictCandidate = findTitleAliasDictionaryCandidate_(language, categories, searchKey, author, originalProductTitle);
-    trace.push('dictionary:' + (dictCandidate ? 'hit' : 'miss') + '(key=' + searchKey + ')');
-    if (dictCandidate) {
-      return {
-        status: 'resolved',
-        japaneseTitle: dictCandidate.title,
-        provider: dictCandidate.provider,
-        normalizedSearchTitle: primaryKey,
-        extractedWorkTitle: String(analysis.extractedWorkTitle || '').trim(),
-        score: dictCandidate.score,
-        trace: trace.join(' | '),
-        candidates: [{
-          title: dictCandidate.title,
-          provider: dictCandidate.provider,
-          score: dictCandidate.score,
-          note: dictCandidate.note,
-        }],
-        errors: [],
-      };
-    }
-
-    for (let c = 0; c < categories.length; c += 1) {
-      const category = categories[c];
+  for (let keyIndex = 0; keyIndex < searchKeys.length; keyIndex += 1) {
+    const searchKey = searchKeys[keyIndex];
+    for (let categoryIndex = 0; categoryIndex < categories.length; categoryIndex += 1) {
+      const category = categories[categoryIndex];
       try {
-        const cascade = cascadeLookupJapaneseTitleResult_(language, category, searchKey, author, originalProductTitle);
-        const provider = lookupProviderName_(cascade.source);
-        trace.push([
-          'cascade',
+        const result = cascadeLookupJapaneseTitleResult_(
+          language,
           category,
-          provider || 'not_found',
-          (cascade.checkedSources || []).join('>'),
-        ].join(':'));
-        (cascade.candidates || []).forEach(function(candidate) {
-          candidates.push({
-            title: String(candidate || '').trim(),
-            provider: provider || 'cascade',
-            score: lookupScoreForProvider_(provider) - 40,
-            note: 'candidate',
-          });
-        });
-        (cascade.failedSources || []).forEach(function(failedSource) {
-          if (failedSource) errors.push(String(failedSource));
-        });
-        if (cascade.japaneseTitle) {
+          searchKey,
+          author,
+          originalProductTitle,
+          analysis.itemType,
+          analysis.providerHint
+        );
+        aggregate.checkedSources = aggregate.checkedSources.concat(result.checkedSources || []);
+        aggregate.failedSources = aggregate.failedSources.concat(result.failedSources || []);
+        aggregate.skippedSources = aggregate.skippedSources.concat(result.skippedSources || []);
+        aggregate.candidates = aggregate.candidates.concat(result.candidates || []);
+        aggregate.errors = aggregate.errors.concat(result.errors || []);
+        if (result.japaneseTitle) {
+          const provider = lookupProviderName_(result.source);
+          const resolvedScore = japaneseTitleLookupResolvedScore_(result.source);
+          if (result.trace && result.trace.length) {
+            trace.push(searchKey + '=>' + result.trace.join(' > '));
+          }
+          trace.push((provider || 'provider') + ':hit(key=' + searchKey + ')');
           return {
-            status: 'resolved',
-            japaneseTitle: cascade.japaneseTitle,
-            provider: provider || 'cascade',
-            normalizedSearchTitle: primaryKey,
-            extractedWorkTitle: String(analysis.extractedWorkTitle || '').trim(),
-            score: lookupScoreForProvider_(provider),
-            trace: trace.join(' | '),
-            candidates: candidates.concat([{
-              title: cascade.japaneseTitle,
-              provider: provider || 'cascade',
-              score: lookupScoreForProvider_(provider),
-              note: 'provider hit',
-            }]),
-            errors: uniqNonEmptyTitles_(errors),
+            success: true,
+            lookup: {
+              status: 'resolved',
+              japaneseTitle: result.japaneseTitle,
+              provider: provider,
+              normalizedSearchTitle: searchKeys[0] || searchKey,
+              extractedWorkTitle: analysis.extractedWorkTitle || searchKey,
+              score: resolvedScore,
+              trace: trace.join(' | '),
+              candidates: [{ title: result.japaneseTitle, provider: provider, score: resolvedScore }],
+              errors: errors
+            }
           };
         }
+        trace.push(result.trace && result.trace.length
+          ? searchKey + '=>' + result.trace.join(' > ')
+          : 'miss:' + category + ':' + searchKey);
       } catch (error) {
-        const message = error && error.message ? error.message : String(error);
+        const message = error && error.message ? error.message : String(error || 'lookup error');
         errors.push(message);
-        trace.push('cascade:error(' + category + ':' + message + ')');
+        const failedSource = inferLookupFailureSource_(error);
+        if (failedSource) aggregate.failedSources.push(failedSource);
+        trace.push('error:' + (failedSource || 'provider') + ':' + searchKey);
       }
     }
   }
 
+  aggregate.checkedSources = uniqNonEmptyTitles_(aggregate.checkedSources);
+  aggregate.failedSources = uniqNonEmptyTitles_(aggregate.failedSources);
+  aggregate.skippedSources = uniqNonEmptyTitles_(aggregate.skippedSources);
+  errors.push.apply(errors, uniqNonEmptyTitles_(aggregate.errors));
+  const providerTrace = [];
+  if (aggregate.checkedSources.length) providerTrace.push('checked:' + aggregate.checkedSources.join('/'));
+  if (aggregate.failedSources.length) providerTrace.push('failed:' + aggregate.failedSources.join('/'));
+  if (aggregate.skippedSources.length) providerTrace.push('skipped:' + aggregate.skippedSources.join('/'));
+  const candidateTitles = uniqNonEmptyTitles_(aggregate.candidates).slice(0, 5);
+  if (candidateTitles.length) providerTrace.push('candidates:' + candidateTitles.join('/'));
   return {
-    status: errors.length ? 'partial_error' : 'not_found',
-    japaneseTitle: '',
-    provider: '',
-    normalizedSearchTitle: primaryKey,
-    extractedWorkTitle: String(analysis.extractedWorkTitle || '').trim(),
-    score: 0,
-    trace: trace.join(' | ') || 'lookup:not_found',
-    candidates: candidates.filter(function(candidate) { return candidate && candidate.title; }),
-    errors: uniqNonEmptyTitles_(errors),
+    success: true,
+    lookup: {
+      status: aggregate.failedSources.length ? 'partial_error' : 'not_found',
+      japaneseTitle: '',
+      provider: '',
+      normalizedSearchTitle: searchKeys[0] || '',
+      extractedWorkTitle: analysis.extractedWorkTitle || searchKeys[0] || '',
+      score: 0,
+      trace: trace.concat(providerTrace).join(' | ') || buildJapaneseTitleLookupStatusLabel_(aggregate),
+      candidates: uniqNonEmptyTitles_(aggregate.candidates).map(function(title) {
+        return { title: title, provider: 'candidate', score: 100 };
+      }),
+      errors: errors
+    }
   };
 }
 
 function lookupJapaneseTitleAction_(payload) {
-  const lookup = lookupJapaneseTitleFromPayload_(payload || {});
-  return jsonResponse_({
-    success: true,
-    ok: true,
-    source: payload && payload.source || '',
-    lookup: lookup,
-  });
+  return lookupJapaneseTitleFromPayload_(payload || {});
 }
 
-function shouldRefreshJapaneseTitleLookup_(lookup) {
-  if (!lookup || typeof lookup !== 'object') return true;
-  if (!String(lookup.status || '').trim()) return true;
-  if (lookup.status === 'failed' && String(lookup.provider || '') === 'extension') return true;
-  return false;
+function shouldRefreshLookup_(lookup, titleAnalysis) {
+  const normalized = normalizeLookupResult_(lookup);
+  if (!normalized) return true;
+  if (normalized.status !== 'resolved') return true;
+  const lookupKey = String(normalized.normalizedSearchTitle || '').trim();
+  const analysisKey = String(titleAnalysis && titleAnalysis.normalizedSearchTitle || '').trim();
+  return Boolean(analysisKey && lookupKey && lookupKey !== analysisKey);
 }
 
-function lookupStatusLabelForSheet_(lookup) {
-  const status = String(lookup && lookup.status || '').trim();
-  if (status === 'resolved') return 'resolved';
-  if (status === 'not_found') return JAPANESE_TITLE_NOT_FOUND_ALL_SOURCES_LABEL;
-  if (status === 'partial_error') return '一部照会失敗';
-  if (status === 'failed') return '照会失敗' + (lookup.provider ? '(' + lookup.provider + ')' : '');
-  if (status === 'skipped') return '未照会';
-  return status || '未照会';
+/** 拡張の MangaUpdates 直叩きなど、サーバ側カスケードに無い trace 断片をシートの照会ログに残す */
+function mergeExtensionMuTraceIntoLookup_(clientLookup, serverLookup) {
+  const client = normalizeLookupResult_(clientLookup);
+  const server = normalizeLookupResult_(serverLookup);
+  if (!server) return client;
+  if (!client || !String(client.trace || '').trim()) return server;
+  const extraParts = String(client.trace || '')
+    .split('|')
+    .map(function(p) { return String(p || '').trim(); })
+    .filter(function(p) {
+      return p && (/mangaupdatesClient:/i.test(p) || /^mangaupdates:/i.test(p));
+    });
+  if (!extraParts.length) return server;
+  const extra = extraParts.join(' | ');
+  var sTrace = String(server.trace || '').trim();
+  if (!sTrace) return Object.assign({}, server, { trace: extra });
+  if (sTrace.indexOf(extra) >= 0) return server;
+  return Object.assign({}, server, { trace: sTrace + ' | ' + extra });
+}
+
+function japaneseTitleLookupStatusLabel_(lookup) {
+  const result = normalizeLookupResult_(lookup);
+  if (!result) return JAPANESE_TITLE_NOT_LOOKED_UP_LABEL;
+  if (result.status === 'resolved') return 'resolved';
+  if (result.status === 'not_found') return JAPANESE_TITLE_NOT_FOUND_ALL_SOURCES_LABEL;
+  if (result.status === 'partial_error') return '一部照会失敗';
+  if (result.status === 'failed') return JAPANESE_TITLE_LOOKUP_FAILED_LABEL + '(' + (result.provider || '不明') + ')';
+  if (result.status === 'skipped') return JAPANESE_TITLE_NOT_LOOKED_UP_LABEL;
+  return result.status || JAPANESE_TITLE_NOT_LOOKED_UP_LABEL;
 }
 
 function applyJapaneseTitleLookupToRowData_(rowData, lookup, titleAnalysis) {
+  const result = normalizeLookupResult_(lookup);
   const next = Object.assign({}, rowData || {});
-  const normalizedLookup = normalizeLookupResult_(lookup);
-  const japaneseTitle = String(normalizedLookup.japaneseTitle || '').trim();
-  const status = String(normalizedLookup.status || '').trim();
-  const logParts = [normalizedLookup.trace].concat(normalizedLookup.errors || []).filter(Boolean);
+  if (!result) return finalizeSheetWorkTitleColumns_(next);
 
-  if (status === 'resolved' && japaneseTitle) {
-    next['日本語タイトル'] = japaneseTitle;
-    if (!String(next['作品名（日本語）'] || '').trim()) next['作品名（日本語）'] = japaneseTitle;
-    if (!String(next['作品名日本語'] || '').trim()) next['作品名日本語'] = japaneseTitle;
-    if (!String(next['商品名（日本語）'] || '').trim()) next['商品名（日本語）'] = japaneseTitle;
-    if (!String(next['商品名(日本語)'] || '').trim()) next['商品名(日本語)'] = japaneseTitle;
-  } else if (status === 'not_found' || status === 'failed') {
+  if (result.status === 'resolved' && result.japaneseTitle) {
+    next['日本語タイトル'] = result.japaneseTitle;
+    if (!String(next['作品名（日本語）'] || '').trim()) next['作品名（日本語）'] = result.japaneseTitle;
+    if (!String(next['作品名日本語'] || '').trim()) next['作品名日本語'] = result.japaneseTitle;
+  } else if (isJapaneseTitleLookupStatusValue_(next['日本語タイトル'])) {
     next['日本語タイトル'] = '';
   }
+  next['日本語タイトル照会結果'] = japaneseTitleLookupStatusLabel_(result);
+  next['日本語タイトル照会元'] = result.provider || '';
+  next['日本語タイトル照会ログ'] = [result.trace || '', (result.errors || []).join(' / ')].filter(Boolean).join(' / ');
+  next['検索用正規化タイトル'] = result.normalizedSearchTitle || titleAnalysis && titleAnalysis.normalizedSearchTitle || '';
+  return finalizeSheetWorkTitleColumns_(next);
+}
 
-  next['日本語タイトル照会結果'] = lookupStatusLabelForSheet_(normalizedLookup);
-  next['日本語タイトル照会元'] = status === 'resolved' || status === 'partial_error'
-    ? String(normalizedLookup.provider || '').trim()
-    : '';
-  next['日本語タイトル照会ログ'] = logParts.join(' | ');
-  next['検索用正規化タイトル'] = String(normalizedLookup.normalizedSearchTitle || titleAnalysis && titleAnalysis.normalizedSearchTitle || '').trim();
-  return next;
+function prepareItemWithJapaneseTitleLookup_(item) {
+  const titleAnalysis = item && item.titleAnalysis || {};
+  const clientLookup = normalizeLookupResult_(item && item.japaneseTitleLookup);
+  const clientResolved = !!(clientLookup && clientLookup.status === 'resolved' && String(clientLookup.japaneseTitle || '').trim());
+
+  let lookup;
+  if (clientResolved) {
+    lookup = clientLookup;
+  } else if (shouldRefreshLookup_(item && item.japaneseTitleLookup, titleAnalysis)) {
+    lookup = lookupJapaneseTitleFromPayload_({
+      source: item && item.source || 'books_tw',
+      rawItem: item && (item.rawItem || item),
+      titleAnalysis: titleAnalysis
+    }).lookup;
+    lookup = mergeExtensionMuTraceIntoLookup_(item && item.japaneseTitleLookup, lookup);
+    if (clientLookup && String(clientLookup.japaneseTitle || '').trim() && !String(lookup.japaneseTitle || '').trim()) {
+      lookup = Object.assign({}, lookup, {
+        japaneseTitle: clientLookup.japaneseTitle,
+        status: 'resolved',
+        provider: clientLookup.provider || lookup.provider || 'mangaUpdates(extension)',
+      });
+    }
+  } else {
+    lookup = clientLookup;
+  }
+  const rowData = applyJapaneseTitleLookupToRowData_(extractRowData_(item), lookup, titleAnalysis);
+  return Object.assign({}, item, {
+    rowData: rowData,
+    japaneseTitleLookup: lookup
+  });
 }
 
 function ensureLookupColumns_(sheet) {
   const lastColumn = Math.max(sheet.getLastColumn(), 1);
-  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(function(header) {
-    return String(header || '').trim();
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+  const normalized = {};
+  headers.forEach(function(header) {
+    const key = normalizeHeader_(header);
+    if (key) normalized[key] = true;
   });
   const missing = LOOKUP_WRITEBACK_HEADERS.filter(function(header) {
-    return header && headers.indexOf(header) < 0;
+    return !normalized[normalizeHeader_(header)];
   });
-  if (!missing.length) return [];
+  if (!missing.length) return;
   sheet.getRange(1, lastColumn + 1, 1, missing.length).setValues([missing]);
-  return missing;
 }
 
-function buildRowForUpdate_(context, item, rowNumber) {
-  const existing = context.sheet.getRange(rowNumber, 1, 1, context.lastColumn).getValues()[0];
-  const rowData = extractRowData_(item);
-  Object.keys(rowData).forEach(function(key) {
-    const idx = context.normalizedHeaderMap[normalizeHeader_(key)];
-    if (typeof idx !== 'number') return;
-    const value = toCellValue_(rowData[key]);
-    if (value === '' && LOOKUP_WRITEBACK_HEADERS.indexOf(key) < 0) return;
-    existing[idx] = value;
-  });
-  return existing;
-}
-
-function findExistingRowByDuplicateKeys_(sheet, duplicateKeyColumns, duplicateKeys) {
+function findExistingDuplicateRow_(sheet, duplicateKeyColumns, duplicateKeys) {
   for (let i = 0; i < duplicateKeys.length; i += 1) {
-    const duplicateKey = String(duplicateKeys[i] || '');
-    const separatorIndex = duplicateKey.indexOf(':');
+    const duplicateKey = duplicateKeys[i];
+    const separatorIndex = String(duplicateKey).indexOf(':');
     if (separatorIndex <= 0) continue;
     const type = duplicateKey.slice(0, separatorIndex);
     const value = duplicateKey.slice(separatorIndex + 1);
@@ -1848,141 +2414,184 @@ function findExistingRowByDuplicateKeys_(sheet, duplicateKeyColumns, duplicateKe
       return column && column.type === type;
     });
     if (!targetColumn || !value) continue;
+    const pattern = buildDuplicateKeySearchPattern_(type, value);
+    if (!pattern) continue;
     const lastRow = Math.max(sheet.getLastRow(), 1);
     if (lastRow <= 1) continue;
     const finder = sheet
       .getRange(2, targetColumn.index + 1, lastRow - 1, 1)
-      .createTextFinder(value)
-      .matchCase(false)
-      .matchEntireCell(true);
-    const cell = finder.findNext();
-    if (cell) return cell.getRow();
+      .createTextFinder(pattern)
+      .useRegularExpression(true)
+      .matchCase(false);
+    const range = finder.findNext();
+    if (range) return range.getRow();
   }
   return 0;
 }
 
-function normalizeUpsertSheetItem_(payload, entry) {
-  const sourceItem = entry && typeof entry === 'object' ? entry : {};
-  const rawItem = sourceItem.rawItem && typeof sourceItem.rawItem === 'object' ? sourceItem.rawItem : sourceItem;
-  const titleAnalysis = sourceItem.titleAnalysis || payload.titleAnalysis || {};
-  let lookup = normalizeLookupResult_(sourceItem.japaneseTitleLookup || payload.japaneseTitleLookup || null);
-  if (shouldRefreshJapaneseTitleLookup_(lookup)) {
-    lookup = lookupJapaneseTitleFromPayload_(Object.assign({}, payload, {
-      source: sourceItem.source || payload.source || 'books_tw',
-      rawItem: rawItem,
-      titleAnalysis: titleAnalysis,
-      title: rawItem.title || rawItem['商品名'] || '',
-    }));
-  }
-
-  const itemType = sourceItem.itemType ||
-    (titleAnalysis.itemType === 'goods' ? 'goods' : titleAnalysis.itemType === 'magazine' ? 'magazine' : 'book');
-  const rowData = Object.assign({}, extractRowData_(sourceItem));
-  if (!Object.keys(rowData).length) {
-    rowData['博客來商品コード'] = firstLookupText_(rawItem.itemId, rawItem.productCode, rawItem['博客來商品コード']);
-    rowData['博客來URL'] = firstLookupText_(rawItem.pageUrl, rawItem.URL, rawItem.url);
-    rowData['原題商品タイトル'] = firstLookupText_(titleAnalysis.originalProductTitle, rawItem.title, rawItem['商品名']);
-    rowData['原題タイトル'] = firstLookupText_(titleAnalysis.originalTitle, titleAnalysis.extractedWorkTitle);
-    rowData['言語'] = firstLookupText_(titleAnalysis.language, rawItem.language, rawItem['言語']);
-    rowData['カテゴリ'] = titleAnalysis.itemType === 'manga' ? 'まんが' : titleAnalysis.itemType === 'goods' ? 'グッズ' : '';
-    rowData['原価'] = firstLookupText_(rawItem.priceSales, rawItem.price, rawItem['価格']);
-    rowData['メイン画像URL'] = firstLookupText_(rawItem.cover, rawItem.imageUrl, rawItem['画像URL']);
-    rowData['追加画像URL'] = firstLookupText_(rawItem.additionalImages, rawItem['追加画像URL']);
-    rowData['商品説明'] = firstLookupText_(rawItem.description, rawItem['商品説明']);
-  }
-
-  return Object.assign({}, sourceItem, {
-    source: sourceItem.source || payload.source || 'books_tw',
-    rawItem: rawItem,
-    itemType: itemType,
-    sheetName: sourceItem.sheetName || resolveSheetName_({ itemType: itemType, rowData: rowData }),
-    rowData: applyJapaneseTitleLookupToRowData_(rowData, lookup, titleAnalysis),
-    titleAnalysis: titleAnalysis,
-    japaneseTitleLookup: lookup,
-  });
+/** 1行ぶんをセル単位ではなくまとめて setValues（高速化の主因） */
+function writeRowBulk_(context, rowNumber, item) {
+  const row = buildRow_(context, item);
+  applyTextFormatToColumns_(context.sheet, rowNumber, 1, context.textColumnIndexes);
+  // 第3引数は numRows(=1) であって rowNumber ではない。
+  // 以前は getRange(rowNumber, 1, rowNumber, lastColumn) としていたため
+  // 行2以降で「データ次元不一致」となり setValues が失敗、結果的に
+  // 日本語タイトル照会ログ等の列が更新されない不具合の原因になっていた。
+  const rng = context.sheet.getRange(rowNumber, 1, 1, context.lastColumn);
+  rng.setValues([row]);
+  rng.setWrap(false);
+  applyRichTextLinksToColumns_(context.sheet, rowNumber, [row], context.urlLinkColumnIndexes);
 }
 
-function upsertItemsWithLookup_(ss, payload) {
-  const sourceItems = Array.isArray(payload.items) && payload.items.length
-    ? payload.items
-    : [payload];
-  const results = new Array(sourceItems.length);
-  const groupedBySheet = {};
+/**
+ * 既存行の重複キー → 行番号（1スキャンで構築。TextFinder 繰り返しより高速）
+ */
+function buildDuplicateKeyToRowMap_(sheet, duplicateKeyColumns) {
+  const map = Object.create(null);
+  if (!duplicateKeyColumns || !duplicateKeyColumns.length) return map;
 
-  sourceItems.forEach(function(entry, index) {
-    const item = normalizeUpsertSheetItem_(payload, entry);
-    const sheetName = resolveSheetName_(item);
-    if (!groupedBySheet[sheetName]) groupedBySheet[sheetName] = [];
-    groupedBySheet[sheetName].push({ item: item, index: index });
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  if (lastRow <= 1) return map;
+
+  const colIndexes = duplicateKeyColumns.map(function(c) { return c.index; });
+  const minCol = Math.min.apply(null, colIndexes);
+  const maxCol = Math.max.apply(null, colIndexes);
+  const numRows = lastRow - 1;
+  const allValues = sheet.getRange(2, minCol + 1, lastRow, maxCol + 1).getDisplayValues();
+
+  duplicateKeyColumns.forEach(function(column) {
+    const localCol = column.index - minCol;
+    for (let r = 0; r < numRows; r += 1) {
+      const normalized = normalizeDuplicateKeyValueByType_(column.type, allValues[r][localCol]);
+      if (!normalized) continue;
+      map[column.type + ':' + normalized] = r + 2;
+    }
   });
+  return map;
+}
 
-  Object.keys(groupedBySheet).forEach(function(sheetName) {
-    const sheet = ss.getSheetByName(sheetName);
-    if (!sheet) throw new Error('Sheet not found: ' + sheetName);
-    ensureLookupColumns_(sheet);
-    const entries = groupedBySheet[sheetName];
-    const context = buildSheetContext_(ss, sheetName, entries[0].item);
-    const duplicateKeyColumns = findDuplicateKeyColumns_(context.normalizedHeaderMap, entries[0].item);
+function findExistingRowFromKeyMaps_(duplicateKeys, primaryMap, fallbackMap) {
+  if (!duplicateKeys || !duplicateKeys.length) return 0;
+  for (let i = 0; i < duplicateKeys.length; i += 1) {
+    const direct = primaryMap[duplicateKeys[i]];
+    if (direct) return direct;
+    const pend = fallbackMap && fallbackMap[duplicateKeys[i]];
+    if (pend) return pend;
+  }
+  return 0;
+}
 
-    entries.forEach(function(entry) {
-      const rowData = extractRowData_(entry.item);
-      const duplicateKeys = buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns);
-      const existingRow = findExistingRowByDuplicateKeys_(context.sheet, duplicateKeyColumns, duplicateKeys);
-      const targetRow = existingRow || resolveAppendRows_(context.sheet, context.keyColumnIndex, 1)[0];
-      const row = existingRow
-        ? buildRowForUpdate_(context, entry.item, existingRow)
-        : buildRow_(context, entry.item);
+function upsertItemsWithLookup_(ss, items) {
+  var preparedEntries = [];
+  var ix;
+  for (ix = 0; ix < items.length; ix += 1) {
+    preparedEntries.push({
+      index: ix,
+      prepared: mag_normalizeMagazineRowForDropdownWrite_(prepareItemWithJapaneseTitleLookup_(items[ix])),
+    });
+  }
 
-      writeRows_(context.sheet, context.lastColumn, [targetRow], [row]);
+  var bySheet = {};
+  for (ix = 0; ix < preparedEntries.length; ix += 1) {
+    var e = preparedEntries[ix];
+    var sname = resolveSheetName_(e.prepared);
+    e.sheetName = sname;
+    if (!bySheet[sname]) bySheet[sname] = [];
+    bySheet[sname].push(e);
+  }
+
+  var results = new Array(items.length);
+  Object.keys(bySheet).forEach(function(sheetName) {
+    var group = bySheet[sheetName];
+    var samplePrepared = group[0].prepared;
+
+    var context = buildSheetContext_(ss, sheetName, samplePrepared);
+    ensureLookupColumns_(context.sheet);
+    var refreshedContext = buildSheetContext_(ss, sheetName, samplePrepared);
+    var duplicateKeyColumns = findDuplicateKeyColumns_(refreshedContext.normalizedHeaderMap, samplePrepared);
+    var keyRowOnSheet = buildDuplicateKeyToRowMap_(refreshedContext.sheet, duplicateKeyColumns);
+    var pendingKeyRow = Object.create(null);
+
+    var gj;
+    for (gj = 0; gj < group.length; gj += 1) {
+      var entry = group[gj];
+      var preparedItem = entry.prepared;
+      var rowData = extractRowData_(preparedItem);
+      var duplicateKeys = buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns);
+      // メモリ上のキーマップのみ（事前にシート全域を読み済み）。新規時に TextFinder で列再走査しない
+      var existingRow = findExistingRowFromKeyMaps_(duplicateKeys, keyRowOnSheet, pendingKeyRow);
+
+      var targetRow = existingRow;
+      var mode = 'updated';
+
+      if (!targetRow) {
+        targetRow = resolveAppendRows_(refreshedContext.sheet, refreshedContext.keyColumnIndex, 1)[0];
+        mode = 'created';
+        var newRow = buildRow_(refreshedContext, preparedItem);
+        writeRows_(refreshedContext.sheet, refreshedContext.lastColumn, [targetRow], [newRow], refreshedContext.textColumnIndexes, refreshedContext.urlLinkColumnIndexes);
+      } else {
+        writeRowBulk_(refreshedContext, targetRow, preparedItem);
+      }
+
+      var pk2;
+      for (pk2 = 0; pk2 < duplicateKeys.length; pk2 += 1) {
+        pendingKeyRow[duplicateKeys[pk2]] = targetRow;
+        keyRowOnSheet[duplicateKeys[pk2]] = targetRow;
+      }
+
       if (sheetName === MAGAZINE_SHEET_NAME) {
         try {
-          mag_書込後処理_(context.sheet, targetRow, entry.item);
+          mag_書込後処理_(refreshedContext.sheet, targetRow, preparedItem);
         } catch (err) {
           Logger.log('台湾雑誌 書込後処理エラー row ' + targetRow + ': ' + err.message);
         }
       }
+
       results[entry.index] = {
         ok: true,
         success: true,
         index: entry.index,
         sheetName: sheetName,
-        sheet: sheetName,
+        productCode: preparedItem && preparedItem.productCode ? preparedItem.productCode : '',
         row: targetRow,
         appendedRow: targetRow,
-        mode: existingRow ? 'updated' : 'created',
-        productCode: entry.item && entry.item.productCode ? entry.item.productCode : '',
-        lookup: entry.item.japaneseTitleLookup || null,
+        mode: mode,
+        lookup: preparedItem.japaneseTitleLookup || null
       };
-    });
+    }
   });
-
   return results;
 }
 
 function upsertProductWithLookupAction_(payload) {
+  const items = Array.isArray(payload && payload.items)
+    ? payload.items
+    : [payload && Object.assign({}, payload.rawItem || {}, {
+      source: payload.source || 'books_tw',
+      titleAnalysis: payload.titleAnalysis || null,
+      japaneseTitleLookup: payload.japaneseTitleLookup || null
+    })].filter(Boolean);
+  if (!items.length) throw new Error('items is empty');
+
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const results = upsertItemsWithLookup_(ss, payload || {});
-    const created = results.filter(function(r) { return r && r.mode === 'created'; }).length;
-    const updated = results.filter(function(r) { return r && r.mode === 'updated'; }).length;
+    const results = upsertItemsWithLookup_(ss, items);
     const first = results[0] || {};
-    return jsonResponse_({
+    return {
       success: true,
       ok: true,
       mode: first.mode || '',
       source: payload && payload.source || 'books_tw',
-      sheet: first.sheet || first.sheetName || '',
+      sheet: first.sheetName || '',
+      sheetName: first.sheetName || '',
       spreadsheetId: SPREADSHEET_ID,
       row: first.row || first.appendedRow || '',
       lookup: first.lookup || null,
       results: results,
-      appended: created,
-      updated: updated,
-      skipped: 0,
-      warnings: [],
-    });
+      warnings: []
+    };
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
@@ -1996,10 +2605,10 @@ function doPost(e) {
 
     const payload = JSON.parse(raw);
     if (payload && payload.action === 'lookupJapaneseTitle') {
-      return lookupJapaneseTitleAction_(payload);
+      return jsonResponse_(lookupJapaneseTitleAction_(payload));
     }
     if (payload && payload.action === 'upsertProductWithLookup') {
-      return upsertProductWithLookupAction_(payload);
+      return jsonResponse_(upsertProductWithLookupAction_(payload));
     }
     if (payload && payload.action === 'lookupMangaUpdatesJapaneseTitle') {
       return handleMangaUpdatesLookupPost_(payload);
@@ -2066,7 +2675,7 @@ function appendItems_(ss, items) {
     const rows = [];
 
     entries.forEach(entry => {
-      const convertedItem = convertJapaneseTitle_(entry.item);
+      const convertedItem = mag_normalizeMagazineRowForDropdownWrite_(convertJapaneseTitle_(entry.item));
       const duplicateKeys = buildDuplicateKeysForRowData_(extractRowData_(convertedItem), duplicateKeyColumns);
       const duplicateHit = duplicateKeys.find(key => {
         if (pendingDuplicateKeys.has(key)) return true;
@@ -2097,7 +2706,7 @@ function appendItems_(ss, items) {
     if (!appendEntries.length) return;
 
     const targetRows = resolveAppendRows_(context.sheet, context.keyColumnIndex, rows.length);
-    writeRows_(context.sheet, context.lastColumn, targetRows, rows);
+    writeRows_(context.sheet, context.lastColumn, targetRows, rows, context.textColumnIndexes, context.urlLinkColumnIndexes);
 
     appendEntries.forEach((entry, entryIndex) => {
       const appendedRow = targetRows[entryIndex];
@@ -2153,7 +2762,14 @@ function buildSheetContext_(ss, sheetName, sampleItem) {
     lastColumn,
     normalizedHeaderMap,
     keyColumnIndex: findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, extractRowData_(sampleItem)),
+    textColumnIndexes: findTextPreservingColumnIndexes_(normalizedHeaderMap),
+    urlLinkColumnIndexes: findUrlLinkColumnIndexes_(normalizedHeaderMap),
   };
+}
+
+function sanitizeIsbn_(value) {
+  const text = String(value || '').replace(/[^\d]/g, '');
+  return /^\d{13}$/.test(text) ? text : '';
 }
 
 function buildRow_(context, item) {
@@ -2163,7 +2779,13 @@ function buildRow_(context, item) {
   Object.keys(rowData).forEach(key => {
     const idx = context.normalizedHeaderMap[normalizeHeader_(key)];
     if (typeof idx !== 'number') return;
-    row[idx] = toCellValue_(rowData[key]);
+    const normalizedKey = normalizeHeader_(key);
+    const rawValue = rowData[key];
+    // ISBN列は13桁のみ許可
+    const cellValue = (normalizedKey === 'ISBN' || normalizedKey === 'isbn')
+      ? sanitizeIsbn_(rawValue)
+      : toCellValue_(rawValue);
+    row[idx] = cellValue;
   });
 
   return row;
@@ -2214,6 +2836,20 @@ function normalizeDuplicateKeyValue_(value) {
   return normalizeCellText_(value).toLowerCase();
 }
 
+function normalizeDuplicateKeyValueByType_(type, value) {
+  const normalized = normalizeDuplicateKeyValue_(value);
+  if (!normalized) return '';
+
+  if (type === 'productCode') {
+    const compact = normalized.replace(/\s+/g, '');
+    if (/^\d+$/.test(compact)) {
+      return compact.replace(/^0+(?=\d)/, '');
+    }
+  }
+
+  return normalized;
+}
+
 function buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns) {
   const keys = [];
   duplicateKeyColumns.forEach(column => {
@@ -2221,7 +2857,7 @@ function buildDuplicateKeysForRowData_(rowData, duplicateKeyColumns) {
     for (let i = 0; i < column.headers.length; i += 1) {
       const candidate = rowData && rowData[column.headers[i]];
       if (candidate == null) continue;
-      const normalized = normalizeDuplicateKeyValue_(candidate);
+      const normalized = normalizeDuplicateKeyValueByType_(column.type, candidate);
       if (!normalized) continue;
       rawValue = normalized;
       break;
@@ -2239,14 +2875,37 @@ function collectExistingDuplicateKeys_(sheet, duplicateKeyColumns) {
   const lastRow = Math.max(sheet.getLastRow(), 1);
   if (lastRow <= 1) return seen;
 
+  // CacheServiceで重複キーをキャッシュ（5分間）
+  const cacheKey = `dupkeys_${sheet.getSheetId()}_${lastRow}`;
+  const cache = CacheService.getScriptCache();
+  try {
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      JSON.parse(cached).forEach(k => seen.add(k));
+      return seen;
+    }
+  } catch (_) {}
+
+  // 全必要列のインデックスを集約し、含む最小～最大範囲を一括読み取り
+  const colIndexes = duplicateKeyColumns.map(c => c.index);
+  const minCol = Math.min.apply(null, colIndexes);
+  const maxCol = Math.max.apply(null, colIndexes);
+  const numRows = lastRow - 1;
+  const numCols = maxCol - minCol + 1;
+  const allValues = sheet.getRange(2, minCol + 1, numRows, numCols).getDisplayValues();
+
   duplicateKeyColumns.forEach(column => {
-    const values = sheet.getRange(2, column.index + 1, lastRow - 1, 1).getDisplayValues();
-    values.forEach(row => {
-      const normalized = normalizeDuplicateKeyValue_(row[0]);
-      if (!normalized) return;
+    const localCol = column.index - minCol;
+    for (let r = 0; r < numRows; r += 1) {
+      const normalized = normalizeDuplicateKeyValueByType_(column.type, allValues[r][localCol]);
+      if (!normalized) continue;
       seen.add(`${column.type}:${normalized}`);
-    });
+    }
   });
+
+  try {
+    cache.put(cacheKey, JSON.stringify([...seen]), 300);
+  } catch (_) {}
 
   return seen;
 }
@@ -2269,13 +2928,71 @@ function hasExistingDuplicateKey_(sheet, duplicateKeyColumns, duplicateKey) {
   const lastRow = Math.max(sheet.getLastRow(), 1);
   if (lastRow <= 1) return false;
 
+  const pattern = buildDuplicateKeySearchPattern_(type, value);
+  if (!pattern) return false;
+
   const finder = sheet
     .getRange(2, targetColumn.index + 1, lastRow - 1, 1)
-    .createTextFinder(value)
-    .matchCase(false)
-    .matchEntireCell(true);
+    .createTextFinder(pattern)
+    .useRegularExpression(true)
+    .matchCase(false);
 
   return !!finder.findNext();
+}
+
+function buildDuplicateKeySearchPattern_(type, value) {
+  const escaped = escapeRegexText_(String(value || ''));
+  if (!escaped) return '';
+  if (type === 'productCode' && /^\d+$/.test(String(value || ''))) {
+    return '^0*' + escaped + '$';
+  }
+  return '^' + escaped + '$';
+}
+
+function escapeRegexText_(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function findTextPreservingColumnIndexes_(normalizedHeaderMap) {
+  const headers = [
+    'サイト商品コード',
+    '博客來商品コード',
+    '商品コード',
+    'productCode',
+    '商品コード（SKU）',
+    'ISBN',
+    'isbn',
+    'アラジン商品コード',
+  ];
+  const indexes = new Set();
+
+  headers.forEach(header => {
+    const idx = normalizedHeaderMap[normalizeHeader_(header)];
+    if (typeof idx === 'number') indexes.add(idx);
+  });
+
+  return Array.from(indexes).sort((a, b) => a - b);
+}
+
+function findUrlLinkColumnIndexes_(normalizedHeaderMap) {
+  const headers = [
+    'リンク',
+    'URL',
+    '博客來URL',
+    'メイン画像',
+    '追加画像',
+    'メイン画像URL',
+    '追加画像URL',
+    '画像URL',
+  ];
+  const indexes = new Set();
+
+  headers.forEach(header => {
+    const idx = normalizedHeaderMap[normalizeHeader_(header)];
+    if (typeof idx === 'number') indexes.add(idx);
+  });
+
+  return Array.from(indexes).sort((a, b) => a - b);
 }
 
 function extractRowData_(item) {
@@ -2339,7 +3056,56 @@ function buildSequentialRows_(startRow, count) {
   return Array.from({ length: count }, (_, index) => startRow + index);
 }
 
-function writeRows_(sheet, lastColumn, targetRows, rows) {
+function applyTextFormatToColumns_(sheet, startRow, rowCount, columnIndexes) {
+  if (!rowCount || !columnIndexes || !columnIndexes.length) return;
+
+  // getRangeList でまとめて1回のAPI呼び出しに集約（列ごと個別呼び出しより高速）
+  const a1Notations = columnIndexes.map(index =>
+    sheet.getRange(startRow, index + 1, rowCount, 1).getA1Notation()
+  );
+  sheet.getRangeList(a1Notations).setNumberFormat('@');
+}
+
+function buildUrlRichTextValue_(value) {
+  const text = String(value || '');
+  const builder = SpreadsheetApp.newRichTextValue().setText(text);
+  const urlPattern = /https?:\/\/[^\s]+/g;
+  let match;
+  let hasUrl = false;
+
+  while ((match = urlPattern.exec(text)) !== null) {
+    let url = match[0];
+    let end = match.index + url.length;
+    while (url && /[)\]}>、。，,;；]+$/.test(url)) {
+      url = url.slice(0, -1);
+      end -= 1;
+    }
+    if (!url) continue;
+    builder.setLinkUrl(match.index, end, url);
+    hasUrl = true;
+  }
+
+  return hasUrl ? builder.build() : null;
+}
+
+function applyRichTextLinksToColumns_(sheet, startRow, rows, columnIndexes) {
+  if (!rows || !rows.length || !columnIndexes || !columnIndexes.length) return;
+
+  columnIndexes.forEach(index => {
+    const richValues = [];
+    let hasAnyUrl = false;
+    for (let r = 0; r < rows.length; r += 1) {
+      const text = String((rows[r] || [])[index] || '');
+      const richValue = buildUrlRichTextValue_(text);
+      if (richValue) hasAnyUrl = true;
+      richValues.push([richValue || SpreadsheetApp.newRichTextValue().setText(text).build()]);
+    }
+    if (!hasAnyUrl) return;
+    sheet.getRange(startRow, index + 1, rows.length, 1).setRichTextValues(richValues);
+  });
+}
+
+function writeRows_(sheet, lastColumn, targetRows, rows, textColumnIndexes, urlLinkColumnIndexes) {
   if (!targetRows.length || !rows.length) return;
 
   const maxTargetRow = Math.max.apply(null, targetRows);
@@ -2357,11 +3123,17 @@ function writeRows_(sheet, lastColumn, targetRows, rows) {
     const startRow = targetRows[startIndex];
     const segmentRows = rows.slice(startIndex, endIndex + 1);
     const range = sheet.getRange(startRow, 1, segmentRows.length, lastColumn);
+    // テキスト書式を先に適用してからデータ書き込み（順序を保持しつつバッファ活用）
+    applyTextFormatToColumns_(sheet, startRow, segmentRows.length, textColumnIndexes);
     range.setValues(segmentRows);
     range.setWrap(false);
+    applyRichTextLinksToColumns_(sheet, startRow, segmentRows, urlLinkColumnIndexes);
 
     startIndex = endIndex + 1;
   }
+
+  // 全セグメント書き込み完了後に一括フラッシュ（API遅延を最小化）
+  SpreadsheetApp.flush();
 }
 
 function normalizeHeader_(value) {
@@ -2389,6 +3161,60 @@ function jsonResponse_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * 台湾雑誌シート「雑誌名」列に入力規則（マスター由来の一覧）がある場合、
+ * 一覧外文字列を setValues すると書き込み全体が失敗するため、書き込み前に正規化する。
+ * - マスターに照合できる → 正規の表示名（英字名など）へ
+ * - mag_雑誌名を推定_ で選べる → マスター準拠の推定名のみ
+ * - どちらも不可 → 雑誌名は空、候補を備考へ
+ */
+function mag_normalizeMagazineRowForDropdownWrite_(item) {
+  if (!item || resolveSheetName_(item) !== MAGAZINE_SHEET_NAME) return item;
+  var rowData = extractRowData_(item);
+  if (!rowData || typeof rowData !== 'object') return item;
+
+  var cand = String(rowData['雑誌名'] || '').trim();
+  var language = mag_言語表示へ変換_(String(rowData['言語'] || '').trim() || '台湾');
+
+  if (cand) {
+    var infoHit = mag_マスターを検索_(cand, language);
+    if (infoHit) {
+      var canon = String(infoHit.表示英字名 || infoHit.英字名 || '').trim();
+      if (canon && canon !== cand) {
+        return Object.assign({}, item, {
+          rowData: Object.assign({}, rowData, { '雑誌名': canon }),
+        });
+      }
+      return item;
+    }
+  }
+
+  var rawTitle = mag_firstNonEmpty_(
+    rowData['原題タイトル'],
+    rowData['原題商品名'],
+    rowData['表紙情報'],
+    rowData['表紙'],
+    rowData['商品名'],
+    cand
+  );
+  var inferred = mag_雑誌名を推定_(String(rawTitle || '').trim(), language);
+  if (inferred) {
+    return Object.assign({}, item, {
+      rowData: Object.assign({}, rowData, { '雑誌名': inferred }),
+    });
+  }
+
+  if (!cand) return item;
+
+  var note = String(rowData['備考'] || '').trim();
+  var extra = '雑誌名候補: ' + cand;
+  var nextRow = Object.assign({}, rowData, {
+    '雑誌名': '',
+    '備考': note ? note + '\n' + extra : extra,
+  });
+  return Object.assign({}, item, { rowData: nextRow });
 }
 
 function mag_書込後処理_(sh, rowNum, item) {
@@ -3197,6 +4023,8 @@ function mag_雑誌名候補を整形_(rawTitle) {
     /\s+\d{1,2}(?:\s*[.\/\-・~～]\s*\d{1,2})?\s*月(?:號|号)?\s*\/\s*20\d{2}.*$/i,
     /\s+20\d{2}\s*(?:年|\/|\-|\.)\s*\d{1,2}(?:\s*[.\/\-・~～]\s*\d{1,2})?\s*月?(?:號|号)?.*$/i,
     /\s+VOL\.?\s*\d+.*$/i,
+    /\s+NO\.?\s*\d+.*$/i,
+    /\s+ISSUE\s*\d+.*$/i,
     /\s+第\s*\d+\s*(?:號|号|期).*$/i,
     /\s+\d+\s*(?:號|号|期).*$/i,
   ];
@@ -3269,3 +4097,14 @@ function testTaiwanGasRuntime_() {
   Logger.log(JSON.stringify(result, null, 2));
   return result;
 }
+
+
+
+
+
+
+
+
+
+
+

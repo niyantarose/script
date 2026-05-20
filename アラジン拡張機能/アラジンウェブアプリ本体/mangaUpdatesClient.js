@@ -243,8 +243,6 @@
     return {
       Accept: 'application/json',
       'Content-Type': 'application/json',
-      Origin: 'https://www.mangaupdates.com',
-      Referer: 'https://www.mangaupdates.com/',
     };
   }
 

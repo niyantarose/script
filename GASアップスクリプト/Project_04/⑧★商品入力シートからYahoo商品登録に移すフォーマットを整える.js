@@ -522,13 +522,14 @@ function normalizeDateYahoo8_(value) {
   if (isNaN(dt.getTime()) || dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== da) return '';
 
   // 365日ルール（Yahoo仕様）：不要ならこのブロックをコメントアウト
-  const today = new Date();
-  today.setHours(0,0,0,0);
-  const t = new Date(dt.getTime());
-  t.setHours(0,0,0,0);
+  // 365日ルールを使わない：過去日も出力する
+// const today = new Date();
+// today.setHours(0,0,0,0);
+// const t = new Date(dt.getTime());
+// t.setHours(0,0,0,0);
 
-  const diffDays = Math.floor((t.getTime() - today.getTime()) / 86400000);
-  if (diffDays < 0 || diffDays > 365) return '';
+// const diffDays = Math.floor((t.getTime() - today.getTime()) / 86400000);
+// if (diffDays < 0 || diffDays > 365) return '';
 
   const mm = ('0' + mo).slice(-2);
   const dd = ('0' + da).slice(-2);

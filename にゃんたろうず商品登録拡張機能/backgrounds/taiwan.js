@@ -341,7 +341,7 @@ async function enrichItemWithTaiwanMangaUpdates(item) {
         candidates: japaneseTitle
           ? [{ title: japaneseTitle, provider: muResult?.provider || 'mangaUpdates(extension)', score: 900 }]
           : (Array.isArray(muResult?.candidates) ? muResult.candidates : []),
-        errors: [],
+        errors: Array.isArray(muResult?.errors) ? muResult.errors : [],
       },
     };
   } catch (error) {

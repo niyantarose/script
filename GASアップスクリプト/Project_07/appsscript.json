@@ -7,7 +7,8 @@
       {
         "userSymbol": "_kyoutuu",
         "libraryId": "17x6e7MdvMh6V3DZ_kQqIn13-r_UHJ9IzLYvTYFb9LX3H3sa3ygpvt_tl",
-        "version": "24"
+        "version": "0",
+        "developmentMode": true
       }
     ]
   },

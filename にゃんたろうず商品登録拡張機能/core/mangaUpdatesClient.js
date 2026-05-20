@@ -83,16 +83,12 @@
     return {
       Accept: 'application/json',
       'Content-Type': 'application/json',
-      Origin: 'https://www.mangaupdates.com',
-      Referer: 'https://www.mangaupdates.com/',
     };
   }
 
   function detailHeaders() {
     return {
       Accept: 'application/json',
-      Origin: 'https://www.mangaupdates.com',
-      Referer: 'https://www.mangaupdates.com/',
     };
   }
 
@@ -520,11 +516,12 @@
     return list.length > 1 ? list[0] + '+' + (list.length - 1) + 'cand' : list[0];
   }
 
-  async function searchAndCollectDetails(q) {
+  async function searchAndCollectDetails(q, errors) {
     var results = [];
     try {
       results = await mangaUpdatesSearch(q);
-    } catch (_) {
+    } catch (err) {
+      if (errors) errors.push('search(' + q + '): ' + (err.message || err));
       results = [];
     }
     var slice = results.slice(0, MU_SEARCH_TOP);
@@ -532,7 +529,10 @@
       slice.map(function(row) {
         var seriesId = getSearchResultSeriesId(row);
         return seriesId
-          ? mangaUpdatesSeriesDetailBySlugOrId(seriesId).catch(function() { return null; })
+          ? mangaUpdatesSeriesDetailBySlugOrId(seriesId).catch(function(err) {
+              if (errors) errors.push('detail(' + seriesId + '): ' + (err.message || err));
+              return null;
+            })
           : Promise.resolve(null);
       })
     );
@@ -546,6 +546,7 @@
   async function lookupJapaneseTitleDetailed(queryOrQueries) {
     var inputQueries = Array.isArray(queryOrQueries) ? queryOrQueries : [queryOrQueries];
     var queries = uniqQueries(expandQueriesWithStripped(inputQueries)).slice(0, 3);
+    var errors = [];
     if (!queries.length) {
       return {
         status: 'not_found',
@@ -555,7 +556,7 @@
         matchedTitles: [],
         candidates: [],
         trace: 'mangaUpdates:no_query',
-        errors: [],
+        errors: errors,
       };
     }
     var queryKeys = uniqQueries(
@@ -567,7 +568,7 @@
     var traceQuery = makeTraceQuery(queries);
     var qi;
     for (qi = 0; qi < queries.length; qi += 1) {
-      var pack = await searchAndCollectDetails(queries[qi]);
+      var pack = await searchAndCollectDetails(queries[qi], errors);
       var dj;
       for (dj = 0; dj < pack.details.length; dj += 1) {
         var searchRow = (pack.results || [])[dj] || {};
@@ -608,11 +609,15 @@
       var sq;
       for (qi = 0; qi < queries.length; qi += 1) {
         sq = queries[qi];
-        var slugs = await searchSeriesSlugsOnMuSite(sq).catch(function() {
+        var slugs = await searchSeriesSlugsOnMuSite(sq).catch(function(err) {
+          errors.push('siteSearch(' + sq + '): ' + (err.message || err));
           return [];
         });
         for (si = 0; si < slugs.length; si += 1) {
-          var siteDetail = await mangaUpdatesSeriesDetailBySlugOrId(slugs[si]);
+          var siteDetail = await mangaUpdatesSeriesDetailBySlugOrId(slugs[si]).catch(function(err) {
+            errors.push('siteDetail(' + slugs[si] + '): ' + (err.message || err));
+            return null;
+          });
           var siteRow = { hit_title: sq };
           var siteResolved = tryResolveMatchedDetail_(
             siteDetail,
@@ -641,10 +646,11 @@
         matchedTitles: matchedTitles,
         candidates: toCandidateList([verifiedJp], 'mangaUpdates', 900),
         trace: 'mangaUpdates:hit(q=' + traceQuery + ')',
-        errors: [],
+        errors: errors,
       };
     }
-    var fromAni = await aniListFetchNativeJapanese(aniQueries).catch(function() {
+    var fromAni = await aniListFetchNativeJapanese(aniQueries).catch(function(err) {
+      errors.push('aniList: ' + (err.message || err));
       return '';
     });
     if (fromAni) {
@@ -656,7 +662,7 @@
         matchedTitles: matchedTitles,
         candidates: toCandidateList([fromAni], 'aniList(via_mangaupdatesClient)', 850),
         trace: 'aniListNative:hit(q=' + traceQuery + ')',
-        errors: [],
+        errors: errors,
       };
     }
     if (matchedTitles.length) {
@@ -668,7 +674,7 @@
         matchedTitles: matchedTitles,
         candidates: toCandidateList(matchedTitles, 'mangaUpdates(series)', 100),
         trace: 'mangaUpdates:series_hit_no_japanese(q=' + traceQuery + ' titles=' + matchedTitles.slice(0, 4).join('/') + ')',
-        errors: [],
+        errors: errors,
       };
     }
     return {
@@ -679,7 +685,7 @@
       matchedTitles: [],
       candidates: [],
       trace: 'mangaUpdates:not_found(q=' + traceQuery + ')',
-      errors: [],
+      errors: errors,
     };
   }
 

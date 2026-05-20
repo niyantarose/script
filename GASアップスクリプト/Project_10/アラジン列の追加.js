@@ -27,7 +27,6 @@ const ALADIN_ADD_COLUMNS = {
     '商品説明',
   ],
   '韓国音楽映像': [
-        '商品名(タイトル)',
     'アラジン商品ID',
     '商品説明',
   ],
@@ -129,7 +128,6 @@ function 新マップを生成_() {
     url:          'アラジンURL',
     isbn:         'JANコード',
     title:        '商品名(原題)',
-    worksTitle:   '商品名(タイトル)',
     author:       'アーティスト名',
     pubDate:      '発売日',
     price:        '原価',
@@ -152,4 +150,3 @@ function 新マップを生成_() {
   },
 };`;
 }
-

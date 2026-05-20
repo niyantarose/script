@@ -136,12 +136,45 @@ function 韓国マンガカテゴリを補正_(source) {
   if (/handcraft|craft|자수|뜨개|수예|手芸/.test(combined)) return '手芸';
   if (/magazine|잡지|매거진/.test(combined)) return '雑誌';
   if (/essay|에세이/.test(combined)) return 'エッセイ';
-  if (/novel|소설|라이트노벨|light\s*novel/.test(combined)) return '小説';
+  if (/comic|comics|만화|코믹|webtoon/.test(combined)) return 'まんが';
   if (/setting|guide\s*book|guidebook|fan\s*book|fanbook|character\s*book|official\s*guide|設定集|설정집|가이드북|팬북|캐릭터북|자료집/.test(combined)) return '設定集';
   if (/art\s*book|artbook|아트북|illustration|illust|画集|화보|원화|작화집|포토북|컨셉북/.test(combined)) return 'アートブック';
   if (/goods|gift|굿즈/.test(combined)) return 'グッズ';
+  if (/novel|소설|라이트노벨|light\s*novel/.test(combined)) return '小説';
+  return 'まんが';
+}
+
+function 韓国書籍カテゴリを補正_(source) {
+  const categoryName = String(source && source.categoryName || '').trim();
+  const title = String(source && source.title || '').trim();
+  const subtitle = String((source && source.subInfo && source.subInfo.subTitle) || '').trim();
+  const description = String(source && (source.fulldescription || source.description) || '').trim();
+  const mainText = [categoryName, title, subtitle].join(' ').toLowerCase();
+  const combined = [mainText, description].join(' ').toLowerCase();
+
+  if (!combined) return '';
+  if (/sticker|스티커/.test(combined)) return 'ステッカー';
+  if (/seal|씰/.test(combined)) return 'シール';
+  if (/dvd/.test(combined)) return 'DVD';
+  if (/blu[-\s]?ray|블루레이/.test(combined)) return 'Blu-ray';
+  if (/\blp\b|vinyl/.test(combined)) return 'LP';
+  if (/\bcd\b|음반/.test(combined)) return 'CD';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(combined)) return 'OST';
+  if (/scenario|시나리오/.test(combined)) return 'シナリオ集';
+  if (/script|screenplay|대본/.test(combined)) return '台本';
+  if (/picture\s*book|그림책|絵本/.test(combined)) return '絵本';
+  if (/papercraft|paper\s*art|cut\s*out|切り絵|종이공예|종이접기/.test(combined)) return '切り絵';
+  if (/handcraft|craft|자수|뜨개|수예|手芸/.test(combined)) return '手芸';
+  if (/essay|에세이|산문/.test(mainText)) return 'エッセイ';
+  if (/참고서|수험서|문제집|기출|모의고사|수능|내신|검정고시|자격증|공무원|고시|임용|편입|leet|meet|deet|psat|ncs|toeic|toefl|ielts|teps|jlpt|hsk|topik|参考書|問題集|過去問|受験|資格/.test(mainText)) return '参考書';
+  if (/교재|학습지|학습서|워크북|work\s*book|workbook|text\s*book|textbook|student\s*book|activity\s*book|teacher'?s\s*book|course\s*book|教材|教科書/.test(mainText)) return '教材';
+  if (/setting|guide\s*book|guidebook|fan\s*book|fanbook|character\s*book|official\s*guide|設定集|설정집|가이드북|팬북|캐릭터북|자료집/.test(combined)) return '設定集';
+  if (/art\s*book|artbook|아트북|illustration|illust|画集|화보|원화|작화집|포토북|컨셉북|예체능|미술|디자인|사진/.test(combined)) return 'アートブック';
+  if (/magazine|잡지|매거진/.test(combined)) return '雑誌';
+  if (/goods|gift|굿즈/.test(combined)) return 'グッズ';
   if (/comic|comics|만화|코믹|webtoon/.test(combined)) return 'まんが';
-  return categoryName || '';
+  if (/novel|소설|라이트노ベル|light\s*novel|문학|시집/.test(combined)) return '小説';
+  return '';
 }
 
 function 韓国音楽映像カテゴリを補正_(source) {
@@ -156,18 +189,41 @@ function 韓国音楽映像カテゴリを補正_(source) {
   if (/\bdvd\b|\[dvd\]|dvd\//.test(titleAndCategory)) return 'DVD';
   if (/blu[-\s]?ray|blue\s*ray|블루레이/.test(titleAndCategory)) return 'Blu-ray';
   if (/\blp\b|vinyl|record|레코드/.test(titleAndCategory)) return 'LP';
-  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(titleAndCategory)) return 'CD';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(titleAndCategory)) return 'OST';
   if (/\bcd\b|음반|album|single|mini\s*album|ep\b/.test(titleAndCategory)) return 'CD';
 
   if (/\bdvd\b|\[dvd\]|dvd\//.test(combined)) return 'DVD';
   if (/blu[-\s]?ray|blue\s*ray|블루레이/.test(combined)) return 'Blu-ray';
   if (/\blp\b|vinyl|record|레코드/.test(combined)) return 'LP';
-  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(combined)) return 'CD';
+  if (/o\.s\.t\.|\bost\b|original\s*sound\s*track|사운드트랙/.test(combined)) return 'OST';
   if (/\bcd\b|음반|album|single|mini\s*album|ep\b/.test(combined)) return 'CD';
   return categoryName || '';
 }
 
+function 判定済みカテゴリを取得_(sheetName, source) {
+  const value = String(source && (source.sheetCategory || source.normalizedCategory || source.登録カテゴリ) || '').trim();
+  if (!value) return '';
+
+  const validMap = {
+    '韓国書籍': ['まんが', '小説', 'エッセイ', 'グッズ', '設定集', 'アートブック', '雑誌', 'OST', 'CD', 'DVD', 'Blu-ray', 'LP', '絵本', 'シナリオ集', '台本', 'ステッカー', 'シール', '手芸', '切り絵', '教材', '参考書'],
+    '韓国マンガ': ['まんが', '小説', 'エッセイ', 'グッズ', '設定集', 'アートブック', '雑誌', 'OST', 'CD', 'DVD', 'Blu-ray', 'LP', '絵本', 'シナリオ集', '台本', 'ステッカー', 'シール', '手芸', '切り絵', '教材', '参考書'],
+    '韓国音楽映像': ['OST', 'CD', 'DVD', 'Blu-ray', 'LP'],
+    '韓国雑誌': ['雑誌'],
+    '韓国グッズ': ['グッズ']
+  };
+
+  const validValues = validMap[sheetName];
+  if (validValues && validValues.indexOf(value) === -1) return '';
+  return value;
+}
+
 function カテゴリ入力値を補正_(sheetName, source) {
+  const normalizedCategory = 判定済みカテゴリを取得_(sheetName, source);
+  if (normalizedCategory) return normalizedCategory;
+
+  if (sheetName === '韓国書籍') {
+    return 韓国書籍カテゴリを補正_(source);
+  }
   if (sheetName === '韓国マンガ') {
     return 韓国マンガカテゴリを補正_(source);
   }
@@ -175,6 +231,50 @@ function カテゴリ入力値を補正_(sheetName, source) {
     return 韓国音楽映像カテゴリを補正_(source);
   }
   return String(source && source.categoryName || '').trim();
+}
+function アラジンWorksタイトルを推定_(item, sheetName) {
+  const originalTitle = String(item && item.title || '').trim();
+  if (!originalTitle) return '';
+
+  let title = originalTitle
+    .replace(/\u3000/g, ' ')
+    .replace(/[（）]/g, ch => ch === '（' ? '(' : ')')
+    .replace(/[［］]/g, ch => ch === '［' ? '[' : ']')
+    .replace(/[：]/g, ':')
+    .replace(/[‐−–—―]/g, '-')
+    .replace(/\bo\.?\s*s\.?\s*t\.?\b/gi, 'OST')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const category = sheetName === '韓国音楽映像' ? カテゴリ入力値を補正_(sheetName, item) : '';
+  const isMedia = sheetName === '韓国音楽映像' || /^(CD|LP|OST|DVD|Blu-ray)$/i.test(category);
+  if (!isMedia) return title;
+
+  title = title.replace(/^\s*\[[^\]]*(?:4k|blu[-\s]?ray|블루레이|dvd|uhd|ubd)[^\]]*\]\s*/i, '');
+
+  const dashMatch = title.match(/^(.{1,45}?)\s+-\s+(.+)$/);
+  if (dashMatch && /(?:정규|미니|싱글|앨범|album|ost|o\.s\.t\.|lp|cd|vinyl|no tragedy|revive)/i.test(dashMatch[2])) {
+    title = dashMatch[2];
+  }
+
+  title = title
+    .replace(/^\s*(?:정규|미니|싱글|스페셜|리패키지)\s*\d+\s*(?:집|앨범)\s*/i, '')
+    .replace(/^\s*\d+(?:st|nd|rd|th)?\s+(?:full|mini)\s+album\s*/i, '')
+    .replace(/\[[^\]]*(?:180g|white\s*marble|vinyl|lp|ver\.?|한정|限定|picture|픽처|photocard|poster|cd|dvd|blu[-\s]?ray|ubd|uhd|disc)[^\]]*\]/gi, ' ')
+    .replace(/\([^)]*(?:album\s*ver\.?|mubeat|pouch|파우치|mini\s*cd|미니\s*cd|photocard|포토카드|포토북|booklet|소책자|nfc|disc|cd|dvd|blu[-\s]?ray|ubd|uhd|\d+\s*종|\d+\s*p)[^)]*\)/gi, ' ')
+    .replace(/\s+-\s+.*(?:커버|바이닐|포토|파우치|소책자|booklet|poster|photocard|album\s*ver\.?|nfc|카드|세트).*$/i, ' ')
+    .replace(/\s*:\s*(?:스틸북|풀슬립|full\s*slip|steelbook).*$/i, ' ')
+    .replace(/\b(?:4k\s*uhd|4k|uhd|ubd|2d|blu[-\s]?ray|dvd|cd|lp|vinyl|record)\b/gi, ' ')
+    .replace(/(?:블루레이|스틸북|풀슬립|소책자|포토카드|포토북|북클릿|파우치|한정반|한정판|게이트폴드\s*커버|바이닐)/gi, ' ')
+    .replace(/\b(?:a|b|c|d)\s*ver\.?\b/gi, ' ')
+    .replace(/\b(?:album|mubeat\s*album)\s*ver\.?\b/gi, ' ')
+    .replace(/\d+\s*(?:disc|종|p)\b/gi, ' ')
+    .replace(/[<＞>]+/g, ' ')
+    .replace(/[『』「」"'`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return title.replace(/\bost\b/gi, 'OST') || originalTitle;
 }
 const ALADIN_COLUMN_MAP = {
   '韓国書籍': {
@@ -212,6 +312,7 @@ const ALADIN_COLUMN_MAP = {
     url:              'アラジンURL',
     isbn:             'JANコード',
     title:            '商品名(原題)',
+    worksTitle:       '商品名(タイトル)',
     author:           'アーティスト名',
     pubDate:          '発売日',
     price:            '原価',
@@ -245,6 +346,41 @@ const ALADIN_COLUMN_MAP = {
   },
 };
 
+function ALADIN_API_URLリストへ分割_(value) {
+  const source = Array.isArray(value) ? value.join(';') : String(value || '');
+  const matches = source.match(/https?:\/\/[^\s;]+/gi) || [];
+  const seen = {};
+  const urls = [];
+
+  matches.forEach(url => {
+    const clean = String(url || '').trim();
+    if (!clean || seen[clean]) return;
+    seen[clean] = true;
+    urls.push(clean);
+  });
+
+  return urls;
+}
+
+function ALADIN_API_セルへリンク値を書き込む_(range, value) {
+  const urls = ALADIN_API_URLリストへ分割_(value);
+  if (!urls.length) {
+    range.setValue(value);
+    return;
+  }
+
+  const text = urls.join('\n');
+  const builder = SpreadsheetApp.newRichTextValue().setText(text);
+  let offset = 0;
+
+  urls.forEach(url => {
+    builder.setLinkUrl(offset, offset + url.length, url);
+    offset += url.length + 1;
+  });
+
+  range.setRichTextValue(builder.build());
+}
+
 // ============================================================
 // onEditから呼び出されるメイン処理
 // ============================================================
@@ -269,7 +405,15 @@ function アラジン_onEdit(e) {
   if (!colMap.trigger.includes(編集列名)) return;
 
   const get = (名前) => 列[名前] ? sh.getRange(row, 列[名前]).getValue() : '';
-  const set = (名前, v) => { if (列[名前] && v !== null && v !== undefined && v !== '') sh.getRange(row, 列[名前]).setValue(v); };
+  const set = (名前, v, options = {}) => {
+    if (!列[名前] || v === null || v === undefined || v === '') return;
+    const range = sh.getRange(row, 列[名前]);
+    if (options.link) {
+      ALADIN_API_セルへリンク値を書き込む_(range, v);
+      return;
+    }
+    range.setValue(v);
+  };
 
   // ItemId またはISBN を特定
   let idType = null, id = null;
@@ -302,13 +446,14 @@ function アラジン_onEdit(e) {
     }
 
     // 各列にセット（既入力の値は上書きしない）
+    if (colMap.url)              set(colMap.url,              get(colMap.url), { link: true });
     if (colMap.title)            set(colMap.title,            item.title || '');
     if (colMap.author)           set(colMap.author,           item.author || '');
     if (colMap.publisher)        set(colMap.publisher,        item.publisher || '');
     if (colMap.pubDate)          set(colMap.pubDate,          item.pubDate || '');
     if (colMap.price)            set(colMap.price,            item.priceSales || '');
-    if (colMap.cover)            set(colMap.cover,            item.cover || '');
-    if (colMap.additionalImages) set(colMap.additionalImages, item.cover || '');
+    if (colMap.cover)            set(colMap.cover,            item.cover || '', { link: true });
+    if (colMap.additionalImages) set(colMap.additionalImages, item.cover || '', { link: true });
     if (colMap.description)      set(colMap.description,      (item.fulldescription || item.description || '').slice(0, 2000));
     if (colMap.categoryName)     set(colMap.categoryName,     カテゴリ入力値を補正_(shName, item));
     if (colMap.itemId)           set(colMap.itemId,           String(item.itemId || ''));
@@ -316,7 +461,7 @@ function アラジン_onEdit(e) {
 
     // URLがまだ空なら補完
     if (colMap.url && !get(colMap.url) && item.itemId) {
-      set(colMap.url, `https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=${item.itemId}`);
+      set(colMap.url, `https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=${item.itemId}`, { link: true });
     }
 
     SpreadsheetApp.getActiveSpreadsheet().toast(`✅ 取得完了: ${item.title}`, 'アラジン', 4);
@@ -380,19 +525,25 @@ function アラジン一括取得() {
       const item = アラジンAPI呼び出し_('ItemId', itemId);
       if (!item) { スキップ++; return; }
 
-      const setCell = (名前, v) => {
-        if (列[名前] && v !== null && v !== undefined && v !== '') {
-          sh.getRange(rowNum, 列[名前]).setValue(v);
+      const setCell = (名前, v, options = {}) => {
+        if (!列[名前] || v === null || v === undefined || v === '') return;
+        const range = sh.getRange(rowNum, 列[名前]);
+        if (options.link) {
+          ALADIN_API_セルへリンク値を書き込む_(range, v);
+          return;
         }
+        range.setValue(v);
       };
 
+      if (colMap.url)              setCell(colMap.url,              url, { link: true });
       if (colMap.title)            setCell(colMap.title,            item.title || '');
+      if (colMap.worksTitle)       setCell(colMap.worksTitle,       アラジンWorksタイトルを推定_(item, shName));
       if (colMap.author)           setCell(colMap.author,           item.author || '');
       if (colMap.publisher)        setCell(colMap.publisher,        item.publisher || '');
       if (colMap.pubDate)          setCell(colMap.pubDate,          item.pubDate || '');
       if (colMap.price)            setCell(colMap.price,            item.priceSales || '');
-      if (colMap.cover)            setCell(colMap.cover,            item.cover || '');
-      if (colMap.additionalImages) setCell(colMap.additionalImages, item.cover || '');
+      if (colMap.cover)            setCell(colMap.cover,            item.cover || '', { link: true });
+      if (colMap.additionalImages) setCell(colMap.additionalImages, item.cover || '', { link: true });
       if (colMap.description)      setCell(colMap.description,      (item.fulldescription || item.description || '').slice(0, 2000));
       if (colMap.categoryName)     setCell(colMap.categoryName,     カテゴリ入力値を補正_(shName, item));
       if (colMap.itemId)           setCell(colMap.itemId,           String(item.itemId || ''));
@@ -408,6 +559,7 @@ function アラジン一括取得() {
 
   ui.alert(`✅ アラジン一括取得完了\n\n成功: ${成功}件\nスキップ: ${スキップ}件\nエラー: ${エラー}件`);
 }
+
 
 
 

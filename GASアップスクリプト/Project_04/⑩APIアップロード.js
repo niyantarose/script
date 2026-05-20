@@ -43,11 +43,11 @@ YahooUpload.設定 = {
 
   // 検証（軽量）
   VERIFY: {
-    CDN_CHECK: true,      // main CDN URL の 200/404
-    PAGE_CHECK: true,     // 商品ページHTML
-    GETITEM_CHECK: true,  // getItem API で画像紐付け確認
-    MAX_CODES: 30
-  },
+  CDN_CHECK: true,
+  PAGE_CHECK: false,   // ← false に変更
+  GETITEM_CHECK: true,
+  MAX_CODES: 30
+},
 
   // ストア商品ページURL
   STORE_BASE: 'https://store.shopping.yahoo.co.jp/niyantarose/',

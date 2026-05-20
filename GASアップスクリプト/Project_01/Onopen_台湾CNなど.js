@@ -3,51 +3,24 @@
  * メニュー作成・シート設定マップ・onOpen・onEdit
  */
 
+const DEBUG_MODE = false; // ← ここ！
+
 /* ============================================================
- * 共通ヘルパー
+ * シート設定取得
  * ============================================================ */
-
 function シート設定を取得(シート名) {
-  const map = {};
-
-  if (typeof 設定_台湾グッズ !== 'undefined') map['台湾グッズ'] = 設定_台湾グッズ;
-  if (typeof 設定_台湾まんが !== 'undefined') map['台湾まんが'] = 設定_台湾まんが;
-  if (typeof 設定_台湾書籍その他 !== 'undefined') map['台湾書籍その他'] = 設定_台湾書籍その他;
-  if (typeof 設定_台湾雑誌 !== 'undefined') map['台湾雑誌'] = 設定_台湾雑誌;
-
+  const map = {
+    '台湾まんが': 設定_台湾まんが,
+    '台湾書籍その他': 設定_台湾書籍その他,
+    '台湾雑誌': typeof 設定_台湾雑誌 !== 'undefined' ? 設定_台湾雑誌 : null,
+    '台湾グッズ': typeof 設定_台湾グッズ !== 'undefined' ? 設定_台湾グッズ : null
+  };
   return map[シート名] || null;
 }
 
-function OnopenGS_ヘッダーMap_(sh) {
-  const vals = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
-  const map = {};
-  vals.forEach((h, i) => {
-    const key = String(h || '').trim();
-    if (key) map[key] = i + 1;
-  });
-  return map;
-}
-
-function OnopenGS_関数を取得_(name) {
-  try {
-    const fn = globalThis[name];
-    return typeof fn === 'function' ? fn : null;
-  } catch (_) {
-    return null;
-  }
-}
-
-function OnopenGS_関数を呼ぶ_(name, ...args) {
-  const fn = OnopenGS_関数を取得_(name);
-  if (!fn) return false;
-  fn(...args);
-  return true;
-}
-
 /* ============================================================
- * onOpen
+ * onOpen メニュー
  * ============================================================ */
-
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   const menu = ui.createMenu('🌏 台湾商品管理');
@@ -55,353 +28,217 @@ function onOpen() {
   menu
     .addSubMenu(
       ui.createMenu('☑ チェック操作')
-        .addItem('全チェック',         'チェック_全チェック')
-        .addItem('全チェック解除',     'チェック_全解除')
+        .addItem('全チェック', 'チェック_全チェック')
+        .addItem('全チェック解除', 'チェック_全解除')
         .addItem('未登録のみチェック', 'チェック_未登録のみ')
     )
     .addSeparator()
     .addItem('📁 フォルダをSKUにリネーム', '全シート_フォルダをSKUにリネーム')
+    .addItem('🔍 次の空き作品IDを確認', '作品ID_次の空き番号を確認')
 
     .addSubMenu(
       ui.createMenu('台湾グッズ')
-        .addItem('① 確定発行',       '台湾グッズ_確定発行')
-        .addItem('② 一括更新',       '台湾グッズ_一括更新')
-        .addItem('③ 重複チェック',   '台湾グッズ_重複チェック')
-        .addItem('④ Works更新',      '台湾グッズ_Works更新')
+        .addItem('① 確定発行', '台湾グッズ_確定発行')
+        .addItem('② 一括更新', '台湾グッズ_一括更新')
+        .addItem('③ 重複チェック', '台湾グッズ_重複チェック')
+        .addItem('④ Works更新', '台湾グッズ_Worksを更新')
         .addItem('⑤ プルダウン更新', '台湾グッズ_プルダウン更新')
     )
 
     .addSubMenu(
       ui.createMenu('台湾まんが')
-        .addItem('① 確定発行',         '台湾まんが_確定発行')
+        .addItem('① 確定発行', '台湾まんが_確定発行')
         .addItem('② チェック行を削除', '台湾まんが_削除')
-        .addItem('③ 一括更新',         '台湾まんが_一括更新')
-        .addItem('⑥ プルダウン更新',   '台湾まんが_プルダウン更新')
+        .addItem('③ 一括更新', '台湾まんが_一括更新')
+        .addItem('⑥ プルダウン更新', '台湾まんが_プルダウン更新')
         .addSeparator()
         .addItem('🔍 Works重複チェック・統合', '台湾まんが_重複統合')
-        .addItem('🔄 WorksKey再正規化',         '台湾まんが_WorksKey再正規化')
-        .addItem('🔢 Works ID振り直し',         '台湾まんが_ID振り直し')
+        .addItem('🔄 WorksKey再正規化', '台湾まんが_WorksKey再正規化')
+        .addItem('🔢 Works ID振り直し', '台湾まんが_ID振り直し')
         .addItem('🧹 Works孤立エントリー削除', '台湾まんが_孤立削除')
-        .addItem('⚙️ Works初期化',             '台湾まんが_Works初期化')
+        .addItem('⚙️ Works初期化', '台湾まんが_Works初期化')
+        
     )
 
     .addSubMenu(
       ui.createMenu('台湾書籍その他')
-        .addItem('① 確定発行',         '台湾書籍その他_確定発行')
+        .addItem('① 確定発行', '台湾書籍その他_確定発行')
         .addItem('② チェック行を削除', '台湾書籍その他_削除')
-        .addItem('③ 一括更新',         '台湾書籍その他_一括更新')
-        .addItem('⑥ プルダウン更新',   '台湾書籍その他_プルダウン更新')
+        .addItem('③ 一括更新', '台湾書籍その他_一括更新')
+        .addItem('⑥ プルダウン更新', '台湾書籍その他_プルダウン更新')
         .addSeparator()
         .addItem('🔍 Works重複チェック・統合', '台湾書籍その他_重複統合')
-        .addItem('🔄 WorksKey再正規化',         '台湾書籍その他_WorksKey再正規化')
-        .addItem('🔢 Works ID振り直し',         '台湾書籍その他_ID振り直し')
+        .addItem('🔄 WorksKey再正規化', '台湾書籍その他_WorksKey再正規化')
+        .addItem('🔢 Works ID振り直し', '台湾書籍その他_ID振り直し')
         .addItem('🧹 Works孤立エントリー削除', '台湾書籍その他_孤立削除')
-        .addItem('⚙️ Works初期化',             '台湾書籍その他_Works初期化')
+        .addItem('⚙️ Works初期化', '台湾書籍その他_Works初期化')
+        
     )
 
     .addSubMenu(
       ui.createMenu('台湾雑誌')
-        .addItem('① 確定発行',                     '台湾雑誌_確定発行')
-        .addItem('⑥ プルダウン更新',               '台湾雑誌_プルダウン更新')
+        .addItem('① 確定発行', '台湾雑誌_確定発行')
+        .addItem('⑥ プルダウン更新', '台湾雑誌_プルダウン更新')
         .addSeparator()
-        .addItem('📋 候補の件数を確認',             '台湾雑誌_候補件数を確認')
-        .addItem('✅ 候補を正式マスターへ反映',     '台湾雑誌_候補を正式マスターへ反映')
+        .addItem('📋 候補の件数を確認', '台湾雑誌_候補件数を確認')
+        .addItem('✅ 候補を正式マスターへ反映', '台湾雑誌_候補を正式マスターへ反映')
         .addSeparator()
-        .addItem('🔄 現在行を再計算',               '台湾雑誌_現在行を再計算')
+        .addItem('🔄 現在行を再計算', '台湾雑誌_現在行を再計算')
         .addSeparator()
-        .addItem('🔧 コード自動生成セットアップ',   '台湾雑誌_雑誌コード自動生成セットアップ')
+        .addItem('🔧 コード自動生成セットアップ', '台湾雑誌_雑誌コード自動生成セットアップ')
     )
 
     .addSeparator()
 
     .addSubMenu(
-      ui.createMenu('シート作成・初期設定')
-        .addItem('台湾グッズシートを作成',           '台湾グッズシートを作成')
-        .addItem('Works（台湾グッズ）シートを作成',  '台湾グッズWorksシートを作成')
-        .addItem('作品略称マスター（台湾）を作成',   '台湾作品略称マスターを作成')
-        .addSeparator()
-        .addItem('台湾まんがシートを作成',           '台湾まんがシートを作成')
-        .addItem('台湾書籍その他シートを作成',       '台湾書籍その他シートを作成')
-        .addItem('Works（書籍専用）シートを作成',    '台湾書籍Worksシートを作成')
-        .addSeparator()
-        .addItem('雑誌マスター（台湾）を作成',       '台湾雑誌マスターを作成')
-        .addItem('台湾雑誌シートを作成',             '台湾雑誌シートを作成')
-    )
+  ui.createMenu('シート作成・初期設定')
+    .addItem('台湾グッズシートを作成', '台湾グッズシートを作成')
+    .addItem('Works（台湾グッズ）シートを作成', '台湾グッズWorksシートを作成')
+    .addItem('作品略称マスター（台湾）を作成', '台湾グッズ作品マスターを作成')
+    .addSeparator()
+    .addItem('台湾まんがシートを作成', '台湾まんがシートを作成')
+    .addItem('台湾書籍その他シートを作成', '台湾書籍その他シートを作成')
+    .addItem('Works（書籍専用）シートを作成', '台湾書籍Worksシートを作成')
+    .addSeparator()
+    .addItem('🔢 作品IDを4桁に統一', '台湾書籍系_作品IDを4桁に統一_')
+    .addSeparator()
+    .addItem('雑誌マスター（台湾）を作成', '台湾雑誌マスターを作成')
+    .addItem('台湾雑誌シートを作成', '台湾雑誌シートを作成')
+    .addItem('⚠️ 作品ID衝突チェック', '台湾書籍系_作品ID衝突チェック_')
+    .addItem('🔢 Works作品IDを4桁文字列に統一', '台湾書籍系_Works作品IDを4桁文字列に統一_')
+)
+
     .addToUi();
 }
 
 /* ============================================================
  * onEdit トリガー
  * ============================================================ */
-
 function onEditInstallable_(e) {
-  console.log('--- onEditInstallable_ start ---');
-  console.log(JSON.stringify({
-    hasE: !!e,
-    hasRange: !!(e && e.range),
-    sheet: e && e.range ? e.range.getSheet().getName() : null,
-    row: e && e.range ? e.range.getRow() : null,
-    col: e && e.range ? e.range.getColumn() : null,
-    value: e && e.value !== undefined ? e.value : null,
-    oldValue: e && e.oldValue !== undefined ? e.oldValue : null
-  }));
-
-  if (!e || !e.range) {
-    console.log('return: no e or no range');
-    return;
-  }
-
-  const シート名 = String(e.range.getSheet().getName() || '').trim();
-  console.log('sheet name = [' + シート名 + ']');
+  const ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm:ss');
+  let シート名 = '';
 
   try {
+    if (!e || !e.range) return;
+
+    シート名 = String(e.range.getSheet().getName() || '').trim();
+
+    // ★ ログシートは完全に無視
+    if (シート名 === '_DEBUG_LOG') return;
+
+    デバッグログ出力_('onEditInstallable_start', {
+      ts,
+      hasE: !!e,
+      hasRange: !!(e && e.range),
+      hasSource: !!(e && e.source)
+    });
+
+    let ss = null;
+    try {
+      ss = (e && e.source) ? e.source : SpreadsheetApp.getActiveSpreadsheet();
+    } catch (err) {
+      デバッグログ出力_('spreadsheet_get_error', { message: String(err) });
+    }
+
+    if (DEBUG_MODE) {
+  try {
+    if (ss) ss.toast(`onEdit発火 ${ts}`, 'トリガー確認', 3);
+  } catch (err) {
+    デバッグログ出力_('toast_error', { message: String(err) });
+  }
+}
+
+    デバッグログ出力_('onEditInstallable_router', {
+      sheet: シート名,
+      row: e.range.getRow(),
+      col: e.range.getColumn(),
+      value: e.value !== undefined ? e.value : null,
+      oldValue: e.oldValue !== undefined ? e.oldValue : null
+    });
+
     if (シート名 === '台湾グッズ') {
-      console.log('go: 台湾グッズ_onEdit');
-      if (!OnopenGS_関数を呼ぶ_('台湾グッズ_onEdit', e)) {
-        console.log('handler not found: 台湾グッズ_onEdit');
-      }
+      デバッグログ出力_('go_台湾グッズ_onEdit', {});
+      台湾グッズ_onEdit(e);
       return;
     }
 
     if (シート名 === '台湾まんが') {
-      console.log('go: 台湾まんが_onEdit');
-      if (!OnopenGS_関数を呼ぶ_('台湾まんが_onEdit', e)) {
-        console.log('handler not found: 台湾まんが_onEdit');
-      }
+      デバッグログ出力_('go_台湾まんが_onEdit', {});
+      台湾まんが_onEdit(e);
       return;
     }
 
     if (シート名 === '台湾書籍その他') {
-      console.log('go: 台湾書籍その他_onEdit');
-      if (!OnopenGS_関数を呼ぶ_('台湾書籍その他_onEdit', e)) {
-        // 旧互換
-        if (!OnopenGS_関数を呼ぶ_('台湾書籍その他_onEdit_処理', e)) {
-          console.log('handler not found: 台湾書籍その他_onEdit / 台湾書籍その他_onEdit_処理');
-        }
-      }
+      デバッグログ出力_('go_台湾書籍その他_onEdit', {});
+      台湾書籍その他_onEdit(e);
       return;
     }
 
     if (シート名 === '台湾雑誌') {
-      console.log('go: 台湾雑誌_onEdit');
-      if (!OnopenGS_関数を呼ぶ_('台湾雑誌_onEdit', e)) {
-        console.log('handler not found: 台湾雑誌_onEdit');
-      }
+      デバッグログ出力_('go_台湾雑誌_onEdit', {});
+      台湾雑誌_onEdit(e);
       return;
     }
 
-    console.log('return: no matched sheet');
+    デバッグログ出力_('onEditInstallable_no_match', { sheet: シート名 });
+
   } catch (err) {
-    console.log('onEditInstallable_ error: ' + err);
+    // ★ ログシート中は catch 側も書かない
+    if (シート名 !== '_DEBUG_LOG') {
+      デバッグログ出力_('onEditInstallable_error', {
+        message: String(err),
+        stack: err && err.stack ? String(err.stack) : ''
+      });
+    }
     throw err;
   }
 }
 
 /* ============================================================
- * 旧互換（必要なら残す）
- * ============================================================ */
-
-function 台湾書籍その他_onEdit_処理(e) {
-  const cfg = 設定_台湾書籍その他;
-  const sh = e.range.getSheet();
-  const 開始行 = e.range.getRow();
-  const 行数 = e.range.getNumRows();
-  if (開始行 + 行数 - 1 < 2) return;
-
-  const 列マップ = _kyoutuu.列番号を取得(sh);
-  const 監視列番号 = cfg.監視列.map(h => 列マップ[h]).filter(Boolean);
-  const 編集開始列 = e.range.getColumn();
-  const 編集終了列 = e.range.getLastColumn();
-  if (!監視列番号.some(c => c >= 編集開始列 && c <= 編集終了列)) return;
-
-  const lock = LockService.getDocumentLock();
-  try {
-    if (!lock.tryLock(5000)) return;
-  } catch (_) {
-    return;
-  }
-
-  try {
-    _kyoutuu.onEdit処理を実行(e, sh, cfg, 列マップ, 開始行, 行数);
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-/* ============================================================
- * 台湾グッズ メニュー補助ラッパー
- * ============================================================ */
-
-function 台湾作品略称マスターを作成() {
-  if (OnopenGS_関数を呼ぶ_('台湾グッズ作品マスターを作成')) return;
-  SpreadsheetApp.getUi().alert('台湾グッズ作品マスターを作成 関数が見つかりません');
-}
-
-function 台湾グッズ_Works更新() {
-  const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName('台湾グッズ');
-  if (!sh || sh.getLastRow() < 2) {
-    ui.alert('台湾グッズシートにデータがありません');
-    return;
-  }
-
-  const ensureFn = OnopenGS_関数を取得_('台湾グッズ_Worksシートを確保_');
-  const updateFn = OnopenGS_関数を取得_('台湾グッズ_Worksを更新_');
-  if (!ensureFn || !updateFn) {
-    ui.alert('台湾グッズ Works 更新に必要な関数が見つかりません');
-    return;
-  }
-
-  const 列 = OnopenGS_ヘッダーMap_(sh);
-  const data = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
-
-  const Works更新Map = {};
-  data.forEach(row => {
-    const 原題 = 列['原題タイトル'] ? String(row[列['原題タイトル'] - 1] || '').trim() : '';
-    const 日本語 = 列['日本語タイトル'] ? String(row[列['日本語タイトル'] - 1] || '').trim() : '';
-    if (!原題) return;
-    if (!Works更新Map[原題]) Works更新Map[原題] = { 日本語, 件数: 0 };
-    Works更新Map[原題].件数++;
-    if (!Works更新Map[原題].日本語 && 日本語) Works更新Map[原題].日本語 = 日本語;
-  });
-
-  const Worksシート = ensureFn(ss);
-  updateFn(Worksシート, Works更新Map);
-
-  ui.alert(`✅ 台湾グッズ Works更新完了: ${Object.keys(Works更新Map).length}作品`);
-}
-
-function 台湾グッズ_重複チェック() {
-  const ui = SpreadsheetApp.getUi();
-  const sh = SpreadsheetApp.getActive().getSheetByName('台湾グッズ');
-  if (!sh || sh.getLastRow() < 2) {
-    ui.alert('台湾グッズシートにデータがありません');
-    return;
-  }
-
-  const 列 = OnopenGS_ヘッダーMap_(sh);
-  const data = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
-
-  const maps = {
-    サイト商品コード: {},
-    原題商品タイトル: {},
-    商品コードSKU: {}
-  };
-
-  data.forEach((row, i) => {
-    const rowNum = i + 2;
-
-    const サイト商品コード = 列['サイト商品コード'] ? String(row[列['サイト商品コード'] - 1] || '').trim() : '';
-    const 原題商品タイトル = 列['原題商品タイトル'] ? String(row[列['原題商品タイトル'] - 1] || '').trim() : '';
-    const 商品コードSKU = 列['商品コード（SKU）'] ? String(row[列['商品コード（SKU）'] - 1] || '').trim() : '';
-
-    if (サイト商品コード) {
-      if (!maps.サイト商品コード[サイト商品コード]) maps.サイト商品コード[サイト商品コード] = [];
-      maps.サイト商品コード[サイト商品コード].push(rowNum);
-    }
-    if (原題商品タイトル) {
-      if (!maps.原題商品タイトル[原題商品タイトル]) maps.原題商品タイトル[原題商品タイトル] = [];
-      maps.原題商品タイトル[原題商品タイトル].push(rowNum);
-    }
-    if (商品コードSKU) {
-      if (!maps.商品コードSKU[商品コードSKU]) maps.商品コードSKU[商品コードSKU] = [];
-      maps.商品コードSKU[商品コードSKU].push(rowNum);
-    }
-  });
-
-  const lines = [];
-
-  Object.entries(maps.サイト商品コード).forEach(([key, rows]) => {
-    if (rows.length > 1) lines.push(`サイト商品コード重複: ${key} → ${rows.join(', ')}`);
-  });
-  Object.entries(maps.原題商品タイトル).forEach(([key, rows]) => {
-    if (rows.length > 1) lines.push(`原題商品タイトル重複: ${key} → ${rows.join(', ')}`);
-  });
-  Object.entries(maps.商品コードSKU).forEach(([key, rows]) => {
-    if (rows.length > 1) lines.push(`商品コード（SKU）重複: ${key} → ${rows.join(', ')}`);
-  });
-
-  if (lines.length === 0) {
-    ui.alert('✅ 重複は見つかりませんでした');
-    return;
-  }
-
-  ui.alert(`⚠️ 重複が見つかりました\n\n${lines.join('\n')}`);
-}
-
-/* ============================================================
- * シート作成ラッパー
- * ============================================================ */
-
-function 台湾書籍その他シートを作成() {
-  if (OnopenGS_関数を呼ぶ_('台湾書籍系シートを作成する_共通', '台湾書籍その他')) return;
-  SpreadsheetApp.getUi().alert('台湾書籍系シートを作成する_共通 関数が見つかりません');
-}
-
-function 台湾書籍Worksシートを作成() {
-  const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActive();
-
-  let cfg = null;
-  if (typeof 設定_台湾まんが !== 'undefined') cfg = 設定_台湾まんが;
-  if (!cfg && typeof 設定_台湾書籍その他 !== 'undefined') cfg = 設定_台湾書籍その他;
-
-  if (!cfg) {
-    ui.alert('書籍Works用の設定が見つかりません');
-    return;
-  }
-
-  const シート名 = cfg.作品シート名;
-  if (ss.getSheetByName(シート名)) {
-    ui.alert(`「${シート名}」シートは既に存在します`);
-    return;
-  }
-
-  const sh = ss.insertSheet(シート名);
-  sh.getRange(1, 1, 1, cfg.作品列数).setValues([cfg.作品ヘッダー]);
-  sh.getRange(1, 1, 1, cfg.作品列数)
-    .setBackground('#cc0000')
-    .setFontColor('#ffffff')
-    .setFontWeight('bold')
-    .setHorizontalAlignment('center');
-  sh.setFrozenRows(1);
-
-  ui.alert(`✅ ${シート名} シートを作成しました`);
-}
-
-/* ============================================================
  * 台湾まんが メニューラッパー
  * ============================================================ */
+function 台湾まんが_確定発行() {
+  台湾書籍系_チェック行を事前補完_('台湾まんが', 設定_台湾まんが);
+  _kyoutuu.確定発行を実行(設定_台湾まんが);
+}
+function 台湾まんが_削除() { _kyoutuu.削除を実行(設定_台湾まんが); }
 
-function 台湾まんが_確定発行()         { _kyoutuu.確定発行を実行(設定_台湾まんが); }
-function 台湾まんが_削除()             { _kyoutuu.削除を実行(設定_台湾まんが); }
-function 台湾まんが_一括更新()         { _kyoutuu.一括更新を実行(設定_台湾まんが); }
-function 台湾まんが_プルダウン更新()   { _kyoutuu.プルダウン更新を実行(設定_台湾まんが); }
-function 台湾まんが_Works初期化()      { _kyoutuu書籍Works初期化_(設定_台湾まんが); }
+// ★ここを _kyoutuu ではなくローカル一括更新に変更
+function 台湾まんが_一括更新() {
+  台湾書籍系_ローカル一括更新_('台湾まんが', 設定_台湾まんが);
+}
+
+function 台湾まんが_プルダウン更新() { _kyoutuu.プルダウン更新を実行(設定_台湾まんが); }
+function 台湾まんが_Works初期化() { _kyoutuu書籍Works初期化_(設定_台湾まんが); }
 function 台湾まんが_WorksKey再正規化() { _kyoutuu書籍WorksKey再正規化_(設定_台湾まんが); }
-function 台湾まんが_重複統合()         { _kyoutuu書籍重複統合_(設定_台湾まんが); }
-function 台湾まんが_ID振り直し()       { _kyoutuu書籍ID振り直し_(設定_台湾まんが); }
-function 台湾まんが_孤立削除()         { _kyoutuu書籍孤立削除_(設定_台湾まんが); }
+function 台湾まんが_重複統合() { _kyoutuu書籍重複統合_(設定_台湾まんが); }
+function 台湾まんが_ID振り直し() { _kyoutuu書籍ID振り直し_(設定_台湾まんが); }
+function 台湾まんが_孤立削除() { _kyoutuu書籍孤立削除_(設定_台湾まんが); }
 
 /* ============================================================
  * 台湾書籍その他 メニューラッパー
  * ============================================================ */
+function 台湾書籍その他_確定発行() {
+  台湾書籍系_チェック行を事前補完_('台湾書籍その他', 設定_台湾書籍その他);
+  _kyoutuu.確定発行を実行(設定_台湾書籍その他);
+}
+function 台湾書籍その他_削除() { _kyoutuu.削除を実行(設定_台湾書籍その他); }
 
-function 台湾書籍その他_確定発行()         { _kyoutuu.確定発行を実行(設定_台湾書籍その他); }
-function 台湾書籍その他_削除()             { _kyoutuu.削除を実行(設定_台湾書籍その他); }
-function 台湾書籍その他_一括更新()         { _kyoutuu.一括更新を実行(設定_台湾書籍その他); }
-function 台湾書籍その他_プルダウン更新()   { _kyoutuu.プルダウン更新を実行(設定_台湾書籍その他); }
-function 台湾書籍その他_Works初期化()      { _kyoutuu書籍Works初期化_(設定_台湾書籍その他); }
+// ★ここを _kyoutuu ではなくローカル一括更新に変更
+function 台湾書籍その他_一括更新() {
+  台湾書籍系_ローカル一括更新_('台湾書籍その他', 設定_台湾書籍その他);
+}
+
+function 台湾書籍その他_プルダウン更新() { _kyoutuu.プルダウン更新を実行(設定_台湾書籍その他); }
+function 台湾書籍その他_Works初期化() { _kyoutuu書籍Works初期化_(設定_台湾書籍その他); }
 function 台湾書籍その他_WorksKey再正規化() { _kyoutuu書籍WorksKey再正規化_(設定_台湾書籍その他); }
-function 台湾書籍その他_重複統合()         { _kyoutuu書籍重複統合_(設定_台湾書籍その他); }
-function 台湾書籍その他_ID振り直し()       { _kyoutuu書籍ID振り直し_(設定_台湾書籍その他); }
-function 台湾書籍その他_孤立削除()         { _kyoutuu書籍孤立削除_(設定_台湾書籍その他); }
+function 台湾書籍その他_重複統合() { _kyoutuu書籍重複統合_(設定_台湾書籍その他); }
+function 台湾書籍その他_ID振り直し() { _kyoutuu書籍ID振り直し_(設定_台湾書籍その他); }
+function 台湾書籍その他_孤立削除() { _kyoutuu書籍孤立削除_(設定_台湾書籍その他); }
 
 /* ============================================================
- * 書籍Works系 共通ラッパー
+ * 書籍 Works 補助
  * ============================================================ */
-
 function _kyoutuu書籍Works初期化_(cfg) {
   const ui = SpreadsheetApp.getUi();
   if (ui.alert('警告', 'Worksを全削除します。続行？', ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
@@ -460,7 +297,9 @@ function _kyoutuu書籍重複統合_(cfg) {
     let レポート = `🔍 重複検出: ${重複リスト.length}件\n\n`;
     for (const dup of 重複リスト) {
       レポート += `【${dup.行配列[0].データ[2]}】 著：${dup.行配列[0].データ[3]}\n`;
-      for (const item of dup.行配列) レポート += `  ID:${item.データ[1]} (行${item.行})\n`;
+      for (const item of dup.行配列) {
+        レポート += `  ID:${item.データ[1]} (行${item.行})\n`;
+      }
       レポート += '\n';
     }
 
@@ -524,10 +363,9 @@ function _kyoutuu書籍孤立削除_(cfg) {
 /* ============================================================
  * チェックボックス一括操作
  * ============================================================ */
-
-function チェック_全チェック()   { _チェック操作(true,  'all'); }
-function チェック_全解除()       { _チェック操作(false, 'all'); }
-function チェック_未登録のみ()   { _チェック操作(true,  'unregistered'); }
+function チェック_全チェック() { _チェック操作(true, 'all'); }
+function チェック_全解除() { _チェック操作(false, 'all'); }
+function チェック_未登録のみ() { _チェック操作(true, 'unregistered'); }
 
 function _チェック操作(チェック値, モード) {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
@@ -563,12 +401,11 @@ function _チェック操作(チェック値, モード) {
 /* ============================================================
  * トリガー設定
  * ============================================================ */
-
 function トリガーを設定() {
   const ss = SpreadsheetApp.getActive();
 
   ScriptApp.getProjectTriggers()
-    .filter(t => ['onEdit', 'onEditInstallable_'].includes(t.getHandlerFunction()))
+    .filter(t => ['onEdit', 'onEditInstallable_', 'onEditInstallable_test_'].includes(t.getHandlerFunction()))
     .forEach(t => ScriptApp.deleteTrigger(t));
 
   ScriptApp.newTrigger('onEditInstallable_')
@@ -576,29 +413,431 @@ function トリガーを設定() {
     .onEdit()
     .create();
 
-  SpreadsheetApp.getActiveSpreadsheet().toast('トリガー設定完了', '完了', 3);
+  SpreadsheetApp.getActiveSpreadsheet().toast(`トリガー設定完了: ${ss.getName()}`, '完了', 5);
 }
 
 /* ============================================================
  * 再計算補助
  * ============================================================ */
-
 function 台湾まんが_再計算(開始行, 行数) {
   const sh = SpreadsheetApp.getActive().getSheetByName('台湾まんが');
-  if (!sh) return;
-
-  const cfg = 設定_台湾まんが;
-  const 列マップ = _kyoutuu.列番号を取得(sh);
-
-  const ダミーe = {
-    range: sh.getRange(開始行, 1, 行数, sh.getLastColumn())
-  };
+  if (!sh || 行数 <= 0) return;
 
   const lock = LockService.getDocumentLock();
   lock.waitLock(30000);
+
+  // ループ前に数式を確定し、必要な情報と行データを一括取得
+  SpreadsheetApp.flush();
+
+  const 列 = 台湾書籍系_列マップを取得_(sh);
+  const lastCol = sh.getLastColumn();
+  const allRowValues = sh.getRange(開始行, 1, 行数, lastCol).getValues();
+
   try {
-    _kyoutuu.onEdit処理を実行(ダミーe, sh, cfg, 列マップ, 開始行, 行数);
+    for (let r = 開始行; r < 開始行 + 行数; r++) {
+      if (r < 2) continue;
+      const rowValues = allRowValues[r - 開始行];
+      if (!rowValues) continue;
+
+      台湾書籍系_1行補完_共通_(sh, r, 設定_台湾まんが, {
+        skipFlush: true,
+        列マップ: 列,
+        lastCol: lastCol,
+        rowValues: rowValues
+      });
+    }
   } finally {
     lock.releaseLock();
   }
+}
+
+function 台湾書籍その他_再計算(開始行, 行数) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('台湾書籍その他');
+  if (!sh || 行数 <= 0) return;
+
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+
+  // ループ前に数式を確定し、必要な情報と行データを一括取得
+  SpreadsheetApp.flush();
+
+  const 列 = 台湾書籍系_列マップを取得_(sh);
+  const lastCol = sh.getLastColumn();
+  const allRowValues = sh.getRange(開始行, 1, 行数, lastCol).getValues();
+
+  try {
+    for (let r = 開始行; r < 開始行 + 行数; r++) {
+      if (r < 2) continue;
+      const rowValues = allRowValues[r - 開始行];
+      if (!rowValues) continue;
+
+      台湾書籍系_1行補完_共通_(sh, r, 設定_台湾書籍その他, {
+        skipFlush: true,
+        列マップ: 列,
+        lastCol: lastCol,
+        rowValues: rowValues
+      });
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+/* ============================================================
+ * 台湾書籍系 ローカル一括更新
+ * _kyoutuu.一括更新ではなく、
+ * 台湾書籍系_1行補完_共通_() を直接通す
+ * ============================================================ */
+function 台湾書籍系_ローカル一括更新_(シート名, 設定) {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(シート名);
+
+  if (!sh || sh.getLastRow() < 2) {
+    ui.alert(`${シート名} にデータがありません`);
+    return;
+  }
+
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn())
+    .getDisplayValues()[0]
+    .map(v => String(v || '').trim());
+
+  const 登録状況列 = headers.indexOf('登録状況') + 1;
+
+  if (!登録状況列) {
+    ui.alert('登録状況列が見つかりません');
+    return;
+  }
+
+  const lastRow = sh.getLastRow();
+  const statuses = sh.getRange(2, 登録状況列, lastRow - 1, 1).getDisplayValues();
+
+  const 対象行 = [];
+
+  statuses.forEach((r, i) => {
+    const 状態 = String(r[0] || '').trim();
+
+    // 現場運用では登録済みは触らない
+    if (状態 === '未登録') {
+      対象行.push(i + 2);
+    }
+  });
+
+  if (対象行.length === 0) {
+    ui.alert('未登録の対象行がありません');
+    return;
+  }
+
+  if (
+    ui.alert(
+      '確認',
+      `${シート名} の未登録 ${対象行.length} 行を一括更新します。\n\n` +
+      '・作品IDの4桁統一\n' +
+      '・古い作品IDの誤引き継ぎチェック\n' +
+      '・Works取得または新規作成\n' +
+      '・親コード / SKU / タイトル再生成\n\n' +
+      '続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    ) !== ui.Button.OK
+  ) {
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+
+  let 成功 = 0;
+  let 失敗 = 0;
+  const エラー = [];
+
+  // ループ前に数式を確定し、必要な情報とシートデータを一括取得
+  SpreadsheetApp.flush();
+
+  const 列 = 台湾書籍系_列マップを取得_(sh);
+  const lastCol = sh.getLastColumn();
+  const allSheetValues = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+
+  try {
+    // 先にWorksと商品シート側の作品ID表記を4桁に寄せる
+    if (typeof 台湾書籍系_作品IDを4桁に統一_ === 'function') {
+      台湾書籍系_作品IDを4桁に統一_();
+    }
+
+
+    対象行.forEach(row => {
+      try {
+        デバッグログ出力_('一括更新_行開始', {
+          シート名,
+          row
+        });
+
+        const rowValues = allSheetValues[row - 2];
+
+        台湾書籍系_1行補完_共通_(sh, row, 設定, {
+          skipFlush: true,
+          列マップ: 列,
+          lastCol: lastCol,
+          rowValues: rowValues
+        });
+
+        デバッグログ出力_('一括更新_行完了', {
+          シート名,
+          row
+        });
+
+        成功++;
+      } catch (err) {
+        失敗++;
+        エラー.push(`${row}行目: ${err && err.message ? err.message : err}`);
+
+        デバッグログ出力_('一括更新_行エラー', {
+          シート名,
+          row,
+          message: err && err.message ? err.message : String(err),
+          stack: err && err.stack ? String(err.stack) : ''
+        });
+      }
+    });
+
+    SpreadsheetApp.flush();
+
+    let msg =
+      `✅ ${シート名}：未登録 ${対象行.length} 行を一括更新しました\n\n` +
+      `成功: ${成功}件\n` +
+      `失敗: ${失敗}件`;
+
+    if (エラー.length) {
+      msg += '\n\nエラー:\n' + エラー.slice(0, 10).join('\n');
+      if (エラー.length > 10) msg += `\nほか ${エラー.length - 10}件`;
+    }
+
+    ui.alert(msg);
+
+  } finally {
+    lock.releaseLock();
+  }
+}
+function 台湾まんが_現在行を再計算() {
+  台湾書籍系_現在行をローカル再計算_('台湾まんが', 設定_台湾まんが);
+}
+
+function 台湾書籍その他_現在行を再計算() {
+  台湾書籍系_現在行をローカル再計算_('台湾書籍その他', 設定_台湾書籍その他);
+}
+
+function 台湾書籍系_現在行をローカル再計算_(シート名, 設定) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getActiveSheet();
+
+  if (!sh || sh.getName() !== シート名) {
+    SpreadsheetApp.getUi().alert(`${シート名} シートで実行してください`);
+    return;
+  }
+
+  const row = sh.getActiveCell().getRow();
+
+  if (row < 2) {
+    SpreadsheetApp.getUi().alert('2行目以降で実行してください');
+    return;
+  }
+
+  台湾書籍系_1行補完_共通_(sh, row, 設定);
+  ss.toast(`✅ ${シート名} ${row}行目を再計算しました`, '完了', 4);
+}
+
+function 台湾書籍系_作品IDを4桁に統一_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const 対象 = [
+    {
+      シート名: 'Works（書籍専用）',
+      候補列名: ['作品ID']
+    },
+    {
+      シート名: '台湾まんが',
+      候補列名: ['作品ID(W)（自動）', '作品ID(W)(自動)', '作品(W)（自動）']
+    },
+    {
+      シート名: '台湾書籍その他',
+      候補列名: ['作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）']
+    }
+  ];
+
+  let 更新数 = 0;
+
+  対象.forEach(info => {
+    const sh = ss.getSheetByName(info.シート名);
+    if (!sh || sh.getLastRow() < 2) return;
+
+    const headers = sh.getRange(1, 1, 1, sh.getLastColumn())
+      .getDisplayValues()[0]
+      .map(v => String(v || '').trim());
+
+    let col = 0;
+    for (const name of info.候補列名) {
+      const idx = headers.indexOf(name);
+      if (idx >= 0) {
+        col = idx + 1;
+        break;
+      }
+    }
+
+    if (!col) return;
+
+    const lastRow = sh.getLastRow();
+    const range = sh.getRange(2, col, lastRow - 1, 1);
+    const values = range.getDisplayValues();
+
+    const out = values.map(([v]) => {
+      const id = 台湾書籍系_作品ID4桁文字列_(v);
+      if (!id) return [''];
+      if (String(v || '').trim() !== id) 更新数++;
+      return [id];
+    });
+
+    // 文字列として固定する
+    range.setNumberFormat('@');
+    range.setValues(out);
+  });
+
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    `✅ 作品IDを4桁に統一しました：${更新数}件`,
+    '完了',
+    5
+  );
+}
+
+function 台湾書籍系_作品ID4桁文字列_(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+
+  const m = s.match(/\d+/);
+  if (!m) return '';
+
+  const n = parseInt(m[0], 10);
+  if (isNaN(n)) return '';
+
+  return String(n).padStart(4, '0');
+}
+
+function デバッグログ出力_(tag, obj) {
+  const DEBUG_TRACE = true; // 追跡中だけ true。終わったら false にする。
+
+  if (!DEBUG_TRACE) return;
+
+  try {
+    const json = obj ? JSON.stringify(obj) : '';
+    console.log(`[${tag}] ${json}`);
+  } catch (err) {
+    console.log(`[${tag}] ログ出力エラー: ${err}`);
+  }
+}
+
+function 台湾書籍系_作品ID使用場所チェック_0088() {
+  台湾書籍系_作品ID使用場所チェック_('0088');
+}
+
+function 台湾書籍系_作品ID使用場所チェック_(targetId) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const target = String(targetId || '').replace(/[^\d]/g, '').padStart(4, '0');
+
+  const result = [];
+
+  const コードからID = (v) => {
+    const s = String(v == null ? '' : v).trim().toUpperCase();
+    if (!s) return '';
+
+    // 例: TW0088-CM-01 / TWS0088-CM-0304
+    const m = s.match(/^[A-Z]{2}[A-Z]*?(\d{4})-/);
+    return m ? m[1] : '';
+  };
+
+  const 正規ID = (v) => {
+    const s = String(v == null ? '' : v).trim();
+    if (!s) return '';
+
+    const m = s.match(/\d+/);
+    if (!m) return '';
+
+    return String(parseInt(m[0], 10)).padStart(4, '0');
+  };
+
+  const checkSheet = (sheetName, cols) => {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh || sh.getLastRow() < 2) return;
+
+    const headers = sh.getRange(1, 1, 1, sh.getLastColumn())
+      .getDisplayValues()[0]
+      .map(v => String(v || '').trim());
+
+    cols.forEach(colName => {
+      const col = headers.indexOf(colName) + 1;
+      if (!col) return;
+
+      const values = sh.getRange(2, col, sh.getLastRow() - 1, 1).getDisplayValues();
+
+      values.forEach(([v], i) => {
+        const row = i + 2;
+        const id1 = 正規ID(v);
+        const id2 = コードからID(v);
+
+        if (id1 === target || id2 === target) {
+          result.push({
+            シート: sheetName,
+            行: row,
+            列: colName,
+            値: v
+          });
+        }
+      });
+    });
+  };
+
+  checkSheet('Works（書籍専用）', [
+    '作品ID'
+  ]);
+
+  checkSheet('台湾まんが', [
+    '作品ID(W)（自動）',
+    '作品ID(W)(自動)',
+    '作品(W)（自動）',
+    '親コード',
+    '商品コード(SKU)',
+    'SKU（自動）',
+    'SKU(自動)'
+  ]);
+
+  checkSheet('台湾書籍その他', [
+    '作品ID(W)（自動）',
+    '作品ID(W)(自動)',
+    '作品(W)（自動）',
+    '親コード',
+    '商品コード(SKU)',
+    'SKU（自動）',
+    'SKU(自動)'
+  ]);
+
+  if (result.length === 0) {
+    console.log(`✅ ${target} は見つかりませんでした`);
+    SpreadsheetApp.getUi().alert(`${target} は Works / 台湾まんが / 台湾書籍その他 では見つかりませんでした`);
+    return;
+  }
+
+  console.log(`⚠️ ${target} の使用場所`);
+  result.forEach(r => console.log(JSON.stringify(r)));
+
+  SpreadsheetApp.getUi().alert(
+    `${target} の使用場所が ${result.length} 件あります。\n\nApps Script の「実行数」ログを確認してください。`
+  );
+}
+
+function 作品ID0088使用場所チェック() {
+  台湾書籍系_作品ID使用場所チェック_('0088');
+}
+
+function 列名確認() {
+  const sh = SpreadsheetApp.getActive().getSheetByName('台湾まんが');
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  console.log(JSON.stringify(headers));
 }
