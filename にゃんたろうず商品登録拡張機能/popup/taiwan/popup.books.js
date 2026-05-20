@@ -84,7 +84,7 @@ function buildCommonBookSheetRow(product, overrides = {}) {
   const memo = buildBookMemo(product);
   const additional = getAdditionalImagesValue(product);
   const rawTitle = trimValue((overrides.rawTitle ?? product?.商品名) || '');
-  const originalTitle = extractOriginalTitleText((overrides.originalTitle ?? product?.原題タイトル) || rawTitle);
+  const originalTitle = finalizeSheetOriginalWorkTitleRow((overrides.originalTitle ?? product?.原題タイトル) || rawTitle);
   const category = trimValue(overrides.category || getBookGenreLabel(product));
 
   return {
@@ -94,7 +94,7 @@ function buildCommonBookSheetRow(product, overrides = {}) {
     'サイト商品コード': code,
     'タイトル': trimValue(product?.タイトル || ''),
     '作者': trimValue(product?.著者 || ''),
-    '日本語タイトル': trimValue(product?.日本語タイトル || ''),
+    '日本語タイトル': normalizeSheetJapaneseWorkTitleForRow(getDisplayJapaneseTitleValue(product?.日本語タイトル)),
     'リンク': trimValue(product?.URL || ''),
     '原題タイトル': originalTitle,
     '原題商品タイトル': rawTitle,

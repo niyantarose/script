@@ -33,6 +33,13 @@ async function getProductInfo() {
   const productCodeRegexSafe = escapeRegExp(productCode);
 const keepGoodsThumbVariant = !isBook;
 const TARGET_IMAGE_EDGE = 1000;
+// books.com.tw の画像URL末尾バリアント:
+//   _t_N = サムネイル系（N=1～3）
+//   _b_N = 拡大系（N=1～3、N=2 が約700px、N=3 が約1000px）
+// グッズはサムネがそのまま縮小品として使われるので _t_ を温存。
+// 書籍は _t_ → _b_ への置換のみ行い、N（サイズ番号）は元URLに従う。
+// 過剰なアップグレードは必要以上に大きい画像を取得する原因になるため、
+// _b_N の N は変更しない。
 const upgradeBooksImageVariant = (imageUrl, options = {}) => {
   const keepThumbVariant = options.keepThumbVariant === true;
   return String(imageUrl || '')
@@ -89,10 +96,46 @@ const promoteLargeImageUrl = imageUrl => {
   }
 };
 
-const normalizeImageUrl = rawUrl => {
+/** 一覧・シート表示用（サムネイル優先。大きすぎないサイズ） */
+const normalizeDisplayImageUrl = rawUrl => {
+  if (!rawUrl) return '';
+
+  let urlText = String(rawUrl || '').trim();
+  if (!urlText) return '';
+  if (urlText.startsWith('//')) urlText = `${window.location.protocol}${urlText}`;
+
+  try {
+    const parsed = new URL(urlText, window.location.href);
+    const original = parsed.searchParams.get('i');
+    if (original) {
+      let originalUrl = decodeURIComponent(original);
+      if (originalUrl.startsWith('//')) {
+        originalUrl = `${window.location.protocol}${originalUrl}`;
+      }
+      const wrappedBannerUrl = buildBooksBannerWrapperUrl(originalUrl);
+      if (wrappedBannerUrl) return wrappedBannerUrl;
+      return upgradeBooksImageVariant(originalUrl, { keepThumbVariant: true });
+    }
+
+    const href = parsed.href;
+    const thumbVariant = href.replace(/_b_(\d+)(?=\.(?:jpe?g|png|webp)(?:$|[?#]))/gi, '_t_$1');
+    if (thumbVariant !== href) return thumbVariant;
+
+    const upgradedUrl = upgradeBooksImageVariant(href, { keepThumbVariant: false });
+    return buildBooksBannerWrapperUrl(upgradedUrl) || upgradedUrl;
+  } catch {
+    const upgradedUrl = upgradeBooksImageVariant(urlText, { keepThumbVariant: true });
+    return buildBooksBannerWrapperUrl(upgradedUrl) || upgradedUrl;
+  }
+};
+
+/** ダウンロード・追加画像用（高解像度 _b_ 優先） */
+const normalizeDownloadImageUrl = rawUrl => {
   if (!rawUrl) return '';
   return promoteLargeImageUrl(rawUrl);
 };
+
+const normalizeImageUrl = rawUrl => normalizeDownloadImageUrl(rawUrl);
 
 const IMAGE_VIEWER_OVERLAY_SELECTORS = [
   '.fancybox-overlay',
@@ -136,6 +179,92 @@ const queryFirstOutsideImageViewer = (...selectors) => {
   return null;
 };
 
+  const EXCLUDED_IMAGE_REGION_HEADING = /(?:買了此商品的人也買了|買了此商品的人還買|也買了|猜你喜歡|你可能會喜歡|其他人也買|相關推薦|熱門推薦|最近瀏覽|最近浏览|browse_history|weekly_hot)/;
+  const GIFT_PROMO_HEADING = /^(?:特惠贈品|特惠赠品|首刷贈品|首刷赠品|滿額送|满额送)$/;
+  const PRODUCT_IMAGE_ROOT_SELECTORS = [
+    '.cnt_prod_img001',
+    '#item-img-content',
+    '.prod_img_box',
+    '.item_img',
+  ];
+  const BOOK_GALLERY_MAX_IMAGES = 9;
+  const BOOK_GIFT_MAX_IMAGES = 2;
+  const BOOK_DETAIL_MAX_IMAGES = 12;
+  const BOOK_MAX_TOTAL_IMAGES = 10;
+
+  const isInsideExcludedImageRegion = node => {
+    if (!node || typeof node.closest !== 'function') return false;
+    if (node.closest('.mod_recommend, .recommend_box, .reco_box, .also_buy, .prod_recommend, [class*="recommend"], [id*="recommend"], [id*="Recommend"]')) {
+      return true;
+    }
+    let el = node;
+    for (let depth = 0; depth < 10 && el; depth += 1) {
+      const heading = el.matches?.('h1, h2, h3, h4, .title, .maintitle')
+        ? el
+        : el.querySelector?.('h1, h2, h3, h4, .title, .maintitle');
+      const headingText = toSingleLine(getText(heading));
+      if (EXCLUDED_IMAGE_REGION_HEADING.test(headingText)) return true;
+      const snippet = toSingleLine(getText(el)).slice(0, 120);
+      if (EXCLUDED_IMAGE_REGION_HEADING.test(snippet)) return true;
+      el = el.parentElement;
+    }
+    return false;
+  };
+
+  const isInsideGiftPromoImageRegion = node => {
+    if (!node || typeof node.closest !== 'function') return false;
+    if (node.closest('[id*="getGiftInfo"]')) return true;
+    let el = node;
+    for (let depth = 0; depth < 10 && el; depth += 1) {
+      const heading = toSingleLine(getText(
+        el.querySelector?.('h1, h2, h3, h4, .title, .maintitle, strong, dt') || ''
+      ));
+      if (GIFT_PROMO_HEADING.test(heading)) return true;
+      el = el.parentElement;
+    }
+    return false;
+  };
+
+  const isAllowedProductImageNode = node => (
+    !isInsideImageViewerOverlay(node)
+    && !isInsideExcludedImageRegion(node)
+    && !isInsideGiftPromoImageRegion(node)
+  );
+
+  const getProductImageRoot = () => {
+    for (const selector of PRODUCT_IMAGE_ROOT_SELECTORS) {
+      const found = queryAllOutsideImageViewer(selector).find(isAllowedProductImageNode);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  const queryWithinProductImageRoot = selector => {
+    const root = getProductImageRoot();
+    if (!root) return [];
+    return Array.from(root.querySelectorAll(selector)).filter(isAllowedProductImageNode);
+  };
+
+  const isGalleryImageNode = node => (
+    !!node
+    && !isInsideImageViewerOverlay(node)
+    && !isInsideExcludedImageRegion(node)
+  );
+
+  const getGalleryImageRoot = () => {
+    for (const selector of PRODUCT_IMAGE_ROOT_SELECTORS) {
+      const found = queryAllOutsideImageViewer(selector).find(isGalleryImageNode);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  const queryWithinGalleryRoot = selector => {
+    const root = getGalleryImageRoot();
+    if (!root) return [];
+    return Array.from(root.querySelectorAll(selector)).filter(isGalleryImageNode);
+  };
+
 const scoreEdgeDistance = edge => {
     if (!Number.isFinite(edge) || edge <= 0) return 0;
     return Math.max(0, 3000 - Math.abs(edge - TARGET_IMAGE_EDGE) * 4);
@@ -153,7 +282,7 @@ const scoreEdgeDistance = edge => {
   };
   const collectImageUrlsFromNode = node => {
     if (!node) return [];
-    if (isInsideImageViewerOverlay(node)) return [];
+    if (!isAllowedProductImageNode(node)) return [];
     const urls = [];
     const pushUrl = raw => {
       const normalized = normalizeImageUrl(raw);
@@ -183,9 +312,12 @@ const scoreEdgeDistance = edge => {
     });
 
     Array.from(node.querySelectorAll('a[href]'))
-      .filter(a => !isInsideImageViewerOverlay(a))
+      .filter(a => isAllowedProductImageNode(a))
       .forEach(a => {
       const href = a.getAttribute('href') || '';
+      if (/\/products\//i.test(href) && !new RegExp(productCodeRegexSafe, 'i').test(href)) {
+        return;
+      }
       if (/\.(?:jpe?g|webp|png)(?:\?|$)/i.test(href) || /getImage\.php/i.test(href)) {
         pushUrl(href);
       }
@@ -250,7 +382,7 @@ const scoreEdgeDistance = edge => {
       Array.from(document.querySelectorAll(sectionSelector)).filter(scope => {
         const heading = toSingleLine(getText(scope.querySelector('h1, h2, h3, h4, .title, .maintitle, strong, dt')));
         const text = toSingleLine(getText(scope));
-        return /特惠贈品|特惠赠品|首刷贈品|首刷赠品|買就送|买就送|限定特典卡|書籍延伸內容|书籍延伸内容/.test(`${heading}\n${text}`) ||
+        return /特惠贈品|特惠赠品|首刷贈品|首刷赠品|滿額送|满额送|買就送|买就送|限定特典卡|書籍延伸內容|书籍延伸内容|贈送條件|赠送条件/.test(`${heading}\n${text}`) ||
           !!scope.querySelector('[id*="getGiftInfo"]');
       })
     );
@@ -541,13 +673,55 @@ const scoreEdgeDistance = edge => {
     };
   };
 
-  const getImageOrderIndex = imageUrl => {
+  const getImageSlotIndex = imageUrl => {
     const text = String(imageUrl || '');
     const match = text.match(new RegExp(`${productCodeRegexSafe}(?:_(?:b|t)_(\\d+))?\\.(?:jpe?g|png|webp)`, 'i'));
     if (!match) return Number.MAX_SAFE_INTEGER;
     if (!match[1]) return 0;
     const idx = parseInt(match[1], 10);
     return Number.isFinite(idx) ? idx : Number.MAX_SAFE_INTEGER;
+  };
+
+  const getImageOrderIndex = imageUrl => getImageSlotIndex(imageUrl);
+
+  /** メイン表示用URL: サムネイル(_t_01等)を優先。なければギャラリー先頭 */
+  const pickMainDisplayImageUrl = urls => {
+    const list = uniq((urls || []).map(normalizeDisplayImageUrl).filter(Boolean));
+    if (!list.length) return '';
+
+    const thumbCandidates = list
+      .filter(url => /_t_\d+\.(?:jpe?g|png|webp)(?:[?&#]|$)/i.test(url))
+      .sort((a, b) => getImageSlotIndex(a) - getImageSlotIndex(b));
+    if (thumbCandidates.length) return thumbCandidates[0];
+
+    const sorted = [...list].sort((a, b) => getImageSlotIndex(a) - getImageSlotIndex(b));
+    return sorted[0];
+  };
+
+  /** ダウンロード用メイン: 表紙スロットの _b_ 高解像度を優先（_t_ サムネは2枚目に回るのを防ぐ） */
+  const pickMainBookDownloadImageUrl = urls => {
+    const list = uniq((urls || []).map(normalizeDownloadImageUrl).filter(Boolean));
+    if (!list.length) return '';
+
+    const coverCandidates = list
+      .filter(url => /_b_\d+\.(?:jpe?g|png|webp)(?:[?&#]|$)/i.test(url))
+      .sort((a, b) => {
+        const order = getImageSlotIndex(a) - getImageSlotIndex(b);
+        if (order !== 0) return order;
+        return getImageQualityScore(b) - getImageQualityScore(a);
+      });
+    if (coverCandidates.length) return coverCandidates[0];
+
+    const sorted = [...list].sort((a, b) => getImageSlotIndex(a) - getImageSlotIndex(b));
+    return sorted[0] || '';
+  };
+
+  const isSameBookImageSlot = (leftUrl, rightUrl) => {
+    if (!leftUrl || !rightUrl) return false;
+    const leftSlot = getImageSlotIndex(leftUrl);
+    const rightSlot = getImageSlotIndex(rightUrl);
+    if (leftSlot < Number.MAX_SAFE_INTEGER && leftSlot === rightSlot) return true;
+    return normalizeDownloadImageUrl(leftUrl) === normalizeDownloadImageUrl(rightUrl);
   };
 
     const getImageQualityScore = imageUrl => {
@@ -577,7 +751,10 @@ const scoreEdgeDistance = edge => {
     })
     .slice(0, maxCount);
 
-  const hasCurrentProductCode = text => new RegExp(productCodeRegexSafe, 'i').test(String(text || ''));
+  const hasCurrentProductCode = text => new RegExp(
+    `${productCodeRegexSafe}(?:_(?:b|t)_\\d+|\\.(?:jpe?g|png|webp))`,
+    'i'
+  ).test(String(text || ''));
   const isImageLikeUrl = imageUrl => /(?:\.jpe?g|\.png|\.webp)(?:[?&#]|$)|\/fancybox\/getImage\.php\?|\/image\/getImage\?/i.test(String(imageUrl || ''));
   const isNoiseImageUrl = imageUrl => keepGoodsThumbVariant
     ? /(?:\/G\/ADbanner\/|\/G\/prod\/comingsoon|languageTest|esqsm|\/reco\/|\/banner\/|\/recommend\/|\/ad\/|listE\.php|listN\.php|\/activity\/|\/combo\/)/i.test(String(imageUrl || ''))
@@ -585,6 +762,19 @@ const scoreEdgeDistance = edge => {
   const isProductBonusBannerImage = imageUrl => {
     const text = String(imageUrl || '');
     return hasCurrentProductCode(text) && /(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/|\/banner\/)/i.test(text);
+  };
+  const isGiftPromoBannerImage = imageUrl => {
+    const text = String(imageUrl || '');
+    if (!isImageLikeUrl(text)) return false;
+    if (isProductBonusBannerImage(text)) return true;
+    if (/(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/|\/image\/getImage\?|fancybox\/getImage\.php)/i.test(text)) {
+      return !/(?:\/reco\/|\/recommend\/|listE\.php|listN\.php|\/activity\/combo)/i.test(text);
+    }
+    if (hasCurrentProductCode(text) && /_(?:b|t)_\d+\./i.test(text)) return false;
+    if (/(?:addons\.books\.com\.tw|activity\.books\.com\.tw|im\d+\.book\.com\.tw)/i.test(text)) {
+      return !/(?:\/reco\/|\/recommend\/|comingsoon|\/img\/[A-Z]\d{2}\/)/i.test(text);
+    }
+    return false;
   };
   const isCurrentProductImageUrl = imageUrl => {
     const text = String(imageUrl || '');
@@ -594,59 +784,150 @@ const scoreEdgeDistance = edge => {
     const text = String(imageUrl || '');
     return isImageLikeUrl(text) && hasCurrentProductCode(text) && (!isNoiseImageUrl(text) || isProductBonusBannerImage(text));
   };
-  const collectGiftSectionImages = scope => {
-    if (!scope) return [];
-
-    const productSpecific = collectImageUrlsFromNode(scope).filter(isCurrentProductDetailImage);
-    if (productSpecific.length) return sortProductImageUrls(productSpecific, 3);
-
-    const relaxedScopeUrls = sortProductImageUrls(
-      collectImageUrlsFromNode(scope).filter(imageUrl => {
-        const normalized = normalizeImageUrl(imageUrl);
-        if (!normalized || !isImageLikeUrl(normalized)) return false;
-        if (/(?:logo|icon|spinner|loading|blank|share)/i.test(normalized)) return false;
-        return !isNoiseImageUrl(normalized) || /(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/)/i.test(normalized);
-      }),
-      3
-    );
-    if (relaxedScopeUrls.length) return relaxedScopeUrls;
-
-    const candidates = [];
-    const pushCandidate = (rawUrl, width = 0, height = 0) => {
-      const normalized = normalizeImageUrl(rawUrl);
-      if (!normalized || !isImageLikeUrl(normalized)) return;
-
-      const w = Number(width) || 0;
-      const h = Number(height) || 0;
-      if (Math.max(w, h) < 100 || Math.min(w, h) < 60) return;
-      if (/(?:logo|icon|spinner|loading|blank|share)/i.test(normalized)) return;
-      if (isNoiseImageUrl(normalized) && !/(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/)/i.test(normalized)) return;
-
-      candidates.push({ url: normalized, area: w * h });
+  const collectImageUrlsFromGalleryNode = node => {
+    if (!node || !isGalleryImageNode(node)) return [];
+    const urls = [];
+    const pushUrl = raw => {
+      const normalized = normalizeImageUrl(raw);
+      if (normalized) urls.push(normalized);
     };
 
-    Array.from(scope.querySelectorAll('img')).forEach(img => {
-      const width = parseInt(img.getAttribute('width'), 10) || img.naturalWidth || img.width || 0;
-      const height = parseInt(img.getAttribute('height'), 10) || img.naturalHeight || img.height || 0;
-      pushCandidate(img.getAttribute('data-original'), width, height);
-      pushCandidate(img.getAttribute('data-src'), width, height);
-      pushCandidate(img.getAttribute('data-large'), width, height);
-      pushCandidate(img.currentSrc, width, height);
-      pushCandidate(img.src, width, height);
+    Array.from(node.querySelectorAll('img'))
+      .filter(img => isGalleryImageNode(img))
+      .forEach(img => {
+        const linkedHref = img.closest('a[href]')?.getAttribute('href') || '';
+        if (/\/products\//i.test(linkedHref) && !new RegExp(productCodeRegexSafe, 'i').test(linkedHref)) {
+          return;
+        }
+        pushUrl(img.getAttribute('data-original'));
+        pushUrl(img.getAttribute('data-src'));
+        pushUrl(img.getAttribute('data-large'));
+        pushUrl(img.currentSrc);
+        pushUrl(img.src);
+        const srcset = img.getAttribute('srcset') || img.getAttribute('data-srcset') || '';
+        if (srcset) {
+          srcset.split(',').forEach(part => {
+            pushUrl(part.trim().split(/\s+/)[0]);
+          });
+        }
+      });
+
+    Array.from(node.querySelectorAll('a[href]'))
+      .filter(a => isGalleryImageNode(a))
+      .forEach(a => {
+        const href = a.getAttribute('href') || '';
+        if (/\/products\//i.test(href) && !new RegExp(productCodeRegexSafe, 'i').test(href)) {
+          return;
+        }
+        if (/\.(?:jpe?g|webp|png)(?:\?|$)/i.test(href) || /getImage/i.test(href)) {
+          pushUrl(href);
+        }
+      });
+
+    Array.from(node.querySelectorAll('[style*="background-image"]'))
+      .filter(el => isGalleryImageNode(el))
+      .forEach(el => {
+        const style = el.getAttribute('style') || '';
+        Array.from(style.matchAll(/url\((['"]?)(.*?)\1\)/gi)).forEach(match => {
+          pushUrl(match[2]);
+        });
+      });
+
+    const html = getSanitizedHtml(node);
+    Array.from(
+      html.matchAll(/https?:\/\/[^"'\\s<)]+?\.(?:jpg|jpeg|webp|png)(?:\?[^"'\\s<)]*)?/gi)
+    ).forEach(match => {
+      const normalized = normalizeImageUrl(match[0]);
+      if (!normalized) return;
+      if (!new RegExp(productCodeRegexSafe, 'i').test(normalized)) return;
+      pushUrl(normalized);
+    });
+    Array.from(
+      html.matchAll(/https?:\/\/www\.books\.com\.tw\/fancybox\/getImage\.php\?[^"'\\s<)]*/gi)
+    ).forEach(match => {
+      pushUrl(match[0]);
     });
 
-    return uniq(
-      candidates
-        .sort((a, b) => b.area - a.area)
-        .map(item => item.url)
-    ).slice(0, 3);
+    return uniq(urls);
   };
 
-  const isProductGalleryImage = imageUrl => {
-    const text = String(imageUrl || '');
-    return !isNoiseImageUrl(text) &&
-      new RegExp(`${productCodeRegexSafe}(?:_(?:b|t)_\\d+)?\\.(?:jpe?g|png|webp)(?:[?&#]|$)`, 'i').test(text);
+  const collectImageUrlsFromGiftScope = scope => {
+    if (!scope) return [];
+    const urls = [];
+    const pushUrl = raw => {
+      const normalized = normalizeImageUrl(raw);
+      if (normalized) urls.push(normalized);
+    };
+
+    const isGiftScopeNode = node => (
+      !!node
+      && !isInsideImageViewerOverlay(node)
+      && !isInsideExcludedImageRegion(node)
+    );
+
+    Array.from(scope.querySelectorAll('img'))
+      .filter(img => isGiftScopeNode(img))
+      .forEach(img => {
+        pushUrl(img.getAttribute('data-original'));
+        pushUrl(img.getAttribute('data-src'));
+        pushUrl(img.getAttribute('data-large'));
+        pushUrl(img.currentSrc);
+        pushUrl(img.src);
+      });
+
+    Array.from(scope.querySelectorAll('a[href]'))
+      .filter(a => isGiftScopeNode(a))
+      .forEach(a => {
+        const href = a.getAttribute('href') || '';
+        if (/\.(?:jpe?g|webp|png)(?:\?|$)/i.test(href) || /getImage/i.test(href)) {
+          pushUrl(href);
+        }
+      });
+
+    const html = getSanitizedHtml(scope);
+    Array.from(
+      html.matchAll(/https?:\/\/[^"'\\s<)]+?\.(?:jpg|jpeg|webp|png)(?:\?[^"'\\s<)]*)?/gi)
+    ).forEach(match => pushUrl(match[0]));
+    Array.from(
+      html.matchAll(/https?:\/\/www\.books\.com\.tw\/fancybox\/getImage\.php\?[^"'\\s<)]*/gi)
+    ).forEach(match => pushUrl(match[0]));
+
+    return uniq(urls).filter(url => {
+      if (!isImageLikeUrl(url)) return false;
+      if (isGiftPromoBannerImage(url)) return true;
+      const text = String(url || '');
+      if (hasCurrentProductCode(text) && /_(?:b|t)_\d+\./i.test(text)) return false;
+      return /(?:addons\.books\.com\.tw|activity\.books\.com\.tw)/i.test(text)
+        && !/(?:\/reco\/|\/recommend\/|comingsoon)/i.test(text);
+    });
   };
+
+  const collectGiftSectionImages = scope => {
+    if (!scope) return [];
+    return sortProductImageUrls(
+      collectImageUrlsFromGiftScope(scope),
+      BOOK_GIFT_MAX_IMAGES
+    );
+  };
+
+  const isBooksGallerySlotUrl = imageUrl => {
+    const text = String(imageUrl || '');
+    if (!hasCurrentProductCode(text) || !isImageLikeUrl(text)) return false;
+    if (isNoiseImageUrl(text) && !isProductBonusBannerImage(text)) return false;
+    return /_(?:b|t)_\d+\.(?:jpe?g|png|webp)(?:[?&#]|$)/i.test(text)
+      || new RegExp(`/img/[A-Z]\\d{2}/[^"'\\s<)]*${productCodeRegexSafe}\\.(?:jpe?g|png|webp)`, 'i').test(text)
+      || new RegExp(`/img/[A-Z]\\d{2}/[^"'\\s<)]*${productCodeRegexSafe}(?:_(?:b|t)_\\d+)?\\.`, 'i').test(text);
+  };
+
+  const isBookSectionDetailImage = imageUrl => {
+    if (isCurrentProductDetailImage(imageUrl)) return true;
+    const text = String(imageUrl || '');
+    return isImageLikeUrl(text)
+      && /(?:addons\.books\.com\.tw\/G\/ADbanner\/|\/G\/ADbanner\/)/i.test(text)
+      && !/(?:\/reco\/|\/recommend\/|\/activity\/|\/combo\/)/i.test(text);
+  };
+
+  const isProductGalleryImage = imageUrl => isBooksGallerySlotUrl(imageUrl);
   const isDetailSectionImage = imageUrl => {
     const text = String(imageUrl || '');
     return isImageLikeUrl(text) && (!isNoiseImageUrl(text) || isProductBonusBannerImage(text));
@@ -687,16 +968,23 @@ const scoreEdgeDistance = edge => {
     return '';
   };
 
-  const getBookDescription = () => {
-    const headingPattern = /內容簡介|内容简介|商品簡介|商品介紹|商品介绍|內容介紹/;
+  const getBookDescriptionBlocks = () => {
+    const headingPattern = /^(?:內容簡介|内容简介|商品簡介|商品介紹|商品介绍|內容介紹)$/;
     const blocks = Array.from(document.querySelectorAll('.mod_b, .mod, .prod_cont')).filter(block => {
-      const headingText = getText(block.querySelector('h3, h2'));
+      const headingText = toSingleLine(getText(block.querySelector('h3, h2, h1')));
       return headingPattern.test(headingText);
     });
+    if (blocks.length) return blocks;
 
+    const fallback = document.querySelector('[itemprop="description"], #summary, .prod_summary, .bd .content');
+    return fallback ? [fallback] : [];
+  };
+
+  const getBookDescription = () => {
+    const blocks = getBookDescriptionBlocks();
     const texts = blocks
       .map(block => toMultiline(getText(
-        block.querySelector('.bd .content, .content, [itemprop="description"]')
+        block.querySelector?.('.bd .content, .content, [itemprop="description"]') || block
       )))
       .filter(Boolean);
     if (texts.length) return mergeTextBlocks(texts);
@@ -704,6 +992,86 @@ const scoreEdgeDistance = edge => {
     return toMultiline(getText(
       document.querySelector('[itemprop="description"], #summary, .prod_summary, .bd .content')
     ));
+  };
+
+  const getBookDescriptionContentInfo = () => {
+    const blocks = getBookDescriptionBlocks();
+    if (!blocks.length) return { text: '', images: [] };
+
+    const images = sortProductImageUrls(
+      blocks.flatMap(block =>
+        collectImageUrlsFromNode(block).filter(isBookSectionDetailImage)
+      ),
+      BOOK_DETAIL_MAX_IMAGES
+    );
+
+    return {
+      text: getBookDescription(),
+      images,
+    };
+  };
+
+  const getBookPreviewContentInfo = () => {
+    // 「內頁簡介」「試閱」など、書籍プレビュー専用セクションだけを抽出する。
+    // 以前は span/p/div/td/strong まで幅広く拾っていて、無関係な領域を picking してしまっていた。
+    const sectionSelector = '.mod_a, .mod_b, .mod, .prod_cont, .type01, .type02, .type02_p001, .type02_p002, .type02_p003';
+    const headingSelector = 'h1, h2, h3, h4, .title, .maintitle, dt';
+    // 見出しテキスト全体が「試閱」等の完全一致 or それに近い場合だけ採用（ノイズ抑止）
+    const previewHeadingPattern = /^(?:\s*)(?:內頁簡介|内頁簡介|內頁介绍|内页简介|內页简介|內頁圖|内頁圖|內页图|內頁試閱|内頁試阅|試閱|试阅)(?:\s*[:：]?\s*)$/;
+    // 関連商品・おすすめ・暢銷ランキング等のセクションに侵入しないよう停止パターンを追加
+    const stopHeadingPattern = /^(?:特惠贈品|特惠赠品|首刷贈品|首刷赠品|書籍延伸內容|书籍延伸内容|商品簡介|商品介绍|商品介紹|內容簡介|内容简介|詳細資料|详细资料|規格|规格|作者|譯者|译者|出版社|主題活動|主题活动|百貨商品推薦|百货商品推荐|買了此商品的人.*|买了此商品的人.*|看了此商品的人.*|看过此商品的人.*|猜你喜歡.*|猜你喜欢.*|你可能會喜歡.*|你可能会喜欢.*|相關商品.*|相关商品.*|同類商品.*|同类商品.*|暢銷排行.*|畅销排行.*|本月強推.*|本月强推.*|延伸閱讀.*|延伸阅读.*)$/;
+    const headingNodes = Array.from(
+      document.querySelectorAll(headingSelector)
+    ).filter(node => previewHeadingPattern.test(toSingleLine(getText(node))));
+    const seenSections = new Set();
+    const scopes = [];
+    const MAX_SIBLING_WALK = 8; // 無制限に nextElementSibling を辿らない
+
+    for (const headingNode of headingNodes) {
+      const section = headingNode.closest(sectionSelector);
+      if (!section || seenSections.has(section)) continue;
+      seenSections.add(section);
+
+      let anchor = headingNode;
+      while (anchor?.parentElement && anchor.parentElement !== section) {
+        anchor = anchor.parentElement;
+      }
+
+      if (anchor) scopes.push(anchor);
+      let current = anchor?.nextElementSibling || null;
+      let walks = 0;
+      while (current && walks < MAX_SIBLING_WALK) {
+        const currentHeading = current.matches?.(headingSelector)
+          ? toSingleLine(getText(current))
+          : toSingleLine(getText(current.querySelector?.(headingSelector)));
+        if (previewHeadingPattern.test(currentHeading) || stopHeadingPattern.test(currentHeading)) break;
+        scopes.push(current);
+        current = current.nextElementSibling;
+        walks += 1;
+      }
+
+      const fallbackScope = section.querySelector('.bd .content, .content, .cont, .bd');
+      if (fallbackScope) scopes.push(fallbackScope);
+    }
+
+    const targetScopes = uniq(scopes).filter(Boolean);
+    if (!targetScopes.length) return { text: '', images: [] };
+
+    const texts = targetScopes
+      .map(scope => toMultiline(getText(scope)).replace(previewHeadingPattern, '').trim())
+      .filter(Boolean);
+    // 商品コードを含まない画像は別商品の画像なので必ず除外
+    const images = sortProductImageUrls(
+      targetScopes.flatMap(scope =>
+        collectImageUrlsFromNode(scope).filter(isBookSectionDetailImage)
+      ),
+      BOOK_DETAIL_MAX_IMAGES
+    );
+
+    return {
+      text: mergeTextBlocks(texts),
+      images,
+    };
   };
 
   const cleanGoodsSectionText = raw => toMultiline(raw)
@@ -785,7 +1153,9 @@ const scoreEdgeDistance = edge => {
     if (!sectionEntries.length) return { text: '', images: [] };
 
     const headingSelector = 'h1, h2, h3, h4, .title, .maintitle, strong, dt';
-    const stopHeadingPattern = /^(?:特惠贈品|特惠赠品|首刷贈品|首刷赠品|商品簡介|商品介绍|商品介紹|內容簡介|内容简介|詳細資料|详细资料|規格|规格|作者|譯者|译者|出版社|主題活動|主题活动|百貨商品推薦|百货商品推荐)$/;
+    // 関連商品・おすすめセクションに侵入しないよう停止パターンを追加
+    const stopHeadingPattern = /^(?:特惠贈品|特惠赠品|首刷贈品|首刷赠品|商品簡介|商品介绍|商品介紹|內容簡介|内容简介|詳細資料|详细资料|規格|规格|作者|譯者|译者|出版社|主題活動|主题活动|百貨商品推薦|百货商品推荐|買了此商品的人.*|买了此商品的人.*|看了此商品的人.*|看过此商品的人.*|猜你喜歡.*|猜你喜欢.*|你可能會喜歡.*|你可能会喜欢.*|相關商品.*|相关商品.*|同類商品.*|同类商品.*|暢銷排行.*|畅销排行.*|本月強推.*|本月强推.*|延伸閱讀.*|延伸阅读.*)$/;
+    const MAX_SIBLING_WALK = 8; // 無制限に nextElementSibling を辿らない（関連商品セクションへの侵入防止）
     const collectExtendedContentScopes = (section, headingNode) => {
       let anchor = headingNode;
       while (anchor?.parentElement && anchor.parentElement !== section) {
@@ -801,13 +1171,15 @@ const scoreEdgeDistance = edge => {
         scopes.push(anchor);
       }
       let current = anchor?.nextElementSibling || null;
-      while (current) {
+      let walks = 0;
+      while (current && walks < MAX_SIBLING_WALK) {
         const currentHeading = current.matches?.(headingSelector)
           ? toSingleLine(getText(current))
           : toSingleLine(getText(current.querySelector?.(headingSelector)));
         if (exactHeadingPattern.test(currentHeading) || stopHeadingPattern.test(currentHeading)) break;
         scopes.push(current);
         current = current.nextElementSibling;
+        walks += 1;
       }
 
       if (!scopes.length) {
@@ -830,7 +1202,7 @@ const scoreEdgeDistance = edge => {
       const parts = [];
 
       for (const scope of scopes) {
-        imageUrls.push(...collectGiftSectionImages(scope));
+        imageUrls.push(...collectImageUrlsFromNode(scope).filter(isBookSectionDetailImage));
         const items = Array.from(scope.children || []).filter(child => child.matches?.('.item'));
         const targetItems = items.length ? items : [scope];
 
@@ -838,6 +1210,12 @@ const scoreEdgeDistance = edge => {
           const itemTitle = toSingleLine(getText(item.querySelector?.('h4')));
           const contentEl = item.querySelector?.('.cont') || item.querySelector?.('.content') || item;
           let itemBody = toMultiline(getText(contentEl));
+          const itemImages = collectImageUrlsFromNode(item).filter(isBookSectionDetailImage);
+          if (itemImages.length) {
+            imageUrls.push(...itemImages);
+          } else {
+            imageUrls.push(...collectImageUrlsFromNode(contentEl || item).filter(isBookSectionDetailImage));
+          }
 
           if (bonusTextPattern.test(`${itemTitle}\n${itemBody}`)) {
             continue;
@@ -850,12 +1228,6 @@ const scoreEdgeDistance = edge => {
             }
           }
           if (itemBody) parts.push(itemBody);
-          const itemImages = collectGiftSectionImages(item);
-          if (itemImages.length) {
-            imageUrls.push(...itemImages);
-          } else {
-            imageUrls.push(...collectGiftSectionImages(contentEl || item));
-          }
         }
       }
 
@@ -866,14 +1238,37 @@ const scoreEdgeDistance = edge => {
 
     return {
       text: mergeTextBlocks(texts),
-      images: sortProductImageUrls(uniq(imageUrls), 20),
+      images: sortProductImageUrls(uniq(imageUrls), BOOK_DETAIL_MAX_IMAGES),
     };
   };
 
   const getFirstEditionBonusInfo = () => {
-    const giftHeadingPattern = /特惠贈品|特惠赠品|首刷贈品|首刷赠品|書籍延伸內容|书籍延伸内容/;
+    const giftHeadingPattern = /特惠贈品|特惠赠品|首刷贈品|首刷赠品|滿額送|满额送|書籍延伸內容|书籍延伸内容/;
+    const giftHeadingSelector = 'h1, h2, h3, h4, h5, p, span, strong, dt, th, .title, .maintitle, .hd, .tit';
     const sectionSelector = '.mod_a, .mod_b, .mod, .prod_cont, .type01, .type02, .type02_p001, .type02_p002, .type02_p003';
-    const genericGiftTextPattern = /贈品|赠品|滿額送|满额送|買就送|买就送|贈送條件|赠送条件|活動說明|活动说明|注意事項|注意事项|寄送地區限制|寄送地区限制|送完為止|送完为止|剩餘數量|剩余数量|限量|滿\d+元|满\d+元/;
+    const genericGiftTextPattern = /贈品|赠品|滿額送|满额送|買就送|买就送|贈送條件|赠送条件|活動說明|活动说明|注意事項|注意事项|寄送地區限制|寄送地区限制|送完為止|送完为止|已贈完|已赠完|此商品贈品|此商品赠品|剩餘數量|剩余数量|限量|滿\d+元|满\d+元/;
+
+    const resolveGiftScopeHeading = (scope, fallbackHeading = '') => {
+      const headingCandidates = Array.from(scope?.querySelectorAll?.(giftHeadingSelector) || [])
+        .map(el => toSingleLine(getText(el)))
+        .filter(Boolean);
+      const preferred = headingCandidates.find(text => /特惠贈品|特惠赠品/.test(text))
+        || headingCandidates.find(text => /滿額送|满额送/.test(text))
+        || headingCandidates.find(text => giftHeadingPattern.test(text))
+        || toSingleLine(fallbackHeading);
+      if (preferred) return preferred;
+      const scopeLead = toSingleLine(getText(scope)).slice(0, 120);
+      if (/特惠贈品|特惠赠品/.test(scopeLead)) return '特惠贈品';
+      if (/滿額送|满额送/.test(scopeLead)) return '滿額送';
+      return '';
+    };
+
+    const buildGiftSectionLabel = (heading, genericBlocks) => {
+      if (/特惠贈品|特惠赠品/.test(heading)) return '特惠贈品';
+      if (/滿額送|满额送/.test(heading)) return '滿額送';
+      if (genericBlocks.some(block => /滿額送|满额送/.test(block))) return '特惠贈品';
+      return '';
+    };
 
     const extractBuyGiftSummary = rawText => {
       const collapsed = toSingleLine(rawText);
@@ -894,13 +1289,15 @@ const scoreEdgeDistance = edge => {
       .trim();
 
     const extractGenericGiftBlocks = (scope, heading) => {
-      const items = Array.from(scope.children || []).filter(child => child.matches?.('.item'));
-      const targetItems = items.length ? items : [scope];
+      const giftInfoRoot = scope.querySelector?.('[id*="getGiftInfo"]');
+      const extractionRoot = giftInfoRoot || scope;
+      const items = Array.from(extractionRoot.querySelectorAll?.('.item') || []);
+      const targetItems = items.length ? items : [extractionRoot];
       const blocks = [];
 
       for (const item of targetItems) {
-        const itemTitle = toSingleLine(getText(item.querySelector?.('h4, .title, strong')));
-        const contentEl = item.querySelector?.('.cont, .content, .bd, .box_2') || item;
+        const itemTitle = toSingleLine(getText(item.querySelector?.('h4, h5, .title, strong, dt')));
+        const contentEl = item.querySelector?.('.cont, .content, .bd, .box_2, .box') || item;
         let itemBody = cleanupGiftBlockText(getText(contentEl));
 
         if (itemTitle && itemBody.startsWith(itemTitle)) {
@@ -931,17 +1328,17 @@ const scoreEdgeDistance = edge => {
     };
 
     const headingScopes = Array.from(
-      document.querySelectorAll('h1, h2, h3, h4, .title, .maintitle, strong, dt')
+      document.querySelectorAll(giftHeadingSelector)
     )
       .filter(el => giftHeadingPattern.test(toSingleLine(getText(el))))
-      .map(el => el.closest(sectionSelector) || el.parentElement)
+      .map(el => el.closest(sectionSelector) || el.closest('[id*="getGiftInfo"]')?.parentElement || el.parentElement)
       .filter(Boolean);
     const ajaxScopes = Array.from(document.querySelectorAll('[id*="getGiftInfo"]'))
       .map(el => el.closest(sectionSelector) || el.parentElement)
       .filter(Boolean);
-    const itemTitleScopes = Array.from(document.querySelectorAll('.item h4, .item strong, .item .title'))
-      .filter(el => /首刷贈品|首刷赠品|買就送|买就送/.test(toSingleLine(getText(el))))
-      .map(el => el.closest(sectionSelector) || el.parentElement)
+    const itemTitleScopes = Array.from(document.querySelectorAll('.item h4, .item h5, .item strong, .item .title, .item dt'))
+      .filter(el => /首刷贈品|首刷赠品|滿額送|满额送|買就送|买就送/.test(toSingleLine(getText(el))))
+      .map(el => el.closest(sectionSelector) || el.closest('[id*="getGiftInfo"]')?.parentElement || el.parentElement)
       .filter(Boolean);
 
     const scopes = uniq([
@@ -953,7 +1350,7 @@ const scoreEdgeDistance = edge => {
     const blocks = [];
     const images = [];
     for (const scope of scopes) {
-      const heading = toSingleLine(getText(scope.querySelector('h1, h2, h3, h4, .title, .maintitle, strong, dt')));
+      const heading = resolveGiftScopeHeading(scope);
       const scopeText = toMultiline(getText(scope));
       const scopeSingleLine = toSingleLine(getText(scope));
       if (!scopeText) continue;
@@ -976,8 +1373,9 @@ const scoreEdgeDistance = edge => {
       }
 
       const genericBlocks = extractGenericGiftBlocks(scope, heading);
+      const sectionLabel = buildGiftSectionLabel(heading, genericBlocks);
       const blockText = mergeTextBlocks([
-        /特惠贈品|特惠赠品/.test(heading) && genericBlocks.length ? '特惠贈品' : '',
+        sectionLabel && genericBlocks.length ? sectionLabel : '',
         ...directBlocks,
         ...genericBlocks,
       ]);
@@ -993,76 +1391,173 @@ const scoreEdgeDistance = edge => {
     };
   };
 
-  const getGalleryImageUrls = () => {
-    const MAX_GALLERY_IMAGES = 30;
-    const sortAndLimit = urls => sortProductImageUrls(urls, MAX_GALLERY_IMAGES);
-
-    const thumbImgs = queryAllOutsideImageViewer(
-      '#thumbnail img, .cnt_prod_img001 #thumbnail img, .cnt_prod_img001 .li_box img, .cnt_prod_img001 .each_box img, .cnt_prod_img001 .items img, .prod_img #thumbnail img'
+  const collectCoverFallbackUrls = () => {
+    const coverImg = queryFirstOutsideImageViewer(
+      '#item-img-content img',
+      '.cnt_prod_img001 .cover_img .cover',
+      '.cnt_prod_img001 .cover_img img',
+      '.cover img',
+      'img[id*="item-img"]'
     );
-    const thumbUrls = uniq(
-      thumbImgs
-        .map(img => img?.getAttribute('data-original') || img?.getAttribute('data-src') || img?.currentSrc || img?.src || '')
-        .map(normalizeImageUrl)
-    ).filter(isProductGalleryImage);
+    if (!coverImg) return [];
 
-    const thumbScopes = queryAllOutsideImageViewer(
-      '#thumbnail, .cnt_prod_img001 #thumbnail, .cnt_prod_img001 .li_box, .cnt_prod_img001 .each_box, .cnt_prod_img001 .items, .prod_img #thumbnail'
-    );
-    const thumbScopeUrls = uniq(
-      thumbScopes.flatMap(scope => collectImageUrlsFromNode(scope))
-    ).filter(isProductGalleryImage);
-
-    const coverImgs = queryAllOutsideImageViewer(
-      '.cnt_prod_img001 .cover_img .cover, .cnt_prod_img001 .cover_img img, #item-img-content img.cover, .prod_img img.cover, .cover_img img'
-    );
-    const coverUrls = uniq(
-      coverImgs
-        .map(img => img?.getAttribute('data-original') || img?.getAttribute('data-src') || img?.currentSrc || img?.src || '')
-        .map(normalizeImageUrl)
-    ).filter(isProductGalleryImage);
-
-    const domGalleryUrls = sortAndLimit([...thumbUrls, ...thumbScopeUrls, ...coverUrls]);
-    if (domGalleryUrls.length > 1) {
-      return domGalleryUrls;
-    }
-
-    const html = getSanitizedHtml(document.documentElement);
-    const rawHtmlUrls = Array.from(
-      html.matchAll(new RegExp(`https?:\\/\\/(?:www\\.books\\.com\\.tw\\/img|im\\d+\\.book\\.com\\.tw\\/image\\/getImage\\?i=https:\\/\\/www\\.books\\.com\\.tw\\/img)\\/[^"'\\s<)]*${productCodeRegexSafe}(?:_(?:b|t)_\\d+)?\\.(?:jpg|jpeg|png|webp)(?:\\?[^"'\\s<)]*)?`, 'gi'))
-    ).map(match => normalizeImageUrl(match[0]));
-    const htmlUrls = sortAndLimit(rawHtmlUrls.filter(isProductGalleryImage));
-    if (htmlUrls.length > 1) {
-      return htmlUrls;
-    }
-
-    const gallerySection = queryFirstOutsideImageViewer(
-      '.cnt_prod_img001',
-      '#item-img-content',
-      '.prod_img_box',
-      '.item_img'
-    );
-    const sectionUrls = gallerySection
-      ? collectImageUrlsFromNode(gallerySection).filter(isProductGalleryImage)
-      : [];
-
-    const sectionMerged = sortAndLimit([...domGalleryUrls, ...htmlUrls, ...sectionUrls]);
-    if (sectionMerged.length > 1) {
-      return sectionMerged;
-    }
-
-    return sectionMerged;
+    const urls = [];
+    const push = raw => {
+      const normalized = normalizeDownloadImageUrl(raw);
+      if (normalized && isCurrentProductImageUrl(normalized)) urls.push(normalized);
+    };
+    push(coverImg.getAttribute('data-original'));
+    push(coverImg.getAttribute('data-src'));
+    push(coverImg.getAttribute('data-large'));
+    push(coverImg.closest('a[href]')?.getAttribute('href'));
+    push(coverImg.currentSrc);
+    push(coverImg.src);
+    return uniq(urls);
   };
-  const getBookImages = () => {
-    const galleryUrls = getGalleryImageUrls();
-    const detailUrls = [];
-    const allJpgUrls = uniq([...galleryUrls, ...detailUrls]);
+
+  const collectGallerySlotUrls = () => {
+    const bySlot = new Map();
+
+    const pushCandidate = raw => {
+      const normalized = normalizeDownloadImageUrl(raw);
+      if (!normalized) return;
+      const isGalleryUrl = isBooksGallerySlotUrl(normalized) || isCurrentProductImageUrl(normalized);
+      if (!isGalleryUrl) return;
+      const slot = getImageSlotIndex(normalized);
+      const existing = bySlot.get(slot);
+      if (!existing || (/_b_\d+\./i.test(normalized) && !/_b_\d+\./i.test(existing))) {
+        bySlot.set(slot, normalized);
+      }
+    };
+
+    const pushFromNode = node => {
+      if (!node || !isGalleryImageNode(node)) return;
+      [
+        'data-original',
+        'data-src',
+        'data-large',
+        'data-img',
+        'data-image',
+        'data-l',
+      ].forEach(attr => pushCandidate(node.getAttribute?.(attr)));
+      collectImageUrlsFromGalleryNode(node).forEach(pushCandidate);
+    };
+
+    const galleryRoot = getGalleryImageRoot();
+    const thumbSelectors = '#thumbnail li, .li_box li, .each_box li, .items li, #thumbnail a, .li_box a';
+    const thumbScopes = galleryRoot
+      ? Array.from(galleryRoot.querySelectorAll(thumbSelectors)).filter(isGalleryImageNode)
+      : queryWithinGalleryRoot(thumbSelectors);
+
+    thumbScopes.forEach(pushFromNode);
+
+    queryWithinGalleryRoot(
+      '#thumbnail img, .li_box img, .each_box img, .items img, #thumbnail li img'
+    ).forEach(img => {
+      pushCandidate(img.getAttribute('data-original'));
+      pushCandidate(img.getAttribute('data-src'));
+      pushCandidate(img.getAttribute('data-large'));
+      pushCandidate(img.currentSrc);
+      pushCandidate(img.src);
+      pushCandidate(img.closest('a[href]')?.getAttribute('href'));
+    });
+
+    queryWithinGalleryRoot('#thumbnail, .li_box, .each_box, .items').forEach(scope => {
+      pushFromNode(scope);
+      scope.querySelectorAll('li, a, img').forEach(pushFromNode);
+    });
+
+    queryWithinGalleryRoot(
+      '.cover_img .cover, .cover_img img, img.cover, img[id*="item-img"]'
+    ).forEach(img => {
+      pushCandidate(img.getAttribute('data-original'));
+      pushCandidate(img.getAttribute('data-src'));
+      pushCandidate(img.getAttribute('data-large'));
+      pushCandidate(img.currentSrc);
+      pushCandidate(img.src);
+      pushCandidate(img.closest('a[href]')?.getAttribute('href'));
+    });
+
+    if (!bySlot.size) {
+      collectCoverFallbackUrls().forEach(pushCandidate);
+    }
+
+    return [...bySlot.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, url]) => url)
+      .slice(0, BOOK_GALLERY_MAX_IMAGES);
+  };
+
+  const getGalleryImageUrls = () => collectGallerySlotUrls();
+
+  const dedupeBookImageUrls = (urls, maxCount = BOOK_MAX_TOTAL_IMAGES) => {
+    const byKey = new Map();
+    for (const url of uniq(urls || [])) {
+      if (!url) continue;
+      const slot = getImageSlotIndex(url);
+      const isGiftBanner = isGiftPromoBannerImage(url);
+      const key = isGiftBanner
+        ? `gift:${String(url).replace(/[?#].*$/, '').toLowerCase()}`
+        : (slot < Number.MAX_SAFE_INTEGER
+          ? `slot:${slot}`
+          : String(url).replace(/[?#].*$/, '').toLowerCase());
+      const existing = byKey.get(key);
+      if (!existing || getImageQualityScore(url) > getImageQualityScore(existing)) {
+        byKey.set(key, url);
+      }
+    }
+    return sortProductImageUrls([...byKey.values()], maxCount);
+  };
+
+  const getBookGiftPromoImages = (giftImages = []) => sortProductImageUrls(
+    uniq((giftImages || []).map(normalizeDownloadImageUrl).filter(isGiftPromoBannerImage)),
+    BOOK_GIFT_MAX_IMAGES
+  );
+
+  const getBookImages = (options = {}) => {
+    const galleryUrls = dedupeBookImageUrls(
+      getGalleryImageUrls(),
+      BOOK_GALLERY_MAX_IMAGES
+    );
+    const giftUrls = getBookGiftPromoImages(options.giftImages)
+      .filter(url => !galleryUrls.some(galleryUrl => isSameBookImageSlot(galleryUrl, url)));
+
+    const pageCoverDisplay = normalizeDisplayImageUrl(options.displayCoverUrl || '')
+      || normalizeDisplayImageUrl(collectCoverFallbackUrls()[0] || '');
+    const pageCoverDownload = normalizeDownloadImageUrl(options.displayCoverUrl || '')
+      || normalizeDownloadImageUrl(collectCoverFallbackUrls()[0] || '');
+
+    const resolvedMainDownload = pageCoverDownload
+      || pickMainBookDownloadImageUrl(galleryUrls)
+      || normalizeDownloadImageUrl(galleryUrls[0])
+      || '';
+    const resolvedMainDisplay = pageCoverDisplay
+      || normalizeDisplayImageUrl(resolvedMainDownload)
+      || pickMainDisplayImageUrl(galleryUrls)
+      || '';
+
+    const galleryAdditional = galleryUrls
+      .filter(url => url && !isSameBookImageSlot(url, resolvedMainDownload))
+      .sort((a, b) => getImageOrderIndex(a) - getImageOrderIndex(b));
+
+    const maxGalleryAdditional = Math.max(0, BOOK_MAX_TOTAL_IMAGES - 1 - giftUrls.length);
+    const additionalImageUrls = [
+      ...galleryAdditional.slice(0, maxGalleryAdditional),
+      ...giftUrls,
+    ].filter(Boolean);
+
+    const all = dedupeBookImageUrls([
+      ...(resolvedMainDownload ? [resolvedMainDownload] : []),
+      ...additionalImageUrls,
+    ], BOOK_MAX_TOTAL_IMAGES);
 
     return {
-      main: galleryUrls[0] || detailUrls[0] || '',
+      main: resolvedMainDownload,
+      displayMain: resolvedMainDisplay,
       gallery: galleryUrls,
-      detail: detailUrls,
-      all: allJpgUrls,
+      gift: giftUrls,
+      all,
+      additional: additionalImageUrls,
     };
   };
 
@@ -1070,7 +1565,10 @@ const scoreEdgeDistance = edge => {
     const galleryUrls = getGalleryImageUrls();
     const detailUrls = sortProductImageUrls(extraDetailUrls, 20)
       .filter(url => !galleryUrls.includes(url));
-    const main = galleryUrls[0] || detailUrls[0] || '';
+    const main = pickMainDisplayImageUrl(galleryUrls)
+      || normalizeDisplayImageUrl(galleryUrls[0])
+      || detailUrls[0]
+      || '';
 
     return {
       main,
@@ -1102,7 +1600,7 @@ const scoreEdgeDistance = edge => {
     '.cover img',
     'img[id*="item-img"]'
   );
-  const fallbackImageUrl = normalizeImageUrl(
+  const fallbackImageUrl = normalizeDisplayImageUrl(
     imgEl?.getAttribute('data-original') ||
     imgEl?.getAttribute('data-src') ||
     imgEl?.getAttribute('data-large') ||
@@ -1129,22 +1627,25 @@ const scoreEdgeDistance = edge => {
 
   if (isBook) {
     const baseDescription = getBookDescription();
-    const extendedContent = getExtendedContentInfo();
     const firstEditionBonus = getFirstEditionBonusInfo();
     const formatInfo = getFormatInfo();
-    const bookImages = getBookImages();
+    const bookImages = getBookImages({
+      giftImages: firstEditionBonus.images,
+      displayCoverUrl: fallbackImageUrl,
+    });
 
     description = baseDescription;
     bonusInfoText = firstEditionBonus.text;
     formatSize = formatInfo.format || formatInfo.size;
     originalTitle = extractOriginalTitle(name);
-    mainImageUrl = bookImages.main || fallbackImageUrl;
-    additionalImageUrls = uniq([
-      ...bookImages.gallery.slice(1),
-      ...bookImages.detail,
-      ...extendedContent.images,
-      ...firstEditionBonus.images,
-    ]).filter(imgUrl => imgUrl && imgUrl !== mainImageUrl);
+    mainImageUrl = bookImages.displayMain
+      || fallbackImageUrl
+      || normalizeDisplayImageUrl(bookImages.main)
+      || bookImages.main
+      || '';
+    additionalImageUrls = (bookImages.additional || [])
+      .filter(imgUrl => imgUrl && imgUrl !== mainImageUrl)
+      .slice(0, BOOK_MAX_TOTAL_IMAGES - 1);
   } else {
     const brand = getLabeledValue(['品牌']);
     const goodsContent = getGoodsContentInfo();

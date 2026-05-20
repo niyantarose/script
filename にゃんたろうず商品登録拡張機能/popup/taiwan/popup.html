@@ -197,6 +197,51 @@
       background: #f5f5f5;
       line-height: 1.5;
     }
+    #btn-log { background: #34495e; color: #fff; }
+    #log-panel {
+      display: none;
+      margin: 8px 16px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #1e1e1e;
+      color: #ddd;
+      font-family: Consolas, 'Courier New', monospace;
+      font-size: 11px;
+    }
+    #log-panel.open { display: block; }
+    #log-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      background: #2d2d30;
+      border-radius: 4px 4px 0 0;
+      border-bottom: 1px solid #3e3e42;
+    }
+    #log-panel-header strong { color: #fff; font-size: 12px; }
+    #log-panel-header .actions { display: flex; gap: 6px; }
+    #log-panel-header button {
+      padding: 2px 8px;
+      font-size: 11px;
+      background: #3e3e42;
+      color: #fff;
+      border: 0;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    #log-panel-header button:hover { background: #555; }
+    #log-body {
+      padding: 8px 10px;
+      max-height: 220px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #log-body .log-info { color: #9cdcfe; }
+    #log-body .log-success { color: #4ec9b0; }
+    #log-body .log-warn { color: #dcdcaa; }
+    #log-body .log-error { color: #f48771; }
+    #log-body .log-time { color: #6a9955; margin-right: 4px; }
   </style>
 </head>
 <body>
@@ -227,6 +272,19 @@
 
 <div class="btn-row btn-row-secondary">
   <button id="btn-download-images" disabled>画像だけ保存</button>
+  <button id="btn-log" type="button">ログ</button>
+</div>
+
+<div id="log-panel">
+  <div id="log-panel-header">
+    <strong>動作ログ</strong>
+    <div class="actions">
+      <button id="btn-log-copy" type="button">コピー</button>
+      <button id="btn-log-clear" type="button">クリア</button>
+      <button id="btn-log-close" type="button">閉じる</button>
+    </div>
+  </div>
+  <div id="log-body">（まだログはありません）</div>
 </div>
 
 <div class="list-container" id="list-container">
@@ -234,6 +292,7 @@
 </div>
 
 <div class="footer">CSV出力と画像保存は従来どおり使えます。新しくGAS経由のシート追記にも対応します。</div>
+  <script src="../../core/titleAnalysis.js"></script>
   <script src="popup.shared.js"></script>
   <script src="popup.books.js"></script>
   <script src="popup.comics.js"></script>
@@ -243,7 +302,6 @@
   <script src="popup.js"></script>
 </body>
 </html>
-
 
 
 

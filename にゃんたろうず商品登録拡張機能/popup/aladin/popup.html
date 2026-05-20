@@ -33,6 +33,15 @@
     .product-info { flex: 1; min-width: 0; }
     .product-name { font-size: 12px; font-weight: bold; color: #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .product-meta { display: flex; gap: 5px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+    .product-analysis {
+      margin-top: 4px;
+      font-size: 10px;
+      color: #5f6f7a;
+      line-height: 1.35;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; color: #fff; white-space: nowrap; background: #888; }
     .badge-media { background: #8e44ad; }
     .badge-comic { background: #2980b9; }
@@ -79,6 +88,7 @@
   </div>
 
   <div class="footer">URL→API→ページ解析→GAS送信の流れで取得します</div>
+  <script src="../../core/titleAnalysis.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

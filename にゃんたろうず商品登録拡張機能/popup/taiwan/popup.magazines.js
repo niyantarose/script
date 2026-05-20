@@ -86,7 +86,10 @@ function isMagazineProduct(product) {
     trimValue(product?.商品説明 || ''),
   ].filter(Boolean).join('\n');
 
-  if (/雜誌|杂志|雑誌/u.test(source) || getCategoryValue(product) === '雑誌') return true;
+  const categoryValue = getCategoryValue(product);
+  if (/^(?:設定集|アートブック|まんが|小説|絵本|シナリオ集|台本)$/u.test(categoryValue)) return false;
+  if (/設定集|設定資料|設定资料|公式設定|書冊|书册|畫集|画集|畫冊|画冊|美術設定|アートブック/u.test(source)) return false;
+  if (/雜誌|杂志|雑誌/u.test(source) || categoryValue === '雑誌') return true;
 
   const rawTitle = trimValue(product?.商品名 || product?.ページタイトル || '');
   if (!rawTitle) return false;
@@ -108,10 +111,18 @@ function buildMagazineSheetRow(product) {
   const additional = getAdditionalImagesValue(product);
   const rawTitle = trimValue(product?.商品名 || product?.ページタイトル || product?.原題商品名 || '');
   const originalTitleSource = trimValue(product?.原題タイトル || rawTitle);
-  const originalTitle = extractMagazineTitleText(rawTitle || originalTitleSource) ||
+  let originalTitle = extractMagazineTitleText(rawTitle || originalTitleSource) ||
     normalizeMagazineBrandName(originalTitleSource) ||
     originalTitleSource;
+  originalTitle = typeof stripVolumeNoiseForSheetOriginal === 'function'
+    ? trimValue(stripVolumeNoiseForSheetOriginal(originalTitle)) || originalTitle
+    : originalTitle;
   const issueInfo = extractMagazineIssueParts(rawTitle, product?.発売日 || '');
+
+  const noteBase = trimValue(product?.備考 || '');
+  const noteWithCandidate = originalTitle
+    ? (noteBase ? noteBase + '\n' : '') + '雑誌名候補: ' + originalTitle
+    : noteBase;
 
   return {
     '発番発行': '',
@@ -119,7 +130,8 @@ function buildMagazineSheetRow(product) {
     '商品コード（SKU）': trimValue(product?.SKU || ''),
     '商品名（出品用）': '',
     '言語': getLanguageValue(product),
-    '雑誌名': originalTitle,
+    /** シート「雑誌名」は入力規則付きのため空で送り、GAS でマスター照合後に確定（候補は備考） */
+    '雑誌名': '',
     '年': issueInfo.year,
     '月': issueInfo.month,
     '号数': issueInfo.issue,
@@ -140,7 +152,7 @@ function buildMagazineSheetRow(product) {
     '追加画像URL': additional,
     '登録日': resolveTodayString(),
     '登録者': trimValue(product?.登録者 || ''),
-    '備考': '',
+    '備考': noteWithCandidate,
   };
 }
 

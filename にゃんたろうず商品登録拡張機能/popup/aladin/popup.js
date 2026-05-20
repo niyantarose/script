@@ -173,6 +173,79 @@ function getProductSheetCategory(product) {
     || detectSheetCategory(product?.ジャンル || detectGenre(product), product, product);
 }
 
+function normalizeAladinWorksTitle(product) {
+  const originalTitle = String(product?.title || '').trim();
+  if (!originalTitle) return '';
+
+  let title = originalTitle
+    .replace(/　/g, ' ')
+    .replace(/[（）]/g, match => match === '（' ? '(' : ')')
+    .replace(/[［］]/g, match => match === '［' ? '[' : ']')
+    .replace(/[：]/g, ':')
+    .replace(/[‐−–—―]/g, '-')
+    .replace(/\bo\.?\s*s\.?\s*t\.?\b/gi, 'OST')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const category = getProductSheetCategory(product);
+  const isMedia = product?.ジャンル === '音楽映像' || ['CD', 'LP', 'OST', 'DVD', 'Blu-ray'].includes(category);
+  if (!isMedia) return title;
+
+  title = title.replace(/^\s*\[[^\]]*(?:4k|blu[-\s]?ray|블루레이|dvd|uhd|ubd)[^\]]*\]\s*/i, '');
+
+  const dashMatch = title.match(/^(.{1,45}?)\s+-\s+(.+)$/);
+  if (dashMatch) {
+    const beforeDash = dashMatch[1].trim();
+    const afterDash = dashMatch[2].trim();
+    const isAudioMedia = ['CD', 'LP', 'OST'].includes(category)
+      || /(?:음반|cd|lp|album)/i.test(String(product?.categoryName || '') + ' ' + String(product?.mallType || ''));
+    const afterLooksLikeOnlyPackage =
+      /(?:상자|박스|부클릿|북클릿|소책자|컵받침대|거치대|종이\s*거치대|파우치|포토카드|포토북|카드|커버|세트|랜덤|booklet|photocard|poster|pouch|nfc|\d+\s*(?:종|p|disc)|cd\s*\()/i.test(afterDash);
+
+    if (isAudioMedia) {
+      title = afterLooksLikeOnlyPackage ? beforeDash : afterDash;
+    } else if (/(?:정규|미니|싱글|앨범|album|ost|o\.s\.t\.|lp|cd|vinyl)/i.test(afterDash)) {
+      title = afterDash;
+    } else if (afterLooksLikeOnlyPackage) {
+      title = beforeDash;
+    }
+  }
+
+  title = title
+    .replace(/^\s*(?:정규|미니|싱글|스페셜|리패키지)\s*\d+\s*(?:집|앨범)\s*/i, '')
+    .replace(/^\s*\d+(?:st|nd|rd|th)?\s+(?:full|mini)\s+album\s*/i, '')
+    .replace(/\[[^\]]*(?:180g|white\s*marble|vinyl|lp|ver\.?|한정|限定|picture|픽처|photocard|poster|cd|dvd|blu[-\s]?ray|ubd|uhd|disc)[^\]]*\]/gi, ' ')
+    .replace(/\([^)]*(?:album\s*ver\.?|mubeat|pouch|파우치|mini\s*cd|미니\s*cd|photocard|포토카드|포토북|booklet|소책자|nfc|disc|cd|dvd|blu[-\s]?ray|ubd|uhd|\d+\s*종|\d+\s*p)[^)]*\)/gi, ' ')
+    .replace(/\s+-\s+.*(?:커버|바이닐|포토|파우치|소책자|부클릿|북클릿|상자|박스|컵받침대|거치대|종이\s*거치대|랜덤|booklet|poster|photocard|album\s*ver\.?|nfc|카드|세트|컵).*$/i, ' ')
+    .replace(/\s*:\s*(?:스틸북|풀슬립|full\s*slip|steelbook).*$/i, ' ')
+    .replace(/\b(?:4k\s*uhd|4k|uhd|ubd|2d|blu[-\s]?ray|dvd|cd|lp|vinyl|record)\b/gi, ' ')
+    .replace(/(?:블루레이|스틸북|풀슬립|소책자|포토카드|포토북|북클릿|파우치|한정반|한정판|게이트폴드\s*커버|바이닐)/gi, ' ')
+    .replace(/\b(?:a|b|c|d)\s*ver\.?\b/gi, ' ')
+    .replace(/\b(?:album|mubeat\s*album)\s*ver\.?\b/gi, ' ')
+    .replace(/\d+\s*(?:disc|종|p)\b/gi, ' ')
+    .replace(/\s*(?:OST|O\.S\.T\.?|original\s*sound\s*track|사운드트랙)\s*$/i, '')
+    .replace(/[<＞>]+/g, ' ')
+    .replace(/[『』「」"'`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!title) {
+    const subTitle = String(product?.subInfo?.subTitle || '').trim();
+    if (subTitle) {
+      const cleaned = subTitle
+        .replace(/　/g, ' ')
+        .replace(/^\s*(?:정규|미니|싱글|스페셜|리패키지)\s*\d*\s*(?:집|앨범)?\s*$/i, '')
+        .replace(/^\s*\d+(?:st|nd|rd|th)?\s+(?:full|mini)\s+album\s*$/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cleaned) return cleaned;
+    }
+    return '';
+  }
+
+  return title;
+}
+
 const MAGAZINE_NAME_PATTERNS = [
   { name: 'DAZED & CONFUSED', pattern: /dazed\s*&\s*confused/i },
   { name: "HARPER'S BAZAAR", pattern: /harper'?s\s*bazaar/i },
@@ -310,6 +383,7 @@ function renderList() {
     const price = escapeHtml(product.priceSales || '-');
     const itemId = escapeHtml(product.itemId || '');
     const cover = escapeHtml(product.cover || '');
+    const analysisHtml = renderTitleAnalysisPreview(product);
 
     return `
       <div class="product-item">
@@ -324,6 +398,7 @@ function renderList() {
             <span class="price">₩${price}</span>
             <span class="item-id">${itemId}</span>
           </div>
+          ${analysisHtml}
         </div>
         <button class="btn-remove" data-index="${index}" title="削除">×</button>
       </div>
@@ -340,6 +415,27 @@ function renderList() {
   });
 }
 
+function renderTitleAnalysisPreview(product) {
+  if (typeof analyzeProductTitle !== 'function') return '';
+  const analysis = product?.titleAnalysis || analyzeProductTitle({ ...product, source: 'aladin' });
+  const lookupText = product?.japaneseTitleLookup && typeof renderLookupResult === 'function'
+    ? `照会: ${renderLookupResult({ lookup: product.japaneseTitleLookup })}`
+    : '';
+  const parts = [
+    analysis.itemType,
+    analysis.normalizedSearchTitle ? `検索: ${analysis.normalizedSearchTitle}` : '',
+    analysis.extractedWorkTitle ? `作品: ${analysis.extractedWorkTitle}` : '',
+    analysis.volume ? `巻: ${analysis.volume}` : '',
+    analysis.edition ? `版: ${analysis.edition}` : '',
+    analysis.goodsType ? `グッズ: ${analysis.goodsType}` : '',
+    analysis.magazineName ? `雑誌: ${analysis.magazineName}${analysis.year ? ` ${analysis.year}` : ''}${analysis.month ? `.${analysis.month}` : ''}` : '',
+    lookupText,
+    (analysis.warnings || []).length ? `警告: ${analysis.warnings.join(' / ')}` : '',
+  ].filter(Boolean).map(escapeHtml);
+  console.log('[titleAnalysis preview]', analysis);
+  return parts.length ? `<div class="product-analysis" title="${parts.join(' / ')}">${parts.join(' / ')}</div>` : '';
+}
+
 function setStatus(message, type = '') {
   const element = document.getElementById('status');
   element.textContent = message;
@@ -348,6 +444,57 @@ function setStatus(message, type = '') {
 
 function save() {
   storageSet({ [STORAGE_KEY]: products }).catch(() => {});
+}
+
+function isValidGasWebAppUrl(url) {
+  return /^https:\/\/(?:script\.google\.com|script\.googleusercontent\.com)\//i.test(String(url || '').trim());
+}
+
+async function getStoredGasWebAppUrl() {
+  const stored = await storageGet([GAS_URL_STORAGE]);
+  return String(stored[GAS_URL_STORAGE] || DEFAULT_GAS_URL || '').trim();
+}
+
+function hasReusableJapaneseTitleLookup(product, analysis) {
+  const lookup = product?.japaneseTitleLookup;
+  if (!lookup || typeof lookup !== 'object') return false;
+  const lookupKey = String(lookup.normalizedSearchTitle || '').trim();
+  const analysisKey = String(analysis?.normalizedSearchTitle || '').trim();
+  return Boolean(lookup.status && lookupKey && analysisKey && lookupKey === analysisKey);
+}
+
+async function enrichProductWithJapaneseTitleLookup(product, options = {}) {
+  if (!product || typeof product !== 'object') return product;
+  if (typeof analyzeProductTitle !== 'function') return product;
+
+  const analysis = product.titleAnalysis || analyzeProductTitle({ ...product, source: 'aladin' });
+  let nextProduct = { ...product, titleAnalysis: analysis };
+  if (!options.force && hasReusableJapaneseTitleLookup(nextProduct, analysis)) return nextProduct;
+  if (typeof lookupJapaneseTitle !== 'function') return nextProduct;
+
+  const gasUrl = String(options.gasUrl || await getStoredGasWebAppUrl()).trim();
+  if (!isValidGasWebAppUrl(gasUrl)) return nextProduct;
+
+  try {
+    const result = await lookupJapaneseTitle(analysis, {
+      url: gasUrl,
+      rawItem: nextProduct,
+    });
+    nextProduct = typeof applyJapaneseTitleLookupToProduct === 'function'
+      ? applyJapaneseTitleLookupToProduct(nextProduct, result)
+      : { ...nextProduct, japaneseTitleLookup: result.lookup || null };
+  } catch (error) {
+    nextProduct.japaneseTitleLookup = {
+      status: 'failed',
+      provider: 'extension',
+      normalizedSearchTitle: analysis.normalizedSearchTitle || '',
+      extractedWorkTitle: analysis.extractedWorkTitle || '',
+      trace: 'extension:lookup_failed',
+      errors: [error?.message || String(error || 'lookup failed')],
+    };
+  }
+
+  return nextProduct;
 }
 
 function sanitizeDownloadSegment(segment) {
@@ -370,9 +517,10 @@ function buildAladinCsvContent(product) {
   const sheetCategory = getProductSheetCategory(product) || product.categoryName || '';
 
   if (genre === '音楽映像') {
+    const worksTitle = product.worksTitle || product.productTitle || '';
     return toCsv(
-      ['商品名（原題）', 'アーティスト', 'レーベル', '発売日', '原価', 'ジャンル分類', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
-      [product.title, product.author, product.publisher, product.pubDate,
+      ['商品名（原題）', '商品名(タイトル)', 'アーティスト', 'レーベル', '発売日', '原価', 'ジャンル分類', 'メイン画像URL', '追加画像URL', '商品説明', 'アラジンURL'],
+      [product.title, worksTitle, product.author, product.publisher, product.pubDate,
        product.priceSales, sheetCategory, product.cover, additional,
        description, product.pageUrl]
     );
@@ -582,7 +730,7 @@ function buildProductRecord({ item, itemId, pageUrl, genre, scrapeResult }) {
     description: pageDescription,
   });
 
-  return {
+  const productBase = {
     ...item,
     itemId,
     pageUrl,
@@ -597,6 +745,17 @@ function buildProductRecord({ item, itemId, pageUrl, genre, scrapeResult }) {
     pageDescription,
     basicInfo: scrapeResult?.basicInfo || ''
   };
+  const worksTitle = normalizeAladinWorksTitle(productBase);
+
+  const product = {
+    ...productBase,
+    worksTitle,
+    productTitle: worksTitle
+  };
+  if (typeof analyzeProductTitle === 'function') {
+    product.titleAnalysis = analyzeProductTitle({ ...product, source: 'aladin' });
+  }
+  return product;
 }
 
 function upsertProduct(product) {
@@ -680,12 +839,24 @@ document.getElementById('btn-add').addEventListener('click', async () => {
   setStatus('API取得 + ページ解析中...', '');
 
   try {
-    const { product } = await collectCurrentPageProduct();
+    let { product } = await collectCurrentPageProduct();
+    const gasUrl = await getStoredGasWebAppUrl();
     upsertProduct(product);
     save();
     renderList();
     updateUI();
-    setStatus(`✅ ${product.ジャンル} として追加`, 'success');
+    setStatus(`✅ ${product.ジャンル} として追加（照会はバックグラウンド）`, 'success');
+    if (isValidGasWebAppUrl(gasUrl)) {
+      chrome.runtime.sendMessage(
+        {
+          action: 'enrichAladinProductTitleLookup',
+          gasUrl,
+          itemId: String(product.itemId || ''),
+          product,
+        },
+        () => void chrome.runtime.lastError
+      );
+    }
   } catch (error) {
     setStatus(`❌ ${error.message}`, 'error');
   }
@@ -780,8 +951,6 @@ document.getElementById('btn-send-to-sheet')?.addEventListener('click', async ()
     setStatus(`❌ ${error.message}`, 'error');
   }
 });
-
-
 
 
 

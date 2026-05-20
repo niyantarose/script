@@ -18,6 +18,24 @@ from typing import Any, Iterable
 # ─── 投入順（FK 依存） ─────────────────────────────────────────────────────
 MODEL_ORDER: list = []
 
+# orders の String(n) 相当カラムと PostgreSQL 側の想定最大長（models/order.py と一致させる）
+ORDERS_STRING_MAX_LEN: dict[str, int] = {
+    'yahoo_order_id': 100,
+    'customer_name': 255,
+    'yahoo_ship_status': 50,
+    'yahoo_order_status': 10,
+    'yahoo_pay_status': 50,
+    'status': 50,
+    'ship_name': 255,
+}
+
+# 事前チェックで最大文字数のみ報告（Text 型・制限なし）
+ORDERS_TEXT_LENGTH_INFO: tuple[str, ...] = (
+    'ship_company_code',
+    'gift_wrap_message',
+    'delay_memo',
+)
+
 
 def _sqlite_uri_readonly(abs_path: Path) -> str:
     u = abs_path.expanduser().resolve().as_uri()
@@ -34,6 +52,55 @@ def _run_scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> Any:
     cur = conn.execute(sql, params)
     row = cur.fetchone()
     return row[0] if row else None
+
+
+def _sqlite_orders_column_names(conn: sqlite3.Connection) -> set[str]:
+    cur = conn.execute("SELECT name FROM pragma_table_info('orders')")
+    return {str(r[0]) for r in cur.fetchall()}
+
+
+def _check_orders_string_lengths(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
+    """(エラー行, 情報行) を返す。エラー行があれば precheck は失敗させる。"""
+    err_lines: list[str] = []
+    info_lines: list[str] = []
+    try:
+        cols = _sqlite_orders_column_names(conn)
+    except sqlite3.Error:
+        return err_lines, info_lines
+    if not cols:
+        return err_lines, info_lines
+
+    ref_col = 'yahoo_order_id' if 'yahoo_order_id' in cols else 'id'
+
+    for col, max_len in ORDERS_STRING_MAX_LEN.items():
+        if col not in cols:
+            continue
+        mx = _run_scalar(
+            conn, f"SELECT MAX(LENGTH(COALESCE({col}, ''))) FROM orders"
+        )
+        mx_i = int(mx or 0)
+        info_lines.append(f'  [orders.{col}] SQLite 最大文字数={mx_i}（PG 想定上限={max_len}）')
+        if mx_i > max_len:
+            row = conn.execute(
+                f"SELECT {ref_col}, SUBSTR(COALESCE({col}, ''), 1, 120) FROM orders "
+                f"WHERE LENGTH(COALESCE({col}, '')) = ? LIMIT 1",
+                (mx_i,),
+            ).fetchone()
+            sample = f' ref={row[0]!r} 先頭120字={row[1]!r}' if row else ''
+            err_lines.append(
+                f'  [orders.{col}] 最大 {mx_i} 文字 > PG 想定 {max_len}{sample}'
+            )
+
+    for col in ORDERS_TEXT_LENGTH_INFO:
+        if col not in cols:
+            continue
+        mx = _run_scalar(
+            conn, f"SELECT MAX(LENGTH(COALESCE({col}, ''))) FROM orders"
+        )
+        mx_i = int(mx or 0)
+        info_lines.append(f'  [orders.{col}] SQLite 最大文字数={mx_i}（PG は TEXT）')
+
+    return err_lines, info_lines
 
 
 def run_precheck_sqlite(sqlite_path: Path) -> int:
@@ -163,11 +230,17 @@ def run_precheck_sqlite(sqlite_path: Path) -> int:
             """,
         )
 
+        len_err, len_info = _check_orders_string_lengths(conn)
+        issues.extend(len_err)
+
         if issues:
             print('事前チェック: 問題あり (exit 1)')
             print('\n'.join(issues))
             return 1
         print('事前チェック: 問題なし')
+        if len_info:
+            print('--- orders 文字数（参考） ---')
+            print('\n'.join(len_info))
         return 0
     finally:
         conn.close()
@@ -183,6 +256,38 @@ def _table_counts_sqlite(conn: sqlite3.Connection, tables: Iterable[str]) -> dic
 def _row_to_mapping(row: sqlite3.Row, model) -> dict[str, Any]:
     cols = {c.key for c in model.__table__.columns}
     return {k: row[k] for k in row.keys() if k in cols}
+
+
+def _order_row_from_sqlite(row: sqlite3.Row, model) -> dict[str, Any]:
+    """orders のみ: SQLite に列が無い場合はデフォルト、is_seen は 0/1 を bool に。"""
+    d = _row_to_mapping(row, model)
+    if 'yahoo_pay_status' not in d or d.get('yahoo_pay_status') is None:
+        d['yahoo_pay_status'] = ''
+    else:
+        d['yahoo_pay_status'] = str(d['yahoo_pay_status'])
+
+    if 'is_seen' not in d or d.get('is_seen') is None:
+        d['is_seen'] = False
+    else:
+        v = d['is_seen']
+        if isinstance(v, bool):
+            d['is_seen'] = v
+        elif isinstance(v, (int, float)):
+            d['is_seen'] = bool(int(v))
+        elif isinstance(v, (bytes, bytearray)):
+            d['is_seen'] = bool(v[0]) if len(v) else False
+        elif isinstance(v, str):
+            s = v.strip().lower()
+            d['is_seen'] = s in ('1', 'true', 'yes', 't')
+        else:
+            d['is_seen'] = bool(v)
+    return d
+
+
+def _sqlite_row_to_mapping(row: sqlite3.Row, model) -> dict[str, Any]:
+    if model.__tablename__ == 'orders':
+        return _order_row_from_sqlite(row, model)
+    return _row_to_mapping(row, model)
 
 
 def _load_models():
@@ -228,6 +333,18 @@ RESTART IDENTITY CASCADE
 """
 
 
+def _reset_db_session(db) -> None:
+    """count / create_all 後に残る暗黙トランザクションを捨て、新規トランザクションを開始できる状態にする。"""
+    try:
+        db.session.rollback()
+    except Exception:
+        pass
+    try:
+        db.session.remove()
+    except Exception:
+        pass
+
+
 def migrate(sqlite_path: Path, env_file: Path, truncate: bool) -> int:
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
@@ -263,7 +380,9 @@ def migrate(sqlite_path: Path, env_file: Path, truncate: bool) -> int:
     try:
         with flask_app.app_context():
             db.create_all()
+            _reset_db_session(db)
 
+            # ── 事前カウント（このブロックのトランザクションは投入前に切り離す） ──
             nonempty = []
             for m in MODEL_ORDER:
                 c = db.session.query(m).count()
@@ -271,6 +390,7 @@ def migrate(sqlite_path: Path, env_file: Path, truncate: bool) -> int:
                     nonempty.append(m.__tablename__)
 
             if nonempty and not truncate:
+                _reset_db_session(db)
                 print(
                     'PostgreSQL に既存データがあります:',
                     nonempty,
@@ -279,6 +399,9 @@ def migrate(sqlite_path: Path, env_file: Path, truncate: bool) -> int:
                 )
                 return 1
 
+            _reset_db_session(db)
+
+            # ── TRUNCATE + INSERT + setval を単一トランザクションで実行 ──
             with db.session.begin():
                 if truncate and nonempty:
                     db.session.execute(text(TRUNCATE_TABLES_SQL))
@@ -288,7 +411,7 @@ def migrate(sqlite_path: Path, env_file: Path, truncate: bool) -> int:
                     for model in MODEL_ORDER:
                         tbl = model.__tablename__
                         rows = sl_conn.execute(f'SELECT * FROM {tbl}').fetchall()
-                        maps = [_row_to_mapping(r, model) for r in rows]
+                        maps = [_sqlite_row_to_mapping(r, model) for r in rows]
                         if maps:
                             db.session.bulk_insert_mappings(model, maps)
                         print(f'  投入 {tbl}: {len(maps)} 件')
@@ -309,6 +432,8 @@ def migrate(sqlite_path: Path, env_file: Path, truncate: bool) -> int:
                 finally:
                     sl_conn.close()
 
+            _reset_db_session(db)
+
             dst_counts = {}
             for m in MODEL_ORDER:
                 tbl = m.__tablename__
@@ -327,7 +452,7 @@ def migrate(sqlite_path: Path, env_file: Path, truncate: bool) -> int:
         print(traceback.format_exc(), file=sys.stderr)
         try:
             with flask_app.app_context():
-                db.session.rollback()
+                _reset_db_session(db)
         except Exception:
             pass
         return 1

@@ -60,7 +60,8 @@ def _build_ems_boxes(agent, q='', status_filter='', page=1):
 
     total = ems_q.count()
     ems_list = (
-        ems_q.order_by(Ems.shipped_at.desc(), Ems.id.desc())
+        # 発送日を主キーに安定ソート（同日複数箱でも表示順が崩れにくい）
+        ems_q.order_by(Ems.shipped_at.desc(), Ems.ems_number.desc(), Ems.id.desc())
         .offset((page - 1) * PER_PAGE)
         .limit(PER_PAGE)
         .all()
@@ -89,17 +90,33 @@ def _build_ems_boxes(agent, q='', status_filter='', page=1):
             'order':      o,
         })
 
+    # 同一発送日の中で何箱目かを付与（例: 4/17 の 2箱目）
+    shipped_groups = {}
+    for e in ems_list:
+        key = e.shipped_at.isoformat() if e.shipped_at else ''
+        shipped_groups.setdefault(key, []).append(e.id)
+
+    shipped_rank = {}
+    shipped_total = {}
+    for key, ids in shipped_groups.items():
+        shipped_total[key] = len(ids)
+        for idx, ems_id in enumerate(ids, start=1):
+            shipped_rank[ems_id] = idx
+
     boxes = []
     for e in ems_list:
         days = (today - e.shipped_at).days if e.shipped_at else 0
         is_overdue = (e.status == 'in_transit'
                       and e.arrived_at is None
                       and days >= 10)
+        key = e.shipped_at.isoformat() if e.shipped_at else ''
         boxes.append({
             'ems':             e,
             'rows':            items_by_ems[e.id],
             'is_overdue':      is_overdue,
             'days_in_transit': days,
+            'box_rank_in_shipped_date': shipped_rank.get(e.id, 1),
+            'box_total_in_shipped_date': shipped_total.get(key, 1),
         })
 
     return boxes, total

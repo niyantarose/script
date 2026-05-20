@@ -189,6 +189,31 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function renderTitleAnalysisPreview(product) {
+  const analysis = product?.titleAnalysis || (typeof analyzeProductTitle === 'function'
+    ? analyzeProductTitle({ ...product, source: 'aladin' })
+    : null);
+  if (!analysis) return '';
+  const parts = [
+    `検索: ${analysis.normalizedSearchTitle || '-'}`,
+    `種別: ${analysis.itemType || '-'}`,
+    analysis.volume ? `巻: ${analysis.volume}` : '',
+    analysis.edition ? `版: ${analysis.edition}` : '',
+    analysis.goodsType ? `グッズ: ${analysis.goodsType}` : '',
+    analysis.magazineName ? `雑誌: ${analysis.magazineName}` : ''
+  ].filter(Boolean);
+  return `<div class="title-preview">${escapeHtml(parts.join(' / '))}</div>`;
+}
+
+function renderLookupPreview(product) {
+  const lookup = product?.japaneseTitleLookup || null;
+  if (!lookup) return '';
+  const label = typeof renderLookupResult === 'function'
+    ? renderLookupResult(lookup)
+    : `${lookup.status || ''} ${lookup.japaneseTitle || ''}`;
+  return `<div class="lookup-preview">${escapeHtml(label)}</div>`;
+}
+
 function renderList() {
   const container = document.getElementById('list-container');
   if (products.length === 0) {
@@ -215,6 +240,8 @@ function renderList() {
             <span class="price">₩${price}</span>
             <span class="item-id">${itemId}</span>
           </div>
+          ${renderTitleAnalysisPreview(product)}
+          ${renderLookupPreview(product)}
         </div>
         <button class="btn-remove" data-index="${index}" title="削除">×</button>
       </div>
@@ -313,7 +340,7 @@ function buildProductRecord({ item, itemId, pageUrl, genre, scrapeResult }) {
   const pageDescription = String(scrapeResult?.description || '').trim();
   const magazineName = genre === '雑誌' ? extractMagazineName(item) : '';
 
-  return {
+  const product = {
     ...item,
     itemId,
     pageUrl,
@@ -326,6 +353,12 @@ function buildProductRecord({ item, itemId, pageUrl, genre, scrapeResult }) {
     pageDescription,
     basicInfo: scrapeResult?.basicInfo || ''
   };
+  return {
+    ...product,
+    titleAnalysis: typeof analyzeProductTitle === 'function'
+      ? analyzeProductTitle({ ...product, source: 'aladin' })
+      : null
+  };
 }
 
 function upsertProduct(product) {
@@ -336,6 +369,40 @@ function upsertProduct(product) {
   }
   products.push(product);
   return 'added';
+}
+
+function hasReusableJapaneseTitleLookup(product) {
+  const lookup = product?.japaneseTitleLookup || null;
+  const analysis = product?.titleAnalysis || null;
+  if (!lookup || !analysis) return false;
+  const lookupKey = String(lookup.normalizedSearchTitle || '').trim();
+  const analysisKey = String(analysis.normalizedSearchTitle || '').trim();
+  return Boolean(lookup.status && (!lookupKey || !analysisKey || lookupKey === analysisKey));
+}
+
+async function enrichProductWithJapaneseTitleLookup(product) {
+  const analysis = product.titleAnalysis || (typeof analyzeProductTitle === 'function'
+    ? analyzeProductTitle({ ...product, source: 'aladin' })
+    : null);
+  let nextProduct = { ...product, titleAnalysis: analysis };
+  if (!analysis || hasReusableJapaneseTitleLookup(nextProduct) || typeof lookupJapaneseTitle !== 'function') {
+    return nextProduct;
+  }
+
+  const stored = await storageGet(GAS_URL_STORAGE);
+  const gasUrl = String(stored[GAS_URL_STORAGE] || DEFAULT_GAS_URL || '').trim();
+  if (typeof isValidGasWebAppUrl === 'function' && !isValidGasWebAppUrl(gasUrl)) {
+    return nextProduct;
+  }
+
+  setStatus(`日本語タイトル照会中: ${analysis.normalizedSearchTitle || analysis.rawTitle || ''}`, '');
+  const result = await lookupJapaneseTitle(analysis, { gasUrl, rawItem: nextProduct });
+  if (typeof applyJapaneseTitleLookupToProduct === 'function') {
+    nextProduct = applyJapaneseTitleLookupToProduct(nextProduct, result);
+  } else {
+    nextProduct = { ...nextProduct, japaneseTitleLookup: result?.lookup || null };
+  }
+  return nextProduct;
 }
 
 async function collectCurrentPageProduct() {
@@ -414,7 +481,20 @@ document.getElementById('btn-add').addEventListener('click', async () => {
     save();
     renderList();
     updateUI();
-    setStatus(`✅ ${product.ジャンル} として追加`, 'success');
+    setStatus(`✅ ${product.ジャンル} として追加（照会はバックグラウンド）`, 'success');
+    const stored = await storageGet(GAS_URL_STORAGE);
+    const gasUrl = String(stored[GAS_URL_STORAGE] || DEFAULT_GAS_URL || '').trim();
+    if (typeof isValidGasWebAppUrl === 'function' && isValidGasWebAppUrl(gasUrl)) {
+      chrome.runtime.sendMessage(
+        {
+          action: 'enrichAladinProductTitleLookup',
+          gasUrl,
+          itemId: String(product.itemId || ''),
+          product,
+        },
+        () => void chrome.runtime.lastError
+      );
+    }
   } catch (error) {
     setStatus(`❌ ${error.message}`, 'error');
   }
@@ -509,5 +589,3 @@ document.getElementById('btn-send-to-sheet')?.addEventListener('click', async ()
     setStatus(`❌ ${error.message}`, 'error');
   }
 });
-
-

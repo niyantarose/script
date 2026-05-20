@@ -10,7 +10,8 @@
     "scripting",
     "tabs",
     "storage",
-    "notifications"
+    "notifications",
+    "offscreen"
   ],
   "host_permissions": [
     "https://www.books.com.tw/*",
@@ -23,7 +24,8 @@
     "https://script.google.com/*",
     "https://script.googleusercontent.com/*",
     "https://api.mangaupdates.com/*",
-    "https://www.mangaupdates.com/*"
+    "https://www.mangaupdates.com/*",
+    "https://graphql.anilist.co/*"
   ],
   "action": {
     "default_popup": "popup/popup.html"

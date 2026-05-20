@@ -1,29 +1,14 @@
 """韓国代行EMSファイル（Excel）のパーサー
-ファイル名: EMS発送リスト_YYMMDD_HHMM.xlsx  /  EMS발송리스트_YYMMDD_HHMM.xlsx
+ファイル名: EMS発送リスト_YYMMDD_HHMM.xlsx / EMS발송리스트_YYMMDD_HHMM.xlsx
 シート: Sheet1
 
 行1-3: 送付先住所情報（スキップ）
-行4  : 韓国語ヘッダー行（スキップ）
+行4  : ヘッダー行
 行5以降: データ行（B列が 'Wata' で始まる行）
 
-列マッピング（実際のファイルに基づく）:
-  A(0) : #              → 行番号
-  B(1) : 구매일         → 購買日（Wata形式）
-  C(2) : 발송일         → 発送日（YYMMDD 形式: 250204 = 2025/02/04）
-  D(3) : 입고수량       → 入荷数量
-  E(4) : -              → 未使用
-  F(5) : 구매번호       → 発注NO
-  G(6) : 주문번호       → Yahoo受注番号
-  H(7) : 주문번호2      → 未使用
-  I(8) : 업체명         → 発注先
-  J(9) : 상품내용       → 商品名
-  K(10): 상품ID         → danielID（空の場合が多い）
-  L(11): 냔타로즈ID     → 商品コード（主キー）
-  M(12): 주문수량       → 数量
-  N(13): 옵션명         → オプション
-  O(14): 특이사항       → メモ
-  ...
-  R(17): 배송1          → EMS追跡番号（例: EG 028 313 542 KR）
+現在の帳票は日本語ヘッダー版（購入日/発送日/購入番号/EMS番号）なので、
+ヘッダー名を優先して動的に列マッピングする。
+（旧韓国語ヘッダーにもフォールバック対応）
 """
 from datetime import date
 
@@ -33,16 +18,16 @@ class EmsExcelParser:
     SHEET_NAME = 'Sheet1'
     SKIP_ROWS  = 4   # 行1-4はアドレス情報・ヘッダー行
 
-    COL_PURCHASE_DATE = 1   # B: 購買日（Wata形式、データ行の識別に使用）
+    COL_PURCHASE_DATE = 1   # B: 購入日
     COL_SHIPPED_AT    = 2   # C: 発送日（YYMMDD形式）
-    COL_PURCHASE_NO   = 5   # F: 発注NO
-    COL_ORDER_ID      = 6   # G: Yahoo受注番号
-    COL_SHOP_NAME     = 8   # I: 発注先
-    COL_PRODUCT_NAME  = 9   # J: 商品名
-    COL_PRODUCT_CODE  = 11  # L: 商品コード（냔타로즈ID）
-    COL_QUANTITY      = 12  # M: 数量
-    COL_MEMO          = 14  # O: メモ
-    COL_EMS_NUMBER    = 17  # R: EMS追跡番号
+    COL_PURCHASE_NO   = 5   # F: 購入番号
+    COL_SHOP_NAME     = 7   # H: 仕入先名
+    COL_PRODUCT_NAME  = 8   # I: 商品内容
+    COL_DANIEL_ID     = 9   # J: ダニエル商品ID
+    COL_PRODUCT_CODE  = 10  # K: にゃんたろうずID
+    COL_QUANTITY      = 11  # L: 注文数量
+    COL_MEMO          = 15  # P: 備考
+    COL_EMS_NUMBER    = 16  # Q: EMS番号
 
     def __init__(self):
         pass
@@ -62,6 +47,7 @@ class EmsExcelParser:
         else:
             ws = wb.active
 
+        header_map = self._build_header_map(ws)
         items = []
         for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
             if row_idx < self.SKIP_ROWS:
@@ -72,32 +58,32 @@ class EmsExcelParser:
                 continue
 
             # B列が 'Wata' で始まる行のみ取り込む
-            purchase_date = self._cell(cells, self.COL_PURCHASE_DATE)
+            purchase_date = self._cell(cells, self._idx(header_map, 'purchase_date', self.COL_PURCHASE_DATE))
             if not purchase_date or not purchase_date.startswith('Wata'):
                 continue
 
             # EMS番号（R列）は必須
-            ems_raw = self._cell(cells, self.COL_EMS_NUMBER)
+            ems_raw = self._cell(cells, self._idx(header_map, 'ems_number', self.COL_EMS_NUMBER))
             ems_number = ems_raw.replace(' ', '').strip() if ems_raw else ''
             if not ems_number:
                 continue
 
-            # 商品コード: L列（냔타로즈ID）
-            product_code = self._cell(cells, self.COL_PRODUCT_CODE)
-            if not product_code:
-                product_code = self._cell(cells, 10)  # K列フォールバック
+            # 商品コード: にゃんたろうずIDを優先。空欄/記号時はダニエルIDへフォールバック。
+            product_code = self._cell(cells, self._idx(header_map, 'product_code', self.COL_PRODUCT_CODE))
+            if not product_code or product_code in ('-', 'ー'):
+                product_code = self._cell(cells, self._idx(header_map, 'daniel_id', self.COL_DANIEL_ID))
 
             item = {
                 'ems_number':    ems_number,
-                'shipped_at':    self._parse_yymmdd(self._cell(cells, self.COL_SHIPPED_AT)),
+                'shipped_at':    self._parse_yymmdd(self._cell(cells, self._idx(header_map, 'shipped_at', self.COL_SHIPPED_AT))),
                 'purchase_date': purchase_date,                          # B列: 구매日 作成日
-                'purchase_no':   self._cell(cells, self.COL_PURCHASE_NO),  # F列: 구매番号
-                'order_id':      self._cell(cells, self.COL_ORDER_ID),
-                'shop_name':     self._cell(cells, self.COL_SHOP_NAME),
-                'product_name':  self._cell(cells, self.COL_PRODUCT_NAME),
+                'purchase_no':   self._cell(cells, self._idx(header_map, 'purchase_no', self.COL_PURCHASE_NO)),
+                'order_id':      '',
+                'shop_name':     self._cell(cells, self._idx(header_map, 'shop_name', self.COL_SHOP_NAME)),
+                'product_name':  self._cell(cells, self._idx(header_map, 'product_name', self.COL_PRODUCT_NAME)),
                 'product_code':  product_code,
-                'quantity':      self._to_int(cells, self.COL_QUANTITY, default=1),
-                'memo':          self._cell(cells, self.COL_MEMO),
+                'quantity':      self._to_int(cells, self._idx(header_map, 'quantity', self.COL_QUANTITY), default=1),
+                'memo':          self._cell(cells, self._idx(header_map, 'memo', self.COL_MEMO)),
             }
             items.append(item)
 
@@ -139,3 +125,42 @@ class EmsExcelParser:
         except (ValueError, IndexError):
             pass
         return None   # ← today() デフォルトを廃止（sort汚染防止）
+
+    @staticmethod
+    def _normalize_header_name(name):
+        if not name:
+            return ''
+        return str(name).replace('\n', '').replace(' ', '').strip().lower()
+
+    def _build_header_map(self, ws):
+        """4行目のヘッダーから列名→index を作る（見つからない場合は空）。"""
+        header_map = {}
+        try:
+            header_row = next(ws.iter_rows(min_row=self.SKIP_ROWS, max_row=self.SKIP_ROWS, values_only=True), None)
+            if not header_row:
+                return header_map
+            alias = {
+                'purchase_date': ('購入日', '구매일'),
+                'shipped_at': ('発送日', '발송일'),
+                'purchase_no': ('購入番号', '구매번호'),
+                'shop_name': ('仕入先名', '업체명'),
+                'product_name': ('商品内容', '상품내용'),
+                'daniel_id': ('ダニエル商品id', '상품id'),
+                'product_code': ('にゃんたろうずid', '냔타로즈id'),
+                'quantity': ('注文数量', '주문수량'),
+                'memo': ('備考', '특이사항'),
+                'ems_number': ('ems番号', '배송1', 'ems'),
+            }
+            normalized_headers = [self._normalize_header_name(v) for v in header_row]
+            for key, names in alias.items():
+                for idx, header in enumerate(normalized_headers):
+                    if header in tuple(self._normalize_header_name(n) for n in names):
+                        header_map[key] = idx
+                        break
+        except Exception:
+            return {}
+        return header_map
+
+    @staticmethod
+    def _idx(header_map, key, default_idx):
+        return header_map.get(key, default_idx)

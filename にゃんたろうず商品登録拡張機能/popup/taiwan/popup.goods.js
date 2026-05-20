@@ -15,12 +15,18 @@ function stripGoodsMediaTag(value) {
     .trim();
 }
 
+function stripGoodsLineCode(value) {
+  return trimValue(value)
+    .replace(/([\p{Script=Han}ぁ-ゖァ-ヺー々〆ヵヶ]{2,})\s*[A-Z]{1,4}$/u, '$1')
+    .trim();
+}
+
 function extractGoodsWorkTitleText(value) {
   const fallback = trimValue(value).replace(/^[台臺][湾灣]版\s*/u, '');
   if (!fallback) return '';
 
   const normalizeCandidate = candidate => {
-    const normalized = stripGoodsMediaTag(extractOriginalTitleText(candidate) || candidate);
+    const normalized = stripGoodsLineCode(stripGoodsMediaTag(extractOriginalTitleText(candidate) || candidate));
     return normalized || fallback;
   };
 
@@ -29,7 +35,7 @@ function extractGoodsWorkTitleText(value) {
     return normalizeCandidate(mediaTagged[1]);
   }
 
-  const merchTagged = fallback.match(/^(.+?)\s+(?:全棉托特袋|托特袋|帆布袋|手提袋|透明立方|壓克力(?:牌|立牌|磚|砖)?|压克力(?:牌|立牌|磚|砖)?|立牌|海報|海报|掛軸|挂轴|徽章|胸章|卡片|貼紙|贴纸|明信片|抱枕|滑鼠墊|鼠標墊|鼠标垫|桌墊|桌垫|吊飾|吊饰|鑰匙圈|钥匙圈|杯墊|杯垫|色紙|色纸|套組|套装|福袋|拼圖|拼图|公仔|玩偶|資料夾|资料夹|文件夾|文件夹|T恤|毛巾|桌曆|桌历|年曆|年历)(?:\b|\s|$)/u);
+  const merchTagged = fallback.match(/^(.+?)(?:\s+|[-－–—:：])(?:全棉托特袋|托特袋|帆布袋|手提袋|多功能手機包|手機包|手機袋|手機殼|手機壳|手機架|手机包|手机袋|手机壳|手机架|透明立方|壓克力(?:牌|立牌|磚|砖|便利夾|筋牌)?|压克力(?:牌|立牌|磚|砖|便利夹|筋牌)?|便利夾|便利夹|立牌|海報|海报|掛軸|挂轴|徽章|胸章|卡片|貼紙|贴纸|明信片|抱枕|滑鼠墊|鼠標墊|鼠标垫|桌墊|桌垫|吊飾|吊饰|鑰匙圈|钥匙圈|杯墊|杯垫|色紙|色纸|套組|套装|福袋|拼圖|拼图|公仔|玩偶|資料夾|资料夹|文件夾|文件夹|T恤|毛巾|桌曆|桌历|年曆|年历)(?:\s*[\d０-９]{1,4}\s*入)?(?:\b|\s|$|[A-Z]\b|[（(])/u);
   if (merchTagged?.[1]) {
     return normalizeCandidate(merchTagged[1]);
   }
@@ -57,10 +63,10 @@ function buildGoodsSheetRow(product) {
   const description = normalizeGoodsSheetDescription(product?.商品説明 || '');
   const additional = getAdditionalImagesValue(product);
   const rawTitle = trimValue(product?.商品名 || '');
-  const goodsWorkTitle = trimValue(product?.作品名原題 || extractGoodsWorkTitleText(rawTitle));
+  const goodsWorkTitle = finalizeSheetOriginalWorkTitleRow(extractGoodsWorkTitleText(product?.作品名原題 || rawTitle));
   const bonusMemo = extractBonusMemo(product);
-  const japaneseTitle = trimValue(product?.日本語タイトル || product?.作品名日本語 || product?.['作品名（日本語）'] || '');
-  const japaneseProductName = trimValue(product?.['商品名（日本語）'] || product?.商品名日本語 || '');
+  const japaneseTitle = normalizeSheetJapaneseWorkTitleForRow(getDisplayJapaneseTitleValue(product?.日本語タイトル, product?.作品名日本語, product?.['作品名（日本語）']));
+  const japaneseProductName = normalizeSheetJapaneseWorkTitleForRow(getDisplayJapaneseTitleValue(product?.['商品名（日本語）'], product?.商品名日本語));
   const listingName = japaneseProductName || rawTitle;
   const pageUrl = trimValue(product?.URL || '');
   const mainImageUrl = trimValue(product?.画像URL || '');

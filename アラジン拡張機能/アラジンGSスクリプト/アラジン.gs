@@ -232,6 +232,50 @@ function カテゴリ入力値を補正_(sheetName, source) {
   }
   return String(source && source.categoryName || '').trim();
 }
+function アラジンWorksタイトルを推定_(item, sheetName) {
+  const originalTitle = String(item && item.title || '').trim();
+  if (!originalTitle) return '';
+
+  let title = originalTitle
+    .replace(/\u3000/g, ' ')
+    .replace(/[（）]/g, ch => ch === '（' ? '(' : ')')
+    .replace(/[［］]/g, ch => ch === '［' ? '[' : ']')
+    .replace(/[：]/g, ':')
+    .replace(/[‐−–—―]/g, '-')
+    .replace(/\bo\.?\s*s\.?\s*t\.?\b/gi, 'OST')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const category = sheetName === '韓国音楽映像' ? カテゴリ入力値を補正_(sheetName, item) : '';
+  const isMedia = sheetName === '韓国音楽映像' || /^(CD|LP|OST|DVD|Blu-ray)$/i.test(category);
+  if (!isMedia) return title;
+
+  title = title.replace(/^\s*\[[^\]]*(?:4k|blu[-\s]?ray|블루레이|dvd|uhd|ubd)[^\]]*\]\s*/i, '');
+
+  const dashMatch = title.match(/^(.{1,45}?)\s+-\s+(.+)$/);
+  if (dashMatch && /(?:정규|미니|싱글|앨범|album|ost|o\.s\.t\.|lp|cd|vinyl|no tragedy|revive)/i.test(dashMatch[2])) {
+    title = dashMatch[2];
+  }
+
+  title = title
+    .replace(/^\s*(?:정규|미니|싱글|스페셜|리패키지)\s*\d+\s*(?:집|앨범)\s*/i, '')
+    .replace(/^\s*\d+(?:st|nd|rd|th)?\s+(?:full|mini)\s+album\s*/i, '')
+    .replace(/\[[^\]]*(?:180g|white\s*marble|vinyl|lp|ver\.?|한정|限定|picture|픽처|photocard|poster|cd|dvd|blu[-\s]?ray|ubd|uhd|disc)[^\]]*\]/gi, ' ')
+    .replace(/\([^)]*(?:album\s*ver\.?|mubeat|pouch|파우치|mini\s*cd|미니\s*cd|photocard|포토카드|포토북|booklet|소책자|nfc|disc|cd|dvd|blu[-\s]?ray|ubd|uhd|\d+\s*종|\d+\s*p)[^)]*\)/gi, ' ')
+    .replace(/\s+-\s+.*(?:커버|바이닐|포토|파우치|소책자|booklet|poster|photocard|album\s*ver\.?|nfc|카드|세트).*$/i, ' ')
+    .replace(/\s*:\s*(?:스틸북|풀슬립|full\s*slip|steelbook).*$/i, ' ')
+    .replace(/\b(?:4k\s*uhd|4k|uhd|ubd|2d|blu[-\s]?ray|dvd|cd|lp|vinyl|record)\b/gi, ' ')
+    .replace(/(?:블루레이|스틸북|풀슬립|소책자|포토카드|포토북|북클릿|파우치|한정반|한정판|게이트폴드\s*커버|바이닐)/gi, ' ')
+    .replace(/\b(?:a|b|c|d)\s*ver\.?\b/gi, ' ')
+    .replace(/\b(?:album|mubeat\s*album)\s*ver\.?\b/gi, ' ')
+    .replace(/\d+\s*(?:disc|종|p)\b/gi, ' ')
+    .replace(/[<＞>]+/g, ' ')
+    .replace(/[『』「」"'`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return title.replace(/\bost\b/gi, 'OST') || originalTitle;
+}
 const ALADIN_COLUMN_MAP = {
   '韓国書籍': {
     trigger:          ['ISBN', 'アラジンURL'],
@@ -268,6 +312,7 @@ const ALADIN_COLUMN_MAP = {
     url:              'アラジンURL',
     isbn:             'JANコード',
     title:            '商品名(原題)',
+    worksTitle:       '商品名(タイトル)',
     author:           'アーティスト名',
     pubDate:          '発売日',
     price:            '原価',
@@ -492,6 +537,7 @@ function アラジン一括取得() {
 
       if (colMap.url)              setCell(colMap.url,              url, { link: true });
       if (colMap.title)            setCell(colMap.title,            item.title || '');
+      if (colMap.worksTitle)       setCell(colMap.worksTitle,       アラジンWorksタイトルを推定_(item, shName));
       if (colMap.author)           setCell(colMap.author,           item.author || '');
       if (colMap.publisher)        setCell(colMap.publisher,        item.publisher || '');
       if (colMap.pubDate)          setCell(colMap.pubDate,          item.pubDate || '');
@@ -513,6 +559,8 @@ function アラジン一括取得() {
 
   ui.alert(`✅ アラジン一括取得完了\n\n成功: ${成功}件\nスキップ: ${スキップ}件\nエラー: ${エラー}件`);
 }
+
+
 
 
 

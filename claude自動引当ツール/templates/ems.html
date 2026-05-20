@@ -50,22 +50,19 @@
     <!-- ヘッダー -->
     <div class="ems-hd" onclick="toggleBox({{ e.id }})">
 
-      <!-- 左：EMS番号 + ステータス -->
+      <!-- 左：EMS番号 + 発送日箱番号 -->
       <div class="ems-hd-id">
         <span class="ems-num">{{ e.ems_number }}</span>
-        {% if e.status == 'arrived' %}
-          <span class="badge badge-done">入荷済</span>
-        {% elif box.is_overdue %}
-          <span class="badge badge-alert">⚠ 遅延 {{ box.days_in_transit }}日</span>
-        {% else %}
-          <span class="badge badge-ems">輸送中 {{ box.days_in_transit }}日目</span>
+        {% if e.shipped_at %}
+          <span class="ems-ship-group">
+            {{ e.shipped_at.strftime('%m/%d') }}_{{ box.box_rank_in_shipped_date }}
+            <span class="ems-ship-total">（同日 {{ box.box_total_in_shipped_date }} 箱）</span>
+          </span>
         {% endif %}
-        {% if e.purchase_no %}
-          <span class="ems-pno">{{ e.purchase_no }}</span>
-        {% endif %}
+        <span class="ems-hd-hint">クリックで詳細を表示</span>
       </div>
 
-      <!-- 中央：件数サマリー（大きく） -->
+      <!-- 中央：件数サマリー -->
       <div class="ems-hd-counts">
         <span class="cnt-total">{{ total_cnt }}件</span>
         {% if alloc_cnt > 0 %}
@@ -76,13 +73,14 @@
         {% endif %}
       </div>
 
-      <!-- 右：日付 -->
+      <!-- 右：ステータス -->
       <div class="ems-hd-dates">
-        <span>{{ e.shipped_at.strftime('%m/%d') if e.shipped_at else '—' }}</span>
-        <span class="date-arrow">→</span>
-        <span class="{{ 'date-overdue' if box.is_overdue else '' }}">{{ e.estimated_arrival.strftime('%m/%d') if e.estimated_arrival else '—' }}</span>
-        {% if e.arrived_at %}
-          <span class="date-arrived">✓ {{ e.arrived_at.strftime('%m/%d') }}</span>
+        {% if e.status == 'arrived' %}
+          <span class="badge badge-done">入荷済</span>
+        {% elif box.is_overdue %}
+          <span class="badge badge-alert">⚠ 遅延 {{ box.days_in_transit }}日</span>
+        {% else %}
+          <span class="badge badge-ems">輸送中 {{ box.days_in_transit }}日目</span>
         {% endif %}
         <span class="ems-toggle" id="toggle-{{ e.id }}">▼</span>
       </div>
@@ -90,14 +88,15 @@
     </div>
 
     <!-- 展開エリア -->
-    <div class="ems-body" id="box-{{ e.id }}">
+    <div class="ems-body" id="box-{{ e.id }}" style="display:none;">
       {% if box.rows %}
       <table class="ems-tbl">
         <thead>
           <tr>
-            <th class="col-pno">발주番号</th>
-            <th class="col-code">商品コード</th>
-            <th class="col-qty">数量</th>
+            <th class="col-pno">購入番号</th>
+            <th class="col-code">にゃんたろうずID</th>
+            <th class="col-name">商品内容</th>
+            <th class="col-qty">注文数量</th>
             <th class="col-alloc">引当状況</th>
           </tr>
         </thead>
@@ -112,6 +111,7 @@
               <span class="cell-val">{{ ei.product_code if ei else '—' }}</span>
               <input class="cell-input" type="text" value="{{ ei.product_code if ei else '' }}">
             </td>
+            <td class="cell-name">{{ ei.product_name if ei and ei.product_name else '—' }}</td>
             <td class="cell-edit center" data-url="/ems/update/item" data-field="quantity" data-id="{{ ei.id if ei else '' }}">
               <span class="cell-val">{{ ei.quantity if ei else '—' }}</span>
               <input class="cell-input" type="number" min="1" value="{{ ei.quantity if ei else 1 }}" style="width:50px;">
@@ -263,6 +263,16 @@
   color: var(--accent-blue); background: rgba(59,130,246,.1);
   padding: 2px 8px; border-radius: 4px;
 }
+.ems-ship-group{
+  font-size:12px; font-weight:600;
+  color:#334155; background:#e2e8f0;
+  padding:2px 8px; border-radius:999px;
+}
+.ems-ship-total { color:#64748b; font-weight:600; }
+.ems-hd-hint {
+  font-size:11px;
+  color:var(--text-secondary);
+}
 
 /* 中央列 – 件数 */
 .ems-hd-counts {
@@ -299,16 +309,23 @@
 /* テーブル */
 .ems-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .ems-tbl th {
-  padding: 6px 14px; text-align: left; font-size: 12px; font-weight: 600;
+  padding: 8px 14px; text-align: left; font-size: 13px; font-weight: 700;
   color: var(--text-secondary); background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
 }
 .col-pno   { width: 130px; }
 .col-code  { width: 160px; }
+.col-name  { min-width: 320px; }
 .col-qty   { width: 52px; }
-.ems-tbl td { padding: 7px 14px; border-bottom: 1px solid var(--border-light); vertical-align: middle; }
+.ems-tbl td { padding: 9px 14px; border-bottom: 1px solid var(--border-light); vertical-align: middle; font-size: 15px; }
 .ems-tbl tr:last-child td { border-bottom: none; }
 .ems-tbl tr:hover td { background: rgba(0,0,0,.02); }
+.cell-name {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
 
 /* 行の左端色 */
 .row-alloc   td:first-child { border-left: 3px solid #22c55e; }
@@ -346,19 +363,11 @@ function toggleBox(id) {
   const body   = document.getElementById('box-' + id);
   const toggle = document.getElementById('toggle-' + id);
   const open   = body.classList.toggle('open');
+  body.style.display = open ? 'block' : 'none';
   toggle.classList.toggle('open', open);
 }
 
-// デフォルト: 輸送中のみ展開
-document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('.ems-transit').forEach(box => {
-    const hd = box.querySelector('.ems-hd');
-    if (hd) {
-      const id = hd.getAttribute('onclick').match(/\d+/)[0];
-      toggleBox(id);
-    }
-  });
-});
+// デフォルトは全て閉じる（ヘッダークリックで開閉）
 
 // 全展開 / 全折りたたみ
 let _allOpen = false;
@@ -371,6 +380,7 @@ function toggleAll() {
     const toggle = document.getElementById('toggle-' + id);
     if (!body || !toggle) return;
     body.classList.toggle('open', _allOpen);
+    body.style.display = _allOpen ? 'block' : 'none';
     toggle.classList.toggle('open', _allOpen);
   });
 }

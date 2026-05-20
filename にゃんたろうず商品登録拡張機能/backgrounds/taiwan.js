@@ -184,12 +184,199 @@ async function postGasJson(url, bodyText) {
   }
 }
 
+function normalizeTaiwanLookupText(value) {
+  return String(value || '')
+    .replace(/\u3000/g, ' ')
+    .replace(/[（]/g, '(')
+    .replace(/[）]/g, ')')
+    .replace(/[［]/g, '[')
+    .replace(/[］]/g, ']')
+    .replace(/[＋]/g, '+')
+    .replace(/[－–—―]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function uniqTaiwanLookupQueries(values) {
+  const seen = new Set();
+  const list = [];
+  for (const value of values || []) {
+    const text = normalizeTaiwanLookupText(value);
+    const key = text.toLowerCase().replace(/[\s"'“”‘’・･:：!！?？,，、.．\-ー‐―–—~〜/／\\|()[\]{}【】「」『』<>]/g, '');
+    if (!text || !key || seen.has(key)) continue;
+    seen.add(key);
+    list.push(text);
+  }
+  return list;
+}
+
+function stripTaiwanLookupNoiseForMu(value) {
+  let text = normalizeTaiwanLookupText(value);
+  if (!text) return '';
+  const rules = [
+    /\s*【[^】]*(?:首刷|初版|初回|限定|特[裝装]|通常|贈品|赠品)[^】]*】\s*/gu,
+    /\s*\([^)]*(?:首刷|初版|初回|限定|特[裝装]|通常|贈品|赠品)[^)]*\)\s*/gu,
+    /\s*\[[^\]]*(?:首刷|初版|初回|限定|特[裝装]|通常|贈品|赠品)[^\]]*\]\s*/gu,
+    /\s*(?:第)?\s*[0-9０-９]{1,4}\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*$/iu,
+    /\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*(?:第)?\s*[0-9０-９]{1,4}\s*$/iu,
+    /\s*[#＃]?\s*[0-9０-９]{1,4}\s*$/u,
+    /\s*(?:vol\.?|v\.?|第)\s*[0-9０-９]{1,4}\s*(?:巻|卷|集|冊|册|話|回|期|号|號)?\s*$/iu,
+    /\s*(?:資料夾|资料夹|文件夾|文件夹|壓克力|压克力|立牌|色紙|色纸|貼紙|贴纸|明信片|鑰匙圈|钥匙圈|徽章|海報|海报|掛軸|挂轴|手機包|手机包|托特袋|帆布袋|手提袋|杯墊|杯垫|卡片|吊飾|吊饰|公仔|玩偶|抱枕|套組|套装|福袋|拼圖|拼图|T恤|毛巾).*/iu,
+    /\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*$/iu,
+  ];
+  for (let i = 0; i < 5; i += 1) {
+    const prev = text;
+    for (const rule of rules) {
+      text = text.replace(rule, ' ').trim();
+    }
+    text = normalizeTaiwanLookupText(text);
+    if (text === prev) break;
+  }
+  return text;
+}
+
+function getTaiwanMuQueries(item, analysis) {
+  const rawItem = item?.rawItem || item || {};
+  const rowData = item?.rowData || rawItem.rowData || {};
+  const rawValues = [
+    analysis?.normalizedSearchTitle,
+    analysis?.extractedWorkTitle,
+    analysis?.originalTitle,
+    rowData['原題タイトル'],
+    rowData['作品名（原題）'],
+    rowData['作品名原題'],
+    rowData['原題商品タイトル'],
+    rowData['原題商品名'],
+    rawItem.原題タイトル,
+    rawItem.作品名原題,
+    rawItem.商品名,
+    rawItem.title,
+  ];
+  const stripped = rawValues.map(stripTaiwanLookupNoiseForMu);
+  return uniqTaiwanLookupQueries(stripped.concat(rawValues)).slice(0, 3);
+}
+
+function shouldTryTaiwanMuLookup(item, analysis) {
+  const type = String(analysis?.itemType || item?.itemType || '').trim();
+  if (type === 'magazine' || type === 'music_video') return false;
+  return ['manga', 'bl_manga', 'goods', 'light_novel', 'novel_book', 'unknown', 'book'].includes(type) || !type;
+}
+
+async function enrichItemWithTaiwanMangaUpdates(item) {
+  if (!item || typeof item !== 'object') return item;
+  const existing = item.japaneseTitleLookup;
+  if (existing?.status === 'resolved' && String(existing.japaneseTitle || existing.title || '').trim()) {
+    return item;
+  }
+
+  const rawItem = item.rawItem || item;
+  const analysis = item.titleAnalysis || (
+    typeof globalThis.analyzeProductTitle === 'function'
+      ? globalThis.analyzeProductTitle({ ...rawItem, source: 'books_tw' })
+      : null
+  );
+  if (!analysis || !shouldTryTaiwanMuLookup(item, analysis)) {
+    return { ...item, titleAnalysis: analysis || item.titleAnalysis || null };
+  }
+
+  const queries = getTaiwanMuQueries(item, analysis);
+  if (!queries.length) return { ...item, titleAnalysis: analysis };
+
+  const client = globalThis.titleLookupMangaUpdates;
+  if (!client || typeof client.lookupJapaneseTitle !== 'function') {
+    return {
+      ...item,
+      titleAnalysis: analysis,
+      japaneseTitleLookup: {
+        status: 'not_found',
+        provider: '',
+        normalizedSearchTitle: analysis.normalizedSearchTitle || queries[0],
+        extractedWorkTitle: analysis.extractedWorkTitle || queries[0],
+        trace: `mangaupdatesClient:skip(no_client q=${queries[0]})`,
+        errors: [],
+      },
+    };
+  }
+
+  try {
+    const traceQuery = queries.length > 1 ? `${queries[0]}+${queries.length - 1}cand` : queries[0];
+    const muResult = typeof client.lookupJapaneseTitleDetailed === 'function'
+      ? await client.lookupJapaneseTitleDetailed(queries)
+      : {
+          status: 'resolved',
+          japaneseTitle: await client.lookupJapaneseTitle(queries),
+          provider: 'mangaUpdates(extension)',
+          trace: '',
+          candidates: [],
+        };
+    const japaneseTitle = normalizeTaiwanLookupText(muResult?.japaneseTitle || '');
+    const status = japaneseTitle ? 'resolved' : 'not_found';
+    const seriesTitles = Array.isArray(muResult?.matchedTitles)
+      ? muResult.matchedTitles.map(normalizeTaiwanLookupText).filter(Boolean).slice(0, 6)
+      : [];
+    const detailTrace = japaneseTitle
+      ? (muResult?.trace || `mangaupdatesClient:hit(q=${traceQuery})`)
+      : (
+          muResult?.status === 'series_found_no_japanese'
+            ? `mangaupdatesClient:series_hit_no_japanese(q=${traceQuery} titles=${seriesTitles.join('/')})`
+            : (muResult?.trace || `mangaupdatesClient:not_found(q=${traceQuery})`)
+        );
+    const normalizedTrace = detailTrace
+      .replace(/^mangaUpdates:/, 'mangaupdatesClient:')
+      .replace(/^aniListNative:/, 'mangaupdatesClient:aniListNative:');
+    const clientTrace = normalizedTrace.indexOf('mangaupdatesClient:') === 0
+      ? normalizedTrace
+      : `mangaupdatesClient:${normalizedTrace}`;
+    return {
+      ...item,
+      titleAnalysis: analysis,
+      japaneseTitleLookup: {
+        status,
+        japaneseTitle,
+        provider: japaneseTitle ? (muResult?.provider || 'mangaUpdates(extension)') : '',
+        normalizedSearchTitle: analysis.normalizedSearchTitle || queries[0],
+        extractedWorkTitle: analysis.extractedWorkTitle || queries[0],
+        score: japaneseTitle ? 900 : 0,
+        trace: clientTrace,
+        candidates: japaneseTitle
+          ? [{ title: japaneseTitle, provider: muResult?.provider || 'mangaUpdates(extension)', score: 900 }]
+          : (Array.isArray(muResult?.candidates) ? muResult.candidates : []),
+        errors: [],
+      },
+    };
+  } catch (error) {
+    return {
+      ...item,
+      titleAnalysis: analysis,
+      japaneseTitleLookup: {
+        status: 'partial_error',
+        provider: 'mangaUpdates(extension)',
+        normalizedSearchTitle: analysis.normalizedSearchTitle || queries[0],
+        extractedWorkTitle: analysis.extractedWorkTitle || queries[0],
+        trace: `mangaupdatesClient:error(q=${queries[0]} ${error?.message || error})`,
+        errors: [String(error?.message || error || 'MangaUpdates lookup failed')],
+      },
+    };
+  }
+}
+
+async function enrichItemsWithTaiwanMangaUpdates(items) {
+  const sourceItems = Array.isArray(items) ? items : [];
+  const enriched = [];
+  for (const item of sourceItems) {
+    enriched.push(await enrichItemWithTaiwanMangaUpdates(item));
+  }
+  return enriched;
+}
+
 async function postProductsToGas(url, items) {
+  const enrichedItems = await enrichItemsWithTaiwanMangaUpdates(items);
   const response = await postGasJson(url, JSON.stringify({
-    source: 'books.com.tw-extension',
+    action: 'upsertProductWithLookup',
+    source: 'books_tw',
     appendMode: 'append',
     requestedAt: new Date().toISOString(),
-    items,
+    items: enrichedItems,
   }));
 
   const responseText = response.responseText;
@@ -217,6 +404,56 @@ async function postProductsToGas(url, items) {
   }
 
   return data;
+}
+
+function normalizeGasWriteErrorMessage(errorLike) {
+  const raw = String(errorLike?.message || errorLike || '').trim();
+  if (!raw) return 'GAS write failed';
+  const compact = raw.replace(/\s+/g, ' ').trim();
+  const build = (title, details = [], actions = []) => {
+    const body = [title];
+    if (details.length) body.push(`原因候補: ${details.join(' / ')}`);
+    if (actions.length) body.push(`対処: ${actions.join(' / ')}`);
+    body.push(`原文: ${compact}`);
+    return body.join('\n');
+  };
+
+  if (/データの行数が範囲の行数と一致しません/.test(raw)) {
+    return build(
+      '行数不一致エラー（setValues）',
+      ['重複判定の途中で書込配列が崩れた', 'シート列構成と送信データ構成の不一致'],
+      ['同一商品コード/URL の重複行を確認', 'GASヘッダー列と拡張列定義の差分を確認', '対象行を1件に絞って再送']
+    );
+  }
+  if (/このセルで設定しているデータの入力規則に違反しています/.test(raw)) {
+    return build(
+      '入力規則エラー（ドロップダウン/検証ルール違反）',
+      ['送信値が許可候補にない', 'マスター未登録の値が送られた'],
+      ['対象列の入力規則候補に値を追加', '未確定値は空欄送信して備考へ退避']
+    );
+  }
+  if (/範囲が見つかりません|指定した範囲|対象のシートが見つかりません|does not exist|Cannot find range/i.test(raw)) {
+    return build(
+      'シート/範囲エラー',
+      ['対象シート名が変更された', 'ヘッダー行や列位置が想定とずれている'],
+      ['GAS対象シート名設定を確認', 'ヘッダー行を再生成し列名一致を確認']
+    );
+  }
+  if (/HTTP 401|HTTP 403|権限|アクセス権|permission|forbidden|unauthorized/i.test(raw)) {
+    return build(
+      '認証/権限エラー',
+      ['Webアプリ実行ユーザーの権限不足', 'GAS公開範囲が不一致'],
+      ['GASを再デプロイして権限見直し', '拡張のGAS URLが最新か確認']
+    );
+  }
+  if (/timed out|timeout|hard timeout|ネットワーク|network|fetch failed/i.test(raw)) {
+    return build(
+      '通信タイムアウト/ネットワークエラー',
+      ['一時的な通信失敗', 'GAS側処理時間超過'],
+      ['少し待って再実行', '送信件数を減らして分割実行']
+    );
+  }
+  return build('GAS書き込みエラー');
 }
 
 function createGasSyncJob(request) {
@@ -327,6 +564,7 @@ async function processGasSyncQueue() {
         const latestResetToken = await getStoredGasSyncResetToken();
         gasSyncResetToken = latestResetToken;
         if (runToken !== latestResetToken) continue;
+        const normalizedError = normalizeGasWriteErrorMessage(error);
         await storageSetLocal({
           [GAS_SYNC_QUEUE_KEY]: nextQueue,
           [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
@@ -336,8 +574,8 @@ async function processGasSyncQueue() {
             queueLength: nextQueue.length,
             requestedAt: job.requestedAt,
             finishedAt: new Date().toISOString(),
-            error: error?.message || 'GAS write failed',
-            message: `❌ ${error?.message || 'GAS write failed'}`,
+            error: normalizedError,
+            message: `❌ ${normalizedError}`,
           }),
         });
       }
@@ -738,11 +976,32 @@ async function prepareTaiwanImageDownload(request) {
   }
 
   const productCode = inferTaiwanProductCodeFromFilename(filename);
-  const preparedUrl = buildTaiwanImageDownloadUrl(url, {
-    keepThumbVariant: isGoodsLikeTaiwanProductCode(productCode),
-  });
-  const blob = await fetchTaiwanImageBlob(preparedUrl);
-  const dataUrl = await convertBlobToJpegDataUrl(blob, TAIWAN_IMAGE_MAX_EDGE);
+  const sequence = Number(request.sequence) || 0;
+  const isMainBookImage = sequence === 1 && !isGoodsLikeTaiwanProductCode(productCode);
+  const options = {
+    keepThumbVariant: request.keepThumbVariant === true
+      || isGoodsLikeTaiwanProductCode(productCode)
+      || isMainBookImage,
+  };
+  const candidates = buildTaiwanImageCandidates(url, options);
+  const tryUrls = candidates.length ? candidates : [buildTaiwanImageDownloadUrl(url, options)];
+
+  let blob = null;
+  let lastError = '';
+  for (const candidate of tryUrls) {
+    try {
+      blob = await fetchTaiwanImageBlob(candidate);
+      if (blob) break;
+    } catch (error) {
+      lastError = String(error?.message || error || 'image fetch failed');
+    }
+  }
+  if (!blob) {
+    throw new Error(`image prepare failed: ${lastError || 'all candidates failed'}`);
+  }
+
+  const maxEdge = isMainBookImage ? 800 : TAIWAN_IMAGE_MAX_EDGE;
+  const dataUrl = await convertBlobToJpegDataUrl(blob, maxEdge);
   const downloadName = buildTaiwanMarkerFilename(filename);
   return { ok: true, url: dataUrl, downloadName, filename };
 }
@@ -1045,6 +1304,19 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'lookupMangaUpdatesJapaneseTitleDirect') {
+    const client = globalThis.titleLookupMangaUpdates;
+    const queries = Array.isArray(request.queries) ? request.queries : [];
+    if (!client || typeof client.lookupJapaneseTitleDetailed !== 'function') {
+      sendResponse({ ok: false, error: 'MangaUpdates client unavailable' });
+      return true;
+    }
+    client.lookupJapaneseTitleDetailed(queries)
+      .then(result => sendResponse({ ok: true, result }))
+      .catch(error => sendResponse({ ok: false, error: error?.message || 'lookup failed' }));
+    return true;
+  }
+
   if (request.action === 'prepareTaiwanImageDownload') {
     prepareTaiwanImageDownload(request)
       .then(result => sendResponse(result))
@@ -1078,6 +1350,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     processSaveProductsAssetsJob({
       products: Array.isArray(request.products) ? request.products : [],
       mode: request.mode,
+      saveAs: request.saveAs,
     })
       .then(result => sendResponse({ ok: true, ...result }))
       .catch(error => sendResponse({ ok: false, error: error.message || 'save failed' }));
@@ -1085,8 +1358,3 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   }
   return false;
 });
-
-
-
-
-

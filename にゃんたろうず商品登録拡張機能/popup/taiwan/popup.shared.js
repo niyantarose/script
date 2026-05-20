@@ -217,6 +217,34 @@ function buildBooksBannerWrapperUrl(imageUrl) {
   return `https://im1.book.com.tw/image/getImage?i=${encodeURIComponent(urlText)}`;
 }
 
+/** シート表示・1枚目保存用（サムネ _t_ 優先） */
+function getBooksMainImageUrl(imageUrl, productCode = '') {
+  let urlText = String(imageUrl || '').trim();
+  if (!urlText) return '';
+  if (urlText.startsWith('//')) urlText = `https:${urlText}`;
+
+  try {
+    const parsed = new URL(urlText, 'https://www.books.com.tw/');
+    const original = parsed.searchParams.get('i');
+    if (original) {
+      let originalUrl = decodeURIComponent(original);
+      if (originalUrl.startsWith('//')) originalUrl = `https:${originalUrl}`;
+      const wrappedBannerUrl = buildBooksBannerWrapperUrl(originalUrl);
+      if (wrappedBannerUrl) return wrappedBannerUrl;
+      return upgradeBooksImageVariant(originalUrl, { keepThumbVariant: true });
+    }
+    const href = parsed.href;
+    const thumbVariant = href.replace(/_b_(\d+)(?=\.(?:jpe?g|png|webp)(?:$|[?#]))/gi, '_t_$1');
+    if (thumbVariant !== href) return thumbVariant;
+    const upgradedUrl = upgradeBooksImageVariant(href, { keepThumbVariant: isGoodsLikeProductCode(productCode) });
+    return buildBooksBannerWrapperUrl(upgradedUrl) || upgradedUrl;
+  } catch {
+    const upgradedUrl = upgradeBooksImageVariant(urlText, { keepThumbVariant: true });
+    return buildBooksBannerWrapperUrl(upgradedUrl) || upgradedUrl;
+  }
+}
+
+/** 追加画像・2枚目以降の保存用（高解像度 _b_ 優先） */
 function getBooksImageSourceUrl(imageUrl, productCode = '') {
   let urlText = String(imageUrl || '').trim();
   if (!urlText) return '';
@@ -243,6 +271,17 @@ function normalizeBooksImageUrl(rawUrl, productCode = '') {
   return getBooksImageSourceUrl(rawUrl, productCode);
 }
 
+/** ポップアップ一覧サムネ用（表示向け _t_ を維持） */
+function getProductThumbnailUrl(product) {
+  const productCode = extractProductCode(product);
+  const raw = String(product?.画像URL || '').trim();
+  if (!raw) return '';
+  if (isGoodsLikeProductCode(productCode)) {
+    return getBooksMainImageUrl(raw, productCode);
+  }
+  return getBooksMainImageUrl(raw, productCode) || raw;
+}
+
 function getImageOrderIndexByProductCode(imageUrl, productCode) {
   const code = String(productCode || '');
   if (!code) return Number.MAX_SAFE_INTEGER;
@@ -262,10 +301,18 @@ function getImageOrderIndexByProductCode(imageUrl, productCode) {
   return Number.isFinite(idx) ? idx : Number.MAX_SAFE_INTEGER;
 }
 
+function isBooksGallerySlotUrl(imageUrl, productCode = '') {
+  const text = String(imageUrl || '');
+  const code = String(productCode || '').trim();
+  if (!code || !/_t_\d+|_b_\d+/i.test(text)) return false;
+  return new RegExp(`${escapeRegExp(code)}_(?:b|t)_\\d+`, 'i').test(text);
+}
+
 function isNoiseBooksImageUrl(imageUrl, productCode = '') {
   const text = String(imageUrl || '');
   const baseNoise = /(?:\/G\/ADbanner\/|\/G\/prod\/comingsoon|languageTest|esqsm|\/reco\/|\/banner\/|\/recommend\/|\/ad\/|listE\.php|listN\.php|\/activity\/|\/combo\/|\/event\/|logo|icon)/i;
   if (baseNoise.test(text)) return true;
+  if (isBooksGallerySlotUrl(text, productCode)) return false;
   return !isGoodsLikeProductCode(productCode) && /_t_\d+\.(?:jpg|jpeg|png|webp)/i.test(text);
 }
 
@@ -288,6 +335,19 @@ function buildImageDedupeKey(imageUrl, productCode = '') {
   const idx = getImageOrderIndexByProductCode(normalized, productCode);
   if (idx !== Number.MAX_SAFE_INTEGER) return `slot:${idx}`;
 
+  if (isBooksAdBannerImage(normalized) || /\/image\/getImage\?/i.test(normalized)) {
+    try {
+      const parsed = new URL(normalized, 'https://www.books.com.tw/');
+      const embedded = parsed.searchParams.get('i');
+      if (embedded) {
+        return `gift:${decodeURIComponent(embedded).replace(/[?#].*$/, '').toLowerCase()}`;
+      }
+      return `gift:${parsed.origin}${parsed.pathname}`.toLowerCase();
+    } catch {
+      return `gift:${String(normalized).replace(/[?#].*$/, '').toLowerCase()}`;
+    }
+  }
+
   const sourceUrl = getBooksImageSourceUrl(normalized, productCode);
   try {
     const parsed = new URL(sourceUrl);
@@ -297,15 +357,18 @@ function buildImageDedupeKey(imageUrl, productCode = '') {
   }
 }
 
-function limitImageUrls(urls, max = MAX_IMAGE_DOWNLOADS_PER_PRODUCT, productCode = '') {
+function limitImageUrls(urls, max = MAX_IMAGE_DOWNLOADS_PER_PRODUCT, productCode = '', options = {}) {
   const ordered = [];
   const seen = new Set();
+  const forMainOnly = options.forMainOnly === true;
 
   for (const rawUrl of (urls || [])) {
     const rawText = String(rawUrl || '').trim();
     if (!/^https?:\/\//i.test(rawText)) continue;
 
-    const normalized = normalizeBooksImageUrl(rawText, productCode);
+    const normalized = forMainOnly
+      ? getBooksMainImageUrl(rawText, productCode)
+      : normalizeBooksImageUrl(rawText, productCode);
     if (!normalized) continue;
     if (isNoiseBooksImageUrl(normalized, productCode) && !isProductBonusBannerImage(normalized, productCode)) continue;
 
@@ -321,7 +384,12 @@ function limitImageUrls(urls, max = MAX_IMAGE_DOWNLOADS_PER_PRODUCT, productCode
 
 function collectOrderedImageUrls(product) {
   const productCode = extractProductCode(product);
-  const mainOnly = limitImageUrls([product.画像URL || ''], 1, productCode);
+  const mainOnly = limitImageUrls(
+    [product.画像URL || ''],
+    1,
+    productCode,
+    { forMainOnly: isGoodsLikeProductCode(productCode) }
+  );
   if (MAIN_IMAGE_ONLY_MODE) {
     return mainOnly;
   }
@@ -333,12 +401,45 @@ function collectOrderedImageUrls(product) {
   ].filter(Boolean).join(';');
   const additional = product.追加画像URL || legacyAdditional;
 
-  const urls = [
-    ...mainOnly,
-    ...splitImageUrls(additional),
-  ].filter(u => /^https?:\/\//i.test(u));
+  const additionalUrls = limitImageUrls(
+    splitImageUrls(additional).filter(u => /^https?:\/\//i.test(u)),
+    MAX_IMAGE_DOWNLOADS_PER_PRODUCT,
+    productCode
+  );
 
-  return limitImageUrls(urls, MAX_IMAGE_DOWNLOADS_PER_PRODUCT, productCode);
+  const giftUrls = [];
+  const galleryUrls = [];
+  for (const url of additionalUrls) {
+    if (isBooksAdBannerImage(url) && !isBooksGallerySlotUrl(url, productCode)) {
+      giftUrls.push(url);
+    } else {
+      galleryUrls.push(url);
+    }
+  }
+
+  const ordered = [];
+  const seen = new Set();
+  const pushUrl = url => {
+    const key = buildImageDedupeKey(url, productCode);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    ordered.push(url);
+  };
+
+  for (const url of mainOnly) pushUrl(url);
+  for (const url of galleryUrls) pushUrl(url);
+  for (const url of giftUrls) pushUrl(url);
+
+  const maxForProduct = isGoodsLikeProductCode(productCode)
+    ? MAX_IMAGE_DOWNLOADS_PER_PRODUCT
+    : 10;
+  if (ordered.length <= maxForProduct) return ordered;
+
+  const main = ordered[0];
+  const gifts = ordered.filter(url => giftUrls.includes(url));
+  const galleries = ordered.filter(url => url !== main && !gifts.includes(url));
+  const maxGallery = Math.max(0, maxForProduct - 1 - gifts.length);
+  return [main, ...galleries.slice(0, maxGallery), ...gifts];
 }
 
 function isLikelyBooksPageImageUrl(imageUrl, productCode) {
@@ -346,9 +447,10 @@ function isLikelyBooksPageImageUrl(imageUrl, productCode) {
   if (!/^https?:\/\//i.test(text)) return false;
   if (!/(?:\.jpe?g|\.png|\.webp)(?:[?&#]|$)|\/image\/getImage\?|\/fancybox\/getImage\.php\?/i.test(text)) return false;
   if (isNoiseBooksImageUrl(text, productCode) && !isProductBonusBannerImage(text, productCode)) return false;
+  if (isBooksAdBannerImage(text)) return true;
 
   if (productCode) {
-    return new RegExp(escapeRegExp(productCode), 'i').test(text);
+    return new RegExp(`${escapeRegExp(productCode)}(?:_(?:b|t)_\\d+|\\.(?:jpe?g|png|webp))`, 'i').test(text);
   }
   return /(?:im\d+\.book\.com\.tw\/image\/getImage\?|www\.books\.com\.tw\/img\/)/i.test(text);
 }
@@ -561,14 +663,26 @@ async function downloadCsv(csvText, filename) {
   return true;
 }
 
-async function downloadImage(imageUrl, filename, saveAs) {
-  const response = await sendRuntimeMessage({ action: 'prepareTaiwanImageDownload', url: imageUrl, filename, saveAs: !!saveAs });
+async function downloadImage(imageUrl, filename, saveAs, options = {}) {
+  const response = await sendRuntimeMessage({
+    action: 'prepareTaiwanImageDownload',
+    url: imageUrl,
+    filename,
+    saveAs: !!saveAs,
+    sequence: Number(options.sequence) || 0,
+    keepThumbVariant: options.keepThumbVariant === true,
+  });
   if (!response?.ok || !response.url || !response.downloadName) {
-    return false;
+    return {
+      ok: false,
+      error: String(response?.error || 'prepareTaiwanImageDownload failed'),
+      imageUrl: String(imageUrl || ''),
+      filename: String(filename || ''),
+    };
   }
   triggerTaiwanAnchorDownload(response.downloadName, response.url);
   await waitForQueuedDownloadTick();
-  return true;
+  return { ok: true };
 }
 async function downloadProductImages(items, options = {}) {
   const manualSave = !!options.manualSave;
@@ -576,6 +690,7 @@ async function downloadProductImages(items, options = {}) {
   let success = 0;
   let failed = 0;
   const folders = new Set();
+  const failedDetails = [];
 
   for (const item of items) {
     const titleFolder = buildProductFolderName(item);
@@ -591,11 +706,20 @@ async function downloadProductImages(items, options = {}) {
       const ext = guessImageExt(imageUrl);
       const filePath = buildImageDownloadPath(titleFolder, seq, ext);
       total += 1;
-      const ok = await downloadImage(imageUrl, filePath, manualSave);
-      if (ok) {
+      const result = await downloadImage(imageUrl, filePath, manualSave, {
+        sequence: seq,
+        keepThumbVariant: seq === 1 && !isGoodsLikeProductCode(extractProductCode(item)),
+      });
+      if (result?.ok) {
         success += 1;
       } else {
         failed += 1;
+        failedDetails.push({
+          productCode: extractProductCode(item),
+          filePath,
+          imageUrl: String(imageUrl || ''),
+          error: String(result?.error || 'download failed'),
+        });
       }
       seq += 1;
     }
@@ -610,6 +734,7 @@ async function downloadProductImages(items, options = {}) {
     folderRuleMisses: 0,
     directSave: false,
     folderName: '',
+    failedDetails,
   };
 }
 
@@ -642,13 +767,19 @@ function cleanDescription(value) {
 }
 
 function getAdditionalImagesValue(product) {
-  return normalizeAdditionalImages(
+  const normalized = normalizeAdditionalImages(
     product.追加画像URL || [
       product.画像URL_2枚目 || '',
       product.画像URL_3枚目 || '',
       product.画像URL_4枚目以降 || '',
     ].filter(Boolean).join(';')
   );
+  // シート上でURLとして見やすく/扱いやすいよう1行1URLで出力
+  return normalized
+    .split(';')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .join('\n');
 }
 
 function cleanupOriginalTitleTextOnce(value) {
@@ -682,6 +813,54 @@ function extractOriginalTitleText(value) {
   }
 
   return normalized || fallback;
+}
+
+if (typeof globalThis.getDisplayJapaneseTitleValue !== 'function') {
+  globalThis.getDisplayJapaneseTitleValue = function getDisplayJapaneseTitleValue(...candidates) {
+    for (const candidate of candidates) {
+      const text = trimValue(candidate);
+      if (text) return text;
+    }
+    return '';
+  };
+}
+
+if (typeof globalThis.stripVolumeNoiseForSheetOriginal !== 'function') {
+  globalThis.stripVolumeNoiseForSheetOriginal = function stripVolumeNoiseForSheetOriginal(value) {
+    let text = trimValue(value);
+    if (!text) return '';
+    text = text
+      .replace(/\s*(?:vol\.?|v\.?|第)\s*[0-9０-９]{1,4}\s*(?:巻|卷|集|冊|話|回|期|号|號)?\s*$/iu, '')
+      .replace(/\s*[#＃]?\s*[0-9０-９]{1,4}\s*$/u, '')
+      .replace(/\s*(?:第)?\s*[0-9０-９]{1,4}\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*$/iu, '')
+      .replace(/\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*(?:第)?\s*[0-9０-９]{1,4}\s*$/iu, '')
+      .replace(/\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*$/iu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return text;
+  };
+}
+
+if (typeof globalThis.finalizeSheetOriginalWorkTitleRow !== 'function') {
+  globalThis.finalizeSheetOriginalWorkTitleRow = function finalizeSheetOriginalWorkTitleRow(value) {
+    const extracted = extractOriginalTitleText(value);
+    const stripped = globalThis.stripVolumeNoiseForSheetOriginal(extracted);
+    return trimValue(stripped || extracted || value);
+  };
+}
+
+if (typeof globalThis.normalizeSheetJapaneseWorkTitleForRow !== 'function') {
+  globalThis.normalizeSheetJapaneseWorkTitleForRow = function normalizeSheetJapaneseWorkTitleForRow(value) {
+    const source = trimValue(value);
+    if (!source) return '';
+    if (typeof globalThis.normalizeSheetJapaneseWorkTitle === 'function') {
+      return trimValue(globalThis.normalizeSheetJapaneseWorkTitle(source));
+    }
+    return source
+      .replace(/\s*[\[(（〈【]\s*(?:TV|T\.V\.|OVA|OAD|ONA|SP|映画|電影|劇場版|剧场版|アニメ(?:版|ーション)?|ドラマ(?:版)?|真人版|Web\s*アニメ|Anime|Movie|Film)\s*[\])）〉】]/giu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
 }
 
 function detectEditionType(product) {

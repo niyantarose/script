@@ -16,7 +16,10 @@
     "https://image.aladin.co.kr/*",
     "https://cdnimage.aladin.co.kr/*",
     "https://script.google.com/*",
-    "https://script.googleusercontent.com/*"
+    "https://script.googleusercontent.com/*",
+    "https://api.mangaupdates.com/*",
+    "https://www.mangaupdates.com/*",
+    "https://graphql.anilist.co/*"
   ],
   "action": {
     "default_popup": "popup.html",
