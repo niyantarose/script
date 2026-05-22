@@ -53,7 +53,7 @@ function normalizeMagazineBrandName(value) {
     .normalize('NFKC')
     .toUpperCase()
     .replace(/&/g, ' AND ')
-    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/[^A-Z0-9\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -78,6 +78,9 @@ function normalizeMagazineBrandName(value) {
 function isMagazineProduct(product) {
   if (!isBookProduct(product)) return false;
 
+  const code = extractProductCode(product);
+  if (code && /^R/i.test(code)) return true; // books.com.tw の雑誌コード (R始まり)
+
   const source = [
     trimValue(product?.カテゴリ || ''),
     trimValue(product?.ページタイトル || ''),
@@ -86,12 +89,18 @@ function isMagazineProduct(product) {
     trimValue(product?.商品説明 || ''),
   ].filter(Boolean).join('\n');
 
+  const rawTitle = trimValue(product?.商品名 || product?.ページタイトル || '');
+  const hasIssue = rawTitle ? hasMagazineIssueMarker(rawTitle) : false;
+
   const categoryValue = getCategoryValue(product);
-  if (/^(?:設定集|アートブック|まんが|小説|絵本|シナリオ集|台本)$/u.test(categoryValue)) return false;
-  if (/設定集|設定資料|設定资料|公式設定|書冊|书册|畫集|画集|畫冊|画冊|美術設定|アートブック/u.test(source)) return false;
+  // 小説やまんがなどのカテゴリ判定があっても、雑誌の号数表記（5月號/第487期など）が明確にある場合は雑誌として扱う
+  if (!hasIssue) {
+    if (/^(?:設定集|アートブック|まんが|小説|絵本|シナリオ集|台本)$/u.test(categoryValue)) return false;
+    if (/設定集|設定資料|設定资料|公式設定|書冊|书册|畫集|画集|畫冊|画冊|美術設定|アートブック/u.test(source)) return false;
+  }
+
   if (/雜誌|杂志|雑誌/u.test(source) || categoryValue === '雑誌') return true;
 
-  const rawTitle = trimValue(product?.商品名 || product?.ページタイトル || '');
   if (!rawTitle) return false;
 
   const knownMagazineBrandPattern = /Marie\s*Claire|VOGUE|ELLE|GQ|BAZAAR|Esquire|L['’]?OFFICIEL|Men['’]?s\s+Health|THE\s+BIG\s+ISSUE/i;
@@ -99,7 +108,7 @@ function isMagazineProduct(product) {
     return true;
   }
 
-  if (!hasMagazineIssueMarker(rawTitle)) return false;
+  if (!hasIssue) return false;
 
   const brandName = extractMagazineTitleText(rawTitle);
   return !!brandName && brandName !== rawTitle;

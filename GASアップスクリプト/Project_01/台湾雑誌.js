@@ -130,7 +130,7 @@ function 台湾雑誌_英字キー_(v) {
     .normalize('NFKC')
     .toUpperCase()
     .replace(/&/g, ' AND ')
-    .replace(/[^\w]+/g, ' ')
+    .replace(/[^\w\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

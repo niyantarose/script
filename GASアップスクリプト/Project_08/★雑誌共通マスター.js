@@ -38,7 +38,7 @@ function 共通雑誌_正規化雑誌文字列_(value) {
     .replace(/&/g, ' AND ')
     .replace(/\b(KOREA|TAIWAN|HONG\s*KONG|HONGKONG|CHINA|THAILAND|HK|TW|CN)\b/g, ' ')
     .replace(/(韓国版|韓國版|台湾版|臺灣版|中国版|中國版|香港版|タイ版)/g, ' ')
-    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/[^A-Z0-9\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -57,7 +57,7 @@ function 共通雑誌_英字表示キー_(value) {
     .normalize('NFKC')
     .toUpperCase()
     .replace(/&/g, ' AND ')
-    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/[^A-Z0-9\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

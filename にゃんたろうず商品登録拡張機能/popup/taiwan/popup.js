@@ -174,14 +174,9 @@ async function initPopup() {
     }
 
     renderList();
-    await refreshGasSyncStatus({ updateUi: false, applyMessage: false });
+    await refreshGasSyncStatus({ updateUi: true, applyMessage: true });
     if (gasSyncStatus?.state && !['queued', 'running'].includes(gasSyncStatus.state)) {
-      try {
-        await clearGasSyncStatus();
-      } catch (error) {
-        console.warn('Failed to clear stale GAS sync status:', error);
-      }
-      gasSyncStatus = null;
+      scheduleGasSyncSuccessAutoClear(gasSyncStatus);
     }
     updateUI();
     if (gasSyncStatus?.state && ['queued', 'running'].includes(gasSyncStatus.state)) {
