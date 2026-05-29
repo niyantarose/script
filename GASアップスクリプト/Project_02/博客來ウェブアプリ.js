@@ -216,7 +216,7 @@ function buildJapaneseTitleDictionaryMapFromSheet_(sheet) {
   const lastColumn = Math.max(sheet.getLastColumn(), 1);
   if (lastRow < 2) return byKey;
 
-  const values = sheet.getRange(1, 1, lastRow, lastColumn).getDisplayValues();
+  const values = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
   const headerMap = {};
   values[0].forEach(function(header, idx) {
     const normalized = normalizeHeader_(header);
@@ -2308,6 +2308,7 @@ const CLIENT_TERMINAL_LOOKUP_STATUSES_ = {
   not_found: true,
   series_found_no_japanese: true,
   partial_error: true,
+  skipped: true,
 };
 
 function shouldRefreshLookup_(lookup, titleAnalysis) {
