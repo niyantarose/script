@@ -519,7 +519,9 @@ function formatGasSyncTimingText_(result) {
   }
   
   const sizeInfo = (result && result.sheetRows)
-    ? `[サイズ: ${result.sheetRows}行x${result.sheetCols}列]`
+    ? (result.sheetMaxRows && result.sheetMaxRows > result.sheetRows
+      ? `[データ:${result.sheetRows}行 / シート物理:${result.sheetMaxRows}行x${result.sheetCols || '?'}列]`
+      : `[サイズ: ${result.sheetRows}行x${result.sheetCols}列]`)
     : '';
     
   const gasInfo = (result && result.gasFile && result.gasVersion)

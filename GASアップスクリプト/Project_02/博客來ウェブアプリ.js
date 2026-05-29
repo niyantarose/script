@@ -2639,8 +2639,11 @@ function upsertItemsWithLookup_(ss, items, timing) {
         appendedRow: targetRow,
         mode: mode,
         lookup: preparedItem.japaneseTitleLookup || null,
-        sheetRows: refreshedContext.allValues.length + 1,
-        sheetCols: refreshedContext.lastColumn
+        sheetRows: refreshedContext.actualLastRow || (refreshedContext.allValues.length + 1),
+        sheetCols: refreshedContext.lastColumn,
+        sheetMaxRows: refreshedContext.sheet.getMaxRows(),
+        sheetLastRow: refreshedContext.sheet.getLastRow(),
+        dataRowCount: refreshedContext.allValues.length
       };
     }
   });
@@ -2701,7 +2704,7 @@ function upsertProductWithLookupAction_(payload) {
         recalcMs: tEnd - tLock - (serverTiming.compactMs || 0) - (serverTiming.enrichMs || 0) - (serverTiming.buildContextMs || 0) - (serverTiming.buildKeysMs || 0) - (serverTiming.writeRowsMs || 0),
       },
       gasFile: "博客來ウェブアプリ.js",
-      gasVersion: "v73",
+      gasVersion: "v74",
       warnings: []
     };
   } finally {
@@ -2871,22 +2874,59 @@ var DATA_ROW_SCAN_CHUNK = 500;
 var SHEET_TRIM_PADDING_ROWS = 25;
 var SHEET_TRIM_MIN_SURPLUS_ROWS = 100;
 
+/** 最終行判定に使わない列（チェックボックス・自動計算列など） */
+var SHEET_SCAN_EXCLUDED_HEADER_KEYS = [
+  '発番発行', '登録状況', '粗利益率',
+  'ステータス（自動）', '残日数（自動）', 'アラート（自動）',
+  '作品id(w)（自動）', 'sku（自動）', '商品コードステータス',
+];
+
+function isExcludedScanHeader_(normalizedHeader) {
+  const key = String(normalizedHeader || '').trim().toLowerCase();
+  if (!key) return true;
+  if (SHEET_SCAN_EXCLUDED_HEADER_KEYS.indexOf(key) >= 0) return true;
+  return /（自動）$/.test(key) || /\(自動\)$/.test(key);
+}
+
+function isIgnorableScanCellValue_(value) {
+  if (value === null || value === undefined || value === '') return true;
+  // チェックボックス列の true/false は「データ行」として数えない
+  if (typeof value === 'boolean') return true;
+  const text = String(value).trim().toLowerCase();
+  if (!text) return true;
+  if (text === 'true' || text === 'false') return true;
+  return false;
+}
+
 function collectDataScanColumnIndexes_(normalizedHeaderMap, sampleItem, rowData) {
   const indexes = [];
   const keyIdx = findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, rowData || {});
-  if (typeof keyIdx === 'number' && keyIdx >= 0) indexes.push(keyIdx);
+  if (typeof keyIdx === 'number' && keyIdx >= 0) {
+    let keyHeaderExcluded = false;
+    Object.keys(normalizedHeaderMap).forEach(function(headerKey) {
+      if (normalizedHeaderMap[headerKey] === keyIdx && isExcludedScanHeader_(headerKey)) {
+        keyHeaderExcluded = true;
+      }
+    });
+    if (!keyHeaderExcluded) indexes.push(keyIdx);
+  }
 
   [
-    '原題タイトル', '原題商品タイトル', 'タイトル', 'サイト商品コード', '博客來商品コード',
-    '商品コード（SKU）', 'リンク', '重複チェックキー', 'カテゴリ', 'ISBN',
+    'サイト商品コード', '博客來商品コード', '原題タイトル', '原題商品タイトル', 'タイトル',
+    '親コード', 'リンク', '重複チェックキー', 'カテゴリ', 'ISBN', '商品コード（SKU）',
   ].forEach(function(header) {
-    const idx = normalizedHeaderMap[normalizeHeader_(header)];
+    const normalized = normalizeHeader_(header);
+    if (isExcludedScanHeader_(normalized)) return;
+    const idx = normalizedHeaderMap[normalized];
     if (typeof idx === 'number' && idx >= 0 && indexes.indexOf(idx) < 0) indexes.push(idx);
   });
 
   if (!indexes.length) {
-    const fallbackCols = Math.min(3, Math.max(sheet_getLastColumnSafe_(normalizedHeaderMap), 1));
-    for (let c = 0; c < fallbackCols; c += 1) indexes.push(c);
+    Object.keys(normalizedHeaderMap).forEach(function(headerKey) {
+      if (isExcludedScanHeader_(headerKey)) return;
+      const idx = normalizedHeaderMap[headerKey];
+      if (typeof idx === 'number' && idx >= 0 && indexes.indexOf(idx) < 0) indexes.push(idx);
+    });
   }
   return indexes;
 }
@@ -2903,7 +2943,9 @@ function rowHasMeaningfulSheetData_(rowValues, colIndexes, minCol1) {
   for (let i = 0; i < colIndexes.length; i += 1) {
     const localCol = colIndexes[i] - (minCol1 - 1);
     if (localCol < 0 || localCol >= rowValues.length) continue;
-    const text = String(rowValues[localCol] == null ? '' : rowValues[localCol]).trim();
+    const raw = rowValues[localCol];
+    if (isIgnorableScanCellValue_(raw)) continue;
+    const text = String(raw).trim();
     if (text.length >= 2) return true;
   }
   return false;
