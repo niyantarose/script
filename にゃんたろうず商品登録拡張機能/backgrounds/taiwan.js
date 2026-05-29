@@ -433,6 +433,7 @@ async function postProductsToGas(url, items) {
     action: 'upsertProductWithLookup',
     source: 'books_tw',
     appendMode: 'append',
+    compactSheets: true,
     requestedAt: new Date().toISOString(),
     items: enrichedItems,
   }));
@@ -493,6 +494,9 @@ function formatGasSyncTimingText_(result) {
       innerParts.push(`照会 ${(Number(server.enrichMs) / 1000).toFixed(1)}s`);
     }
     if (Number.isFinite(Number(server.buildContextMs))) {
+      if (Number(server.compactMs) > 0) {
+        innerParts.push(`縮小 ${(Number(server.compactMs) / 1000).toFixed(1)}s`);
+      }
       innerParts.push(`読込 ${(Number(server.buildContextMs) / 1000).toFixed(1)}s`);
     }
     if (Number.isFinite(Number(server.buildKeysMs))) {

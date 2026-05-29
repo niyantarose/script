@@ -2504,11 +2504,19 @@ function buildDuplicateKeyToRowMapInMemory_(allValues, duplicateKeyColumns) {
   return map;
 }
 
-function buildDuplicateKeyToRowMap_(sheet, duplicateKeyColumns) {
+function buildDuplicateKeyToRowMap_(sheet, duplicateKeyColumns, sampleItem) {
   const map = Object.create(null);
   if (!duplicateKeyColumns || !duplicateKeyColumns.length) return map;
 
-  const lastRow = Math.max(sheet.getLastRow(), 1);
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const headerValues = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+  const normalizedHeaderMap = {};
+  headerValues.forEach(function(header, idx) {
+    const normalized = normalizeHeader_(header);
+    if (normalized) normalizedHeaderMap[normalized] = idx;
+  });
+  const rowData = sampleItem ? extractRowData_(sampleItem) : {};
+  const lastRow = findActualLastDataRow_(sheet, normalizedHeaderMap, sampleItem, rowData);
   if (lastRow <= 1) return map;
 
   const colIndexes = duplicateKeyColumns.map(function(c) { return c.index; });
@@ -2660,6 +2668,11 @@ function upsertProductWithLookupAction_(payload) {
     const serverTiming = {
       lockWaitMs: tLock - tStart,
     };
+    if (payload.compactSheets !== false) {
+      const tCompactStart = Date.now();
+      serverTiming.compactSheets = compactSheetsForItems_(ss, items);
+      serverTiming.compactMs = Date.now() - tCompactStart;
+    }
     const results = upsertItemsWithLookup_(ss, items, serverTiming);
     const tEnd = Date.now();
     const first = results[0] || {};
@@ -2680,14 +2693,15 @@ function upsertProductWithLookupAction_(payload) {
       timing: {
         serverMs: tEnd - tStart,
         lockWaitMs: serverTiming.lockWaitMs,
+        compactMs: serverTiming.compactMs || 0,
         enrichMs: serverTiming.enrichMs,
         buildContextMs: serverTiming.buildContextMs,
         buildKeysMs: serverTiming.buildKeysMs,
         writeRowsMs: serverTiming.writeRowsMs,
-        recalcMs: tEnd - tLock - (serverTiming.enrichMs || 0) - (serverTiming.buildContextMs || 0) - (serverTiming.buildKeysMs || 0) - (serverTiming.writeRowsMs || 0),
+        recalcMs: tEnd - tLock - (serverTiming.compactMs || 0) - (serverTiming.enrichMs || 0) - (serverTiming.buildContextMs || 0) - (serverTiming.buildKeysMs || 0) - (serverTiming.writeRowsMs || 0),
       },
       gasFile: "博客來ウェブアプリ.js",
-      gasVersion: "v72",
+      gasVersion: "v73",
       warnings: []
     };
   } finally {
@@ -2710,6 +2724,27 @@ function doPost(e) {
     }
     if (payload && payload.action === 'lookupMangaUpdatesJapaneseTitle') {
       return handleMangaUpdatesLookupPost_(payload);
+    }
+    if (payload && payload.action === 'compactSheets') {
+      const lock = LockService.getScriptLock();
+      lock.waitLock(30000);
+      try {
+        const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        const sheetNames = Array.isArray(payload.sheetNames) ? payload.sheetNames : [];
+        if (items.length) {
+          return jsonResponse_({ ok: true, compacted: compactSheetsForItems_(ss, items) });
+        }
+        const trimmed = {};
+        sheetNames.forEach(function(sheetName) {
+          const sheet = ss.getSheetByName(String(sheetName || '').trim());
+          if (!sheet) return;
+          trimmed[sheetName] = compactSheetForWrite_(sheet, null);
+        });
+        return jsonResponse_({ ok: true, compacted: trimmed });
+      } finally {
+        try { lock.releaseLock(); } catch (_) {}
+      }
     }
     const items = Array.isArray(payload.items) ? payload.items : [];
     if (!items.length) throw new Error('items is empty');
@@ -2832,6 +2867,137 @@ function resolveSheetName_(item) {
   return category === 'まんが' ? COMIC_BOOK_SHEET_NAME : OTHER_BOOK_SHEET_NAME;
 }
 
+var DATA_ROW_SCAN_CHUNK = 500;
+var SHEET_TRIM_PADDING_ROWS = 25;
+var SHEET_TRIM_MIN_SURPLUS_ROWS = 100;
+
+function collectDataScanColumnIndexes_(normalizedHeaderMap, sampleItem, rowData) {
+  const indexes = [];
+  const keyIdx = findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, rowData || {});
+  if (typeof keyIdx === 'number' && keyIdx >= 0) indexes.push(keyIdx);
+
+  [
+    '原題タイトル', '原題商品タイトル', 'タイトル', 'サイト商品コード', '博客來商品コード',
+    '商品コード（SKU）', 'リンク', '重複チェックキー', 'カテゴリ', 'ISBN',
+  ].forEach(function(header) {
+    const idx = normalizedHeaderMap[normalizeHeader_(header)];
+    if (typeof idx === 'number' && idx >= 0 && indexes.indexOf(idx) < 0) indexes.push(idx);
+  });
+
+  if (!indexes.length) {
+    const fallbackCols = Math.min(3, Math.max(sheet_getLastColumnSafe_(normalizedHeaderMap), 1));
+    for (let c = 0; c < fallbackCols; c += 1) indexes.push(c);
+  }
+  return indexes;
+}
+
+function sheet_getLastColumnSafe_(normalizedHeaderMap) {
+  const values = Object.keys(normalizedHeaderMap).map(function(key) {
+    return normalizedHeaderMap[key];
+  });
+  if (!values.length) return 1;
+  return Math.max.apply(null, values) + 1;
+}
+
+function rowHasMeaningfulSheetData_(rowValues, colIndexes, minCol1) {
+  for (let i = 0; i < colIndexes.length; i += 1) {
+    const localCol = colIndexes[i] - (minCol1 - 1);
+    if (localCol < 0 || localCol >= rowValues.length) continue;
+    const text = String(rowValues[localCol] == null ? '' : rowValues[localCol]).trim();
+    if (text.length >= 2) return true;
+  }
+  return false;
+}
+
+/**
+ * getLastRow() が空行膨張で5万超えでも、キー列を下からチャンク読みして真の最終行だけ返す。
+ */
+function findActualLastDataRow_(sheet, normalizedHeaderMap, sampleItem, rowData) {
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  if (lastRow <= 1) return 1;
+
+  const colIndexes = collectDataScanColumnIndexes_(normalizedHeaderMap, sampleItem, rowData);
+  const minCol1 = Math.min.apply(null, colIndexes) + 1;
+  const maxCol1 = Math.max.apply(null, colIndexes) + 1;
+  const width = maxCol1 - minCol1 + 1;
+
+  function rowHasData(row) {
+    if (row < 2) return false;
+    const vals = sheet.getRange(row, minCol1, row, width).getValues()[0];
+    return rowHasMeaningfulSheetData_([vals], colIndexes, minCol1);
+  }
+
+  // 下側が空行膨張（データは上の方だけ）のとき、下からチャンク走査すると遅いので二分探索する。
+  if (lastRow > 1000 && !rowHasData(lastRow)) {
+    let lo = 2;
+    let hi = lastRow;
+    let ans = 1;
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (rowHasData(mid)) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return ans;
+  }
+
+  let end = lastRow;
+  while (end >= 2) {
+    const start = Math.max(2, end - DATA_ROW_SCAN_CHUNK + 1);
+    const values = sheet.getRange(start, minCol1, end, width).getValues();
+    for (let r = values.length - 1; r >= 0; r -= 1) {
+      if (rowHasMeaningfulSheetData_(values[r], colIndexes, minCol1)) {
+        return start + r;
+      }
+    }
+    end = start - 1;
+  }
+  return 1;
+}
+
+function maybeTrimSheetEmptyTail_(sheet, actualLastRow) {
+  const keepRows = Math.max(2, actualLastRow + SHEET_TRIM_PADDING_ROWS);
+  const maxRows = sheet.getMaxRows();
+  if (maxRows <= keepRows + SHEET_TRIM_MIN_SURPLUS_ROWS) {
+    return { trimmed: 0, keepRows: keepRows };
+  }
+  const deleteCount = maxRows - keepRows;
+  sheet.deleteRows(keepRows + 1, deleteCount);
+  return { trimmed: deleteCount, keepRows: keepRows };
+}
+
+function compactSheetForWrite_(sheet, sampleItem) {
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const headerValues = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+  const normalizedHeaderMap = {};
+  headerValues.forEach(function(header, idx) {
+    const normalized = normalizeHeader_(header);
+    if (normalized) normalizedHeaderMap[normalized] = idx;
+  });
+  const rowData = sampleItem ? extractRowData_(sampleItem) : {};
+  const actualLastRow = findActualLastDataRow_(sheet, normalizedHeaderMap, sampleItem, rowData);
+  return maybeTrimSheetEmptyTail_(sheet, actualLastRow);
+}
+
+function compactSheetsForItems_(ss, items) {
+  const names = Object.create(null);
+  items.forEach(function(item) {
+    names[resolveSheetName_(item)] = true;
+  });
+  const trimmed = {};
+  Object.keys(names).forEach(function(sheetName) {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+    trimmed[sheetName] = compactSheetForWrite_(sheet, items.find(function(item) {
+      return resolveSheetName_(item) === sheetName;
+    }) || null);
+  });
+  return trimmed;
+}
+
 function buildSheetContext_(ss, sheetName, sampleItem) {
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
@@ -2846,9 +3012,14 @@ function buildSheetContext_(ss, sheetName, sampleItem) {
     if (normalized) normalizedHeaderMap[normalized] = idx;
   });
 
-  const lastRow = Math.max(sheet.getLastRow(), 1);
-  const allValues = lastRow > 1
-    ? sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues()
+  const rowData = extractRowData_(sampleItem);
+  const actualLastRow = findActualLastDataRow_(sheet, normalizedHeaderMap, sampleItem, rowData);
+  if (sheet.getMaxRows() > actualLastRow + SHEET_TRIM_MIN_SURPLUS_ROWS + SHEET_TRIM_PADDING_ROWS) {
+    maybeTrimSheetEmptyTail_(sheet, actualLastRow);
+  }
+
+  const allValues = actualLastRow > 1
+    ? sheet.getRange(2, 1, actualLastRow - 1, lastColumn).getValues()
     : [];
 
   return {
@@ -2857,7 +3028,8 @@ function buildSheetContext_(ss, sheetName, sampleItem) {
     lastColumn,
     normalizedHeaderMap,
     allValues,
-    keyColumnIndex: findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, extractRowData_(sampleItem)),
+    actualLastRow: actualLastRow,
+    keyColumnIndex: findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, rowData),
     textColumnIndexes: findTextPreservingColumnIndexes_(normalizedHeaderMap),
     urlLinkColumnIndexes: findUrlLinkColumnIndexes_(normalizedHeaderMap),
   };

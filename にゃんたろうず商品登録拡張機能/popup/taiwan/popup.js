@@ -12,6 +12,7 @@ let sendToSheetRequestInFlight = false;
 const POPUP_LOG_MAX = 500;
 const POPUP_LOG_STORAGE_KEY = 'popupLogLines_v1';
 const popupLogLines = [];
+let lastPopupStatusLogMessage = '';
 
 function _logTime(date = new Date()) {
   const hh = String(date.getHours()).padStart(2, '0');
@@ -293,13 +294,20 @@ function warmupGas(url) {
     .catch(() => {});
 }
 
-function setStatus(msg, type = '') {
+function setStatus(msg, type = '', options = {}) {
   const el = document.getElementById('status');
-  el.textContent = msg || DEFAULT_STATUS_MESSAGE;
+  const text = msg || DEFAULT_STATUS_MESSAGE;
+  el.textContent = text;
   el.className = `status-bar ${type}`;
-  if (msg && msg !== DEFAULT_STATUS_MESSAGE) {
-    const logType = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
-    appendPopupLog(msg, logType);
+  if (!text || text === DEFAULT_STATUS_MESSAGE) {
+    lastPopupStatusLogMessage = '';
+    return;
+  }
+  const logType = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+  const forceLog = options.forceLog === true;
+  if (forceLog || text !== lastPopupStatusLogMessage) {
+    appendPopupLog(text, logType);
+    lastPopupStatusLogMessage = text;
   }
 }
 
@@ -317,12 +325,13 @@ function restoreDefaultStatusIfMatching(previousStatus) {
 }
 
 function syncGasStatusUi(previousStatus, nextStatus) {
+  const previousMessage = gasSyncStatusMessage(previousStatus);
   gasSyncStatus = nextStatus || null;
   const nextMessage = gasSyncStatusMessage(gasSyncStatus);
 
-  if (nextMessage) {
+  if (nextMessage && nextMessage !== previousMessage) {
     setStatus(nextMessage, gasSyncStatusType(gasSyncStatus));
-  } else if (previousStatus) {
+  } else if (!nextMessage && previousStatus) {
     restoreDefaultStatusIfMatching(previousStatus);
   }
 
@@ -380,6 +389,7 @@ function buildGasPayload(items) {
     action: 'upsertProductWithLookup',
     source: 'books_tw',
     appendMode: 'append',
+    compactSheets: true,
     requestedAt: new Date().toISOString(),
     items: items.map(product => {
       const kind = getProductSheetType(product);
@@ -712,8 +722,7 @@ async function handleSendToSheet() {
     }
 
     clearGasSyncSuccessAutoClearTimer();
-    syncGasStatusUi(gasSyncStatus, response.status || null);
-    setStatus(gasSyncStatusMessage(gasSyncStatus) || `⏳ ${products.length}件の送信を開始しました`, gasSyncStatusType(gasSyncStatus));
+    syncGasStatusUi(null, response.status || null);
   } finally {
     sendToSheetRequestInFlight = false;
     updateUI();

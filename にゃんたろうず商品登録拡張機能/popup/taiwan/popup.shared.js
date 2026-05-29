@@ -607,9 +607,10 @@ async function refreshGasSyncStatus(options = {}) {
   const response = await sendRuntimeMessage({ action: 'getGasSyncStatus' });
   if (!response?.ok) return null;
 
+  const previousMessage = gasSyncStatusMessage(gasSyncStatus);
   gasSyncStatus = response.status || null;
   const message = gasSyncStatusMessage(gasSyncStatus);
-  if (message && options.applyMessage !== false) {
+  if (message && options.applyMessage !== false && message !== previousMessage) {
     setStatus(message, gasSyncStatusType(gasSyncStatus));
   }
 
