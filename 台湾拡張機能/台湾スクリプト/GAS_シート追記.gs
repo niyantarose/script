@@ -2477,6 +2477,26 @@ function writeRowBulk_(context, rowNumber, item) {
 /**
  * 既存行の重複キー → 行番号（1スキャンで構築。TextFinder 繰り返しより高速）
  */
+function buildDuplicateKeyToRowMapInMemory_(allValues, duplicateKeyColumns) {
+  const map = Object.create(null);
+  if (!duplicateKeyColumns || !duplicateKeyColumns.length) return map;
+
+  const numRows = allValues.length;
+  if (numRows <= 0) return map;
+
+  duplicateKeyColumns.forEach(function(column) {
+    const colIdx = column.index;
+    for (let r = 0; r < numRows; r += 1) {
+      const cellRaw = allValues[r][colIdx];
+      const cellStr = String(cellRaw == null ? '' : cellRaw);
+      const normalized = normalizeDuplicateKeyValueByType_(column.type, cellStr);
+      if (!normalized) continue;
+      map[column.type + ':' + normalized] = r + 2;
+    }
+  });
+  return map;
+}
+
 function buildDuplicateKeyToRowMap_(sheet, duplicateKeyColumns) {
   const map = Object.create(null);
   if (!duplicateKeyColumns || !duplicateKeyColumns.length) return map;
@@ -2544,7 +2564,7 @@ function upsertItemsWithLookup_(ss, items) {
       ? buildSheetContext_(ss, sheetName, samplePrepared)
       : context;
     var duplicateKeyColumns = findDuplicateKeyColumns_(refreshedContext.normalizedHeaderMap, samplePrepared);
-    var keyRowOnSheet = buildDuplicateKeyToRowMap_(refreshedContext.sheet, duplicateKeyColumns);
+    var keyRowOnSheet = buildDuplicateKeyToRowMapInMemory_(refreshedContext.allValues, duplicateKeyColumns);
     var pendingKeyRow = Object.create(null);
 
     var gj;

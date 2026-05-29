@@ -4,7 +4,11 @@ const GAS_SYNC_QUEUE_KEY = 'booksGasSyncQueueV1';
 const GAS_SYNC_STATUS_KEY = 'booksGasSyncStatusV1';
 const GAS_SYNC_RESET_TOKEN_KEY = 'booksGasSyncResetTokenV1';
 const GAS_SYNC_ALARM_NAME = 'booksGasSyncQueueAlarmV1';
-const GAS_SYNC_TIMEOUT_MS = 60000;
+const GAS_SYNC_TIMEOUT_MS = 90000;
+// 一時的な通信失敗・タイムアウト・コールドスタートを吸収するための自動リトライ設定。
+// 1回目で失敗しても最大この回数まで同一ジョブを再送する（指数バックオフ）。
+const GAS_SYNC_MAX_ATTEMPTS = 3;
+const GAS_SYNC_RETRY_BASE_DELAY_MS = 3000;
 const GAS_SYNC_ALARM_PERIOD_MINUTES = 1;
 const IMAGE_FILENAME_EXT = 'jpg';
 const TAIWAN_IMAGE_MAX_EDGE = 1000;
@@ -148,6 +152,16 @@ async function getGasSyncStatusWithRecovery() {
   scheduleGasSyncAlarm(150);
   processGasSyncQueue().catch(() => {});
   return status;
+}
+
+// GASへGETを投げてコールドスタートを解消しておく（fire-and-forget）。
+function warmupGasFromBackground(url) {
+  if (!url) return;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  fetch(url, { method: 'GET', credentials: 'omit', redirect: 'follow', signal: controller.signal })
+    .catch(() => {})
+    .finally(() => clearTimeout(timeoutId));
 }
 
 async function postGasJson(url, bodyText) {
@@ -462,7 +476,19 @@ function createGasSyncJob(request) {
     url: String(request.url || '').trim(),
     items: Array.isArray(request.items) ? request.items : [],
     requestedAt: new Date().toISOString(),
+    attempts: 0,
   };
+}
+
+// タイムアウト/ネットワーク系の一過性エラーのみ自動リトライ対象とする。
+// 行数不一致・入力規則違反・権限エラー等のロジック系は再送しても無駄なので除外。
+function isRetryableGasSyncError(errorLike) {
+  const raw = String(errorLike?.message || errorLike || '');
+  return /timed out|timeout|hard timeout|ネットワーク|network|fetch failed|failed to fetch|load failed|connection|ECONN|socket/i.test(raw);
+}
+
+function delayMs_(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
 async function queueGasSyncJob(request) {
@@ -564,7 +590,33 @@ async function processGasSyncQueue() {
         const latestResetToken = await getStoredGasSyncResetToken();
         gasSyncResetToken = latestResetToken;
         if (runToken !== latestResetToken) continue;
+
+        const attemptsSoFar = Number(job.attempts || 0) + 1;
+        // 一過性（タイムアウト/通信失敗）かつ上限未満なら、同一ジョブを先頭に戻して自動再送する。
+        if (isRetryableGasSyncError(error) && attemptsSoFar < GAS_SYNC_MAX_ATTEMPTS) {
+          const retryJob = { ...job, attempts: attemptsSoFar };
+          const backoffMs = GAS_SYNC_RETRY_BASE_DELAY_MS * Math.pow(2, attemptsSoFar - 1);
+          await storageSetLocal({
+            [GAS_SYNC_QUEUE_KEY]: [retryJob].concat(nextQueue),
+            [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
+              state: 'queued',
+              jobId: job.jobId,
+              itemCount: job.items.length,
+              queueLength: nextQueue.length + 1,
+              // バックオフ待機中に「stale（30秒超の queued）」と誤判定され
+              // 二重処理されないよう、requestedAt は現在時刻に更新する。
+              requestedAt: new Date().toISOString(),
+              message: `⏳ 通信が不安定なため再送します（${attemptsSoFar}/${GAS_SYNC_MAX_ATTEMPTS - 1}回目・${Math.round(backoffMs / 1000)}秒後）`,
+            }),
+          });
+          // GASのコールドスタートを温め直してから待機・再試行する。
+          try { warmupGasFromBackground(job.url); } catch (_) {}
+          await delayMs_(backoffMs);
+          continue;
+        }
+
         const normalizedError = normalizeGasWriteErrorMessage(error);
+        const attemptSuffix = attemptsSoFar > 1 ? `（${attemptsSoFar}回試行）` : '';
         await storageSetLocal({
           [GAS_SYNC_QUEUE_KEY]: nextQueue,
           [GAS_SYNC_STATUS_KEY]: buildGasSyncStatus({
@@ -575,7 +627,7 @@ async function processGasSyncQueue() {
             requestedAt: job.requestedAt,
             finishedAt: new Date().toISOString(),
             error: normalizedError,
-            message: `❌ ${normalizedError}`,
+            message: `❌ ${normalizedError}${attemptSuffix}`,
           }),
         });
       }
