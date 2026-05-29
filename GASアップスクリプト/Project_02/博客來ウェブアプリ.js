@@ -2303,6 +2303,11 @@ function lookupJapaneseTitleAction_(payload) {
   return lookupJapaneseTitleFromPayload_(payload || {});
 }
 
+// 拡張機能（クライアント）側のカスケードで確定済みとみなせる状態。
+// これらが来たら、書き込み時にサーバ側で重い外部API・スクレイピングを
+// 再実行しない（＝GASへの書き込みを超高速化する主目的）。
+// クライアントの「追加」時点で lookupJapaneseTitle（GASカスケード＋MU直叩き）を
+// 既に実行済みのため、書き込み時の再照会は完全な重複処理だった。
 const CLIENT_TERMINAL_LOOKUP_STATUSES_ = {
   resolved: true,
   not_found: true,
@@ -2313,9 +2318,13 @@ const CLIENT_TERMINAL_LOOKUP_STATUSES_ = {
 
 function shouldRefreshLookup_(lookup, titleAnalysis) {
   const normalized = normalizeLookupResult_(lookup);
+  // クライアントが照会結果を一切持っていない場合のみ、サーバ側カスケードを実行。
   if (!normalized) return true;
   const status = String(normalized.status || '').trim();
+  // failed / skipped / 未知ステータス（=クライアント側カスケードが完走していない一過性の状態）
+  // のときだけサーバで再照会する。
   if (!CLIENT_TERMINAL_LOOKUP_STATUSES_[status]) return true;
+  // 確定状態でも、保存済み照会キーが現在のタイトル解析キーと食い違う（陳腐化）場合は再照会。
   const lookupKey = String(normalized.normalizedSearchTitle || '').trim();
   const analysisKey = String(titleAnalysis && titleAnalysis.normalizedSearchTitle || '').trim();
   return Boolean(analysisKey && lookupKey && lookupKey !== analysisKey);
@@ -2395,6 +2404,8 @@ function prepareItemWithJapaneseTitleLookup_(item) {
         provider: clientLookup.provider || lookup.provider || 'mangaUpdates(extension)',
       });
     }
+    // 「MU上に作品はあるが日本語訳なし」の状態をクライアントから引き継ぐ
+    // （サーバカスケード再実行で 'not_found' になっても上書きしない）
     if (clientSeriesOnly && !String(lookup.japaneseTitle || '').trim()) {
       const muCandidates = Array.isArray(clientLookup.candidates) ? clientLookup.candidates : [];
       const existingCandidates = Array.isArray(lookup.candidates) ? lookup.candidates : [];
@@ -2528,7 +2539,10 @@ function findExistingRowFromKeyMaps_(duplicateKeys, primaryMap, fallbackMap) {
   return 0;
 }
 
-function upsertItemsWithLookup_(ss, items) {
+function upsertItemsWithLookup_(ss, items, timing) {
+  timing = timing || {};
+  
+  var tEnrichStart = Date.now();
   var preparedEntries = [];
   var ix;
   for (ix = 0; ix < items.length; ix += 1) {
@@ -2537,6 +2551,7 @@ function upsertItemsWithLookup_(ss, items) {
       prepared: mag_normalizeMagazineRowForDropdownWrite_(prepareItemWithJapaneseTitleLookup_(items[ix])),
     });
   }
+  timing.enrichMs = Date.now() - tEnrichStart;
 
   var bySheet = {};
   for (ix = 0; ix < preparedEntries.length; ix += 1) {
@@ -2552,14 +2567,21 @@ function upsertItemsWithLookup_(ss, items) {
     var group = bySheet[sheetName];
     var samplePrepared = group[0].prepared;
 
+    var tBStart = Date.now();
     var context = buildSheetContext_(ss, sheetName, samplePrepared);
+    // 照会ログ等の列が不足しているときだけヘッダー追記＆コンテキスト再構築する。
+    // 既に列が揃っている通常時は再読込しない（無駄なシート読込を削減）。
     var columnsAdded = ensureLookupColumns_(context.sheet);
     var refreshedContext = columnsAdded
       ? buildSheetContext_(ss, sheetName, samplePrepared)
       : context;
+    timing.buildContextMs = (timing.buildContextMs || 0) + (Date.now() - tBStart);
+
+    var tKStart = Date.now();
     var duplicateKeyColumns = findDuplicateKeyColumns_(refreshedContext.normalizedHeaderMap, samplePrepared);
     var keyRowOnSheet = buildDuplicateKeyToRowMapInMemory_(refreshedContext.allValues, duplicateKeyColumns);
     var pendingKeyRow = Object.create(null);
+    timing.buildKeysMs = (timing.buildKeysMs || 0) + (Date.now() - tKStart);
 
     var gj;
     for (gj = 0; gj < group.length; gj += 1) {
@@ -2573,7 +2595,9 @@ function upsertItemsWithLookup_(ss, items) {
       var targetRow = existingRow;
       var mode = 'updated';
 
+      var tWStart = Date.now();
       if (!targetRow) {
+        // 事前に読み込んだ allValues から追記行を決定（シート再読込を避けて高速化）。
         targetRow = resolveAppendRowsInMemory_(refreshedContext.allValues, refreshedContext.keyColumnIndex, 1)[0];
         mode = 'created';
         var newRow = buildRow_(refreshedContext, preparedItem);
@@ -2581,6 +2605,7 @@ function upsertItemsWithLookup_(ss, items) {
       } else {
         writeRowBulk_(refreshedContext, targetRow, preparedItem);
       }
+      timing.writeRowsMs = (timing.writeRowsMs || 0) + (Date.now() - tWStart);
 
       var pk2;
       for (pk2 = 0; pk2 < duplicateKeys.length; pk2 += 1) {
@@ -2609,6 +2634,7 @@ function upsertItemsWithLookup_(ss, items) {
       };
     }
   });
+  timing.writeEnd = Date.now();
   return results;
 }
 
@@ -2622,11 +2648,18 @@ function upsertProductWithLookupAction_(payload) {
     })].filter(Boolean);
   if (!items.length) throw new Error('items is empty');
 
+  // === 処理時間計測（書き込みが遅いときの切り分け用）===
+  const tStart = Date.now();
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
+  const tLock = Date.now();
   try {
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const results = upsertItemsWithLookup_(ss, items);
+    const serverTiming = {
+      lockWaitMs: tLock - tStart,
+    };
+    const results = upsertItemsWithLookup_(ss, items, serverTiming);
+    const tEnd = Date.now();
     const first = results[0] || {};
     return {
       success: true,
@@ -2639,6 +2672,18 @@ function upsertProductWithLookupAction_(payload) {
       row: first.row || first.appendedRow || '',
       lookup: first.lookup || null,
       results: results,
+      // 各工程の実測ミリ秒を返す
+      timing: {
+        serverMs: tEnd - tStart,
+        lockWaitMs: serverTiming.lockWaitMs,
+        enrichMs: serverTiming.enrichMs,
+        buildContextMs: serverTiming.buildContextMs,
+        buildKeysMs: serverTiming.buildKeysMs,
+        writeRowsMs: serverTiming.writeRowsMs,
+        recalcMs: tEnd - tLock - (serverTiming.enrichMs || 0) - (serverTiming.buildContextMs || 0) - (serverTiming.buildKeysMs || 0) - (serverTiming.writeRowsMs || 0),
+      },
+      gasFile: "博客來ウェブアプリ.js",
+      gasVersion: "v72",
       warnings: []
     };
   } finally {

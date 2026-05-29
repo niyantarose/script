@@ -2539,7 +2539,10 @@ function findExistingRowFromKeyMaps_(duplicateKeys, primaryMap, fallbackMap) {
   return 0;
 }
 
-function upsertItemsWithLookup_(ss, items) {
+function upsertItemsWithLookup_(ss, items, timing) {
+  timing = timing || {};
+  
+  var tEnrichStart = Date.now();
   var preparedEntries = [];
   var ix;
   for (ix = 0; ix < items.length; ix += 1) {
@@ -2548,6 +2551,7 @@ function upsertItemsWithLookup_(ss, items) {
       prepared: mag_normalizeMagazineRowForDropdownWrite_(prepareItemWithJapaneseTitleLookup_(items[ix])),
     });
   }
+  timing.enrichMs = Date.now() - tEnrichStart;
 
   var bySheet = {};
   for (ix = 0; ix < preparedEntries.length; ix += 1) {
@@ -2563,6 +2567,7 @@ function upsertItemsWithLookup_(ss, items) {
     var group = bySheet[sheetName];
     var samplePrepared = group[0].prepared;
 
+    var tBStart = Date.now();
     var context = buildSheetContext_(ss, sheetName, samplePrepared);
     // 照会ログ等の列が不足しているときだけヘッダー追記＆コンテキスト再構築する。
     // 既に列が揃っている通常時は再読込しない（無駄なシート読込を削減）。
@@ -2570,9 +2575,13 @@ function upsertItemsWithLookup_(ss, items) {
     var refreshedContext = columnsAdded
       ? buildSheetContext_(ss, sheetName, samplePrepared)
       : context;
+    timing.buildContextMs = (timing.buildContextMs || 0) + (Date.now() - tBStart);
+
+    var tKStart = Date.now();
     var duplicateKeyColumns = findDuplicateKeyColumns_(refreshedContext.normalizedHeaderMap, samplePrepared);
     var keyRowOnSheet = buildDuplicateKeyToRowMapInMemory_(refreshedContext.allValues, duplicateKeyColumns);
     var pendingKeyRow = Object.create(null);
+    timing.buildKeysMs = (timing.buildKeysMs || 0) + (Date.now() - tKStart);
 
     var gj;
     for (gj = 0; gj < group.length; gj += 1) {
@@ -2586,14 +2595,17 @@ function upsertItemsWithLookup_(ss, items) {
       var targetRow = existingRow;
       var mode = 'updated';
 
+      var tWStart = Date.now();
       if (!targetRow) {
-        targetRow = resolveAppendRows_(refreshedContext.sheet, refreshedContext.keyColumnIndex, 1)[0];
+        // 事前に読み込んだ allValues から追記行を決定（シート再読込を避けて高速化）。
+        targetRow = resolveAppendRowsInMemory_(refreshedContext.allValues, refreshedContext.keyColumnIndex, 1)[0];
         mode = 'created';
         var newRow = buildRow_(refreshedContext, preparedItem);
         writeRows_(refreshedContext.sheet, refreshedContext.lastColumn, [targetRow], [newRow], refreshedContext.textColumnIndexes, refreshedContext.urlLinkColumnIndexes);
       } else {
         writeRowBulk_(refreshedContext, targetRow, preparedItem);
       }
+      timing.writeRowsMs = (timing.writeRowsMs || 0) + (Date.now() - tWStart);
 
       var pk2;
       for (pk2 = 0; pk2 < duplicateKeys.length; pk2 += 1) {
@@ -2635,11 +2647,18 @@ function upsertProductWithLookupAction_(payload) {
     })].filter(Boolean);
   if (!items.length) throw new Error('items is empty');
 
+  // === 処理時間計測（書き込みが遅いときの切り分け用）===
+  const tStart = Date.now();
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
+  const tLock = Date.now();
   try {
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const results = upsertItemsWithLookup_(ss, items);
+    const serverTiming = {
+      lockWaitMs: tLock - tStart,
+    };
+    const results = upsertItemsWithLookup_(ss, items, serverTiming);
+    const tEnd = Date.now();
     const first = results[0] || {};
     return {
       success: true,
@@ -2652,6 +2671,18 @@ function upsertProductWithLookupAction_(payload) {
       row: first.row || first.appendedRow || '',
       lookup: first.lookup || null,
       results: results,
+      // 各工程の実測ミリ秒を返す
+      timing: {
+        serverMs: tEnd - tStart,
+        lockWaitMs: serverTiming.lockWaitMs,
+        enrichMs: serverTiming.enrichMs,
+        buildContextMs: serverTiming.buildContextMs,
+        buildKeysMs: serverTiming.buildKeysMs,
+        writeRowsMs: serverTiming.writeRowsMs,
+        recalcMs: tEnd - tLock - (serverTiming.enrichMs || 0) - (serverTiming.buildContextMs || 0) - (serverTiming.buildKeysMs || 0) - (serverTiming.writeRowsMs || 0),
+      },
+      gasFile: "GAS_シート追記.gs",
+      gasVersion: "v72",
       warnings: []
     };
   } finally {

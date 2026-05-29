@@ -425,7 +425,10 @@ async function enrichItemsWithTaiwanMangaUpdates(items) {
 }
 
 async function postProductsToGas(url, items) {
+  // === 処理時間計測（書き込みが遅いときの切り分け用）===
+  const tEnrichStart = Date.now();
   const enrichedItems = await enrichItemsWithTaiwanMangaUpdates(items);
+  const tPostStart = Date.now();
   const response = await postGasJson(url, JSON.stringify({
     action: 'upsertProductWithLookup',
     source: 'books_tw',
@@ -433,6 +436,7 @@ async function postProductsToGas(url, items) {
     requestedAt: new Date().toISOString(),
     items: enrichedItems,
   }));
+  const tPostEnd = Date.now();
 
   const responseText = response.responseText;
   let data = null;
@@ -458,7 +462,63 @@ async function postProductsToGas(url, items) {
     throw new Error(data.error || 'GAS write failed');
   }
 
+  // クライアント側の内訳: MU照会(enrichMs) / GAS往復(postMs)。
+  // サーバ側の内訳(serverMs/lockWaitMs/writeMs)は data.timing から取得。
+  data.__clientTiming = {
+    enrichMs: tPostStart - tEnrichStart,
+    postMs: tPostEnd - tPostStart,
+  };
   return data;
+}
+
+function formatGasSyncTimingText_(result) {
+  if (!result || typeof result !== 'object') return '';
+  const client = result.__clientTiming || {};
+  const server = result.timing || null;
+  const parts = [];
+  
+  if (Number.isFinite(Number(client.enrichMs))) {
+    parts.push(`MU照会 ${(Number(client.enrichMs) / 1000).toFixed(1)}s`);
+  }
+  if (Number.isFinite(Number(client.postMs))) {
+    parts.push(`GAS往復 ${(Number(client.postMs) / 1000).toFixed(1)}s`);
+  }
+  
+  if (server && Number.isFinite(Number(server.serverMs))) {
+    const innerParts = [];
+    if (Number.isFinite(Number(server.lockWaitMs))) {
+      innerParts.push(`ロック待 ${(Number(server.lockWaitMs) / 1000).toFixed(1)}s`);
+    }
+    if (Number.isFinite(Number(server.enrichMs))) {
+      innerParts.push(`照会 ${(Number(server.enrichMs) / 1000).toFixed(1)}s`);
+    }
+    if (Number.isFinite(Number(server.buildContextMs))) {
+      innerParts.push(`読込 ${(Number(server.buildContextMs) / 1000).toFixed(1)}s`);
+    }
+    if (Number.isFinite(Number(server.buildKeysMs))) {
+      innerParts.push(`キー判定 ${(Number(server.buildKeysMs) / 1000).toFixed(1)}s`);
+    }
+    
+    // 旧バージョンの writeMs もしくは 新バージョンの writeRowsMs
+    const writeVal = server.writeRowsMs !== undefined ? server.writeRowsMs : server.writeMs;
+    if (Number.isFinite(Number(writeVal))) {
+      innerParts.push(`実書込 ${(Number(writeVal) / 1000).toFixed(1)}s`);
+    }
+    if (Number.isFinite(Number(server.recalcMs))) {
+      innerParts.push(`計算等 ${(Number(server.recalcMs) / 1000).toFixed(1)}s`);
+    }
+    
+    parts.push(`サーバ ${(Number(server.serverMs) / 1000).toFixed(1)}s(${innerParts.join('/')})`);
+  } else {
+    // timing が無い = 旧バージョンのGASがデプロイされている可能性が高い。
+    parts.push('サーバ内訳なし');
+  }
+  
+  const gasInfo = (result && result.gasFile && result.gasVersion)
+    ? `[GAS: ${result.gasFile}(${result.gasVersion})]`
+    : '[GAS: 旧バージョン/未デプロイ]';
+  
+  return parts.length ? `⏱ ${parts.join(' / ')} ${gasInfo}` : '';
 }
 
 function normalizeGasWriteErrorMessage(errorLike) {
@@ -606,11 +666,13 @@ async function processGasSyncQueue() {
         const locationText = appended === 1 && firstAppendedResult?.sheetName && firstAppendedResult?.appendedRow
           ? `（${firstAppendedResult.sheetName} ${firstAppendedResult.appendedRow}行目）`
           : '';
+        const timingText = formatGasSyncTimingText_(result);
+        const timingSuffix = timingText ? ` ${timingText}` : '';
         const message = appended > 0
-          ? `✅ シートへ ${appended} 件追記しました${skipped > 0 ? `（重複スキップ:${skipped}）` : ''}${locationText}`
+          ? `✅ シートへ ${appended} 件追記しました${skipped > 0 ? `（重複スキップ:${skipped}）` : ''}${locationText}${timingSuffix}`
           : skipped > 0
-            ? `ℹ️ 重複のため新規追加はありませんでした（スキップ:${skipped}）`
-            : 'ℹ️ 追加対象はありませんでした';
+            ? `ℹ️ 重複のため新規追加はありませんでした（スキップ:${skipped}）${timingSuffix}`
+            : `ℹ️ 追加対象はありませんでした${timingSuffix}`;
 
         await storageSetLocal({
           [GAS_SYNC_QUEUE_KEY]: nextQueue,
