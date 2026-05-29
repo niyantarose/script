@@ -2630,7 +2630,9 @@ function upsertItemsWithLookup_(ss, items, timing) {
         row: targetRow,
         appendedRow: targetRow,
         mode: mode,
-        lookup: preparedItem.japaneseTitleLookup || null
+        lookup: preparedItem.japaneseTitleLookup || null,
+        sheetRows: refreshedContext.allValues.length + 1,
+        sheetCols: refreshedContext.lastColumn
       };
     }
   });
@@ -2671,6 +2673,8 @@ function upsertProductWithLookupAction_(payload) {
       spreadsheetId: SPREADSHEET_ID,
       row: first.row || first.appendedRow || '',
       lookup: first.lookup || null,
+      sheetRows: first.sheetRows || 0,
+      sheetCols: first.sheetCols || 0,
       results: results,
       // 各工程の実測ミリ秒を返す
       timing: {

@@ -514,11 +514,16 @@ function formatGasSyncTimingText_(result) {
     parts.push('サーバ内訳なし');
   }
   
+  const sizeInfo = (result && result.sheetRows)
+    ? `[サイズ: ${result.sheetRows}行x${result.sheetCols}列]`
+    : '';
+    
   const gasInfo = (result && result.gasFile && result.gasVersion)
     ? `[GAS: ${result.gasFile}(${result.gasVersion})]`
     : '[GAS: 旧バージョン/未デプロイ]';
   
-  return parts.length ? `⏱ ${parts.join(' / ')} ${gasInfo}` : '';
+  const suffix = [sizeInfo, gasInfo].filter(Boolean).join(' ');
+  return parts.length ? `⏱ ${parts.join(' / ')} ${suffix}` : '';
 }
 
 function normalizeGasWriteErrorMessage(errorLike) {
