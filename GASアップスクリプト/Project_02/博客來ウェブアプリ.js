@@ -3226,7 +3226,8 @@ function writeRows_(sheet, lastColumn, targetRows, rows, textColumnIndexes, urlL
   }
 
   // 全セグメント書き込み完了後に一括フラッシュ（API遅延を最小化）
-  SpreadsheetApp.flush();
+  // ※同期的な計算待ちを防ぐため、コメントアウトして非同期に完了させます
+  // SpreadsheetApp.flush();
 }
 
 function normalizeHeader_(value) {

@@ -613,14 +613,21 @@
           errors.push('siteSearch(' + sq + '): ' + (err.message || err));
           return [];
         });
-        for (si = 0; si < slugs.length; si += 1) {
-          var siteDetail = await mangaUpdatesSeriesDetailBySlugOrId(slugs[si]).catch(function(err) {
-            errors.push('siteDetail(' + slugs[si] + '): ' + (err.message || err));
-            return null;
-          });
+        // スラッグ詳細は並列取得する（逐次 await だと最大数十リクエストが直列化し、
+        // MUに日本語タイトルが無い作品で照会が15〜30秒級に膨らむ主因だった）。
+        var siteRefs = slugs.slice(0, 4);
+        var siteDetails = await Promise.all(
+          siteRefs.map(function(slug) {
+            return mangaUpdatesSeriesDetailBySlugOrId(slug).catch(function(err) {
+              errors.push('siteDetail(' + slug + '): ' + (err.message || err));
+              return null;
+            });
+          })
+        );
+        for (si = 0; si < siteDetails.length; si += 1) {
           var siteRow = { hit_title: sq };
           var siteResolved = tryResolveMatchedDetail_(
-            siteDetail,
+            siteDetails[si],
             siteRow,
             queryKeys,
             queries,

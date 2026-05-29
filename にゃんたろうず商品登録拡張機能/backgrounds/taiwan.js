@@ -276,11 +276,26 @@ function shouldTryTaiwanMuLookup(item, analysis) {
   return ['manga', 'bl_manga', 'goods', 'light_novel', 'novel_book', 'unknown', 'book'].includes(type) || !type;
 }
 
+// 拡張ポップアップが「追加」時に既に確定させた照会結果。
+// これらが付いていれば書き込み時にMUを再照会しない（重い逐次通信の二重実行を防ぐ）。
+// not_found / series_found_no_japanese も「MU側では確定」なので、再照会しても結果は変わらない。
+const TAIWAN_TERMINAL_LOOKUP_STATUSES = {
+  resolved: true,
+  not_found: true,
+  series_found_no_japanese: true,
+};
+
 async function enrichItemWithTaiwanMangaUpdates(item) {
   if (!item || typeof item !== 'object') return item;
   const existing = item.japaneseTitleLookup;
-  if (existing?.status === 'resolved' && String(existing.japaneseTitle || existing.title || '').trim()) {
-    return item;
+  const existingStatus = String(existing?.status || '').trim();
+  if (existing && TAIWAN_TERMINAL_LOOKUP_STATUSES[existingStatus]) {
+    // resolved はタイトルが入っている場合のみ信頼（空 resolved は異常なので再照会）。
+    // not_found / series は「見つからない確定」なのでタイトル無しでも再照会不要。
+    const hasTitle = String(existing.japaneseTitle || existing.title || '').trim();
+    if (existingStatus !== 'resolved' || hasTitle) {
+      return item;
+    }
   }
 
   const rawItem = item.rawItem || item;
