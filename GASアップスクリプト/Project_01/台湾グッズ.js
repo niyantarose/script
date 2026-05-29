@@ -295,7 +295,7 @@ function 台湾グッズ_粗利益率を計算_(売価, 原価) {
  * 1行補完
  * ============================================================ */
 
-function 台湾グッズ_1行補完_(sh, row) {
+function 台湾グッズ_1行補完_(sh, row, options = {}) {
   if (!sh || sh.getName() !== '台湾グッズ' || row < 2) {
     台湾グッズ_LOG_('1行補完 skip', {
       hasSheet: !!sh,
@@ -305,11 +305,12 @@ function 台湾グッズ_1行補完_(sh, row) {
     return false;
   }
 
-  const 列 = 台湾グッズ_列マップを取得_(sh);
-  const lastCol = sh.getLastColumn();
-  const rowValues = sh.getRange(row, 1, 1, lastCol).getValues()[0];
+  const 列 = options.列マップ || 台湾グッズ_列マップを取得_(sh);
+  const lastCol = options.lastCol || sh.getLastColumn();
+  const rowValues = options.rowValues || sh.getRange(row, 1, 1, lastCol).getValues()[0];
 
   const g = (名前) => 列[名前] ? rowValues[列[名前] - 1] : '';
+  const modifiedCols = [];
   const s = (名前, 値) => {
     if (!列[名前]) {
       台湾グッズ_LOG_('set skip: no column', { row, colName: 名前, value: 値 });
@@ -333,6 +334,9 @@ function 台湾グッズ_1行補完_(sh, row) {
     });
 
     rowValues[idx] = 値;
+    if (!modifiedCols.includes(名前)) {
+      modifiedCols.push(名前);
+    }
     return true;
   };
 
@@ -495,8 +499,13 @@ if ((!親コード || SKU不一致) && 値.言語 && 値.作品名原題) {
   }
 
   if (changed) {
-    sh.getRange(row, 1, 1, lastCol).setValues([rowValues]);
-    if (列['粗利益率']) {
+    modifiedCols.forEach(colName => {
+      const colIndex = 列[colName];
+      if (colIndex) {
+        sh.getRange(row, colIndex).setValue(rowValues[colIndex - 1]);
+      }
+    });
+    if (列['粗利益率'] && modifiedCols.includes('粗利益率')) {
       sh.getRange(row, 列['粗利益率']).setNumberFormat('0.0%');
     }
     台湾グッズ_LOG_('1行補完 write done', { row });
@@ -671,20 +680,30 @@ function 台湾グッズ_onEdit(e) {
 
   const lock = LockService.getDocumentLock();
   try {
-    if (!lock.tryLock(10000)) {
-      台湾グッズ_LOG_('return: lock failed');
-      return;
-    }
+    lock.waitLock(15000);
   } catch (err) {
-    台湾グッズ_LOG_('return: lock error', { error: String(err) });
+    台湾グッズ_LOG_('return: lock error/failed', { error: String(err) });
     return;
   }
+
+  // ループ前に数式を確定し、必要な情報を一括取得
+  SpreadsheetApp.flush();
+
+  const lastCol = sh.getLastColumn();
+  const allRowValues = sh.getRange(開始行, 1, 行数, lastCol).getValues();
 
   try {
     for (let row = 開始行; row < 開始行 + 行数; row++) {
       if (row < 2) continue;
+      const rowValues = allRowValues[row - 開始行];
+      if (!rowValues) continue;
+
       台湾グッズ_LOG_('go: 1行補完', { row });
-      const changed = 台湾グッズ_1行補完_(sh, row);
+      const changed = 台湾グッズ_1行補完_(sh, row, {
+        列マップ: 列,
+        lastCol: lastCol,
+        rowValues: rowValues
+      });
       台湾グッズ_LOG_('1行補完 end', { row, changed });
     }
   } catch (err) {

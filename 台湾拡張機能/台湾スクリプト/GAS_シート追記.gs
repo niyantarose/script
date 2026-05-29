@@ -752,7 +752,7 @@ function runTitleLookupProvider_(providerId, context) {
   }
 }
 
-function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, author, originalProductTitle, itemType, providerHint) {
+function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, author, originalProductTitle, itemType, providerHint, skipExternalApi) {
   const result = {
     japaneseTitle: '',
     source: '',
@@ -798,6 +798,11 @@ function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, au
     if (!isProviderApplicableForItemType_(providerId, lookupItemType)) {
       result.skippedSources.push(providerId);
       result.trace.push(providerId + ':skipped(not_applicable)');
+      continue;
+    }
+    if (skipExternalApi && providerId !== 'workTitleMaster' && providerId !== 'titleAliasDictionary') {
+      result.skippedSources.push(providerId);
+      result.trace.push(providerId + ':skipped(skip_external_during_write)');
       continue;
     }
 
@@ -2192,7 +2197,7 @@ function normalizeLookupResult_(lookup) {
   };
 }
 
-function lookupJapaneseTitleFromPayload_(payload) {
+function lookupJapaneseTitleFromPayload_(payload, skipExternalApi) {
   const analysis = payload && payload.titleAnalysis || {};
   const rawItem = payload && (payload.rawItem || payload) || {};
   const rowData = extractRowData_(rawItem);
@@ -2223,7 +2228,8 @@ function lookupJapaneseTitleFromPayload_(payload) {
           author,
           originalProductTitle,
           analysis.itemType,
-          analysis.providerHint
+          analysis.providerHint,
+          skipExternalApi
         );
         aggregate.checkedSources = aggregate.checkedSources.concat(result.checkedSources || []);
         aggregate.failedSources = aggregate.failedSources.concat(result.failedSources || []);
@@ -2388,7 +2394,7 @@ function prepareItemWithJapaneseTitleLookup_(item) {
       source: item && item.source || 'books_tw',
       rawItem: item && (item.rawItem || item),
       titleAnalysis: titleAnalysis
-    }).lookup;
+    }, true).lookup;
     lookup = mergeExtensionMuTraceIntoLookup_(item && item.japaneseTitleLookup, lookup);
     if (clientLookup && String(clientLookup.japaneseTitle || '').trim() && !String(lookup.japaneseTitle || '').trim()) {
       lookup = Object.assign({}, lookup, {

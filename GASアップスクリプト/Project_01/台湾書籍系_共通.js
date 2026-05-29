@@ -835,12 +835,16 @@ function 台湾書籍系_1行補完_共通_(sh, row, 設定, options = {}) {
     return rowValues[列[列名] - 1];
   };
 
+  const modifiedCols = [];
   const s = (列名, 値) => {
     if (!列名 || !列[列名]) return false;
     const idx = 列[列名] - 1;
     const before = rowValues[idx];
     if (String(before) === String(値)) return false;
     rowValues[idx] = 値;
+    if (!modifiedCols.includes(列名)) {
+      modifiedCols.push(列名);
+    }
     return true;
   };
 
@@ -896,17 +900,19 @@ function 台湾書籍系_1行補完_共通_(sh, row, 設定, options = {}) {
     }
 
     if (changed) {
+      modifiedCols.forEach(colName => {
+        const colIndex = 列[colName];
+        if (colIndex) {
+          sh.getRange(row, colIndex).setValue(rowValues[colIndex - 1]);
+        }
+      });
+
       const 粗利益率列 = 実列名.粗利益率 ? 列[実列名.粗利益率] : 0;
+      if (粗利益率列 && row > 2) {
+        sh.getRange(row, 粗利益率列).clearContent();
+      }
 
-      台湾書籍系_1行を書き戻す_粗利益率除外_(
-        sh,
-        row,
-        lastCol,
-        rowValues,
-        粗利益率列
-      );
-
-      if (実列名.作品ID) {
+      if (実列名.作品ID && modifiedCols.includes(実列名.作品ID)) {
         sh.getRange(row, 列[実列名.作品ID]).setNumberFormat('@');
       }
     }
@@ -1029,22 +1035,23 @@ function 台湾書籍系_1行補完_共通_(sh, row, 設定, options = {}) {
   }
 
   if (changed) {
+    modifiedCols.forEach(colName => {
+      const colIndex = 列[colName];
+      if (colIndex) {
+        sh.getRange(row, colIndex).setValue(rowValues[colIndex - 1]);
+      }
+    });
+
     const 粗利益率列 = 実列名.粗利益率 ? 列[実列名.粗利益率] : 0;
-
-    台湾書籍系_1行を書き戻す_粗利益率除外_(
-      sh,
-      row,
-      lastCol,
-      rowValues,
-      粗利益率列
-    );
-
-    if (実列名.作品ID) {
-      sh.getRange(row, 列[実列名.作品ID]).setNumberFormat('@');
+    if (粗利益率列) {
+      if (row > 2) {
+        sh.getRange(row, 粗利益率列).clearContent();
+      }
+      sh.getRange(2, 粗利益率列, sh.getMaxRows() - 1, 1).setNumberFormat('0.0%');
     }
 
-    if (粗利益率列) {
-      sh.getRange(2, 粗利益率列, sh.getMaxRows() - 1, 1).setNumberFormat('0.0%');
+    if (実列名.作品ID && modifiedCols.includes(実列名.作品ID)) {
+      sh.getRange(row, 列[実列名.作品ID]).setNumberFormat('@');
     }
   }
 
@@ -1367,7 +1374,11 @@ const 監視列番号 = [...new Set(監視列名)]
   if (!対象列あり) return;
 
   const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(5000)) return;
+  try {
+    lock.waitLock(15000);
+  } catch (err) {
+    return;
+  }
 
   // ループ前に数式を確定し、必要な情報を一括取得
   SpreadsheetApp.flush();

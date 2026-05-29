@@ -825,19 +825,24 @@ function 台湾雑誌_商品名を生成_(cfg, rec, rowData, editionInfo, variat
 /* ============================================================
  * 1行再計算
  * ============================================================ */
-function 台湾雑誌_1行再計算_(sh, row) {
+function 台湾雑誌_1行再計算_(sh, row, options = {}) {
   if (!sh || row < 2) return;
 
   const cfg = 台湾雑誌_設定を取得_();
-  const map = 台湾雑誌_列Map_(sh);
-  const rowValues = sh.getRange(row, 1, 1, sh.getLastColumn()).getValues()[0];
+  const map = options.列マップ || 台湾雑誌_列Map_(sh);
+  const lastCol = options.lastCol || sh.getLastColumn();
+  const rowValues = options.rowValues || sh.getRange(row, 1, 1, lastCol).getValues()[0];
 
   const g = (names) => 台湾雑誌_値_(rowValues, map, Array.isArray(names) ? names : [names]);
+  const modifiedCols = [];
   const s = (names, value) => {
     const col = 台湾雑誌_列番号_(map, Array.isArray(names) ? names : [names]);
     if (!col) return false;
     if (String(rowValues[col - 1]) === String(value)) return false;
     rowValues[col - 1] = value;
+    if (!modifiedCols.includes(col)) {
+      modifiedCols.push(col);
+    }
     return true;
   };
 
@@ -891,13 +896,15 @@ function 台湾雑誌_1行再計算_(sh, row) {
   if (code && !g([cfg.列名.登録日])) changed = s([cfg.列名.登録日], new Date()) || changed;
 
   if (changed) {
-    sh.getRange(row, 1, 1, sh.getLastColumn()).setValues([rowValues]);
+    modifiedCols.forEach(colIndex => {
+      sh.getRange(row, colIndex).setValue(rowValues[colIndex - 1]);
+    });
 
     const rateCol = 台湾雑誌_列番号_(map, [cfg.列名.粗利益率]);
-    if (rateCol) sh.getRange(row, rateCol).setNumberFormat('0.0%');
+    if (rateCol && modifiedCols.includes(rateCol)) sh.getRange(row, rateCol).setNumberFormat('0.0%');
 
     const dateCol = 台湾雑誌_列番号_(map, [cfg.列名.登録日]);
-    if (dateCol) sh.getRange(row, dateCol).setNumberFormat('yyyy/mm/dd');
+    if (dateCol && modifiedCols.includes(dateCol)) sh.getRange(row, dateCol).setNumberFormat('yyyy/mm/dd');
   }
 }
 
@@ -926,12 +933,29 @@ function 台湾雑誌_onEdit(e) {
   if (!touched) return;
 
   const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(5000)) return;
+  try {
+    lock.waitLock(15000);
+  } catch (err) {
+    return;
+  }
+
+  // ループ前に数式を確定し、必要な情報を一括取得
+  SpreadsheetApp.flush();
+
+  const lastCol = sh.getLastColumn();
+  const allRowValues = sh.getRange(startRow, 1, numRows, lastCol).getValues();
 
   try {
     for (let r = startRow; r < startRow + numRows; r++) {
       if (r < 2) continue;
-      台湾雑誌_1行再計算_(sh, r);
+      const rowValues = allRowValues[r - startRow];
+      if (!rowValues) continue;
+
+      台湾雑誌_1行再計算_(sh, r, {
+        列マップ: map,
+        lastCol: lastCol,
+        rowValues: rowValues
+      });
     }
   } finally {
     lock.releaseLock();
