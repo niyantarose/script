@@ -393,7 +393,33 @@ async function enrichItemsWithTaiwanMangaUpdates(items) {
   const sourceItems = Array.isArray(items) ? items : [];
   const enriched = [];
   for (const item of sourceItems) {
-    enriched.push(await enrichItemWithTaiwanMangaUpdates(item));
+    let timeoutId;
+    const lookupPromise = enrichItemWithTaiwanMangaUpdates(item).then(res => {
+      if (timeoutId) clearTimeout(timeoutId);
+      return res;
+    });
+    const timeoutPromise = new Promise(resolve => {
+      timeoutId = setTimeout(() => {
+        const rawItem = item?.rawItem || item || {};
+        const analysis = item?.titleAnalysis || (
+          typeof globalThis.analyzeProductTitle === 'function'
+            ? globalThis.analyzeProductTitle({ ...rawItem, source: 'books_tw' })
+            : null
+        );
+        resolve(Object.assign({}, item, {
+          titleAnalysis: analysis,
+          japaneseTitleLookup: item.japaneseTitleLookup || {
+            status: 'skipped',
+            provider: 'mangaUpdates(extension)',
+            normalizedSearchTitle: analysis?.normalizedSearchTitle || '',
+            extractedWorkTitle: analysis?.extractedWorkTitle || '',
+            trace: 'mangaupdatesClient:skipped(timeout_during_write)',
+            errors: ['MangaUpdates lookup timed out']
+          }
+        }));
+      }, 3000);
+    });
+    enriched.push(await Promise.race([lookupPromise, timeoutPromise]));
   }
   return enriched;
 }
