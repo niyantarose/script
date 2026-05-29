@@ -2297,10 +2297,27 @@ function lookupJapaneseTitleAction_(payload) {
   return lookupJapaneseTitleFromPayload_(payload || {});
 }
 
+// 拡張機能（クライアント）側のカスケードで確定済みとみなせる状態。
+// これらが来たら、書き込み時にサーバ側で重い外部API・スクレイピングを
+// 再実行しない（＝GASへの書き込みを超高速化する主目的）。
+// クライアントの「追加」時点で lookupJapaneseTitle（GASカスケード＋MU直叩き）を
+// 既に実行済みのため、書き込み時の再照会は完全な重複処理だった。
+const CLIENT_TERMINAL_LOOKUP_STATUSES_ = {
+  resolved: true,
+  not_found: true,
+  series_found_no_japanese: true,
+  partial_error: true,
+};
+
 function shouldRefreshLookup_(lookup, titleAnalysis) {
   const normalized = normalizeLookupResult_(lookup);
+  // クライアントが照会結果を一切持っていない場合のみ、サーバ側カスケードを実行。
   if (!normalized) return true;
-  if (normalized.status !== 'resolved') return true;
+  const status = String(normalized.status || '').trim();
+  // failed / skipped / 未知ステータス（=クライアント側カスケードが完走していない一過性の状態）
+  // のときだけサーバで再照会する。
+  if (!CLIENT_TERMINAL_LOOKUP_STATUSES_[status]) return true;
+  // 確定状態でも、保存済み照会キーが現在のタイトル解析キーと食い違う（陳腐化）場合は再照会。
   const lookupKey = String(normalized.normalizedSearchTitle || '').trim();
   const analysisKey = String(titleAnalysis && titleAnalysis.normalizedSearchTitle || '').trim();
   return Boolean(analysisKey && lookupKey && lookupKey !== analysisKey);
@@ -2412,8 +2429,9 @@ function ensureLookupColumns_(sheet) {
   const missing = LOOKUP_WRITEBACK_HEADERS.filter(function(header) {
     return !normalized[normalizeHeader_(header)];
   });
-  if (!missing.length) return;
+  if (!missing.length) return false;
   sheet.getRange(1, lastColumn + 1, 1, missing.length).setValues([missing]);
+  return true;
 }
 
 function findExistingDuplicateRow_(sheet, duplicateKeyColumns, duplicateKeys) {
@@ -2519,8 +2537,12 @@ function upsertItemsWithLookup_(ss, items) {
     var samplePrepared = group[0].prepared;
 
     var context = buildSheetContext_(ss, sheetName, samplePrepared);
-    ensureLookupColumns_(context.sheet);
-    var refreshedContext = buildSheetContext_(ss, sheetName, samplePrepared);
+    // 照会ログ等の列が不足しているときだけヘッダー追記＆コンテキスト再構築する。
+    // 既に列が揃っている通常時は再読込しない（無駄なシート読込を削減）。
+    var columnsAdded = ensureLookupColumns_(context.sheet);
+    var refreshedContext = columnsAdded
+      ? buildSheetContext_(ss, sheetName, samplePrepared)
+      : context;
     var duplicateKeyColumns = findDuplicateKeyColumns_(refreshedContext.normalizedHeaderMap, samplePrepared);
     var keyRowOnSheet = buildDuplicateKeyToRowMap_(refreshedContext.sheet, duplicateKeyColumns);
     var pendingKeyRow = Object.create(null);
@@ -2679,10 +2701,6 @@ function appendItems_(ss, items) {
     const entries = groupedBySheet[sheetName];
     const context = buildSheetContext_(ss, sheetName, entries[0].item);
     const duplicateKeyColumns = findDuplicateKeyColumns_(context.normalizedHeaderMap, entries[0].item);
-    const useFastDuplicateCheck = entries.length <= FAST_DUPLICATE_CHECK_ITEM_LIMIT;
-    const knownDuplicateKeys = useFastDuplicateCheck
-      ? null
-      : collectExistingDuplicateKeys_(context.sheet, duplicateKeyColumns);
     const pendingDuplicateKeys = new Set();
     const appendEntries = [];
     const rows = [];
@@ -2692,8 +2710,7 @@ function appendItems_(ss, items) {
       const duplicateKeys = buildDuplicateKeysForRowData_(extractRowData_(convertedItem), duplicateKeyColumns);
       const duplicateHit = duplicateKeys.find(key => {
         if (pendingDuplicateKeys.has(key)) return true;
-        if (knownDuplicateKeys) return knownDuplicateKeys.has(key);
-        return hasExistingDuplicateKey_(context.sheet, duplicateKeyColumns, key);
+        return hasExistingDuplicateKeyInMemory_(context.allValues, duplicateKeyColumns, key);
       });
       if (duplicateHit) {
         results[entry.index] = {
@@ -2709,16 +2726,13 @@ function appendItems_(ss, items) {
       }
 
       duplicateKeys.forEach(key => pendingDuplicateKeys.add(key));
-      if (knownDuplicateKeys) {
-        duplicateKeys.forEach(key => knownDuplicateKeys.add(key));
-      }
       appendEntries.push(Object.assign({}, entry, { item: convertedItem }));
       rows.push(buildRow_(context, convertedItem));
     });
 
     if (!appendEntries.length) return;
 
-    const targetRows = resolveAppendRows_(context.sheet, context.keyColumnIndex, rows.length);
+    const targetRows = resolveAppendRowsInMemory_(context.allValues, context.keyColumnIndex, rows.length);
     writeRows_(context.sheet, context.lastColumn, targetRows, rows, context.textColumnIndexes, context.urlLinkColumnIndexes);
 
     appendEntries.forEach((entry, entryIndex) => {
@@ -2769,11 +2783,17 @@ function buildSheetContext_(ss, sheetName, sampleItem) {
     if (normalized) normalizedHeaderMap[normalized] = idx;
   });
 
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  const allValues = lastRow > 1
+    ? sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues()
+    : [];
+
   return {
     sheet,
     sheetName,
     lastColumn,
     normalizedHeaderMap,
+    allValues,
     keyColumnIndex: findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, extractRowData_(sampleItem)),
     textColumnIndexes: findTextPreservingColumnIndexes_(normalizedHeaderMap),
     urlLinkColumnIndexes: findUrlLinkColumnIndexes_(normalizedHeaderMap),
@@ -2923,6 +2943,40 @@ function collectExistingDuplicateKeys_(sheet, duplicateKeyColumns) {
   return seen;
 }
 
+function hasExistingDuplicateKeyInMemory_(allValues, duplicateKeyColumns, duplicateKey) {
+  if (!duplicateKey) return false;
+
+  const separatorIndex = String(duplicateKey).indexOf(':');
+  if (separatorIndex <= 0) return false;
+
+  const type = duplicateKey.slice(0, separatorIndex);
+  const value = String(duplicateKey.slice(separatorIndex + 1)).trim().toLowerCase();
+  if (!value) return false;
+
+  const targetColumn = duplicateKeyColumns.find(function(column) {
+    return column && column.type === type;
+  });
+  if (!targetColumn) return false;
+
+  const colIdx = targetColumn.index;
+
+  for (let r = 0; r < allValues.length; r += 1) {
+    const cellRaw = allValues[r][colIdx];
+    const cellStr = String(cellRaw == null ? '' : cellRaw).trim().toLowerCase();
+    if (!cellStr) continue;
+
+    if (type === 'productCode' && /^\d+$/.test(value)) {
+      const valNum = value.replace(/^0+/, '');
+      const cellNum = cellStr.replace(/^0+/, '');
+      if (valNum === cellNum) return true;
+    } else {
+      if (cellStr === value) return true;
+    }
+  }
+
+  return false;
+}
+
 function hasExistingDuplicateKey_(sheet, duplicateKeyColumns, duplicateKey) {
   if (!duplicateKey) return false;
 
@@ -3035,6 +3089,25 @@ function findAppendKeyColumnIndex_(normalizedHeaderMap, item, rowData) {
   }
 
   return -1;
+}
+
+function resolveAppendRowsInMemory_(allValues, keyColumnIndex, count) {
+  if (count <= 0) return [];
+
+  const dataLastRow = keyColumnIndex >= 0
+    ? findLastFilledRowInColumnInMemory_(allValues, keyColumnIndex)
+    : allValues.length + 1;
+
+  return buildSequentialRows_(Math.max(dataLastRow, 1) + 1, count);
+}
+
+function findLastFilledRowInColumnInMemory_(allValues, colIdx) {
+  for (let r = allValues.length - 1; r >= 0; r -= 1) {
+    if (String(allValues[r][colIdx] || '').trim()) {
+      return r + 2; // 2-indexed
+    }
+  }
+  return 1;
 }
 
 function resolveAppendRows_(sheet, keyColumnIndex, count) {

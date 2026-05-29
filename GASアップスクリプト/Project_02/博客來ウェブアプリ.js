@@ -2297,10 +2297,18 @@ function lookupJapaneseTitleAction_(payload) {
   return lookupJapaneseTitleFromPayload_(payload || {});
 }
 
+const CLIENT_TERMINAL_LOOKUP_STATUSES_ = {
+  resolved: true,
+  not_found: true,
+  series_found_no_japanese: true,
+  partial_error: true,
+};
+
 function shouldRefreshLookup_(lookup, titleAnalysis) {
   const normalized = normalizeLookupResult_(lookup);
   if (!normalized) return true;
-  if (normalized.status !== 'resolved') return true;
+  const status = String(normalized.status || '').trim();
+  if (!CLIENT_TERMINAL_LOOKUP_STATUSES_[status]) return true;
   const lookupKey = String(normalized.normalizedSearchTitle || '').trim();
   const analysisKey = String(titleAnalysis && titleAnalysis.normalizedSearchTitle || '').trim();
   return Boolean(analysisKey && lookupKey && lookupKey !== analysisKey);
@@ -2330,6 +2338,7 @@ function japaneseTitleLookupStatusLabel_(lookup) {
   const result = normalizeLookupResult_(lookup);
   if (!result) return JAPANESE_TITLE_NOT_LOOKED_UP_LABEL;
   if (result.status === 'resolved') return 'resolved';
+  if (result.status === 'series_found_no_japanese') return 'MU登録あり/日本語訳なし';
   if (result.status === 'not_found') return JAPANESE_TITLE_NOT_FOUND_ALL_SOURCES_LABEL;
   if (result.status === 'partial_error') return '一部照会失敗';
   if (result.status === 'failed') return JAPANESE_TITLE_LOOKUP_FAILED_LABEL + '(' + (result.provider || '不明') + ')';
@@ -2360,6 +2369,7 @@ function prepareItemWithJapaneseTitleLookup_(item) {
   const titleAnalysis = item && item.titleAnalysis || {};
   const clientLookup = normalizeLookupResult_(item && item.japaneseTitleLookup);
   const clientResolved = !!(clientLookup && clientLookup.status === 'resolved' && String(clientLookup.japaneseTitle || '').trim());
+  const clientSeriesOnly = !!(clientLookup && clientLookup.status === 'series_found_no_japanese');
 
   let lookup;
   if (clientResolved) {
@@ -2376,6 +2386,15 @@ function prepareItemWithJapaneseTitleLookup_(item) {
         japaneseTitle: clientLookup.japaneseTitle,
         status: 'resolved',
         provider: clientLookup.provider || lookup.provider || 'mangaUpdates(extension)',
+      });
+    }
+    if (clientSeriesOnly && !String(lookup.japaneseTitle || '').trim()) {
+      const muCandidates = Array.isArray(clientLookup.candidates) ? clientLookup.candidates : [];
+      const existingCandidates = Array.isArray(lookup.candidates) ? lookup.candidates : [];
+      lookup = Object.assign({}, lookup, {
+        status: 'series_found_no_japanese',
+        provider: clientLookup.provider || lookup.provider || 'mangaUpdates(series_no_jp)',
+        candidates: uniqNonEmptyTitles_(existingCandidates.concat(muCandidates)),
       });
     }
   } else {
@@ -2399,8 +2418,9 @@ function ensureLookupColumns_(sheet) {
   const missing = LOOKUP_WRITEBACK_HEADERS.filter(function(header) {
     return !normalized[normalizeHeader_(header)];
   });
-  if (!missing.length) return;
+  if (!missing.length) return false;
   sheet.getRange(1, lastColumn + 1, 1, missing.length).setValues([missing]);
+  return true;
 }
 
 function findExistingDuplicateRow_(sheet, duplicateKeyColumns, duplicateKeys) {
@@ -2506,8 +2526,10 @@ function upsertItemsWithLookup_(ss, items) {
     var samplePrepared = group[0].prepared;
 
     var context = buildSheetContext_(ss, sheetName, samplePrepared);
-    ensureLookupColumns_(context.sheet);
-    var refreshedContext = buildSheetContext_(ss, sheetName, samplePrepared);
+    var columnsAdded = ensureLookupColumns_(context.sheet);
+    var refreshedContext = columnsAdded
+      ? buildSheetContext_(ss, sheetName, samplePrepared)
+      : context;
     var duplicateKeyColumns = findDuplicateKeyColumns_(refreshedContext.normalizedHeaderMap, samplePrepared);
     var keyRowOnSheet = buildDuplicateKeyToRowMap_(refreshedContext.sheet, duplicateKeyColumns);
     var pendingKeyRow = Object.create(null);
@@ -2525,7 +2547,7 @@ function upsertItemsWithLookup_(ss, items) {
       var mode = 'updated';
 
       if (!targetRow) {
-        targetRow = resolveAppendRows_(refreshedContext.sheet, refreshedContext.keyColumnIndex, 1)[0];
+        targetRow = resolveAppendRowsInMemory_(refreshedContext.allValues, refreshedContext.keyColumnIndex, 1)[0];
         mode = 'created';
         var newRow = buildRow_(refreshedContext, preparedItem);
         writeRows_(refreshedContext.sheet, refreshedContext.lastColumn, [targetRow], [newRow], refreshedContext.textColumnIndexes, refreshedContext.urlLinkColumnIndexes);
@@ -2666,10 +2688,6 @@ function appendItems_(ss, items) {
     const entries = groupedBySheet[sheetName];
     const context = buildSheetContext_(ss, sheetName, entries[0].item);
     const duplicateKeyColumns = findDuplicateKeyColumns_(context.normalizedHeaderMap, entries[0].item);
-    const useFastDuplicateCheck = entries.length <= FAST_DUPLICATE_CHECK_ITEM_LIMIT;
-    const knownDuplicateKeys = useFastDuplicateCheck
-      ? null
-      : collectExistingDuplicateKeys_(context.sheet, duplicateKeyColumns);
     const pendingDuplicateKeys = new Set();
     const appendEntries = [];
     const rows = [];
@@ -2679,8 +2697,7 @@ function appendItems_(ss, items) {
       const duplicateKeys = buildDuplicateKeysForRowData_(extractRowData_(convertedItem), duplicateKeyColumns);
       const duplicateHit = duplicateKeys.find(key => {
         if (pendingDuplicateKeys.has(key)) return true;
-        if (knownDuplicateKeys) return knownDuplicateKeys.has(key);
-        return hasExistingDuplicateKey_(context.sheet, duplicateKeyColumns, key);
+        return hasExistingDuplicateKeyInMemory_(context.allValues, duplicateKeyColumns, key);
       });
       if (duplicateHit) {
         results[entry.index] = {
@@ -2696,16 +2713,13 @@ function appendItems_(ss, items) {
       }
 
       duplicateKeys.forEach(key => pendingDuplicateKeys.add(key));
-      if (knownDuplicateKeys) {
-        duplicateKeys.forEach(key => knownDuplicateKeys.add(key));
-      }
       appendEntries.push(Object.assign({}, entry, { item: convertedItem }));
       rows.push(buildRow_(context, convertedItem));
     });
 
     if (!appendEntries.length) return;
 
-    const targetRows = resolveAppendRows_(context.sheet, context.keyColumnIndex, rows.length);
+    const targetRows = resolveAppendRowsInMemory_(context.allValues, context.keyColumnIndex, rows.length);
     writeRows_(context.sheet, context.lastColumn, targetRows, rows, context.textColumnIndexes, context.urlLinkColumnIndexes);
 
     appendEntries.forEach((entry, entryIndex) => {
@@ -2756,11 +2770,17 @@ function buildSheetContext_(ss, sheetName, sampleItem) {
     if (normalized) normalizedHeaderMap[normalized] = idx;
   });
 
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  const allValues = lastRow > 1
+    ? sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues()
+    : [];
+
   return {
     sheet,
     sheetName,
     lastColumn,
     normalizedHeaderMap,
+    allValues,
     keyColumnIndex: findAppendKeyColumnIndex_(normalizedHeaderMap, sampleItem, extractRowData_(sampleItem)),
     textColumnIndexes: findTextPreservingColumnIndexes_(normalizedHeaderMap),
     urlLinkColumnIndexes: findUrlLinkColumnIndexes_(normalizedHeaderMap),
@@ -2910,6 +2930,40 @@ function collectExistingDuplicateKeys_(sheet, duplicateKeyColumns) {
   return seen;
 }
 
+function hasExistingDuplicateKeyInMemory_(allValues, duplicateKeyColumns, duplicateKey) {
+  if (!duplicateKey) return false;
+
+  const separatorIndex = String(duplicateKey).indexOf(':');
+  if (separatorIndex <= 0) return false;
+
+  const type = duplicateKey.slice(0, separatorIndex);
+  const value = String(duplicateKey.slice(separatorIndex + 1)).trim().toLowerCase();
+  if (!value) return false;
+
+  const targetColumn = duplicateKeyColumns.find(function(column) {
+    return column && column.type === type;
+  });
+  if (!targetColumn) return false;
+
+  const colIdx = targetColumn.index;
+
+  for (let r = 0; r < allValues.length; r += 1) {
+    const cellRaw = allValues[r][colIdx];
+    const cellStr = String(cellRaw == null ? '' : cellRaw).trim().toLowerCase();
+    if (!cellStr) continue;
+
+    if (type === 'productCode' && /^\d+$/.test(value)) {
+      const valNum = value.replace(/^0+/, '');
+      const cellNum = cellStr.replace(/^0+/, '');
+      if (valNum === cellNum) return true;
+    } else {
+      if (cellStr === value) return true;
+    }
+  }
+
+  return false;
+}
+
 function hasExistingDuplicateKey_(sheet, duplicateKeyColumns, duplicateKey) {
   if (!duplicateKey) return false;
 
@@ -3022,6 +3076,25 @@ function findAppendKeyColumnIndex_(normalizedHeaderMap, item, rowData) {
   }
 
   return -1;
+}
+
+function resolveAppendRowsInMemory_(allValues, keyColumnIndex, count) {
+  if (count <= 0) return [];
+
+  const dataLastRow = keyColumnIndex >= 0
+    ? findLastFilledRowInColumnInMemory_(allValues, keyColumnIndex)
+    : allValues.length + 1;
+
+  return buildSequentialRows_(Math.max(dataLastRow, 1) + 1, count);
+}
+
+function findLastFilledRowInColumnInMemory_(allValues, colIdx) {
+  for (let r = allValues.length - 1; r >= 0; r -= 1) {
+    if (String(allValues[r][colIdx] || '').trim()) {
+      return r + 2; // 2-indexed
+    }
+  }
+  return 1;
 }
 
 function resolveAppendRows_(sheet, keyColumnIndex, count) {
