@@ -570,9 +570,113 @@
     return /[ぁ-ゖァ-ヺ]/.test(String(text || ''));
   }
 
+  const HAN_OVERLAP_EQUIV = {
+    與: '与', 与: '與',
+    戀: '恋', 恋: '戀',
+    為: '为', 为: '為',
+    臺: '台', 台: '臺',
+    國: '国', 国: '國',
+    學: '学', 学: '學',
+    體: '体', 体: '體',
+    廣: '广', 广: '廣',
+    樂: '乐', 乐: '樂',
+    電: '电', 电: '電',
+    視: '视', 视: '視',
+    劇: '剧', 剧: '劇',
+    場: '场', 场: '場',
+    畫: '画', 画: '畫',
+    書: '书', 书: '書',
+    來: '来', 来: '來',
+    發: '发', 发: '發',
+    網: '网', 网: '網',
+    龍: '龙', 龙: '龍',
+    馬: '马', 马: '馬',
+    車: '车', 车: '車',
+    門: '门', 门: '門',
+    開: '开', 开: '開',
+    關: '关', 关: '關',
+    風: '风', 风: '風',
+    氣: '气', 气: '氣',
+    愛: '爱', 爱: '愛',
+    見: '见', 见: '見',
+    說: '说', 说: '說',
+    話: '话', 话: '話',
+    語: '语', 语: '語',
+    讀: '读', 读: '讀',
+    聲: '声', 声: '聲',
+    頭: '头', 头: '頭',
+    臉: '脸', 脸: '臉',
+    髮: '发', 髪: '发',
+    總: '总', 总: '總',
+    無: '无', 无: '無',
+    時: '时', 时: '時',
+    間: '间', 间: '間',
+    東: '东', 东: '東',
+    絲: '丝', 丝: '絲',
+    縣: '县', 县: '縣',
+    區: '区', 区: '區',
+    醫: '医', 医: '醫',
+    藥: '药', 药: '藥',
+    買: '买', 买: '買',
+    賣: '卖', 卖: '賣',
+    價: '价', 价: '價',
+    錢: '钱', 钱: '錢',
+    銀: '银', 银: '銀',
+    鐵: '铁', 铁: '鐵',
+    銅: '铜', 铜: '銅',
+    點: '点', 点: '點',
+    線: '线', 线: '線',
+    機: '机', 机: '機',
+    飛: '飞', 飞: '飛',
+    鳥: '鸟', 鸟: '鳥',
+    魚: '鱼', 鱼: '魚',
+    島: '岛', 岛: '島',
+    灣: '湾', 湾: '灣',
+    鄉: '乡', 乡: '鄉',
+    鎮: '镇', 镇: '鎮',
+    縣: '县',
+    護: '护', 护: '護',
+    擊: '击', 击: '擊',
+    戰: '战', 战: '戰',
+    勝: '胜', 胜: '勝',
+    負: '负', 负: '負',
+    號: '号', 号: '號',
+    碼: '码', 码: '碼',
+    錄: '录', 录: '錄',
+    製: '制', 制: '製',
+    復: '复', 复: '復',
+    雜: '杂', 杂: '雜',
+    誌: '志', 志: '誌',
+    專: '专', 专: '專',
+    業: '业', 业: '業',
+    產: '产', 产: '產',
+    質: '质', 质: '質',
+    類: '类', 类: '類',
+    極: '极', 极: '極',
+    樂: '乐',
+    歲: '岁', 岁: '歲',
+    華: '华', 华: '華',
+    聖: '圣', 圣: '聖',
+    靈: '灵', 灵: '靈',
+    龍: '龙',
+    術: '术', 术: '術',
+    師: '师', 师: '師',
+    殺: '杀', 杀: '殺',
+    惡: '恶', 恶: '惡',
+    魔: '魔',
+    獸: '兽', 兽: '獸',
+    靈: '灵',
+  };
+
+  function _normalizeHanForOverlap_(text) {
+    return String(text || '').split('').map(ch => HAN_OVERLAP_EQUIV[ch] || ch).join('');
+  }
+
   function _hanOverlapCount(a, b) {
-    const aChars = _collectHanChars(a);
-    const bChars = _collectHanChars(b);
+    const aNorm = _normalizeHanForOverlap_(a);
+    const bNorm = _normalizeHanForOverlap_(b);
+    const aChars = _collectHanChars(aNorm);
+    const bChars = _collectHanChars(bNorm);
     if (!aChars.length || !bChars.length) return 0;
     const setA = new Set(aChars);
     const seenB = new Set();
@@ -604,16 +708,16 @@
     }
     // 漢字クエリでない場合は検証スキップ（ローマ字/ハングル等）
     if (!queryHan.length) return true;
-    // 候補に漢字が1つもなければ、平仮名/カタカナのみの日本語タイトル
-    // → 強い一致ではないが、別シリーズの可能性も高いので reject
-    if (!_collectHanChars(jp).length && !_hasJapaneseKana(jp)) return false;
-    // 漢字重なり数で判定（最低2文字一致を要求）
+    if (!_hasJapaneseKana(jp) && !_collectHanChars(jp).length) return false;
     const maxOverlap = Math.max(
+      0,
       ...queries.map(q => _hanOverlapCount(q, jp))
     );
-    // 短いクエリでは緩める
     const minOverlap = Math.min(2, Math.max(1, Math.floor(queryHan.length / 3)));
-    return maxOverlap >= minOverlap;
+    if (maxOverlap >= minOverlap) return true;
+    // 漢字クエリに対し、日本語候補がカナのみで漢字重なりゼロ → 別作品誤マッチ（例: バトルファッカーB子）
+    if (!_collectHanChars(jp).length && _hasJapaneseKana(jp)) return false;
+    return false;
   }
 
   function stripMuVolumeNoise_(value) {
@@ -636,15 +740,40 @@
     return s;
   }
 
-  function buildMuQueryVariants_(titleAnalysis) {
-    const q = compactSpaces(titleAnalysis?.normalizedSearchTitle || titleAnalysis?.extractedWorkTitle || '');
-    if (!q) return [];
-    const stripped = stripMuVolumeNoise_(q);
-    const noNumber = compactSpaces(stripped).replace(/[0-9０-９]+/g, '').trim();
-    if (stripped && stripped !== q) {
-      return uniq([stripped, noNumber, q].filter(Boolean));
+  function expandChineseScriptVariants_(text) {
+    const base = compactSpaces(text);
+    if (!base) return [];
+    const out = [base];
+    let variant = '';
+    for (const ch of base) {
+      variant += HAN_OVERLAP_EQUIV[ch] || ch;
     }
-    return uniq([noNumber, q].filter(Boolean));
+    variant = compactSpaces(variant);
+    if (variant && variant !== base) out.push(variant);
+    return out;
+  }
+
+  function buildMuQueryVariants_(titleAnalysis, rawItem) {
+    const item = rawItem || {};
+    const seeds = uniq([
+      titleAnalysis?.normalizedSearchTitle,
+      titleAnalysis?.extractedWorkTitle,
+      titleAnalysis?.originalTitle,
+      titleAnalysis?.originalProductTitle,
+      item['原題タイトル'],
+      item['原題商品タイトル'],
+      item['原題商品名'],
+      item['商品名'],
+      item.title,
+    ].map(compactSpaces).filter(Boolean));
+    const expanded = [];
+    for (const seed of seeds) {
+      const stripped = stripMuVolumeNoise_(seed);
+      const noNumber = compactSpaces(stripped).replace(/[0-9０-９]+/g, '').trim();
+      expanded.push(seed, stripped, noNumber);
+      expanded.push(...expandChineseScriptVariants_(stripped || seed));
+    }
+    return uniq(expanded.filter(title => title.length >= 2));
   }
 
   async function invokeMangaUpdatesLookupDetailed_(queries) {
@@ -679,13 +808,13 @@
     return detailed?.japaneseTitle ? String(detailed.japaneseTitle).trim() : '';
   }
 
-  async function tryMangaUpdatesDirectJapanese_(titleAnalysis) {
+  async function tryMangaUpdatesDirectJapanese_(titleAnalysis, rawItem) {
     const itemType = toText(titleAnalysis?.itemType);
     const tryTypes = new Set(['manga', 'bl_manga', 'goods', 'light_novel', 'unknown']);
     if (!tryTypes.has(itemType)) {
       return { japaneseTitle: '', muTrace: `mangaupdatesClient:skip(itemType=${itemType || 'empty'})`, muStatus: 'skipped', matchedTitles: [] };
     }
-    const queries = buildMuQueryVariants_(titleAnalysis);
+    const queries = buildMuQueryVariants_(titleAnalysis, rawItem || {});
     if (!queries.length) {
       return { japaneseTitle: '', muTrace: 'mangaupdatesClient:skip(empty_query)', muStatus: 'skipped', matchedTitles: [] };
     }
@@ -693,7 +822,10 @@
     try {
       const detailed = await invokeMangaUpdatesLookupDetailed_(queries);
       if (detailed) {
-        const jp = compactSpaces(detailed?.japaneseTitle || '');
+        const jpRaw = compactSpaces(detailed?.japaneseTitle || '');
+        const jp = jpRaw && validateJapaneseTitleAgainstQuery_(jpRaw, queries, 'mangaUpdates(extension)')
+          ? jpRaw
+          : '';
         const status = String(detailed?.status || '');
         const matchedTitles = Array.isArray(detailed?.matchedTitles) ? detailed.matchedTitles : [];
         if (jp) {
@@ -710,7 +842,10 @@
         }
         return { japaneseTitle: '', muTrace: `mangaupdatesClient:miss(q=${traceQ})`, muStatus: 'not_found', matchedTitles };
       }
-      const jp = compactSpaces(await invokeMangaUpdatesLookupJapanese_(queries));
+      const jpRaw = compactSpaces(await invokeMangaUpdatesLookupJapanese_(queries));
+      const jp = jpRaw && validateJapaneseTitleAgainstQuery_(jpRaw, queries, 'mangaUpdates(extension)')
+        ? jpRaw
+        : '';
       if (jp) return { japaneseTitle: jp, muTrace: `mangaupdatesClient:hit(q=${traceQ})`, muStatus: 'resolved', matchedTitles: [] };
       return { japaneseTitle: '', muTrace: 'mangaupdatesClient:skip(no_client)', muStatus: 'skipped', matchedTitles: [] };
     } catch (error) {
@@ -726,17 +861,23 @@
     const itemType = toText(titleAnalysis?.itemType);
     const tryTypes = new Set(['manga', 'bl_manga', 'goods', 'light_novel', 'unknown']);
     if (!tryTypes.has(itemType)) return data;
-    const baseQueries = buildMuQueryVariants_(titleAnalysis);
+    const baseQueries = buildMuQueryVariants_(titleAnalysis, data?.rawItem || {});
     if (!baseQueries.length) return data;
     const q = baseQueries[0];
     const aliasCandidates = Array.isArray(lookup.candidates) ? lookup.candidates : [];
     const queries = uniq(baseQueries.concat(aliasCandidates.map((c) => compactSpaces(c)).filter(Boolean)));
     const hasJapaneseSignal = (s) => /[ぁ-ゖァ-ヺーゝゞ々〆〇]/.test(String(s || ''));
     try {
-      const jp = compactSpaces(await invokeMangaUpdatesLookupJapanese_(queries));
+      const jpRaw = compactSpaces(await invokeMangaUpdatesLookupJapanese_(queries));
+      const jp = jpRaw && validateJapaneseTitleAgainstQuery_(jpRaw, baseQueries, 'mangaUpdates(extension)')
+        ? jpRaw
+        : '';
       if (!jp) {
         const traceQ = queries.length > 1 ? `${q}+${queries.length - 1}cand` : q;
-        const jpFromCandidates = aliasCandidates.map((c) => compactSpaces(c)).find(hasJapaneseSignal) || '';
+        const jpFromCandidates = aliasCandidates.map((c) => compactSpaces(c)).find((c) => {
+          if (!hasJapaneseSignal(c)) return false;
+          return validateJapaneseTitleAgainstQuery_(c, baseQueries, 'mangaUpdates(candidate)');
+        }) || '';
         if (jpFromCandidates) {
           return {
             ...data,
@@ -802,7 +943,7 @@
       }
       return data;
     });
-    const muPromise = tryMangaUpdatesDirectJapanese_(titleAnalysis);
+    const muPromise = tryMangaUpdatesDirectJapanese_(titleAnalysis, options.rawItem || {});
     const [data, muPack] = await Promise.all([gasPromise, muPromise]);
     const muEarly = muPack && typeof muPack === 'object' ? muPack.japaneseTitle : '';
     const muTraceLine = muPack && typeof muPack === 'object' ? muPack.muTrace : '';
@@ -824,7 +965,7 @@
     }
 
     // === GAS結果の検証: 漢字重なりゼロ等の誤マッチを検知 ===
-    const originalQueries = buildMuQueryVariants_(titleAnalysis);
+    const originalQueries = buildMuQueryVariants_(titleAnalysis, options.rawItem || {});
     const gasLookup = merged?.lookup || {};
     const gasJp = compactSpaces(gasLookup.japaneseTitle || gasLookup.title || '');
     const gasProvider = String(gasLookup.provider || '');
@@ -846,16 +987,18 @@
 
     if (muEarly && !compactSpaces(merged?.lookup?.japaneseTitle || merged?.lookup?.title || '')) {
       const baseLookup = merged.lookup && typeof merged.lookup === 'object' ? merged.lookup : {};
-      merged = {
-        ...merged,
-        lookup: {
-          ...baseLookup,
-          status: 'resolved',
-          japaneseTitle: muEarly,
-          provider: baseLookup.provider ? `${baseLookup.provider}+mangaupdatesClient` : 'mangaUpdates(extension)',
-          trace: `${baseLookup.trace || ''} | mangaupdates:parallel_direct`.replace(/^\s*\|\s*/, '').trim(),
-        },
-      };
+      if (validateJapaneseTitleAgainstQuery_(muEarly, originalQueries, 'mangaUpdates(extension)')) {
+        merged = {
+          ...merged,
+          lookup: {
+            ...baseLookup,
+            status: 'resolved',
+            japaneseTitle: muEarly,
+            provider: baseLookup.provider ? `${baseLookup.provider}+mangaupdatesClient` : 'mangaUpdates(extension)',
+            trace: `${baseLookup.trace || ''} | mangaupdates:parallel_direct`.replace(/^\s*\|\s*/, '').trim(),
+          },
+        };
+      }
     }
     merged = await enrichLookupWithDirectMangaUpdates_(titleAnalysis, merged);
 
@@ -1038,6 +1181,8 @@
     buildSavePayload,
     saveProductWithLookup,
     applyJapaneseTitleLookupToProduct,
+    validateJapaneseTitleAgainstQuery: validateJapaneseTitleAgainstQuery_,
+    buildMuQueryVariants: buildMuQueryVariants_,
     stripVolumeNoiseForSheetOriginal,
     normalizeSheetJapaneseWorkTitle,
     renderLookupResult,

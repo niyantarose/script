@@ -44,8 +44,28 @@
     return out;
   }
 
-  async function aniListFetchNativeJapanese(searchStrings) {
+  async function aniListFetchNativeJapanese(searchStrings, validationQueries) {
     var queries = uniqAniListQueries(searchStrings).slice(0, 5);
+    // 元クエリ（中華題など）に漢字があれば、AniList が返す native タイトルが
+    // その作品と無関係な誤答（例: 別作品「バトルファッカーB子」）でないか漢字重なりで検証する。
+    // 検索は広めのクエリ群で行うが、採用判定は必ず元クエリと突き合わせる。
+    var valQueries = Array.isArray(validationQueries)
+      ? validationQueries
+      : (validationQueries ? [validationQueries] : []);
+    var requireHan = false;
+    var vci;
+    for (vci = 0; vci < valQueries.length; vci += 1) {
+      if (collectHanChars(valQueries[vci]).length) { requireHan = true; break; }
+    }
+    function nativeIsValid(nat) {
+      if (!requireHan) return true; // 検証クエリに漢字が無ければ検証不能 → 許容
+      var best = 0;
+      var k;
+      for (k = 0; k < valQueries.length; k += 1) {
+        best = Math.max(best, hanOverlapScore(nat, valQueries[k]));
+      }
+      return best >= 2; // 最低2文字の漢字重なりを要求（誤マッチ防止）
+    }
     var qi;
     for (qi = 0; qi < queries.length; qi += 1) {
       var q = queries[qi];
@@ -73,7 +93,7 @@
       for (mi = 0; mi < media.length; mi += 1) {
         var m = media[mi];
         var nat = m && m.title ? String(m.title.native || '').trim() : '';
-        if (nat && hasJapaneseTitleSignal(nat)) return nat;
+        if (nat && hasJapaneseTitleSignal(nat) && nativeIsValid(nat)) return nat;
       }
     }
     return '';
@@ -656,7 +676,9 @@
         errors: errors,
       };
     }
-    var fromAni = await aniListFetchNativeJapanese(aniQueries).catch(function(err) {
+    // 検索は aniQueries（MU検索で拾った英題等を含む広めの集合）で行うが、
+    // 採用判定は元クエリ（商品名由来 queries）と漢字重なりで検証する。
+    var fromAni = await aniListFetchNativeJapanese(aniQueries, queries).catch(function(err) {
       errors.push('aniList: ' + (err.message || err));
       return '';
     });

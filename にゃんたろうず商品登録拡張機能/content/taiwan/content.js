@@ -623,6 +623,27 @@ const scoreEdgeDistance = edge => {
     const titleEl = document.querySelector('h1.BD_NAME, h1[itemprop=name], .book_title h1, h1');
     if (!titleEl) return '';
 
+    // 【強力なショートカット】h1の直後（隣）に h2 があり、そこに日本語が含まれていればダイレクトに採用する！
+    const nextEl = titleEl.nextElementSibling;
+    if (nextEl && String(nextEl.tagName).toUpperCase() === 'H2') {
+      const text = normalizeJapaneseSubtitle(getText(nextEl) || nextEl.innerText || '');
+      if (hasJapaneseSubtitleSignal(text) && text !== toSingleLine(titleText)) {
+        return text;
+      }
+    }
+    
+    // 兄弟要素の中にある h2 をダイレクトに探す
+    const parent = titleEl.parentElement;
+    if (parent) {
+      const h2El = parent.querySelector('h2');
+      if (h2El && h2El !== titleEl) {
+        const text = normalizeJapaneseSubtitle(getText(h2El) || h2El.innerText || '');
+        if (hasJapaneseSubtitleSignal(text) && text !== toSingleLine(titleText)) {
+          return text;
+        }
+      }
+    }
+
     const candidates = [];
     const pushCandidate = raw => {
       const text = normalizeJapaneseSubtitle(raw);
@@ -631,7 +652,6 @@ const scoreEdgeDistance = edge => {
       if (!candidates.includes(text)) candidates.push(text);
     };
 
-    const parent = titleEl.parentElement;
     if (parent) {
       let afterTitle = false;
       for (const node of Array.from(parent.childNodes)) {

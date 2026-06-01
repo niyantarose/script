@@ -800,9 +800,14 @@ function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, au
       result.trace.push(providerId + ':skipped(not_applicable)');
       continue;
     }
-    if (skipExternalApi && providerId !== 'workTitleMaster' && providerId !== 'titleAliasDictionary') {
+    // 書き込みパス(skipExternalApi=true)では、外部API/スクレイピングに加えて
+    // workTitleMaster / titleAliasDictionary（別マスターを openById して全行 getValues する
+    // 重い処理。実測でサーバ書込の大半を占有）も含めて全プロバイダーをスキップする。
+    // これらのマスター照会は「追加」時のフル照会(skipExternalApi=false)で既に実施済みのため、
+    // 書き込み時に再実行するのは重複かつ低速。書き込みは純粋に高速化する。
+    if (skipExternalApi) {
       result.skippedSources.push(providerId);
-      result.trace.push(providerId + ':skipped(skip_external_during_write)');
+      result.trace.push(providerId + ':skipped(skip_during_write)');
       continue;
     }
 
@@ -2381,10 +2386,47 @@ function applyJapaneseTitleLookupToRowData_(rowData, lookup, titleAnalysis) {
   return finalizeSheetWorkTitleColumns_(next);
 }
 
+function buildLookupValidationQueries_(titleAnalysis, rowData) {
+  const analysis = titleAnalysis || {};
+  const row = rowData || {};
+  return uniqNonEmptyTitles_([
+    analysis.normalizedSearchTitle,
+    analysis.extractedWorkTitle,
+    analysis.originalTitle,
+    row['原題タイトル'],
+    row['原題商品タイトル'],
+    row['原題商品名'],
+    row['タイトル'],
+  ]);
+}
+
+function validateClientJapaneseTitleLookup_(lookup, titleAnalysis, rowData) {
+  const jp = String(lookup && lookup.japaneseTitle || '').trim();
+  if (!jp) return false;
+  const queries = buildLookupValidationQueries_(titleAnalysis, rowData);
+  if (!queries.length) return true;
+  var queryHan = '';
+  queries.forEach(function(q) {
+    queryHan += String(q || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
+  });
+  if (!queryHan) return true;
+  var maxOverlap = 0;
+  queries.forEach(function(q) {
+    maxOverlap = Math.max(maxOverlap, cjkCharOverlap_(q, jp));
+  });
+  if (maxOverlap >= 0.35) return true;
+  if (!/[\u3000-\u9fff\uf900-\ufaff]/.test(jp) && /[\u3041-\u3096\u30a1-\u30fa]/.test(jp)) return false;
+  return maxOverlap >= 0.2;
+}
+
 function prepareItemWithJapaneseTitleLookup_(item) {
   const titleAnalysis = item && item.titleAnalysis || {};
+  const rowDataSeed = extractRowData_(item);
   const clientLookup = normalizeLookupResult_(item && item.japaneseTitleLookup);
-  const clientResolved = !!(clientLookup && clientLookup.status === 'resolved' && String(clientLookup.japaneseTitle || '').trim());
+  var clientResolved = !!(clientLookup && clientLookup.status === 'resolved' && String(clientLookup.japaneseTitle || '').trim());
+  if (clientResolved && !validateClientJapaneseTitleLookup_(clientLookup, titleAnalysis, rowDataSeed)) {
+    clientResolved = false;
+  }
   const clientSeriesOnly = !!(clientLookup && clientLookup.status === 'series_found_no_japanese');
 
   let lookup;
@@ -2591,6 +2633,25 @@ function upsertItemsWithLookup_(ss, items, timing) {
     var pendingKeyRow = Object.create(null);
     timing.buildKeysMs = (timing.buildKeysMs || 0) + (Date.now() - tKStart);
 
+    // 診断値はグループで1回だけ取得（件数ぶん getMaxRows/getLastRow を呼ばない）。
+    var sheetMaxRows = refreshedContext.sheet.getMaxRows();
+    var sheetLastRow = refreshedContext.sheet.getLastRow();
+    var groupSheetRows = refreshedContext.actualLastRow || (refreshedContext.allValues.length + 1);
+
+    // 追記開始行は「複数列で判定した実データ最終行(actualLastRow)」の次にする。
+    // 以前は resolveAppendRowsInMemory_ がキー列1本だけで最終行を判定していたため、
+    // 新規「未登録」行でキー列(例:タイトル列)が空だと最終行を 102 等と取り違え、
+    // 既存データ(103〜107)の上に追記＝上書きしてしまい「書込成功なのに増えない」現象が起きていた。
+    // findActualLastDataRow_ はサイト商品コード/リンク等の複数列で判定するので、その次行が安全。
+    var groupLastDataRow = (refreshedContext.actualLastRow && refreshedContext.actualLastRow >= 1)
+      ? refreshedContext.actualLastRow
+      : (refreshedContext.allValues.length + 1);
+    var appendCursor = groupLastDataRow + 1;
+
+    var tWStart = Date.now();
+    var newRows = [];        // まとめ書き用の新規行データ
+    var newTargetRows = [];  // 対応する行番号（連番）
+    var writtenForPost = []; // 雑誌シートの書込後処理用（新規・更新の両方）
     var gj;
     for (gj = 0; gj < group.length; gj += 1) {
       var entry = group[gj];
@@ -2600,33 +2661,27 @@ function upsertItemsWithLookup_(ss, items, timing) {
       // メモリ上のキーマップのみ（事前にシート全域を読み済み）。新規時に TextFinder で列再走査しない
       var existingRow = findExistingRowFromKeyMaps_(duplicateKeys, keyRowOnSheet, pendingKeyRow);
 
-      var targetRow = existingRow;
-      var mode = 'updated';
-
-      var tWStart = Date.now();
-      if (!targetRow) {
-        // 事前に読み込んだ allValues から追記行を決定（シート再読込を避けて高速化）。
-        targetRow = resolveAppendRowsInMemory_(refreshedContext.allValues, refreshedContext.keyColumnIndex, 1)[0];
-        mode = 'created';
-        var newRow = buildRow_(refreshedContext, preparedItem);
-        writeRows_(refreshedContext.sheet, refreshedContext.lastColumn, [targetRow], [newRow], refreshedContext.textColumnIndexes, refreshedContext.urlLinkColumnIndexes);
-      } else {
+      var targetRow;
+      var mode;
+      if (existingRow) {
+        targetRow = existingRow;
+        mode = 'updated';
+        // 既存行はシート上に散在するためまとめ書き不可。1行だけ更新する。
         writeRowBulk_(refreshedContext, targetRow, preparedItem);
+      } else {
+        targetRow = appendCursor;
+        appendCursor += 1;
+        mode = 'created';
+        // 新規行は配列に貯めて、ループ後に1回の setValues でまとめ書きする。
+        newRows.push(buildRow_(refreshedContext, preparedItem));
+        newTargetRows.push(targetRow);
       }
-      timing.writeRowsMs = (timing.writeRowsMs || 0) + (Date.now() - tWStart);
+      writtenForPost.push({ targetRow: targetRow, preparedItem: preparedItem });
 
       var pk2;
       for (pk2 = 0; pk2 < duplicateKeys.length; pk2 += 1) {
         pendingKeyRow[duplicateKeys[pk2]] = targetRow;
         keyRowOnSheet[duplicateKeys[pk2]] = targetRow;
-      }
-
-      if (sheetName === MAGAZINE_SHEET_NAME) {
-        try {
-          mag_書込後処理_(refreshedContext.sheet, targetRow, preparedItem);
-        } catch (err) {
-          Logger.log('台湾雑誌 書込後処理エラー row ' + targetRow + ': ' + err.message);
-        }
       }
 
       results[entry.index] = {
@@ -2639,15 +2694,31 @@ function upsertItemsWithLookup_(ss, items, timing) {
         appendedRow: targetRow,
         mode: mode,
         lookup: preparedItem.japaneseTitleLookup || null,
-        sheetRows: refreshedContext.actualLastRow || (refreshedContext.allValues.length + 1),
+        sheetRows: groupSheetRows,
         sheetCols: refreshedContext.lastColumn,
-        sheetMaxRows: refreshedContext.sheet.getMaxRows(),
-        sheetLastRow: refreshedContext.sheet.getLastRow(),
+        sheetMaxRows: sheetMaxRows,
+        sheetLastRow: sheetLastRow,
         dataRowCount: refreshedContext.allValues.length
       };
     }
+
+    // 新規行を1回の setValues でまとめ書き（連番なので writeRows_ 内で1範囲に集約される）。
+    if (newTargetRows.length) {
+      writeRows_(refreshedContext.sheet, refreshedContext.lastColumn, newTargetRows, newRows, refreshedContext.textColumnIndexes, refreshedContext.urlLinkColumnIndexes);
+    }
+    timing.writeRowsMs = (timing.writeRowsMs || 0) + (Date.now() - tWStart);
+
+    // 雑誌シートの書込後処理は、行がシートに書き込まれた後にまとめて実行する。
+    if (sheetName === MAGAZINE_SHEET_NAME) {
+      for (gj = 0; gj < writtenForPost.length; gj += 1) {
+        try {
+          mag_書込後処理_(refreshedContext.sheet, writtenForPost[gj].targetRow, writtenForPost[gj].preparedItem);
+        } catch (err) {
+          Logger.log('台湾雑誌 書込後処理エラー row ' + writtenForPost[gj].targetRow + ': ' + err.message);
+        }
+      }
+    }
   });
-  timing.writeEnd = Date.now();
   return results;
 }
 
@@ -2671,7 +2742,10 @@ function upsertProductWithLookupAction_(payload) {
     const serverTiming = {
       lockWaitMs: tLock - tStart,
     };
-    if (payload.compactSheets !== false) {
+    // 末尾空行の物理削除(deleteRows)は約50,000行で37秒級かつチェックボックス破壊を伴う。
+    // 範囲限定読込で書き込みは既に高速化済みのため、既定では実行しない。
+    // シートを物理的に縮めたい場合のみ SHEET_AUTO_TRIM_ENABLED=true にする。
+    if (SHEET_AUTO_TRIM_ENABLED && payload.compactSheets !== false) {
       const tCompactStart = Date.now();
       serverTiming.compactSheets = compactSheetsForItems_(ss, items);
       serverTiming.compactMs = Date.now() - tCompactStart;
@@ -2703,8 +2777,8 @@ function upsertProductWithLookupAction_(payload) {
         writeRowsMs: serverTiming.writeRowsMs,
         recalcMs: tEnd - tLock - (serverTiming.compactMs || 0) - (serverTiming.enrichMs || 0) - (serverTiming.buildContextMs || 0) - (serverTiming.buildKeysMs || 0) - (serverTiming.writeRowsMs || 0),
       },
-      gasFile: "博客來ウェブアプリ.js",
-      gasVersion: "v74",
+      gasFile: "GAS_シート追記.gs",
+      gasVersion: "v78-appendfix",
       warnings: []
     };
   } finally {
@@ -2833,7 +2907,12 @@ function appendItems_(ss, items) {
 
     if (!appendEntries.length) return;
 
-    const targetRows = resolveAppendRowsInMemory_(context.allValues, context.keyColumnIndex, rows.length);
+    // 追記行は actualLastRow(複数列判定の実最終行)の次から連番で確保する。
+    // キー列1本だけで判定すると、新規行でキー列が空のとき既存データを上書きする不具合があった。
+    const appendBaseRow = ((context.actualLastRow && context.actualLastRow >= 1)
+      ? context.actualLastRow
+      : (context.allValues.length + 1)) + 1;
+    const targetRows = buildSequentialRows_(appendBaseRow, rows.length);
     writeRows_(context.sheet, context.lastColumn, targetRows, rows, context.textColumnIndexes, context.urlLinkColumnIndexes);
 
     appendEntries.forEach((entry, entryIndex) => {
@@ -2873,8 +2952,12 @@ function resolveSheetName_(item) {
 var DATA_ROW_SCAN_CHUNK = 500;
 var SHEET_TRIM_PADDING_ROWS = 25;
 var SHEET_TRIM_MIN_SURPLUS_ROWS = 100;
+// 末尾の空行(チェックボックスのみの行)を物理削除する自動トリム。
+// 既定は false（ユーザーが意図的に置いたチェックボックスを勝手に消さない）。
+// 範囲限定読込だけで書き込みは十分高速になるため、トリムは速度には不要。
+// シートを物理的に縮めたい場合のみ true にする。
+var SHEET_AUTO_TRIM_ENABLED = false;
 
-/** 最終行判定に使わない列（チェックボックス・自動計算列など） */
 var SHEET_SCAN_EXCLUDED_HEADER_KEYS = [
   '発番発行', '登録状況', '粗利益率',
   'ステータス（自動）', '残日数（自動）', 'アラート（自動）',
@@ -2890,7 +2973,6 @@ function isExcludedScanHeader_(normalizedHeader) {
 
 function isIgnorableScanCellValue_(value) {
   if (value === null || value === undefined || value === '') return true;
-  // チェックボックス列の true/false は「データ行」として数えない
   if (typeof value === 'boolean') return true;
   const text = String(value).trim().toLowerCase();
   if (!text) return true;
@@ -2951,9 +3033,6 @@ function rowHasMeaningfulSheetData_(rowValues, colIndexes, minCol1) {
   return false;
 }
 
-/**
- * getLastRow() が空行膨張で5万超えでも、キー列を下からチャンク読みして真の最終行だけ返す。
- */
 function findActualLastDataRow_(sheet, normalizedHeaderMap, sampleItem, rowData) {
   const lastRow = Math.max(sheet.getLastRow(), 1);
   if (lastRow <= 1) return 1;
@@ -2965,11 +3044,12 @@ function findActualLastDataRow_(sheet, normalizedHeaderMap, sampleItem, rowData)
 
   function rowHasData(row) {
     if (row < 2) return false;
-    const vals = sheet.getRange(row, minCol1, row, width).getValues()[0];
+    // 第3引数は numRows(=1)。以前は絶対行番号 row を渡しており、
+    // 巨大行(例:50419)で範囲外読込になりエラーになっていた。
+    const vals = sheet.getRange(row, minCol1, 1, width).getValues()[0];
     return rowHasMeaningfulSheetData_([vals], colIndexes, minCol1);
   }
 
-  // 下側が空行膨張（データは上の方だけ）のとき、下からチャンク走査すると遅いので二分探索する。
   if (lastRow > 1000 && !rowHasData(lastRow)) {
     let lo = 2;
     let hi = lastRow;
@@ -2989,7 +3069,8 @@ function findActualLastDataRow_(sheet, normalizedHeaderMap, sampleItem, rowData)
   let end = lastRow;
   while (end >= 2) {
     const start = Math.max(2, end - DATA_ROW_SCAN_CHUNK + 1);
-    const values = sheet.getRange(start, minCol1, end, width).getValues();
+    // 第3引数は numRows(=end-start+1)。以前は絶対行番号 end を渡しており範囲外読込になっていた。
+    const values = sheet.getRange(start, minCol1, end - start + 1, width).getValues();
     for (let r = values.length - 1; r >= 0; r -= 1) {
       if (rowHasMeaningfulSheetData_(values[r], colIndexes, minCol1)) {
         return start + r;
@@ -3056,10 +3137,13 @@ function buildSheetContext_(ss, sheetName, sampleItem) {
 
   const rowData = extractRowData_(sampleItem);
   const actualLastRow = findActualLastDataRow_(sheet, normalizedHeaderMap, sampleItem, rowData);
-  if (sheet.getMaxRows() > actualLastRow + SHEET_TRIM_MIN_SURPLUS_ROWS + SHEET_TRIM_PADDING_ROWS) {
+  // 既定では物理削除しない（チェックボックス保持）。範囲限定読込だけで高速化は達成できる。
+  if (SHEET_AUTO_TRIM_ENABLED && sheet.getMaxRows() > actualLastRow + SHEET_TRIM_MIN_SURPLUS_ROWS + SHEET_TRIM_PADDING_ROWS) {
     maybeTrimSheetEmptyTail_(sheet, actualLastRow);
   }
 
+  // 実データ最終行までしか読まない（チェックボックスで膨らんだ末尾の巨大空領域を読まない）。
+  // これが書き込み遅延（226万セルの getValues に約23秒）の根本対策。
   const allValues = actualLastRow > 1
     ? sheet.getRange(2, 1, actualLastRow - 1, lastColumn).getValues()
     : [];
