@@ -619,16 +619,34 @@ const scoreEdgeDistance = edge => {
     // ひらがな・カタカナ・長音記号などの日本語信号が含まれていれば妥当とみなして採用する。
     return hasJapaneseSubtitleSignal(text);
   };
+  // タイトル文字列そのものに括弧書きで日本語題が併記されているケース（例: 「中文題（バカでも可愛ければ）」）。
+  // これはページ本文＝主タイトル由来なので最も信頼できる。
+  const extractInlineJapaneseSubtitle = titleText => {
+    const text = toSingleLine(titleText);
+    if (!text) return '';
+    const m = text.match(/[（(]\s*([^）)]+?)\s*[)）]/u);
+    if (!m) return '';
+    const inner = normalizeJapaneseSubtitle(m[1]);
+    if (!hasJapaneseSubtitleSignal(inner)) return '';
+    if (inner.length < 2 || inner.length > 120) return '';
+    return inner;
+  };
   const getJapaneseSubtitle = titleText => {
     const titleEl = document.querySelector('h1.BD_NAME, h1[itemprop=name], .book_title h1, h1');
-    if (!titleEl) return '';
+    if (!titleEl) return { text: '', trusted: false };
+
+    // 主タイトル文字列内に併記された括弧書き日本語題
+    const inline = extractInlineJapaneseSubtitle(titleEl.innerText || titleText);
+    if (inline && inline !== toSingleLine(titleText)) {
+      return { text: inline, trusted: true };
+    }
 
     // 【強力なショートカット】h1の直後（隣）に h2 があり、そこに日本語が含まれていればダイレクトに採用する！
     const nextEl = titleEl.nextElementSibling;
     if (nextEl && String(nextEl.tagName).toUpperCase() === 'H2') {
       const text = normalizeJapaneseSubtitle(getText(nextEl) || nextEl.innerText || '');
       if (hasJapaneseSubtitleSignal(text) && text !== toSingleLine(titleText)) {
-        return text;
+        return { text, trusted: true };
       }
     }
     
@@ -639,7 +657,7 @@ const scoreEdgeDistance = edge => {
       if (h2El && h2El !== titleEl) {
         const text = normalizeJapaneseSubtitle(getText(h2El) || h2El.innerText || '');
         if (hasJapaneseSubtitleSignal(text) && text !== toSingleLine(titleText)) {
-          return text;
+          return { text, trusted: true };
         }
       }
     }
@@ -652,6 +670,8 @@ const scoreEdgeDistance = edge => {
       if (!candidates.includes(text)) candidates.push(text);
     };
 
+    // タイトル直後の隣接ノード（同じ見出しブロック内）から取れたものは信頼できる。
+    let trustedFromAdjacent = false;
     if (parent) {
       let afterTitle = false;
       for (const node of Array.from(parent.childNodes)) {
@@ -669,9 +689,13 @@ const scoreEdgeDistance = edge => {
           if (/^(UL|OL|TABLE|DL|NAV)$/.test(tag)) break;
           pushCandidate(getText(el));
         }
-        if (candidates.length) break;
+        if (candidates.length) {
+          trustedFromAdjacent = true;
+          break;
+        }
       }
 
+      // ここから先は離れた場所の走査なので「信頼できない（要検証）」候補扱い。
       Array.from(parent.querySelectorAll('h2, .subtitle, .sub-title, .subTitle, .title02, .book_subtitle, p, div, span'))
         .slice(0, 12)
         .forEach(el => {
@@ -680,7 +704,8 @@ const scoreEdgeDistance = edge => {
         });
     }
 
-    return candidates[0] || '';
+    if (!candidates.length) return { text: '', trusted: false };
+    return { text: candidates[0], trusted: trustedFromAdjacent };
   };
   const parseSizeFromText = raw => {
     const text = String(raw || '');
@@ -1622,7 +1647,9 @@ const scoreEdgeDistance = edge => {
   // 商品名
   const titleEl = document.querySelector('h1.BD_NAME, h1[itemprop=name], .book_title h1, h1');
   const name = titleEl?.innerText?.trim() || '';
-  const japaneseSubtitle = getJapaneseSubtitle(name);
+  const japaneseSubtitleInfo = getJapaneseSubtitle(name);
+  const japaneseSubtitle = japaneseSubtitleInfo.text;
+  const japaneseSubtitleTrusted = japaneseSubtitleInfo.trusted;
 
   // 価格（割引後優先）
   const price = getPrice();
@@ -1710,6 +1737,7 @@ const scoreEdgeDistance = edge => {
     商品名: name,
     ページタイトル: pageTitle,
     日本語タイトル: japaneseSubtitle,
+    日本語タイトル取得元: japaneseSubtitle ? (japaneseSubtitleTrusted ? 'page_trusted' : 'page_scan') : '',
     原題タイトル: originalTitle,
     作品名原題: goodsWorkTitle,
     価格: price,

@@ -40,7 +40,6 @@
         "https://www.books.com.tw/products/*"
       ],
       "js": [
-        "core/titleAnalysis.js",
         "content/taiwan/content.js"
       ]
     },

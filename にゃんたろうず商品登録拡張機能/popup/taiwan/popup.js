@@ -385,6 +385,18 @@ function save() {
 }
 
 function productForSheetRowBuild_(product) {
+  // 商品ページのタイトル直下から取得できた日本語タイトルが最優先（最も信頼できる）。
+  const pageTrustedJp = String(product?.日本語タイトル取得元 || '') === 'page_trusted'
+    ? String(product?.日本語タイトル || '').trim()
+    : '';
+  if (pageTrustedJp) {
+    return {
+      ...product,
+      日本語タイトル: pageTrustedJp,
+      作品名日本語: product.作品名日本語 || pageTrustedJp,
+      '作品名（日本語）': product['作品名（日本語）'] || pageTrustedJp,
+    };
+  }
   const lookup = product?.japaneseTitleLookup || null;
   if (lookup?.status === 'resolved' && String(lookup.japaneseTitle || '').trim()) {
     const jp = String(lookup.japaneseTitle).trim();
@@ -435,8 +447,10 @@ function buildGasPayload(items) {
 function stripInvalidPageJapaneseTitle_(product, analysis) {
   if (!product || typeof product !== 'object' || !analysis) return product;
   const jp = String(product.日本語タイトル || '').trim();
-  if (!jp
-    || typeof validateJapaneseTitleAgainstQuery !== 'function'
+  if (!jp) return product;
+  // 商品ページのタイトル直下から取得できた日本語タイトルは最も信頼できるので検証せず採用する。
+  if (String(product.日本語タイトル取得元 || '') === 'page_trusted') return product;
+  if (typeof validateJapaneseTitleAgainstQuery !== 'function'
     || typeof buildMuQueryVariants !== 'function') {
     return product;
   }
