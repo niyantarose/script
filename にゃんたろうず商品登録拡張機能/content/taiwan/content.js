@@ -611,6 +611,14 @@ const scoreEdgeDistance = edge => {
     if (/(作者|譯者|译者|翻譯者|翻訳者|出版社|出版商|出版日期|出版时间|發行日期|語言|语言|ISBN|定價|優惠價|优惠价|品牌|規格|规格)\\s*[：:]/.test(text)) return false;
     return true;
   };
+  const isJapaneseSubtitlePlausibleForTitle = (candidate, titleText) => {
+    const text = normalizeJapaneseSubtitle(candidate);
+    if (!text) return false;
+    // ブログ來の商品詳細ページから直接スクレイピングしたタイトル下のテキストは極めて信頼性が高いため、
+    // 外部検索（MangaUpdates）のような別作品の誤一致リスク検証（漢字の重なりチェックなど）は不要。
+    // ひらがな・カタカナ・長音記号などの日本語信号が含まれていれば妥当とみなして採用する。
+    return hasJapaneseSubtitleSignal(text);
+  };
   const getJapaneseSubtitle = titleText => {
     const titleEl = document.querySelector('h1.BD_NAME, h1[itemprop=name], .book_title h1, h1');
     if (!titleEl) return '';
@@ -619,6 +627,7 @@ const scoreEdgeDistance = edge => {
     const pushCandidate = raw => {
       const text = normalizeJapaneseSubtitle(raw);
       if (!isJapaneseSubtitleCandidate(text, titleText)) return;
+      if (!isJapaneseSubtitlePlausibleForTitle(text, titleText)) return;
       if (!candidates.includes(text)) candidates.push(text);
     };
 
