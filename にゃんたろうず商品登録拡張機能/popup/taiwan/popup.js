@@ -384,12 +384,28 @@ function save() {
   });
 }
 
+function productForSheetRowBuild_(product) {
+  const lookup = product?.japaneseTitleLookup || null;
+  if (lookup?.status === 'resolved' && String(lookup.japaneseTitle || '').trim()) {
+    const jp = String(lookup.japaneseTitle).trim();
+    return {
+      ...product,
+      日本語タイトル: jp,
+      作品名日本語: product.作品名日本語 || jp,
+      '作品名（日本語）': product['作品名（日本語）'] || jp,
+    };
+  }
+  const analysis = product?.titleAnalysis || (typeof analyzeProductTitle === 'function'
+    ? analyzeProductTitle({ ...product, source: 'books_tw' })
+    : null);
+  return stripInvalidPageJapaneseTitle_(product, analysis);
+}
+
 function buildGasPayload(items) {
   return {
     action: 'upsertProductWithLookup',
     source: 'books_tw',
     appendMode: 'append',
-    compactSheets: true,
     requestedAt: new Date().toISOString(),
     items: items.map(product => {
       const kind = getProductSheetType(product);
@@ -400,6 +416,7 @@ function buildGasPayload(items) {
       const lookupFailedInExtension = lookup
         && lookup.status === 'failed'
         && String(lookup.provider || '').trim() === 'extension';
+      const rowProduct = productForSheetRowBuild_(product);
       return {
         source: 'books_tw',
         rawItem: product,
@@ -407,12 +424,29 @@ function buildGasPayload(items) {
         itemType: kind,
         sheetName: getProductSheetName(product),
         headers: kind === 'magazine' ? MAGAZINE_SHEET_HEADERS : kind === 'book' ? BOOK_SHEET_HEADERS : GOODS_SHEET_HEADERS,
-        rowData: kind === 'magazine' ? buildMagazineSheetRow(product) : kind === 'book' ? buildBookSheetRow(product) : buildGoodsSheetRow(product),
+        rowData: kind === 'magazine' ? buildMagazineSheetRow(rowProduct) : kind === 'book' ? buildBookSheetRow(rowProduct) : buildGoodsSheetRow(rowProduct),
         titleAnalysis,
         japaneseTitleLookup: lookupFailedInExtension ? null : lookup,
       };
     }),
   };
+}
+
+function stripInvalidPageJapaneseTitle_(product, analysis) {
+  if (!product || typeof product !== 'object' || !analysis) return product;
+  const jp = String(product.日本語タイトル || '').trim();
+  if (!jp
+    || typeof validateJapaneseTitleAgainstQuery !== 'function'
+    || typeof buildMuQueryVariants !== 'function') {
+    return product;
+  }
+  const queries = buildMuQueryVariants(analysis, product);
+  if (validateJapaneseTitleAgainstQuery(jp, queries, 'page_subtitle')) return product;
+  const next = { ...product, 日本語タイトル: '' };
+  for (const key of ['作品名日本語', '作品名（日本語）', '商品名日本語', '商品名（日本語）']) {
+    if (String(next[key] || '').trim() === jp) next[key] = '';
+  }
+  return next;
 }
 
 function clearPendingJapaneseTitleMarkers(product) {
@@ -477,7 +511,30 @@ async function enrichProductWithJapaneseTitleLookup(product, options = {}) {
 
 async function prepareProductsForSheetSend(items, options = {}) {
   const sourceItems = Array.isArray(items) ? items : [];
-  return sourceItems.map(item => clearPendingJapaneseTitleMarkers(item));
+  const prepared = [];
+  for (const item of sourceItems) {
+    let product = clearPendingJapaneseTitleMarkers(item);
+    const analysis = product.titleAnalysis || (typeof analyzeProductTitle === 'function'
+      ? analyzeProductTitle({ ...product, source: 'books_tw' })
+      : null);
+    product = stripInvalidPageJapaneseTitle_(product, analysis);
+    const lookup = product.japaneseTitleLookup;
+    const lookupJp = String(lookup?.japaneseTitle || '').trim();
+    const needsEnrich = !lookup
+      || (lookup.status === 'resolved' && lookupJp
+        && typeof validateJapaneseTitleAgainstQuery === 'function'
+        && typeof buildMuQueryVariants === 'function'
+        && !validateJapaneseTitleAgainstQuery(lookupJp, buildMuQueryVariants(analysis, product), lookup.provider || ''))
+      || (!lookupJp && lookup?.status !== 'series_found_no_japanese' && lookup?.status !== 'not_found');
+    if (needsEnrich && typeof enrichProductWithJapaneseTitleLookup === 'function') {
+      product = await enrichProductWithJapaneseTitleLookup(product, {
+        gasUrl: options.gasUrl || gasWebAppUrl,
+        force: true,
+      });
+    }
+    prepared.push(product);
+  }
+  return prepared;
 }
 
 function isValidGasUrl(url) {
@@ -703,18 +760,11 @@ async function handleSendToSheet() {
   sendToSheetRequestInFlight = true;
   updateUI();
   try {
-    setStatus('シート送信用データを準備中...', '');
-    const preparedProducts = await prepareProductsForSheetSend(products);
-    products = preparedProducts;
-    save();
-    renderList();
-    updateUI();
-
     setStatus('バックグラウンド送信を登録中...', '');
     const response = await sendRuntimeMessage({
       action: 'queueGasPost',
       url: gasWebAppUrl,
-      items: buildGasPayload(preparedProducts).items,
+      items: buildGasPayload(products).items,
     });
 
     if (!response?.ok) {

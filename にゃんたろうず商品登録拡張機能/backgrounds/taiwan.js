@@ -338,8 +338,16 @@ async function enrichItemWithTaiwanMangaUpdates(item) {
           trace: '',
           candidates: [],
         };
-    const japaneseTitle = normalizeTaiwanLookupText(muResult?.japaneseTitle || '');
-    const status = japaneseTitle ? 'resolved' : 'not_found';
+    let japaneseTitle = normalizeTaiwanLookupText(muResult?.japaneseTitle || '');
+    const validationQueries = typeof buildMuQueryVariants === 'function'
+      ? buildMuQueryVariants(analysis, rawItem)
+      : queries;
+    if (japaneseTitle
+      && typeof validateJapaneseTitleAgainstQuery === 'function'
+      && !validateJapaneseTitleAgainstQuery(japaneseTitle, validationQueries, muResult?.provider || 'mangaUpdates(extension)')) {
+      japaneseTitle = '';
+    }
+    const status = japaneseTitle ? 'resolved' : (muResult?.status === 'series_found_no_japanese' ? 'series_found_no_japanese' : 'not_found');
     const seriesTitles = Array.isArray(muResult?.matchedTitles)
       ? muResult.matchedTitles.map(normalizeTaiwanLookupText).filter(Boolean).slice(0, 6)
       : [];
@@ -424,16 +432,54 @@ async function enrichItemsWithTaiwanMangaUpdates(items) {
   return enriched;
 }
 
+async function mergeEnrichedItemsToStorageProducts(enrichedItems) {
+  try {
+    const stored = await storageGetLocal(['products']);
+    const products = Array.isArray(stored.products) ? stored.products : [];
+    let modified = false;
+    
+    for (const enriched of enrichedItems) {
+      const code = extractProductCode(enriched);
+      if (!code) continue;
+      const idx = products.findIndex(p => extractProductCode(p) === code);
+      if (idx >= 0) {
+        const lookup = enriched.japaneseTitleLookup || null;
+        products[idx] = Object.assign({}, products[idx], {
+          titleAnalysis: enriched.titleAnalysis || products[idx].titleAnalysis || null,
+          japaneseTitleLookup: lookup || products[idx].japaneseTitleLookup || null,
+        });
+        
+        if (lookup?.status === 'resolved' && String(lookup.japaneseTitle || '').trim()) {
+          const jp = String(lookup.japaneseTitle).trim();
+          products[idx]['日本語タイトル'] = jp;
+          products[idx]['作品名日本語'] = products[idx]['作品名日本語'] || jp;
+          products[idx]['作品名（日本語）'] = products[idx]['作品名（日本語）'] || jp;
+        }
+        modified = true;
+      }
+    }
+    
+    if (modified) {
+      await storageSetLocal({ products });
+    }
+  } catch (error) {
+    console.warn('[background] mergeEnrichedItemsToStorageProducts エラー:', error);
+  }
+}
+
 async function postProductsToGas(url, items) {
   // === 処理時間計測（書き込みが遅いときの切り分け用）===
   const tEnrichStart = Date.now();
   const enrichedItems = await enrichItemsWithTaiwanMangaUpdates(items);
+  
+  // 照会結果をストレージの製品リストに書き戻す（ポップアップが閉じられていても確実に反映）
+  await mergeEnrichedItemsToStorageProducts(enrichedItems);
+
   const tPostStart = Date.now();
   const response = await postGasJson(url, JSON.stringify({
     action: 'upsertProductWithLookup',
     source: 'books_tw',
     appendMode: 'append',
-    compactSheets: true,
     requestedAt: new Date().toISOString(),
     items: enrichedItems,
   }));
