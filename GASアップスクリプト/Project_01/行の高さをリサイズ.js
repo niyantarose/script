@@ -13,7 +13,12 @@ function fixRowHeightOnEdit(e) {
   if (!targetSheets.includes(sheetName)) return;
 
   const row = e.range.getRow();
-  const numRows = e.range.getNumRows();
+  const lastDataRow = sh.getLastRow();
+  if (row > lastDataRow) return;
+
+  const numRows = Math.min(e.range.getNumRows(), lastDataRow - row + 1);
+  if (numRows <= 0) return;
+
   const lastCol = sh.getLastColumn();
 
   const fullRowRange = sh.getRange(row, 1, numRows, lastCol);
@@ -29,7 +34,7 @@ function fixRowHeightOnEdit(e) {
   sh.setRowHeightsForced(row, numRows, 29);
   SpreadsheetApp.flush();
 
-  console.log(row + "行目から" + numRows + "行を21pxに強制固定しました");
+  console.log(row + "行目から" + numRows + "行を29pxに強制固定しました");
 }
 
 function 台湾まんが_行高さを固定する() {

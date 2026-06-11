@@ -186,13 +186,14 @@ function 配送テキストを反映_汎用_(sheetName, headerRows) {
   const { postageToType, typeToText, typeToNum, numToType } = 配送マスタを読み込み_();
 
   const lastRow = sheet.getLastRow();
-  const lastCol = sheet.getLastColumn();
   if (lastRow <= headerRows) {
     SHIP_uiSafeAlert_('データ行がありません: ' + sheetName);
     return;
   }
 
-  const range = sheet.getRange(headerRows + 1, 1, lastRow - headerRows, lastCol);
+  // A〜R列(18列)だけ読み書き — S列(メイン画像)/T列(追加画像)を壊さない
+  const writeCols = COL_POSTAGE_SET; // R=18
+  const range = sheet.getRange(headerRows + 1, 1, lastRow - headerRows, writeCols);
   const data = range.getValues();
 
   const idxI = COL_ABSTRACT - 1;

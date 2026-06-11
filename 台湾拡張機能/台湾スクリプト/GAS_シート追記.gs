@@ -21,6 +21,19 @@ const COMIC_BOOK_SHEET_NAME = '台湾まんが';
 const OTHER_BOOK_SHEET_NAME = '台湾書籍その他';
 const GOODS_SHEET_NAME = '台湾グッズ';
 const MAGAZINE_SHEET_NAME = '台湾雑誌';
+const BOOK_WORKS_SHEET_NAME = 'Works（書籍専用）';
+const BOOK_WORKS_HEADERS = [
+  'WorksKey',
+  '作品ID',
+  '日本語タイトル',
+  '作者',
+  '原題タイトル',
+  '登録済み巻',
+  '最新巻',
+  '更新日時',
+  '最新巻(予約込み)',
+  '予約更新日時'
+];
 
 const MAGAZINE_MASTER_SHEET = '雑誌マスター（共通）';
 const MAGAZINE_MASTER_CANDIDATE_SHEET = '雑誌マスター候補（共通）';
@@ -72,7 +85,17 @@ const BUILTIN_TITLE_ALIAS_DICTIONARY = {
   '台湾|まんが|只想守護溫柔的你': '優しいあなたを守る方法',
   '台湾|グッズ|只想守護溫柔的你': '優しいあなたを守る方法',
   '台湾|書籍|savingmysweetheart': '優しいあなたを守る方法',
-  '台湾|まんが|savingmysweetheart': '優しいあなたを守る方法'
+  '台湾|まんが|savingmysweetheart': '優しいあなたを守る方法',
+  /** Underground Danshi to Hatsukoi（MU search で中国語表題が出る） */
+  '台湾|まんが|與黑道系男子的初戀': 'アングラ系男子と初恋',
+  '台湾|書籍|與黑道系男子的初戀': 'アングラ系男子と初恋',
+  '台湾|グッズ|與黑道系男子的初戀': 'アングラ系男子と初恋',
+  '台湾|まんが|与黑道系男子的初恋': 'アングラ系男子と初恋',
+  '台湾|書籍|与黑道系男子的初恋': 'アングラ系男子と初恋',
+  '台湾|グッズ|与黑道系男子的初恋': 'アングラ系男子と初恋',
+  '台湾|まんが|理想的戀愛條件': '理想的恋愛の条件',
+  '台湾|書籍|理想的戀愛條件': '理想的恋愛の条件',
+  '台湾|グッズ|理想的戀愛條件': '理想的恋愛の条件'
 };
 const TITLE_LOOKUP_PROVIDERS = {
   workTitleMaster: {
@@ -100,8 +123,8 @@ const TITLE_LOOKUP_PROVIDERS = {
     itemTypes: ['manga', 'bl_manga', 'goods', 'light_novel'],
     implemented: true,
     failSoft: true,
-    /** GoogleのIPはMU側で恒久ブロックされるため、GASでは実行せずブラウザ拡張に委譲 */
-    delegatedToExtension: true
+    /** APIが403でも通常サイト検索フォールバックまで走らせる */
+    delegatedToExtension: false
   },
   aniList: {
     label: 'AniList',
@@ -669,11 +692,16 @@ function providerOrderForLookup_(itemType, category, originalTitle, author, prov
     ? normalizeProviderOrder_(providerHint.preferredOrder)
     : [];
   if (hinted.length) return hinted;
-  return PROVIDER_ORDER_BY_ITEM_TYPE[inferredItemType] || PROVIDER_ORDER_BY_ITEM_TYPE.unknown;
+  const order = (PROVIDER_ORDER_BY_ITEM_TYPE[inferredItemType] || PROVIDER_ORDER_BY_ITEM_TYPE.unknown).slice();
+  if (isJapaneseAuthorLike_(author) && order.indexOf('chilchil') < 0) {
+    order.splice(Math.min(2, order.length), 0, 'chilchil');
+  }
+  return order;
 }
 
-function isProviderApplicableForItemType_(providerId, itemType) {
+function isProviderApplicableForItemType_(providerId, itemType, context) {
   if (providerId === 'workTitleMaster' || providerId === 'titleAliasDictionary') return true;
+  if (providerId === 'chilchil' && isJapaneseAuthorLike_(context && context.author)) return true;
   const provider = TITLE_LOOKUP_PROVIDERS[providerId];
   if (!provider || !Array.isArray(provider.itemTypes) || !provider.itemTypes.length) return true;
   return provider.itemTypes.indexOf(itemType) >= 0;
@@ -707,10 +735,10 @@ function runTitleLookupProvider_(providerId, context) {
       return { japaneseTitle: japaneseTitle, candidates: [] };
     }
     case 'chilchil': {
-      if (!isBLLike_(context.originalTitle, context.category, context.author)) {
+      if (!isBLLike_(context.originalTitle, context.category, context.author) && !isJapaneseAuthorLike_(context.author)) {
         return { japaneseTitle: '', candidates: [], skippedReason: 'not_applicable' };
       }
-      const japaneseTitle = searchBLSites_(context.originalTitle, context.candidates || []);
+      const japaneseTitle = searchBLSites_(context.originalTitle, context.candidates || [], context.author);
       return { japaneseTitle: japaneseTitle || '', candidates: [] };
     }
     case 'mangaUpdates':
@@ -795,17 +823,15 @@ function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, au
       result.trace.push(providerId + ':delegated_to_extension');
       continue;
     }
-    if (!isProviderApplicableForItemType_(providerId, lookupItemType)) {
+    if (!isProviderApplicableForItemType_(providerId, lookupItemType, context)) {
       result.skippedSources.push(providerId);
       result.trace.push(providerId + ':skipped(not_applicable)');
       continue;
     }
-    // 書き込みパス(skipExternalApi=true)では、外部API/スクレイピングに加えて
-    // workTitleMaster / titleAliasDictionary（別マスターを openById して全行 getValues する
-    // 重い処理。実測でサーバ書込の大半を占有）も含めて全プロバイダーをスキップする。
-    // これらのマスター照会は「追加」時のフル照会(skipExternalApi=false)で既に実施済みのため、
-    // 書き込み時に再実行するのは重複かつ低速。書き込みは純粋に高速化する。
-    if (skipExternalApi) {
+    // 書き込みパス(skipExternalApi=true)では外部API/スクレイピングは止める。
+    // ただし titleAliasDictionary は内蔵辞書の即時補正を含むため、古い not_found を
+    // 引きずらないよう書き込み時にも通す。
+    if (skipExternalApi && providerId !== 'titleAliasDictionary') {
       result.skippedSources.push(providerId);
       result.trace.push(providerId + ':skipped(skip_during_write)');
       continue;
@@ -868,6 +894,10 @@ function isBLLike_(originalTitle, category, author) {
   return false;
 }
 
+function isJapaneseAuthorLike_(author) {
+  return /[ぁ-ゖァ-ヺ々〆ヵヶ]/.test(String(author || ''));
+}
+
 
 // ==========================================
 // ② MangaUpdates 候補収集
@@ -884,7 +914,8 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
   if (!cacheKey) return result;
 
   const cache = CacheService.getScriptCache();
-  const cached = cache.get('mu_' + cacheKey);
+  const cacheStorageKey = MANGA_UPDATES_CACHE_KEY_PREFIX + cacheKey;
+  const cached = cache.get(cacheStorageKey);
   if (cached !== null) {
     if (cached === MANGA_UPDATES_EMPTY_CACHE_VALUE) return result;
     result.japaneseTitle = cached;
@@ -942,7 +973,7 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
       const jpTitle = pickJapaneseMangaUpdatesTitle_(record, detail);
       if (jpTitle) {
         result.japaneseTitle = jpTitle;
-        cache.put('mu_' + cacheKey, jpTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
+        cache.put(cacheStorageKey, jpTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
         return result;
       }
     }
@@ -960,7 +991,7 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
   }
   if (!result.japaneseTitle && siteFallback.japaneseTitle) {
     result.japaneseTitle = siteFallback.japaneseTitle;
-    cache.put('mu_' + cacheKey, siteFallback.japaneseTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
+    cache.put(cacheStorageKey, siteFallback.japaneseTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
     result.candidates = uniqNonEmptyTitles_(result.candidates);
     return result;
   }
@@ -973,7 +1004,7 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
     throw new Error(siteFallback.error);
   }
   if (!result.japaneseTitle) {
-    cache.put('mu_' + cacheKey, MANGA_UPDATES_EMPTY_CACHE_VALUE, MANGA_UPDATES_CACHE_TTL_SECONDS);
+    cache.put(cacheStorageKey, MANGA_UPDATES_EMPTY_CACHE_VALUE, MANGA_UPDATES_CACHE_TTL_SECONDS);
   }
   return result;
 }
@@ -986,6 +1017,8 @@ function searchMangaUpdatesSiteCandidates_(queries, query, language, category, o
   const queryKeys = buildMangaUpdatesTitleKeys_(query, language, category, originalProductTitle);
   let hadResponse = false;
   let lastError = '';
+  const detailEntries = [];
+  const seenDetailUrls = {};
 
   // fetchAll で全クエリを並列実行
   const requests = searchQueries.map(function(sq) {
@@ -1023,7 +1056,17 @@ function searchMangaUpdatesSiteCandidates_(queries, query, language, category, o
       }
 
       hadResponse = true;
-      const titles = extractMangaUpdatesSiteSeriesTitles_(responses[i].getContentText() || '');
+      const html = responses[i].getContentText() || '';
+      const entries = extractMangaUpdatesSiteSeriesEntries_(html);
+      entries.forEach(function(entry) {
+        if (entry && entry.url && !seenDetailUrls[entry.url]) {
+          seenDetailUrls[entry.url] = true;
+          detailEntries.push(entry);
+        }
+      });
+      const titles = entries.length
+        ? entries.map(function(entry) { return entry.title; })
+        : extractMangaUpdatesSiteSeriesTitles_(html);
       if (!titles.length) continue;
 
       result.candidates = result.candidates.concat(titles);
@@ -1043,12 +1086,58 @@ function searchMangaUpdatesSiteCandidates_(queries, query, language, category, o
     }
   }
 
+  if (!result.japaneseTitle && detailEntries.length) {
+    const detailFallback = fetchMangaUpdatesSiteDetailCandidates_(
+      prioritizeMangaUpdatesSiteDetailEntries_(detailEntries, queryKeys, language, category, originalProductTitle),
+      queryKeys,
+      language,
+      category,
+      originalProductTitle
+    );
+    if (detailFallback.candidates && detailFallback.candidates.length) {
+      result.candidates = result.candidates.concat(detailFallback.candidates);
+    }
+    if (detailFallback.japaneseTitle) {
+      result.japaneseTitle = detailFallback.japaneseTitle;
+    } else if (detailFallback.failed && detailFallback.error) {
+      lastError = detailFallback.error;
+    }
+  }
+
   result.candidates = uniqNonEmptyTitles_(result.candidates);
   if (!hadResponse && lastError) {
     result.failed = true;
     result.error = lastError;
   }
   return result;
+}
+
+function extractMangaUpdatesSiteSeriesEntries_(html) {
+  const raw = String(html || '');
+  const entries = [];
+  const seen = {};
+
+  function pushEntry_(href, fragment) {
+    const url = normalizeMangaUpdatesSiteSeriesUrl_(href);
+    if (!url) return;
+    const text = normalizeTitleSearchCandidateSpacing_(
+      decodeHtmlEntities_(String(fragment || '').replace(/<[^>]+>/g, ' '))
+    );
+    if (!text || text.length < 2 || seen[url]) return;
+    seen[url] = true;
+    entries.push({ title: text, url: url });
+  }
+
+  const linkRe = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = linkRe.exec(raw)) !== null) {
+    const attrs = match[1] || '';
+    const hrefMatch = attrs.match(/\bhref\s*=\s*(["'])([\s\S]*?)\1/i);
+    if (!hrefMatch) continue;
+    pushEntry_(hrefMatch[2], match[2]);
+  }
+
+  return entries;
 }
 
 function extractMangaUpdatesSiteSeriesTitles_(html) {
@@ -1079,6 +1168,171 @@ function extractMangaUpdatesSiteSeriesTitles_(html) {
   return titles;
 }
 
+function normalizeMangaUpdatesSiteSeriesUrl_(href) {
+  const value = decodeHtmlEntities_(String(href || '').trim()).replace(/#.*$/, '');
+  if (!value) return '';
+
+  let url = '';
+  if (/^https?:\/\/(?:www\.)?mangaupdates\.com\//i.test(value)) {
+    url = value.replace(/^http:/i, 'https:');
+  } else if (/^\/\/(?:www\.)?mangaupdates\.com\//i.test(value)) {
+    url = 'https:' + value;
+  } else if (/^\//.test(value)) {
+    url = 'https://www.mangaupdates.com' + value;
+  }
+
+  if (!/(?:^|\/)(?:series\/|series\.html\?id=)/i.test(url)) return '';
+  return url;
+}
+
+function prioritizeMangaUpdatesSiteDetailEntries_(entries, queryKeys, language, category, originalProductTitle) {
+  const uniqueEntries = [];
+  const seen = {};
+  (entries || []).forEach(function(entry, index) {
+    if (!entry || !entry.url || seen[entry.url]) return;
+    seen[entry.url] = true;
+    uniqueEntries.push({
+      title: entry.title || '',
+      url: entry.url,
+      index: index,
+    });
+  });
+
+  return uniqueEntries.sort(function(a, b) {
+    return scoreMangaUpdatesSiteDetailEntry_(b, queryKeys, language, category, originalProductTitle)
+      - scoreMangaUpdatesSiteDetailEntry_(a, queryKeys, language, category, originalProductTitle);
+  });
+}
+
+function scoreMangaUpdatesSiteDetailEntry_(entry, queryKeys, language, category, originalProductTitle) {
+  let score = 1000 - Math.min(999, entry && typeof entry.index === 'number' ? entry.index : 999);
+  const title = entry && entry.title ? String(entry.title) : '';
+  if (title && doesMangaUpdatesTitleMatchQuery_(title, queryKeys, language, category, originalProductTitle)) {
+    score += 100000;
+  }
+  if (hasJapaneseTitleSignal_(title)) score += 2000;
+  if (/\/series\//i.test(String(entry && entry.url || ''))) score += 500;
+  return score;
+}
+
+function fetchMangaUpdatesSiteDetailCandidates_(entries, queryKeys, language, category, originalProductTitle) {
+  const result = { japaneseTitle: '', candidates: [], failed: false, error: '' };
+  const uniqueEntries = [];
+  const seen = {};
+  (entries || []).forEach(function(entry) {
+    if (!entry || !entry.url || seen[entry.url]) return;
+    seen[entry.url] = true;
+    uniqueEntries.push(entry);
+  });
+  if (!uniqueEntries.length) return result;
+
+  const requests = uniqueEntries.slice(0, 5).map(function(entry) {
+    return {
+      url: entry.url,
+      method: 'GET',
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ja,en;q=0.9,en-US;q=0.8,zh-TW;q=0.6',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        Referer: 'https://www.mangaupdates.com/',
+      },
+    };
+  });
+
+  let responses;
+  try {
+    responses = UrlFetchApp.fetchAll(requests);
+  } catch (error) {
+    const detail = error && error.message ? error.message : String(error || 'unknown error');
+    result.failed = true;
+    result.error = 'MangaUpdates site detail error: ' + detail;
+    return result;
+  }
+
+  let lastError = '';
+  let hadResponse = false;
+  for (let i = 0; i < responses.length; i += 1) {
+    try {
+      const status = responses[i].getResponseCode();
+      if (status < 200 || status >= 300) {
+        lastError = 'MangaUpdates site detail error: ' + status;
+        continue;
+      }
+      hadResponse = true;
+      const entry = uniqueEntries[i] || {};
+      const detailTitles = extractMangaUpdatesSiteDetailTitles_(responses[i].getContentText() || '');
+      const pageCandidates = uniqNonEmptyTitles_([entry.title].concat(detailTitles));
+      if (pageCandidates.length) result.candidates = result.candidates.concat(pageCandidates);
+
+      const pageMatchesQuery = pageCandidates.some(function(candidate) {
+        return doesMangaUpdatesTitleMatchQuery_(candidate, queryKeys, language, category, originalProductTitle);
+      });
+      if (!pageMatchesQuery) continue;
+
+      const japaneseTitle = pickBestCandidate_(pageCandidates);
+      if (japaneseTitle) {
+        result.japaneseTitle = stripMangaUpdatesEditionSuffix_(japaneseTitle);
+        break;
+      }
+    } catch (error) {
+      const detail = error && error.message ? error.message : String(error || 'unknown error');
+      lastError = /^MangaUpdates/i.test(detail)
+        ? detail
+        : 'MangaUpdates site detail error: ' + detail;
+    }
+  }
+
+  result.candidates = uniqNonEmptyTitles_(result.candidates);
+  if (!hadResponse && lastError) {
+    result.failed = true;
+    result.error = lastError;
+  }
+  return result;
+}
+
+function extractMangaUpdatesSiteDetailTitles_(html) {
+  const raw = String(html || '');
+  const titles = [];
+  const seen = {};
+
+  function pushTitle_(fragment) {
+    const text = normalizeTitleSearchCandidateSpacing_(
+      decodeHtmlEntities_(String(fragment || '')
+        .replace(/<\s*br\s*\/?>/gi, '\n')
+        .replace(/<\/(?:div|p|li|td|tr|span)>/gi, '\n')
+        .replace(/<[^>]+>/g, ' '))
+    );
+    if (!text || text.length < 2 || seen[text]) return;
+    if (/^(?:Associated Names?|Edit|Description|Type|Genre|Categories|Recommendations|Author\(s\)|Artist\(s\))$/i.test(text)) return;
+    seen[text] = true;
+    titles.push(text);
+  }
+
+  const h1Re = /<h1\b[^>]*>([\s\S]*?)<\/h1>/gi;
+  let match;
+  while ((match = h1Re.exec(raw)) !== null) pushTitle_(match[1]);
+
+  const titleClassRe = /<(?:div|span|td)\b[^>]*class="[^"]*(?:releasestitle|series[_-]?title|title)[^"]*"[^>]*>([\s\S]*?)<\/(?:div|span|td)>/gi;
+  while ((match = titleClassRe.exec(raw)) !== null) pushTitle_(match[1]);
+
+  const associatedStart = raw.search(/Associated\s+Names?/i);
+  if (associatedStart >= 0) {
+    let block = raw.slice(associatedStart, associatedStart + 4000);
+    const endMatch = block.search(/(?:Related\s+Series|Groups\s+Scanlating|Latest\s+Release|Status\s+in\s+Country|Completely\s+Scanlated|Anime\s+Start|Genre|Categories|Recommendations|Author\(s\)|Artist\(s\))/i);
+    if (endMatch > 0) block = block.slice(0, endMatch);
+    decodeHtmlEntities_(block
+      .replace(/<\s*br\s*\/?>/gi, '\n')
+      .replace(/<\/(?:div|p|li|td|tr|span)>/gi, '\n')
+      .replace(/<[^>]+>/g, '\n'))
+      .split(/\r?\n/)
+      .forEach(function(line) { pushTitle_(line); });
+  }
+
+  return uniqNonEmptyTitles_(titles);
+}
+
 function pickMatchingMangaUpdatesSiteJapaneseTitle_(titles, queryKeys, language, category, originalProductTitle) {
   const uniqueTitles = uniqNonEmptyTitles_(titles || []);
   const japaneseTitles = uniqueTitles.filter(function(title) {
@@ -1086,21 +1340,10 @@ function pickMatchingMangaUpdatesSiteJapaneseTitle_(titles, queryKeys, language,
   });
 
   for (let i = 0; i < japaneseTitles.length; i += 1) {
-    const candidateKeys = buildMangaUpdatesTitleKeys_(japaneseTitles[i], language, category, originalProductTitle);
-    const matched = candidateKeys.some(function(candidateKey) {
-      return (queryKeys || []).some(function(queryKey) {
-        if (!candidateKey || !queryKey) return false;
-        if (candidateKey === queryKey) return true;
-        if (candidateKey.length >= 4 && queryKey.length >= 4) {
-          return candidateKey.indexOf(queryKey) !== -1 || queryKey.indexOf(candidateKey) !== -1;
-        }
-        return false;
-      });
-    });
-    if (matched) return japaneseTitles[i];
+    if (doesMangaUpdatesTitleMatchQuery_(japaneseTitles[i], queryKeys, language, category, originalProductTitle)) return japaneseTitles[i];
   }
 
-  return japaneseTitles.length ? japaneseTitles[0] : '';
+  return '';
 }
 
 function decodeHtmlEntities_(value) {
@@ -1126,6 +1369,7 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
 
   // クエリ数を削減して高速化（8→4）
   const searchQueries = buildMangaUpdatesSearchQueries_(query, language, category, originalProductTitle).slice(0, 4);
+  const queryKeys = buildMangaUpdatesTitleKeys_(query, language, category, originalProductTitle);
 
   // fetchAll で全クエリ×メディアタイプを並列実行
   const requests = [];
@@ -1168,6 +1412,11 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
       const titleValues = [title.native, title.romaji, title.english, title.userPreferred];
       const synonyms = Array.isArray(media.synonyms) ? media.synonyms : [];
       const allTitles = uniqNonEmptyTitles_(titleValues.concat(synonyms));
+      const matched = allTitles.some(function(candidateTitle) {
+        return doesMangaUpdatesTitleMatchQuery_(candidateTitle, queryKeys, language, category, '');
+      });
+      if (!matched) continue;
+
       result.candidates = uniqNonEmptyTitles_(result.candidates.concat(allTitles));
 
       const nativeTitle = String(title.native || '').trim();
@@ -1378,9 +1627,10 @@ function confirmOnAmazonJp_(originalQuery, candidates, language, category, origi
   return '';
 }
 
-function searchBLSites_(originalTitle, existingCandidates) {
+function searchBLSites_(originalTitle, existingCandidates, author) {
   const japanCandidates = existingCandidates.filter(function(c) { return hasJapaneseTitleSignal_(c); });
-  const searchTerms = uniqNonEmptyTitles_(japanCandidates.concat([originalTitle])).slice(0, 2);
+  const queryKeys = buildMangaUpdatesTitleKeys_(originalTitle);
+  const searchTerms = uniqNonEmptyTitles_(japanCandidates.concat([originalTitle, author])).slice(0, 4);
 
   const blSites = [
     { name: 'DLsite', buildUrl: function(q) { return 'https://www.dlsite.com/bl-pro/fsr/=/keyword/' + encodeURIComponent(q); } },
@@ -1416,17 +1666,24 @@ function searchBLSites_(originalTitle, existingCandidates) {
     try {
       if (responses[r].getResponseCode() !== 200) continue;
       const html = responses[r].getContentText() || '';
-      const matches = html.match(/<(?:h[1-4]|a|span)[^>]*class="[^"]*(?:title|name|item)[^"]*"[^>]*>([^<]{2,80})</gi) || [];
+      let matches = html.match(/<(?:h[1-4]|a|span)[^>]*class="[^"]*(?:title|name|item)[^"]*"[^>]*>([^<]{2,80})</gi) || [];
+      if (!matches.length) {
+        matches = html.match(/<(?:h[1-4]|a|span)[^>]*>([^<]{2,80})</gi) || [];
+      }
       for (let j = 0; j < Math.min(matches.length, 5); j += 1) {
         const m = matches[j].match(/>([^<]+)$/);
         if (!m) continue;
         const blTitle = String(m[1]).trim();
         if (!hasJapaneseTitleSignal_(blTitle)) continue;
 
+        if (doesMangaUpdatesTitleMatchQuery_(blTitle, queryKeys)) {
+          return stripMangaUpdatesEditionSuffix_(blTitle);
+        }
+
         const blKey = normalizeMangaUpdatesTitleKey_(blTitle);
         for (let k = 0; k < japanCandidates.length; k += 1) {
           const candKey = normalizeMangaUpdatesTitleKey_(japanCandidates[k]);
-          if (candKey && blKey && (blKey.indexOf(candKey) >= 0 || candKey.indexOf(blKey) >= 0)) {
+          if (candKey && blKey && candKey === blKey) {
             return japanCandidates[k];
           }
         }
@@ -1472,6 +1729,7 @@ function testConvertJapaneseTitle_() {
 const ANILIST_API_URL = 'https://graphql.anilist.co';
 const MANGA_UPDATES_API_BASE = 'https://api.mangaupdates.com/v1';
 const MANGA_UPDATES_SITE_SEARCH_BASE = 'https://www.mangaupdates.com/site/search/result?search=';
+const MANGA_UPDATES_CACHE_KEY_PREFIX = 'mu_title_v2_';
 const MANGA_UPDATES_CACHE_TTL_SECONDS = 21600;
 const MANGA_UPDATES_EMPTY_CACHE_VALUE = '__EMPTY__';
 const MANGA_UPDATES_SESSION_CACHE_KEY = 'mu_session_token_v1';
@@ -1553,7 +1811,8 @@ function lookupJapaneseTitleViaMangaUpdates_(query) {
   if (!cacheKey) return '';
 
   const cache = CacheService.getScriptCache();
-  const cached = cache.get(cacheKey);
+  const cacheStorageKey = MANGA_UPDATES_CACHE_KEY_PREFIX + cacheKey;
+  const cached = cache.get(cacheStorageKey);
   if (cached !== null) {
     return cached === MANGA_UPDATES_EMPTY_CACHE_VALUE ? '' : cached;
   }
@@ -1581,17 +1840,17 @@ function lookupJapaneseTitleViaMangaUpdates_(query) {
 
     const japaneseTitle = pickJapaneseMangaUpdatesTitle_(result, detail);
     if (japaneseTitle) {
-      cache.put(cacheKey, japaneseTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
+      cache.put(cacheStorageKey, japaneseTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
       return japaneseTitle;
     }
   }
 
   const siteFallback = searchMangaUpdatesSiteCandidates_([query], query, '', '', '');
   if (siteFallback.japaneseTitle) {
-    cache.put(cacheKey, siteFallback.japaneseTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
+    cache.put(cacheStorageKey, siteFallback.japaneseTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
     return siteFallback.japaneseTitle;
   }
-  cache.put(cacheKey, MANGA_UPDATES_EMPTY_CACHE_VALUE, MANGA_UPDATES_CACHE_TTL_SECONDS);
+  cache.put(cacheStorageKey, MANGA_UPDATES_EMPTY_CACHE_VALUE, MANGA_UPDATES_CACHE_TTL_SECONDS);
   return '';
 }
 
@@ -1879,6 +2138,7 @@ function stripMangaUpdatesEditionSuffix_(value) {
   return normalizeTitleSearchCandidateSpacing_(String(value || '')
     .replace(/\s*[（(]?(?:首刷限定版?|首刷限定|限定版?|特裝版?|特装版?|豪華版|豪华版|通常版|套書|套組|套装|附錄版|附录版|特典版|贈品版|初回限定?|台灣版|臺灣版|台湾版|韓版|韩版)[）)]?\s*$/u, '')
     .replace(/\s*(?:vol\.?\s*\d+|no\.?\s*\d+)\s*$/iu, '')
+    .replace(/\s*(?:[ivxlcdm]+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)\s*$/iu, '')
     .replace(/\s*[（(]?(?:第?\d+\s*(?:巻|卷|卷册|冊|册|集|期|話|号|號|漫畫|漫画|コミック|單行本|单行本)|\d+)[）)]?\s*$/u, ''));
 }
 
@@ -1974,6 +2234,15 @@ function buildMangaUpdatesTitleKeys_(value, language, category, originalProductT
   );
 }
 
+function doesMangaUpdatesTitleMatchQuery_(candidate, queryKeys, language, category, originalProductTitle) {
+  const candidateKeys = buildMangaUpdatesTitleKeys_(candidate, language, category, '');
+  return candidateKeys.some(function(candidateKey) {
+    return (queryKeys || []).some(function(queryKey) {
+      return !!candidateKey && !!queryKey && candidateKey === queryKey;
+    });
+  });
+}
+
 function cjkCharOverlap_(a, b) {
   var charsA = String(a || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
   var charsB = String(b || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
@@ -2043,10 +2312,50 @@ function hasJapaneseTitleSignal_(value) {
 }
 
 function normalizeMangaUpdatesTitleKey_(value) {
-  return String(value || '')
+  return normalizeMangaUpdatesComparableText_(value)
     .trim()
     .toLowerCase()
     .replace(/[\s\u3000\"'“”‘’´・･:：!！?？,，、.．\-ー‐―–—~〜/／\\|()\[\]{}【】「」『』<>]/g, '');
+}
+
+function normalizeMangaUpdatesComparableText_(value) {
+  const replacements = {
+    '與': '与', '与': '与',
+    '戀': '恋', '恋': '恋',
+    '臺': '台', '台': '台',
+    '體': '体', '体': '体',
+    '條': '条', '条': '条',
+    '漫畫': '漫画', '漫畵': '漫画',
+    '畫': '画', '画': '画',
+    '裏': '里',
+    '黒': '黑',
+    '發': '発', '发': '発',
+    '鬥': '斗', '闘': '斗',
+    '傳': '传',
+    '學': '学',
+    '國': '国',
+    '愛': '爱',
+    '惡': '悪', '悪': '悪',
+    '劍': '剑',
+    '龍': '龙',
+    '貓': '猫',
+    '獸': '兽',
+    '姬': '姫', '姫': '姫',
+    '處': '处',
+    '關': '关',
+    '係': '系',
+    '稱': '称',
+    '後': '后',
+    '異': '异',
+    '錄': '录',
+    '卷': '巻',
+    '冊': '册',
+  };
+  let text = String(value || '');
+  Object.keys(replacements).forEach(function(from) {
+    text = text.split(from).join(replacements[from]);
+  });
+  return text.replace(/の/g, '');
 }
 
 function uniqNonEmptyTitles_(values) {
@@ -2309,16 +2618,14 @@ function lookupJapaneseTitleAction_(payload) {
 }
 
 // 拡張機能（クライアント）側のカスケードで確定済みとみなせる状態。
-// これらが来たら、書き込み時にサーバ側で重い外部API・スクレイピングを
-// 再実行しない（＝GASへの書き込みを超高速化する主目的）。
-// クライアントの「追加」時点で lookupJapaneseTitle（GASカスケード＋MU直叩き）を
-// 既に実行済みのため、書き込み時の再照会は完全な重複処理だった。
+// タイトル入りの resolved だけを再利用する。not_found / series_found_no_japanese は
+// 修正後の辞書・MUフォールバックで解決できることがあるため、GAS側で再照会する。
 const CLIENT_TERMINAL_LOOKUP_STATUSES_ = {
   resolved: true,
-  not_found: true,
-  series_found_no_japanese: true,
-  partial_error: true,
-  skipped: true,
+  not_found: false,
+  series_found_no_japanese: false,
+  partial_error: false,
+  skipped: false,
 };
 
 function shouldRefreshLookup_(lookup, titleAnalysis) {
@@ -2589,16 +2896,502 @@ function findExistingRowFromKeyMaps_(duplicateKeys, primaryMap, fallbackMap) {
   return 0;
 }
 
+function createBookCodeRuntime_(ss) {
+  return {
+    ss: ss,
+    worksContext: null,
+    usedIds: null,
+  };
+}
+
+function bookCodeNormalize_(value) {
+  return String(value == null ? '' : value)
+    .replace(/[！-～]/g, function(ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); })
+    .replace(/\u3000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function bookCodeFirstNonEmpty_() {
+  for (let i = 0; i < arguments.length; i += 1) {
+    const value = bookCodeNormalize_(arguments[i]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function bookCodeIsBookSheet_(sheetName) {
+  return sheetName === COMIC_BOOK_SHEET_NAME || sheetName === OTHER_BOOK_SHEET_NAME;
+}
+
+function bookCodeSetIfBlank_(rowData, key, value) {
+  const normalized = bookCodeNormalize_(value);
+  if (!normalized) return false;
+  if (bookCodeNormalize_(rowData[key])) return false;
+  rowData[key] = normalized;
+  return true;
+}
+
+function bookCodeWorkId4_(value) {
+  const text = bookCodeNormalize_(value);
+  if (!text) return '';
+  if (/^\d{4}$/.test(text)) return text;
+  if (/^\d+$/.test(text)) return String(parseInt(text, 10)).padStart(4, '0');
+  return '';
+}
+
+function bookCodeWorkIdFromCode_(value) {
+  const text = bookCodeNormalize_(value).toUpperCase();
+  if (!text) return '';
+  const match = text.match(/^[A-Z]{2}[A-Z]*?(\d{4})-/);
+  return match ? match[1] : '';
+}
+
+function bookCodeWorkIdFromRow_(rowData) {
+  return (
+    bookCodeWorkId4_(rowData['作品ID(W)（自動）']) ||
+    bookCodeWorkId4_(rowData['作品ID(W)(自動)']) ||
+    bookCodeWorkId4_(rowData['作品(W)（自動）']) ||
+    bookCodeWorkIdFromCode_(rowData['親コード']) ||
+    bookCodeWorkIdFromCode_(rowData['商品コード（SKU）']) ||
+    bookCodeWorkIdFromCode_(rowData['商品コード(SKU)']) ||
+    bookCodeWorkIdFromCode_(rowData['SKU（自動）']) ||
+    bookCodeWorkIdFromCode_(rowData['SKU(自動)']) ||
+    ''
+  );
+}
+
+function bookCodeUsableJapaneseTitle_(value) {
+  const text = bookCodeNormalize_(value);
+  if (!text) return '';
+  if (/^(登録なし|登録なし\(全サイト\)|照会失敗|未照会)/.test(text)) return '';
+  return text;
+}
+
+function bookCodeWorkCompareKey_(value) {
+  return bookCodeNormalize_(value)
+    .replace(/[！!？?]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/(?:第)?(?:\d{1,3}|[０-９]{1,3})\s*[~〜\-–]\s*(?:第)?(?:\d{1,3}|[０-９]{1,3})\s*(?:巻|卷|册|集|部|話|期|號|号)?/gi, '')
+    .replace(/(?:第)?(?:\d{1,3}|[０-９]{1,3})\s*(?:巻|卷|册|集|部|話|期|號|号)?/gi, '')
+    .replace(/\b(?:X|IX|IV|V?I{1,3})\b$/i, '')
+    .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$/g, '')
+    .replace(/(?:特装版|特裝版|首刷限定版|初版限定版|初回限定版|限定版|通常版|特装|特裝|首刷|初版|特典)/gi, '')
+    .trim();
+}
+
+function bookCodeWorkInput_(rowData) {
+  const original = bookCodeFirstNonEmpty_(
+    rowData['原題タイトル'],
+    rowData['原題商品タイトル'],
+    rowData['原題商品名'],
+    rowData['タイトル']
+  );
+  const jp = bookCodeUsableJapaneseTitle_(bookCodeFirstNonEmpty_(
+    rowData['日本語タイトル'],
+    rowData['作品名（日本語）'],
+    rowData['商品名（日本語）']
+  ));
+  const author = bookCodeFirstNonEmpty_(rowData['作者'], rowData['著者']);
+  const compare = bookCodeWorkCompareKey_(original);
+  return {
+    original: original,
+    jp: jp,
+    author: author,
+    compare: compare,
+    jpAuthorKey: jp && author ? jp + '||' + author : '',
+  };
+}
+
+function bookCodeEnsureWorksHeaders_(sheet) {
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  let headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(function(v) {
+    return bookCodeNormalize_(v);
+  });
+  if (!headers.some(Boolean)) {
+    if (BOOK_WORKS_HEADERS.length > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), BOOK_WORKS_HEADERS.length - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, 1, 1, BOOK_WORKS_HEADERS.length).setValues([BOOK_WORKS_HEADERS]);
+    return BOOK_WORKS_HEADERS.slice();
+  }
+
+  const present = Object.create(null);
+  headers.forEach(function(header) {
+    if (header) present[header] = true;
+  });
+  const missing = BOOK_WORKS_HEADERS.filter(function(header) {
+    return !present[header];
+  });
+  if (missing.length) {
+    const targetLastColumn = lastColumn + missing.length;
+    if (targetLastColumn > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), targetLastColumn - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, lastColumn + 1, 1, missing.length).setValues([missing]);
+    headers = headers.concat(missing);
+  }
+  return headers;
+}
+
+function bookCodeAddWorkToContext_(context, work) {
+  const id = bookCodeWorkId4_(work && work.id);
+  if (!id) return;
+  const original = bookCodeNormalize_(work.original);
+  const compare = bookCodeWorkCompareKey_(original);
+  const jp = bookCodeUsableJapaneseTitle_(work.jp);
+  const author = bookCodeNormalize_(work.author);
+  const stored = {
+    id: id,
+    jp: jp,
+    author: author,
+    original: original,
+  };
+  context.byId[id] = stored;
+  if (original) context.byOriginal[original] = stored;
+  if (compare) context.byCompare[compare] = stored;
+  if (jp && author) context.byJpAuthor[jp + '||' + author] = stored;
+}
+
+function bookCodeGetWorksContext_(ss, runtime) {
+  runtime = runtime || createBookCodeRuntime_(ss);
+  if (runtime.worksContext) return runtime.worksContext;
+
+  let sheet = ss.getSheetByName(BOOK_WORKS_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(BOOK_WORKS_SHEET_NAME);
+    if (BOOK_WORKS_HEADERS.length > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), BOOK_WORKS_HEADERS.length - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, 1, 1, BOOK_WORKS_HEADERS.length).setValues([BOOK_WORKS_HEADERS]);
+  }
+
+  const headers = bookCodeEnsureWorksHeaders_(sheet);
+  const col = Object.create(null);
+  headers.forEach(function(header, idx) {
+    if (header) col[header] = idx;
+  });
+
+  const context = {
+    sheet: sheet,
+    headers: headers,
+    col: col,
+    byId: Object.create(null),
+    byOriginal: Object.create(null),
+    byCompare: Object.create(null),
+    byJpAuthor: Object.create(null),
+  };
+
+  const lastRow = sheet.getLastRow();
+  const lastColumn = Math.max(sheet.getLastColumn(), BOOK_WORKS_HEADERS.length);
+  if (lastRow >= 2) {
+    sheet.getRange(2, 2, sheet.getMaxRows() - 1, 1).setNumberFormat('@');
+    const values = sheet.getRange(2, 1, lastRow - 1, lastColumn).getDisplayValues();
+    values.forEach(function(row) {
+      bookCodeAddWorkToContext_(context, {
+        id: col['作品ID'] != null ? row[col['作品ID']] : '',
+        jp: col['日本語タイトル'] != null ? row[col['日本語タイトル']] : '',
+        author: col['作者'] != null ? row[col['作者']] : '',
+        original: col['原題タイトル'] != null ? row[col['原題タイトル']] : '',
+      });
+    });
+  }
+
+  runtime.worksContext = context;
+  return context;
+}
+
+function bookCodeHeaderIndex_(headers, candidates) {
+  const normalizedHeaders = headers.map(function(header) {
+    return normalizeHeader_(header);
+  });
+  for (let i = 0; i < candidates.length; i += 1) {
+    const key = normalizeHeader_(candidates[i]);
+    const idx = normalizedHeaders.indexOf(key);
+    if (idx >= 0) return idx + 1;
+  }
+  return 0;
+}
+
+function bookCodeCollectUsedIdsFromSheet_(ss, sheetName, used) {
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return;
+
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+  const directColumns = [
+    bookCodeHeaderIndex_(headers, ['作品ID(W)（自動）', '作品ID(W)(自動)', '作品(W)（自動）']),
+  ].filter(Boolean);
+  const codeColumns = [
+    bookCodeHeaderIndex_(headers, ['親コード']),
+    bookCodeHeaderIndex_(headers, ['商品コード(SKU)', '商品コード（SKU）', '商品コード']),
+    bookCodeHeaderIndex_(headers, ['SKU（自動）', 'SKU(自動)']),
+  ].filter(Boolean);
+  const rowCount = sheet.getLastRow() - 1;
+
+  directColumns.forEach(function(col) {
+    const values = sheet.getRange(2, col, rowCount, 1).getDisplayValues();
+    values.forEach(function(row) {
+      const id = bookCodeWorkId4_(row[0]);
+      if (id) used.add(id);
+    });
+  });
+
+  codeColumns.forEach(function(col) {
+    const values = sheet.getRange(2, col, rowCount, 1).getDisplayValues();
+    values.forEach(function(row) {
+      const id = bookCodeWorkIdFromCode_(row[0]);
+      if (id) used.add(id);
+    });
+  });
+}
+
+function bookCodeGetUsedIds_(ss, runtime) {
+  runtime = runtime || createBookCodeRuntime_(ss);
+  if (runtime.usedIds) return runtime.usedIds;
+
+  const used = new Set();
+  const works = bookCodeGetWorksContext_(ss, runtime);
+  Object.keys(works.byId).forEach(function(id) {
+    if (id) used.add(id);
+  });
+  bookCodeCollectUsedIdsFromSheet_(ss, COMIC_BOOK_SHEET_NAME, used);
+  bookCodeCollectUsedIdsFromSheet_(ss, OTHER_BOOK_SHEET_NAME, used);
+
+  runtime.usedIds = used;
+  return used;
+}
+
+function bookCodeNextUnusedWorkId_(ss, runtime) {
+  const used = bookCodeGetUsedIds_(ss, runtime);
+  for (let n = 1; n < 10000; n += 1) {
+    const id = String(n).padStart(4, '0');
+    if (!used.has(id)) {
+      used.add(id);
+      return id;
+    }
+  }
+  throw new Error('使用可能な作品IDがありません');
+}
+
+function bookCodeLookupOrCreateWork_(ss, rowData, runtime) {
+  const existingId = bookCodeWorkIdFromRow_(rowData);
+  const context = bookCodeGetWorksContext_(ss, runtime);
+  if (existingId && context.byId[existingId]) return context.byId[existingId];
+  if (existingId) {
+    const directWork = {
+      id: existingId,
+      jp: bookCodeUsableJapaneseTitle_(rowData['日本語タイトル']),
+      author: bookCodeFirstNonEmpty_(rowData['作者'], rowData['著者']),
+      original: bookCodeFirstNonEmpty_(rowData['原題タイトル'], rowData['原題商品タイトル'], rowData['タイトル']),
+    };
+    bookCodeAddWorkToContext_(context, directWork);
+    bookCodeGetUsedIds_(ss, runtime).add(existingId);
+    return context.byId[existingId];
+  }
+
+  const input = bookCodeWorkInput_(rowData);
+  let found = null;
+  if (input.original && context.byOriginal[input.original]) found = context.byOriginal[input.original];
+  if (!found && input.compare && context.byCompare[input.compare]) found = context.byCompare[input.compare];
+  if (!found && input.jpAuthorKey && context.byJpAuthor[input.jpAuthorKey]) found = context.byJpAuthor[input.jpAuthorKey];
+  if (found) return found;
+
+  if (!input.original && !input.jp) return null;
+
+  const newId = bookCodeNextUnusedWorkId_(ss, runtime);
+  const writeRow = Math.max(context.sheet.getLastRow() + 1, 2);
+  const worksKey = input.compare || input.original || input.jpAuthorKey || input.jp;
+  const row = BOOK_WORKS_HEADERS.map(function(header) {
+    if (header === 'WorksKey') return worksKey;
+    if (header === '作品ID') return newId;
+    if (header === '日本語タイトル') return input.jp;
+    if (header === '作者') return input.author;
+    if (header === '原題タイトル') return input.original;
+    return '';
+  });
+
+  context.sheet.getRange(writeRow, 2).setNumberFormat('@');
+  context.sheet.getRange(writeRow, 1, 1, BOOK_WORKS_HEADERS.length).setValues([row]);
+
+  const work = {
+    id: newId,
+    jp: input.jp,
+    author: input.author,
+    original: input.original,
+  };
+  bookCodeAddWorkToContext_(context, work);
+  return context.byId[newId];
+}
+
+function bookCodeLanguageCode_(value) {
+  const text = bookCodeNormalize_(value).toUpperCase();
+  if (!text) return 'TW';
+  if (text === '台湾' || text === 'TW') return 'TW';
+  if (text === '中国' || text === 'CN') return 'CN';
+  if (text === '韓国' || text === 'KR') return 'KR';
+  if (text === '香港' || text === 'HK') return 'HK';
+  if (text === '日本' || text === 'JP') return 'JP';
+  return text.replace(/[^A-Z0-9]/g, '').slice(0, 2) || 'TW';
+}
+
+function bookCodeCategoryCode_(sheetName, value) {
+  const text = bookCodeNormalize_(value);
+  if (/まんが|漫画|コミック/i.test(text)) return 'CM';
+  if (/小説|ノベル/i.test(text)) return 'NV';
+  if (/アート|画集|設定集|資料集/i.test(text)) return 'ART';
+  if (/雑誌/i.test(text)) return 'MZ';
+  if (/グッズ/i.test(text)) return 'GD';
+  if (sheetName === COMIC_BOOK_SHEET_NAME) return 'CM';
+  return text.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3) || 'BK';
+}
+
+function bookCodeShapeCode_(rowData) {
+  const shape = bookCodeFirstNonEmpty_(
+    rowData['形態（通常/初回限定/特装）'],
+    rowData['形態(通常/初回限定/特装)'],
+    rowData['形態']
+  );
+  const source = bookCodeFirstNonEmpty_(
+    shape,
+    rowData['原題商品タイトル'],
+    rowData['タイトル'],
+    rowData['原題タイトル'],
+    rowData['特典メモ']
+  );
+  if (/特装|特裝/.test(source)) return 'S';
+  if (/初版限定|初回限定|首刷限定|予約限定|限定版|首刷/.test(source)) return 'F';
+  return '';
+}
+
+function bookCodeTwoDigit_(value) {
+  const text = bookCodeNormalize_(value);
+  const match = text.match(/\d+/);
+  if (!match) return '';
+  const n = parseInt(match[0], 10);
+  if (isNaN(n)) return '';
+  return String(n).padStart(2, '0');
+}
+
+function bookCodeRomanToNumber_(value) {
+  const text = bookCodeNormalize_(value).toUpperCase();
+  const map = {
+    I: 1, II: 2, III: 3, IV: 4, V: 5,
+    VI: 6, VII: 7, VIII: 8, IX: 9, X: 10,
+    'Ⅰ': 1, 'Ⅱ': 2, 'Ⅲ': 3, 'Ⅳ': 4, 'Ⅴ': 5,
+    'Ⅵ': 6, 'Ⅶ': 7, 'Ⅷ': 8, 'Ⅸ': 9, 'Ⅹ': 10,
+  };
+  return map[text] || 0;
+}
+
+function bookCodeVolumeCode_(rowData) {
+  const single = bookCodeTwoDigit_(rowData['単巻数']);
+  if (single) return single;
+
+  const start = bookCodeTwoDigit_(rowData['セット巻数開始番号']);
+  const end = bookCodeTwoDigit_(rowData['セット巻数終了番号']);
+  if (start && end) return start === end ? start : start + end;
+
+  const texts = [
+    rowData['原題商品タイトル'],
+    rowData['タイトル'],
+    rowData['原題タイトル'],
+    rowData['日本語タイトル'],
+  ].map(bookCodeNormalize_).filter(Boolean);
+
+  for (let i = 0; i < texts.length; i += 1) {
+    const text = texts[i];
+    let match = text.match(/(?:第)?\s*(\d{1,3})\s*[~〜\-–]\s*(?:第)?\s*(\d{1,3})\s*(?:巻|卷|册|集|部|話|期|號|号)/i);
+    if (match) {
+      const a = String(parseInt(match[1], 10)).padStart(2, '0');
+      const b = String(parseInt(match[2], 10)).padStart(2, '0');
+      return a === b ? a : a + b;
+    }
+
+    const patterns = [
+      /(?:第)?\s*(\d{1,3})(?=\s*(?:巻|卷|册|集|部|話|期|號|号))/i,
+      // 「2完」「45完結」のように数字の後に完/完結が来る中華題でも巻数を取れるよう、完結|完 を追加
+      /(?:^|[^\d])(\d{1,3})(?=\s*(?:特装版|特裝版|首刷限定版|初版限定版|初回限定版|限定版|通常版|特装|特裝|首刷|初版|版|特典|完結|完|$))/i,
+    ];
+    for (let p = 0; p < patterns.length; p += 1) {
+      match = text.match(patterns[p]);
+      if (match) return String(parseInt(match[1], 10)).padStart(2, '0');
+    }
+
+    match = text.match(/\b(X|IX|IV|V?I{1,3})\b$/i);
+    if (match) {
+      const roman = bookCodeRomanToNumber_(match[1]);
+      if (roman) return String(roman).padStart(2, '0');
+    }
+
+    match = text.match(/([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ])\s*$/);
+    if (match) {
+      const romanWide = bookCodeRomanToNumber_(match[1]);
+      if (romanWide) return String(romanWide).padStart(2, '0');
+    }
+  }
+
+  return '';
+}
+
+function bookCodeBuildFinalCode_(sheetName, rowData, workId) {
+  const id = bookCodeWorkId4_(workId);
+  if (!id) return '';
+  const langCode = bookCodeLanguageCode_(rowData['言語']);
+  const shapeCode = bookCodeShapeCode_(rowData);
+  const categoryCode = bookCodeCategoryCode_(sheetName, rowData['カテゴリ']);
+  const baseCode = langCode + shapeCode + id + '-' + categoryCode;
+  const volumeCode = bookCodeVolumeCode_(rowData);
+  return volumeCode ? baseCode + '-' + volumeCode : baseCode;
+}
+
+function prepareBookCodeFieldsForItem_(ss, item, runtime) {
+  if (!item) return item;
+  const sheetName = resolveSheetName_(item);
+  if (!bookCodeIsBookSheet_(sheetName)) return item;
+
+  const rowData = extractRowData_(item);
+  if (!rowData || typeof rowData !== 'object') return item;
+
+  const work = bookCodeLookupOrCreateWork_(ss, rowData, runtime || createBookCodeRuntime_(ss));
+  const workId = bookCodeWorkId4_(work && work.id);
+  if (!workId) return item;
+
+  const nextRowData = Object.assign({}, rowData);
+  bookCodeSetIfBlank_(nextRowData, '作品ID(W)（自動）', workId);
+  bookCodeSetIfBlank_(nextRowData, '作品ID(W)(自動)', workId);
+
+  const finalCode = bookCodeBuildFinalCode_(sheetName, nextRowData, workId);
+  if (finalCode) {
+    if (sheetName === COMIC_BOOK_SHEET_NAME) {
+      bookCodeSetIfBlank_(nextRowData, '親コード', finalCode);
+    } else {
+      bookCodeSetIfBlank_(nextRowData, '商品コード（SKU）', finalCode);
+      bookCodeSetIfBlank_(nextRowData, '商品コード(SKU)', finalCode);
+    }
+    bookCodeSetIfBlank_(nextRowData, 'SKU（自動）', finalCode);
+    bookCodeSetIfBlank_(nextRowData, 'SKU(自動)', finalCode);
+    bookCodeSetIfBlank_(nextRowData, '商品コードステータス', '生成済み');
+  }
+
+  return Object.assign({}, item, {
+    rowData: nextRowData,
+  });
+}
+
 function upsertItemsWithLookup_(ss, items, timing) {
   timing = timing || {};
   
   var tEnrichStart = Date.now();
   var preparedEntries = [];
+  var bookCodeRuntime = createBookCodeRuntime_(ss);
   var ix;
   for (ix = 0; ix < items.length; ix += 1) {
+    var preparedItem = prepareItemWithJapaneseTitleLookup_(items[ix]);
+    preparedItem = prepareBookCodeFieldsForItem_(ss, preparedItem, bookCodeRuntime);
     preparedEntries.push({
       index: ix,
-      prepared: mag_normalizeMagazineRowForDropdownWrite_(prepareItemWithJapaneseTitleLookup_(items[ix])),
+      prepared: mag_normalizeMagazineRowForDropdownWrite_(preparedItem),
     });
   }
   timing.enrichMs = Date.now() - tEnrichStart;
@@ -2778,7 +3571,7 @@ function upsertProductWithLookupAction_(payload) {
         recalcMs: tEnd - tLock - (serverTiming.compactMs || 0) - (serverTiming.enrichMs || 0) - (serverTiming.buildContextMs || 0) - (serverTiming.buildKeysMs || 0) - (serverTiming.writeRowsMs || 0),
       },
       gasFile: "GAS_シート追記.gs",
-      gasVersion: "v78-appendfix",
+      gasVersion: "v79-volcode",
       warnings: []
     };
   } finally {
@@ -4545,14 +5338,3 @@ function testTaiwanGasRuntime_() {
   Logger.log(JSON.stringify(result, null, 2));
   return result;
 }
-
-
-
-
-
-
-
-
-
-
-

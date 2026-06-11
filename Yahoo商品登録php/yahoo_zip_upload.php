@@ -74,6 +74,61 @@ function respond($arr, $code = 200) {
 function now_ms() { return (int)(microtime(true) * 1000); }
 function safe_mkdir($dir) { if (!is_dir($dir)) @mkdir($dir, 0777, true); }
 
+function upload_image_order_number(string $filename): int {
+  $base = strtolower((string)preg_replace('/\.(jpe?g|png|webp|gif)$/i', '', basename($filename)));
+  if ($base === '') return 999999;
+  if (preg_match('/_(\d+)$/', $base, $m)) return (int)$m[1];
+  if (preg_match('/^\d+$/', $base)) return (int)$base;
+  return 0;
+}
+
+function compare_upload_image_filename(string $left, string $right): int {
+  $ln = upload_image_order_number($left);
+  $rn = upload_image_order_number($right);
+  if ($ln !== $rn) return $ln <=> $rn;
+  return strnatcasecmp(basename($left), basename($right));
+}
+
+function collect_upload_image_files_sorted(string $dir, string $pattern, bool $recursive = false): array {
+  $files = [];
+  if (!is_dir($dir)) return $files;
+
+  if ($recursive) {
+    $it = new RecursiveIteratorIterator(
+      new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $f) {
+      if (!$f->isFile()) continue;
+      $fn = $f->getFilename();
+      if (!preg_match($pattern, $fn)) continue;
+      $files[] = $f->getPathname();
+    }
+  } else {
+    $dh = opendir($dir);
+    if ($dh !== false) {
+      while (($fn = readdir($dh)) !== false) {
+        if ($fn === '.' || $fn === '..') continue;
+        if (!preg_match($pattern, $fn)) continue;
+        $full = rtrim($dir, '/') . '/' . $fn;
+        if (is_file($full)) $files[] = $full;
+      }
+      closedir($dh);
+    }
+  }
+
+  usort($files, 'compare_upload_image_filename');
+  return $files;
+}
+
+function add_upload_image_files_to_zip_sorted(ZipArchive $zip, string $dir, string $pattern = '/\.(jpe?g)$/i', bool $recursive = false): int {
+  $added = 0;
+  foreach (collect_upload_image_files_sorted($dir, $pattern, $recursive) as $full) {
+    $zip->addFile($full, basename($full));
+    $added++;
+  }
+  return $added;
+}
+
 // =========================
 // Fatal handler: 致命エラーだけ JSON
 // =========================
@@ -1525,19 +1580,7 @@ if ($action === 'pipeline') {
     respond(['ok' => false, 'error' => 'zip create failed', 'v' => 'pipeline-zip-open-fail'], 500);
   }
 
-  $zipFiles = 0;
-  if (is_dir($imgRoot)) {
-    $it = new RecursiveIteratorIterator(
-      new RecursiveDirectoryIterator($imgRoot, FilesystemIterator::SKIP_DOTS)
-    );
-    foreach ($it as $f) {
-      if (!$f->isFile()) continue;
-      $fn = $f->getFilename();
-      if (!preg_match('/\.(jpe?g|png|webp|gif)$/i', $fn)) continue;
-      $zb->addFile($f->getPathname(), $fn); 
-      $zipFiles++;
-    }
-  }
+  $zipFiles = add_upload_image_files_to_zip_sorted($zb, $imgRoot, '/\.(jpe?g|png|webp|gif)$/i', true);
   $zb->close();
 
   if ($zipFiles === 0) {
@@ -1898,17 +1941,7 @@ if ($action === 'reupload_urls') {
     ], 500);
   }
 
-  $added = 0;
-  $dh = opendir($workDir);
-  if ($dh !== false) {
-    while (($fn = readdir($dh)) !== false) {
-      if ($fn === '.' || $fn === '..') continue;
-      if (!preg_match('/\.(jpe?g)$/i', $fn)) continue;
-      $full = $workDir . '/' . $fn;
-      if (is_file($full)) { $zb->addFile($full, $fn); $added++; }
-    }
-    closedir($dh);
-  }
+  $added = add_upload_image_files_to_zip_sorted($zb, $workDir);
   $zb->close();
 
   if ($ppRet !== 0 || $added === 0) {
@@ -2127,14 +2160,7 @@ $foundCodes = [];
   $zipOut = $runDir . '/input_processed.zip';
   $zb = new ZipArchive();
   $zb->open($zipOut, ZipArchive::CREATE | ZipArchive::OVERWRITE);
-  $added = 0;
-  $dh = opendir($workDir);
-  while (($fn = readdir($dh)) !== false) {
-    if (!preg_match('/\.jpe?g$/i', $fn)) continue;
-    $full = $workDir . '/' . $fn;
-    if (is_file($full)) { $zb->addFile($full, $fn); $added++; }
-  }
-  closedir($dh);
+  $added = add_upload_image_files_to_zip_sorted($zb, $workDir);
   $zb->close();
 
   if ($added === 0) {
@@ -2249,20 +2275,7 @@ if ($zb->open($zipOut, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
   respond(['ok' => false, 'error' => 'ZIP_CREATE_FAIL_FOR_PREPROCESS'], 500);
 }
 
-$added = 0;
-$dh = opendir($workDir);
-if ($dh !== false) {
-  while (($fn = readdir($dh)) !== false) {
-    if ($fn === '.' || $fn === '..') continue;
-    if (!preg_match('/\.(jpe?g)$/i', $fn)) continue;
-    $full = $workDir . '/' . $fn;
-    if (is_file($full)) {
-      $zb->addFile($full, $fn);
-      $added++;
-    }
-  }
-  closedir($dh);
-}
+$added = add_upload_image_files_to_zip_sorted($zb, $workDir);
 $zb->close();
 
 if ($ppRet !== 0 || $added === 0) {

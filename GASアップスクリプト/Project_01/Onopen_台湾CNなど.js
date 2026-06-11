@@ -5,6 +5,22 @@
 
 const DEBUG_MODE = false; // ← ここ！
 
+function 台湾まんが_ONEDIT_LOG_(label, payload) {
+  const sheet = payload && payload.sheet;
+  if (sheet && sheet !== '台湾まんが') return;
+
+  let body = '';
+  try {
+    body = JSON.stringify(payload || {});
+  } catch (err) {
+    body = String(payload || '');
+  }
+
+  const line = `TW_MANGA_ONEDIT_DEBUG ${label}: ${body}`;
+  try { console.log(line); } catch (err) {}
+  try { Logger.log(line); } catch (err) {}
+}
+
 /* ============================================================
  * シート設定取得
  * ============================================================ */
@@ -35,6 +51,7 @@ function onOpen() {
     .addSeparator()
     .addItem('📁 フォルダをSKUにリネーム', '全シート_フォルダをSKUにリネーム')
     .addItem('🔍 次の空き作品IDを確認', '作品ID_次の空き番号を確認')
+    .addItem('⚡ トリガー再設定（onEdit+onChange）', 'トリガーを設定')
 
     .addSubMenu(
       ui.createMenu('台湾グッズ')
@@ -50,6 +67,7 @@ function onOpen() {
         .addItem('① 確定発行', '台湾まんが_確定発行')
         .addItem('② チェック行を削除', '台湾まんが_削除')
         .addItem('③ 一括更新', '台湾まんが_一括更新')
+        .addItem('④ 選択行を再生成', '台湾まんが_現在行を再計算')
         .addItem('⑥ プルダウン更新', '台湾まんが_プルダウン更新')
         .addSeparator()
         .addItem('🔍 Works重複チェック・統合', '台湾まんが_重複統合')
@@ -65,6 +83,7 @@ function onOpen() {
         .addItem('① 確定発行', '台湾書籍その他_確定発行')
         .addItem('② チェック行を削除', '台湾書籍その他_削除')
         .addItem('③ 一括更新', '台湾書籍その他_一括更新')
+        .addItem('④ 選択行を再生成', '台湾書籍その他_現在行を再計算')
         .addItem('⑥ プルダウン更新', '台湾書籍その他_プルダウン更新')
         .addSeparator()
         .addItem('🔍 Works重複チェック・統合', '台湾書籍その他_重複統合')
@@ -107,6 +126,8 @@ function onOpen() {
     .addItem('⚠️ 作品ID衝突チェック', '台湾書籍系_作品ID衝突チェック_')
     .addItem('🔢 Works作品IDを4桁文字列に統一', '台湾書籍系_Works作品IDを4桁文字列に統一_')
 )
+    .addSeparator()
+    .addItem('🔧 トリガーを再設定（重複削除）', 'トリガーを設定')
 
     .addToUi();
 }
@@ -125,6 +146,15 @@ function onEditInstallable_(e) {
 
     // ★ ログシートは完全に無視
     if (シート名 === '_DEBUG_LOG') return;
+
+    台湾まんが_ONEDIT_LOG_('onEditInstallable_:entry', {
+      sheet: シート名,
+      row: e.range.getRow(),
+      column: e.range.getColumn(),
+      a1: e.range.getA1Notation(),
+      value: e.value !== undefined ? e.value : null,
+      oldValue: e.oldValue !== undefined ? e.oldValue : null
+    });
 
     デバッグログ出力_('onEditInstallable_start', {
       ts,
@@ -403,17 +433,108 @@ function _チェック操作(チェック値, モード) {
  * ============================================================ */
 function トリガーを設定() {
   const ss = SpreadsheetApp.getActive();
+  const handlers = [
+    'onEdit',
+    'onEditInstallable_',
+    'onEditInstallable_test_',
+    'onChangeInstallable_',
+    'fixRowHeightOnEdit'
+  ];
+  let 削除数 = 0;
 
   ScriptApp.getProjectTriggers()
-    .filter(t => ['onEdit', 'onEditInstallable_', 'onEditInstallable_test_'].includes(t.getHandlerFunction()))
-    .forEach(t => ScriptApp.deleteTrigger(t));
+    .filter(t => handlers.includes(t.getHandlerFunction()))
+    .forEach(t => {
+      ScriptApp.deleteTrigger(t);
+      削除数++;
+    });
 
   ScriptApp.newTrigger('onEditInstallable_')
     .forSpreadsheet(ss)
     .onEdit()
     .create();
 
-  SpreadsheetApp.getActiveSpreadsheet().toast(`トリガー設定完了: ${ss.getName()}`, '完了', 5);
+  // 「上から同じ値を入れる（フィルダウン/貼り付け）」は値が変わらず onEdit が発火しないため、
+  // onChange でも変更範囲を拾って再生成する。
+  ScriptApp.newTrigger('onChangeInstallable_')
+    .forSpreadsheet(ss)
+    .onChange()
+    .create();
+
+  if (typeof fixRowHeightOnEdit === 'function') {
+    ScriptApp.newTrigger('fixRowHeightOnEdit')
+      .forSpreadsheet(ss)
+      .onEdit()
+      .create();
+  }
+
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    `トリガー設定完了: onEdit=1 / onChange=1 / 行高さ=1 / 削除=${削除数}`,
+    '完了',
+    5
+  );
+}
+
+/* ============================================================
+ * onChange トリガー
+ * フィルダウン/貼り付けなど、値が変わらず onEdit が発火しないケースを拾う
+ * （onChange は Apps Script 自身の変更では発火しないため、ループにはならない）
+ * ============================================================ */
+function onChangeInstallable_(e) {
+  try {
+    const changeType = e ? String(e.changeType || '') : '';
+    // 値が入りうる変更だけ対象（書式変更・行挿入などは無視）
+    if (['EDIT', 'PASTE', 'OTHER'].indexOf(changeType) === -1) return;
+
+    const ss = (e && e.source) ? e.source : SpreadsheetApp.getActiveSpreadsheet();
+    if (!ss) return;
+
+    const sh = ss.getActiveSheet();
+    const シート名 = sh ? String(sh.getName() || '').trim() : '';
+    if (シート名 === '_DEBUG_LOG') return;
+
+    const 設定マップ = 台湾書籍系_保留設定マップ_();
+    const 設定 = 設定マップ[シート名];
+    if (!設定) return; // 台湾まんが / 台湾書籍その他 以外は無視
+
+    const rng = ss.getActiveRange();
+    if (!rng) return;
+
+    let 開始行 = rng.getRow();
+    let 行数 = rng.getNumRows();
+    if (開始行 < 2) {
+      行数 -= (2 - 開始行);
+      開始行 = 2;
+    }
+    if (行数 <= 0) return;
+
+    if (typeof 台湾まんが_ONEDIT_LOG_ === 'function') {
+      台湾まんが_ONEDIT_LOG_('onChange:enter', {
+        sheet: シート名,
+        changeType,
+        startRow: 開始行,
+        rows: 行数
+      });
+    }
+
+    // 大量範囲は保留キューに積んで時間トリガーで補完（タイムアウト/取りこぼし対策）。
+    if (行数 >= 10) {
+      台湾書籍系_保留に追加_(シート名, 開始行, 行数);
+      台湾書籍系_保留補完トリガーを確保_();
+      return;
+    }
+
+    // 少量範囲はその場で再生成。失敗時は保留キューにフォールバック。
+    try {
+      台湾書籍系_新取込後補完_共通_(シート名, 開始行, 行数, 設定);
+    } catch (procErr) {
+      台湾書籍系_保留に追加_(シート名, 開始行, 行数);
+      台湾書籍系_保留補完トリガーを確保_();
+      デバッグログ出力_('onChangeInstallable_処理エラー', { message: String(procErr) });
+    }
+  } catch (err) {
+    デバッグログ出力_('onChangeInstallable_エラー', { message: String(err) });
+  }
 }
 
 /* ============================================================
@@ -635,15 +756,47 @@ function 台湾書籍系_現在行をローカル再計算_(シート名, 設定
     return;
   }
 
-  const row = sh.getActiveCell().getRow();
+  const range = sh.getActiveRange();
+  const startRow = range ? range.getRow() : sh.getActiveCell().getRow();
+  const rowCount = range ? range.getNumRows() : 1;
+  const endRow = Math.min(sh.getLastRow(), startRow + rowCount - 1);
 
-  if (row < 2) {
+  if (endRow < 2) {
     SpreadsheetApp.getUi().alert('2行目以降で実行してください');
     return;
   }
 
-  台湾書籍系_1行補完_共通_(sh, row, 設定);
-  ss.toast(`✅ ${シート名} ${row}行目を再計算しました`, '完了', 4);
+  const actualStart = Math.max(2, startRow);
+  const actualRows = endRow - actualStart + 1;
+  const lastCol = sh.getLastColumn();
+  const values = sh.getRange(actualStart, 1, actualRows, lastCol).getValues();
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+
+  try {
+    if (typeof 台湾書籍系_使用済みIDキャッシュ無効化_ === 'function') {
+      台湾書籍系_使用済みIDキャッシュ無効化_();
+    }
+
+    const 列 = 台湾書籍系_列マップを取得_(sh);
+    for (let i = 0; i < actualRows; i++) {
+      台湾書籍系_1行補完_共通_(sh, actualStart + i, 設定, {
+        Works新規作成: true,
+        skipFlush: true,
+        列マップ: 列,
+        lastCol: lastCol,
+        rowValues: values[i]
+      });
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  const label = actualRows === 1
+    ? `${actualStart}行目`
+    : `${actualStart}-${endRow}行目`;
+  ss.toast(`✅ ${シート名} ${label}を再生成しました`, '完了', 4);
 }
 
 function 台湾書籍系_作品IDを4桁に統一_() {
@@ -722,7 +875,7 @@ function 台湾書籍系_作品ID4桁文字列_(v) {
 }
 
 function デバッグログ出力_(tag, obj) {
-  const DEBUG_TRACE = true; // 追跡中だけ true。終わったら false にする。
+  const DEBUG_TRACE = false; // 追跡中だけ true。終わったら false にする。
 
   if (!DEBUG_TRACE) return;
 

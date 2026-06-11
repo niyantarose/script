@@ -882,34 +882,58 @@ function extractBonusMemo(product) {
   return cleanDescription(product?.特典情報 || product?.補足項目 || '');
 }
 
+function classifyBookCategoryText(source, options = {}) {
+  const text = trimValue(source);
+  if (!text) return '';
+
+  const preferNonManga = options.preferNonManga === true;
+  const novelLike = /小説|小說|小说|輕小說|轻小说|ライトノベル|ノベル|文學|文学|light[_\s-]*novel|novel[_\s-]*book/i.test(text);
+  const mangaLike = /漫畫|漫画|まんが|コミック|bl[_\s-]*manga|(?:^|[\s_])manga(?:$|[\s_])/i.test(text);
+
+  if (/設定集|設定資料|設定资料|公式設定/.test(text)) return '設定集';
+  if (/畫集|画集|畫冊|画冊|イラスト集|美術設定|アートブック/.test(text)) return 'アートブック';
+  if (preferNonManga && novelLike) return '小説';
+  if (mangaLike) return 'まんが';
+  if (novelLike) return '小説';
+  if (/エッセイ|散文|隨筆|随筆/.test(text)) return 'エッセイ';
+  if (/人文社科|社會議題|社会議題|弱勢族群|弱势族群|報導文學|报道文学|紀實|纪实|人物傳記|人物传记|社會觀察|社会观察|議題思辨|议题思辨/.test(text)) return 'エッセイ';
+  if (/雜誌|杂志|雑誌/.test(text)) return '雑誌';
+  if (/繪本|绘本|絵本/.test(text)) return '絵本';
+  if (/シナリオ|scenario|劇本|剧本/i.test(text)) return 'シナリオ集';
+  if (/台本/.test(text)) return '台本';
+  if (/ステッカー|貼紙|贴纸/.test(text)) return 'ステッカー';
+  if (/シール/.test(text)) return 'シール';
+  if (/手芸|手藝|手艺/.test(text)) return '手芸';
+  if (/切り絵|剪紙|剪纸/.test(text)) return '切り絵';
+  if (/Blu-ray|藍光|蓝光|BLAY/i.test(text)) return 'Blu-ray';
+  if (/(?:^|[^A-Z])DVD(?:$|[^A-Z])/i.test(text)) return 'DVD';
+  if (/(?:^|[^A-Z])CD(?:$|[^A-Z])/i.test(text) || /音樂CD|音乐CD/.test(text)) return 'CD';
+  if (/(?:^|[^A-Z])LP(?:$|[^A-Z])/i.test(text)) return 'LP';
+  return '';
+}
+
 function getCategoryValue(product) {
-  const source = [
+  const categorySource = [
     product?.カテゴリ,
+    product?.categoryName,
+    product?.ジャンル,
+    product?.mallType,
+  ].map(trimValue).filter(Boolean).join('\n');
+  const categoryLabel = classifyBookCategoryText(categorySource, { preferNonManga: true });
+  if (categoryLabel) return categoryLabel;
+
+  const titleSource = [
     product?.商品名,
     product?.ページタイトル,
-    product?.商品説明,
+    product?.titleAnalysis?.itemType,
   ].map(trimValue).filter(Boolean).join('\n');
+  const titleLabel = classifyBookCategoryText(titleSource);
+  if (titleLabel) return titleLabel;
 
-  if (!source) return '';
-  if (/設定集|設定資料|設定资料|公式設定/.test(source)) return '設定集';
-  if (/畫集|画集|畫冊|画冊|イラスト集|美術設定|アートブック/.test(source)) return 'アートブック';
-  if (/漫畫|漫画|コミック/.test(source)) return 'まんが';
-  if (/小説|小說|小说|輕小說|轻小说|ライトノベル|ノベル|文學|文学/.test(source)) return '小説';
-  if (/エッセイ|散文|隨筆|随筆/.test(source)) return 'エッセイ';
-  if (/人文社科|社會議題|社会議題|弱勢族群|弱势族群|報導文學|报道文学|紀實|纪实|人物傳記|人物传记|社會觀察|社会观察|議題思辨|议题思辨/.test(source)) return 'エッセイ';
-  if (/雜誌|杂志|雑誌/.test(source)) return '雑誌';
-  if (/繪本|绘本|絵本/.test(source)) return '絵本';
-  if (/シナリオ|scenario|劇本|剧本/i.test(source)) return 'シナリオ集';
-  if (/台本/.test(source)) return '台本';
-  if (/ステッカー|貼紙|贴纸/.test(source)) return 'ステッカー';
-  if (/シール/.test(source)) return 'シール';
-  if (/手芸|手藝|手艺/.test(source)) return '手芸';
-  if (/切り絵|剪紙|剪纸/.test(source)) return '切り絵';
-  if (/Blu-ray|藍光|蓝光|BLAY/i.test(source)) return 'Blu-ray';
-  if (/(?:^|[^A-Z])DVD(?:$|[^A-Z])/i.test(source)) return 'DVD';
-  if (/(?:^|[^A-Z])CD(?:$|[^A-Z])/i.test(source) || /音樂CD|音乐CD/.test(source)) return 'CD';
-  if (/(?:^|[^A-Z])LP(?:$|[^A-Z])/i.test(source)) return 'LP';
-  return trimValue(product?.カテゴリ || '');
+  const descriptionLabel = classifyBookCategoryText(product?.商品説明 || '');
+  if (descriptionLabel) return descriptionLabel;
+
+  return trimValue(product?.カテゴリ || product?.categoryName || '');
 }
 
 function getLanguageValue(product) {
@@ -1170,8 +1194,6 @@ async function requestActiveTabProductInfo() {
 
   return response.data;
 }
-
-
 
 
 

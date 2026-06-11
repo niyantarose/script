@@ -113,28 +113,47 @@ function _extension(filename) {
   return m ? m[0] : '';
 }
 
+function _isDisclaimerFileName(filename) {
+  const name = String(filename || '');
+  return name.indexOf('notice_') === 0 || name.indexOf('免責') !== -1;
+}
+
+function _isImageFileName(filename) {
+  return /\.(jpe?g|png|webp|gif|bmp)$/i.test(String(filename || ''));
+}
+
+function _naturalCompare(a, b) {
+  return String(a || '').localeCompare(String(b || ''), 'ja', {
+    numeric: true,
+    sensitivity: 'base',
+  });
+}
+
 /**
  * ソートキー抽出（数値系パターンを認識）
  */
 function _sortKey(filename) {
-  const base = _baseName(filename);
+  const base = _baseName(String(filename || '')).trim();
+  const lower = base.toLowerCase();
+
+  // getImage / getImage (数字)
+  if (/^getimage$/i.test(base)) return { n: true, v: 0, t: lower };
+  let m = base.match(/^getImage\s*\((\d+)\)$/i);
+  if (m) return { n: true, v: parseInt(m[1], 10), t: lower };
 
   // imgi_数字 / imgi-数字
-  let m = base.match(/imgi[_-]?(\d+)/i);
-  if (m) return { n: true, v: parseInt(m[1], 10) };
-
-  // getImage (数字)
-  m = base.match(/getImage\s*\((\d+)\)/i);
-  if (m) return { n: true, v: parseInt(m[1], 10) };
-
-  // getImage 単体 → 0
-  if (/^getImage$/i.test(base)) return { n: true, v: 0 };
+  m = base.match(/imgi[_-]?(\d+)/i);
+  if (m) return { n: true, v: parseInt(m[1], 10), t: lower };
 
   // 数字のみ
   m = base.match(/^(\d+)$/);
-  if (m) return { n: true, v: parseInt(m[1], 10) };
+  if (m) return { n: true, v: parseInt(m[1], 10), t: lower };
 
-  return { n: false, v: base };
+  // リネーム済み: 親コード_1 / 作品コード_2 など
+  m = base.match(/^(.+?)_(\d+)$/);
+  if (m) return { n: true, v: parseInt(m[2], 10), t: lower };
+
+  return { n: false, v: 0, t: lower };
 }
 
 function _compareFiles(a, b) {
@@ -143,72 +162,104 @@ function _compareFiles(a, b) {
 
   if (ka.n && kb.n) {
     if (ka.v !== kb.v) return ka.v - kb.v;
-    return a.name.localeCompare(b.name, 'ja');
+    return _naturalCompare(a.name, b.name);
   }
   if (ka.n) return -1;
   if (kb.n) return 1;
-  return a.name.localeCompare(b.name, 'ja');
+  return _naturalCompare(a.name, b.name);
+}
+
+function _escapeRegExp(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function _sortKeyForCode(filename, code) {
+  const base = _baseName(String(filename || '')).trim();
+  const escapedCode = _escapeRegExp(code);
+
+  if (base === code) return { n: true, v: 0, t: base.toLowerCase() };
+
+  const m = base.match(new RegExp('^' + escapedCode + '_(\\d+)$'));
+  if (m) return { n: true, v: parseInt(m[1], 10), t: base.toLowerCase() };
+
+  return _sortKey(filename);
+}
+
+function _isCodeMainName(filename, code) {
+  return _baseName(String(filename || '')).trim() === code;
+}
+
+function _isCodeSuffixedName(filename, code) {
+  const base = _baseName(String(filename || '')).trim();
+  return new RegExp('^' + _escapeRegExp(code) + '_(\\d+)$').test(base);
+}
+
+function _compareFilesForCode(a, b, code) {
+  const ka = _sortKeyForCode(a.name, code);
+  const kb = _sortKeyForCode(b.name, code);
+
+  if (ka.n && kb.n) {
+    if (ka.v !== kb.v) return ka.v - kb.v;
+    return _naturalCompare(a.name, b.name);
+  }
+  if (ka.n) return -1;
+  if (kb.n) return 1;
+  return _naturalCompare(a.name, b.name);
+}
+
+function _expectedImageName(code, index, ext) {
+  return `${code}_${index + 1}${ext}`;
 }
 
 /**
- * フォルダ内のファイルをリネーム（Batchリクエスト版・免責除外修正）
- * ★ notice_ から始まるファイルはリネーム対象から除外します
+ * フォルダ内の画像ファイルをリネーム
+ * 先頭画像は「親コード」、2枚目以降は「親コード_1」から連番にします。
  */
 function _renameFilesInFolder(files, code) {
   if (files.length === 0) {
     return { success: false, message: 'ファイルなし' };
   }
 
-  // 全ファイルが既にフォルダ名と一致 → スキップ
-  const allMatch = files.every(f => _baseName(f.name) === code);
-  if (allMatch) {
-    return { success: true, allMatched: true, renamedCount: 0, skippedCount: files.length };
-  }
-
-  // ソート
-  files.sort(_compareFiles);
-
-  const renameQueue = [];
+  const productFiles = [];
   let skippedCount = 0;
-  let seq = 0;
 
   for (const file of files) {
-    const name = file.name;
-    const base = _baseName(name);
-    const ext = _extension(name);
-
-    // ▼▼▼ 修正: 免責画像（notice_ や 免責）は絶対に触らない ▼▼▼
-    if (name.indexOf('notice_') === 0 || name.indexOf('免責') !== -1) {
+    if (_isDisclaimerFileName(file.name) || !_isImageFileName(file.name)) {
       skippedCount++;
       continue;
     }
-    // ▲▲▲ 修正ここまで ▲▲▲
-
-    // メイン画像（フォルダ名と一致）はスキップ
-    if (base === code) {
-      skippedCount++;
-      continue;
-    }
-
-    seq++;
-    const newName = `${code}_${seq}${ext}`;
-
-    // 名前が変わらないならスキップ
-    if (name === newName) {
-      skippedCount++;
-      continue;
-    }
-
-    renameQueue.push({ id: file.id, newName: newName, oldName: name });
+    productFiles.push(file);
   }
+
+  if (productFiles.length === 0) {
+    return { success: true, allMatched: true, renamedCount: 0, skippedCount: skippedCount };
+  }
+
+  productFiles.sort(function(a, b) {
+    return _compareFilesForCode(a, b, code);
+  });
+
+  const renameQueue = [];
+
+  productFiles.forEach(function(file, index) {
+    const ext = _extension(file.name);
+    const newName = _expectedImageName(code, index, ext);
+
+    if (file.name === newName) {
+      skippedCount++;
+      return;
+    }
+
+    renameQueue.push({ id: file.id, newName: newName, oldName: file.name });
+  });
 
   // リネーム対象がなければ終了
   if (renameQueue.length === 0) {
-    return { success: true, allMatched: false, renamedCount: 0, skippedCount: skippedCount };
+    return { success: true, allMatched: true, renamedCount: 0, skippedCount: skippedCount };
   }
 
   // Batch実行
- for (const item of renameQueue) {
+  for (const item of renameQueue) {
     Drive.Files.update({ name: item.newName }, item.id, null, {
       supportsAllDrives: true
     });

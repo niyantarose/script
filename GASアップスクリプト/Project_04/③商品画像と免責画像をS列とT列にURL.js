@@ -846,7 +846,7 @@ function IMG_画像順番抽出_(name) {
   var m = s.match(/^(\d+)/);
   if (m) return Number(m[1]);
 
-  m = s.match(/[_-](\d+)(?=\.[^.]+$)/);
+  m = s.match(/_(\d+)(?=\.[^.]+$)/);
   if (m) return Number(m[1]);
 
   m = s.match(/(\d+)(?=\.[^.]+$)/);

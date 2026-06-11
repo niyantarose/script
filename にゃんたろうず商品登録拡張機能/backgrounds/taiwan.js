@@ -277,12 +277,12 @@ function shouldTryTaiwanMuLookup(item, analysis) {
 }
 
 // 拡張ポップアップが「追加」時に既に確定させた照会結果。
-// これらが付いていれば書き込み時にMUを再照会しない（重い逐次通信の二重実行を防ぐ）。
-// not_found / series_found_no_japanese も「MU側では確定」なので、再照会しても結果は変わらない。
+// タイトルが入った resolved だけを再利用する。not_found / series_found_no_japanese は
+// MU/GAS側の修正後に古い空結果を引きずるため、書き込み時に再照会する。
 const TAIWAN_TERMINAL_LOOKUP_STATUSES = {
   resolved: true,
-  not_found: true,
-  series_found_no_japanese: true,
+  not_found: false,
+  series_found_no_japanese: false,
 };
 
 async function enrichItemWithTaiwanMangaUpdates(item) {
@@ -291,7 +291,6 @@ async function enrichItemWithTaiwanMangaUpdates(item) {
   const existingStatus = String(existing?.status || '').trim();
   if (existing && TAIWAN_TERMINAL_LOOKUP_STATUSES[existingStatus]) {
     // resolved はタイトルが入っている場合のみ信頼（空 resolved は異常なので再照会）。
-    // not_found / series は「見つからない確定」なのでタイトル無しでも再照会不要。
     const hasTitle = String(existing.japaneseTitle || existing.title || '').trim();
     if (existingStatus !== 'resolved' || hasTitle) {
       return item;

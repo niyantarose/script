@@ -683,18 +683,22 @@ function ソース免責ソート_(sources) {
   const product = [];
   const disclaimer = [];
 
-  for (const src of sources) {
-    const name = String(src.fileName || '').toLowerCase();
+  (sources || []).forEach(function(src, index) {
+    const indexed = Object.assign({ __sourceIndex: index }, src || {});
+    const name = String(indexed.fileName || '').toLowerCase();
     const isDisc = name.startsWith('notice_') || name.includes('免責');
-    if (isDisc) disclaimer.push(src);
-    else product.push(src);
-  }
-
-  product.sort(function(a, b) {
-    return _サフィックス番号取得(a.fileName) - _サフィックス番号取得(b.fileName);
+    if (isDisc) disclaimer.push(indexed);
+    else product.push(indexed);
   });
 
-  return [...product, ...disclaimer];
+  product.sort(_画像ソース順比較_);
+  disclaimer.sort(_画像ソース順比較_);
+
+  return [...product, ...disclaimer].map(function(src) {
+    const out = Object.assign({}, src);
+    delete out.__sourceIndex;
+    return out;
+  });
 }
 
 function _サフィックス番号取得(fileName) {
@@ -702,6 +706,35 @@ function _サフィックス番号取得(fileName) {
   const base = String(fileName).replace(/\.[^.]+$/, '');
   const m = base.match(/_(\d+)$/);
   if (m) return parseInt(m[1], 10);
+  if (/^\d+$/.test(base)) return parseInt(base, 10);
+  return 0;
+}
+
+function _画像ソース順比較_(a, b) {
+  const an = _サフィックス番号取得(a && a.fileName);
+  const bn = _サフィックス番号取得(b && b.fileName);
+  if (an !== bn) return an - bn;
+
+  const nameCompare = _自然順文字列比較_(a && a.fileName, b && b.fileName);
+  if (nameCompare !== 0) return nameCompare;
+
+  return (a.__sourceIndex || 0) - (b.__sourceIndex || 0);
+}
+
+function _自然順文字列比較_(a, b) {
+  const aa = String(a || '').toLowerCase().match(/\d+|\D+/g) || [''];
+  const bb = String(b || '').toLowerCase().match(/\d+|\D+/g) || [''];
+  const len = Math.max(aa.length, bb.length);
+
+  for (let i = 0; i < len; i++) {
+    if (aa[i] == null) return -1;
+    if (bb[i] == null) return 1;
+
+    const an = /^\d+$/.test(aa[i]) ? parseInt(aa[i], 10) : NaN;
+    const bn = /^\d+$/.test(bb[i]) ? parseInt(bb[i], 10) : NaN;
+    if (!isNaN(an) && !isNaN(bn) && an !== bn) return an - bn;
+    if (aa[i] !== bb[i]) return aa[i] < bb[i] ? -1 : 1;
+  }
   return 0;
 }
 
