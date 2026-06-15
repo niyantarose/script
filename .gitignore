@@ -1,3 +1,4 @@
 tmp-*
 .claude/
 **/.venv/
+**/.clasp.json
