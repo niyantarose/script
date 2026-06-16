@@ -1,5 +1,6 @@
 function onOpen() {
   Excel同期メニューを追加_();
+  if (typeof YahooProductName_addMenu_ === 'function') YahooProductName_addMenu_();
 
   SpreadsheetApp.getUi()
     .createMenu('EMS自社用')
