@@ -12,13 +12,33 @@ const YAHOO_PRODUCT_NAME_CFG = {
 function YahooProductName_addMenu_() {
   SpreadsheetApp.getUi()
     .createMenu('Yahoo商品名')
-    .addItem('CSV/Excelフォルダを設定', 'YahooProductName_setCsvFolder')
-    .addItem('使用する最新ファイルを確認', 'YahooProductName_showLatestCsv')
+    .addItem('CSV/Excelフォルダを設定', 'Yahoo商品名_CSVExcelフォルダを設定')
+    .addItem('使用する最新ファイルを確認', 'Yahoo商品名_使用する最新ファイルを確認')
     .addSeparator()
-    .addItem('確認してOKなら空欄だけ反映', 'YahooProductName_confirmLatestAndFillEmptyFromCsv')
-    .addItem('空欄だけ商品マスタへ反映', 'YahooProductName_fillEmptyFromCsv')
-    .addItem('上書きで商品マスタへ反映', 'YahooProductName_overwriteFromCsv')
+    .addItem('確認してOKなら空欄だけ反映', 'Yahoo商品名_確認してOKなら空欄だけ反映')
+    .addItem('空欄だけ商品マスタへ反映', 'Yahoo商品名_空欄だけ商品マスタへ反映')
+    .addItem('上書きで商品マスタへ反映', 'Yahoo商品名_上書きで商品マスタへ反映')
     .addToUi();
+}
+
+function Yahoo商品名_CSVExcelフォルダを設定() {
+  YahooProductName_setCsvFolder();
+}
+
+function Yahoo商品名_使用する最新ファイルを確認() {
+  YahooProductName_showLatestCsv();
+}
+
+function Yahoo商品名_確認してOKなら空欄だけ反映() {
+  YahooProductName_confirmLatestAndFillEmptyFromCsv();
+}
+
+function Yahoo商品名_空欄だけ商品マスタへ反映() {
+  YahooProductName_fillEmptyFromCsv();
+}
+
+function Yahoo商品名_上書きで商品マスタへ反映() {
+  YahooProductName_overwriteFromCsv();
 }
 
 function YahooProductName_setCsvFolder() {
