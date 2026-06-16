@@ -11,7 +11,7 @@ const LAST_COL_NUM = 27; // AA = 27列目
 function getClientSecret_() {
   const secret = PropertiesService.getScriptProperties().getProperty(CLIENT_SECRET_PROPERTY);
   if (!secret) {
-    throw new Error(`Script Properties に ${CLIENT_SECRET_PROPERTY} がありません。`);
+    throw new Error(`Script Properties に ${CLIENT_SECRET_PROPERTY} がありません。メニュー「Excel同期」→「初期設定：CLIENT_SECRETを保存」から設定してください。`);
   }
   return secret;
 }
@@ -28,7 +28,42 @@ function Excel同期メニューを追加_() {
     .addItem('商品マスタ：足りないデータだけ発注から補完', '商品マスタ_足りないデータだけ発注から補完')
     .addItem('商品マスタ：既存データを発注から更新（重さ等）', '商品マスタ_既存データを発注から補完更新')
     .addItem('商品マスタ：重複行を確認して削除', '商品マスタ_重複行を確認して削除')
+    .addSeparator()
+    .addItem('初期設定：CLIENT_SECRETを保存', 'MS_GRAPH_CLIENT_SECRETを設定')
+    .addItem('初期設定：CLIENT_SECRETを確認', 'MS_GRAPH_CLIENT_SECRETを確認')
     .addToUi();
+}
+
+function MS_GRAPH_CLIENT_SECRETを設定() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt(
+    'Microsoft Graph CLIENT_SECRET 設定',
+    'Azureのクライアントシークレット値を貼り付けてOKを押してください。入力欄には表示されるので周囲に注意してください。',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (res.getSelectedButton() !== ui.Button.OK) {
+    SpreadsheetApp.getActive().toast('キャンセルしました', 'Excel同期', 3);
+    return;
+  }
+
+  const secret = String(res.getResponseText() || '').trim();
+  if (!secret) {
+    ui.alert('空欄なので保存していません。');
+    return;
+  }
+
+  PropertiesService.getScriptProperties().setProperty(CLIENT_SECRET_PROPERTY, secret);
+  SpreadsheetApp.getActive().toast('CLIENT_SECRETをScript Propertiesに保存しました。', 'Excel同期', 5);
+}
+
+function MS_GRAPH_CLIENT_SECRETを確認() {
+  const exists = !!PropertiesService.getScriptProperties().getProperty(CLIENT_SECRET_PROPERTY);
+  SpreadsheetApp.getUi().alert(
+    exists
+      ? `${CLIENT_SECRET_PROPERTY} は設定済みです。`
+      : `${CLIENT_SECRET_PROPERTY} は未設定です。メニュー「Excel同期」→「初期設定：CLIENT_SECRETを保存」から設定してください。`
+  );
 }
 // ====== 自動実行の設定（最初に1回だけ手動実行する）======
 function setupTriggers() {
