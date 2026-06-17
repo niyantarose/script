@@ -27,6 +27,7 @@ function Excel同期メニューを追加_() {
     .addItem('EMSリスト：重複行を確認して削除', 'EMSリスト_重複行を確認して削除')
     .addItem('EMSリスト：下に混ざった古い行を確認して削除', 'EMSリスト_下に混ざった古い行を確認して削除')
     .addItem('EMSリスト：空欄行を同期データで補完', 'EMSリスト_空欄行をEMS同期データから補完')
+    .addItem('EMSリスト：EMS同期データ順に並べ替え', 'EMSリスト_同期データ順に並べ替え')
     .addSeparator()
     .addItem('商品マスタ：足りないデータだけ発注から補完', '商品マスタ_足りないデータだけ発注から補完')
     .addItem('商品マスタ：既存データを発注から更新（重さ等）', '商品マスタ_既存データを発注から補完更新')
@@ -731,10 +732,11 @@ function syncDifferences() {
       colorKeshikomiAllRows_(hachu);
     }
   }
-EMSリスト_購入No自動補完(true);
+  EMSリスト_購入No自動補完(true);
+  const nEmsSort = EMSリスト_同期データ順に並べ替え(true);
   Logger.log(
     `差分反映完了: 発注 ${r1.added}件追加 / EMSリスト ${r2.added}件追加 / 入荷情報 ${n3}セル更新 / EMSリスト更新 ${n4}セル`
-      + ` / EMS空欄補完 ${nEmsFill}セル`
+      + ` / EMS空欄補完 ${nEmsFill}セル / EMS並べ替え ${nEmsSort}行`
   );
 }
 // ---- 正規化ヘルパー ----
@@ -1152,11 +1154,115 @@ function EMSリスト_空欄行をEMS同期データから補完(silent) {
   const purchaseFilled = (typeof EMSリスト_購入No自動補完 === 'function')
     ? EMSリスト_購入No自動補完(true)
     : 0;
+  const sortedRows = (typeof EMSリスト_同期データ順に並べ替え === 'function')
+    ? EMSリスト_同期データ順に並べ替え(true)
+    : 0;
 
-  const msg = `EMS空欄補完: ${updates}セル / 購入No補完: ${purchaseFilled}件`;
+  const msg = `EMS空欄補完: ${updates}セル / 購入No補完: ${purchaseFilled}件 / 並べ替え: ${sortedRows}行`;
   if (silent) Logger.log(msg);
   else SpreadsheetApp.getActive().toast(msg);
-  return updates + purchaseFilled;
+  return updates + purchaseFilled + sortedRows;
+}
+
+function EMSリスト_同期データ順に並べ替え(silent) {
+  const ss = SpreadsheetApp.getActive();
+  const src = ss.getSheetByName('EMS同期データ');
+  const dst = ss.getSheetByName('EMSリスト');
+  if (!src || !dst) return 0;
+
+  const srcVals = src.getDataRange().getValues();
+  const dstVals = dst.getDataRange().getValues();
+
+  let srcHeader = -1;
+  for (let i = 0; i < srcVals.length; i++) {
+    if (String(srcVals[i][0]).trim() === '入荷') { srcHeader = i; break; }
+  }
+  let dstHeader = -1;
+  for (let i = 0; i < dstVals.length; i++) {
+    if (String(dstVals[i][0]).trim() === 'No.') { dstHeader = i; break; }
+  }
+  if (srcHeader < 0 || dstHeader < 0) return 0;
+
+  const orderByExact = {};
+  const orderByFallback = {};
+  const orderByLoose = {};
+  const addOrder = (map, key, order) => {
+    if (key && !(key in map)) map[key] = order;
+  };
+
+  for (let i = srcHeader + 1; i < srcVals.length; i++) {
+    const r = srcVals[i];
+    const track = normTrack_(r[3]);          // D列 Tracking #
+    const code = normCode_(r[7]);            // H列 ItemCode
+    const qty = String(r[8] || '').trim();   // I列 Qty
+    if (!code || !qty) continue;
+    const arr = _emsFmtDate_(r[0]);          // A列 入荷
+    const order = i - srcHeader;
+    codeKeys_(code).forEach(k => {
+      if (track) {
+        addOrder(orderByExact, track + '|' + k + '|' + qty, order);
+        addOrder(orderByExact, track + '|' + k, order);
+      }
+      if (arr) addOrder(orderByFallback, arr + '|' + k + '|' + qty, order);
+      addOrder(orderByLoose, k + '|' + qty, order);
+    });
+  }
+
+  let lastDataIdx = dstHeader;
+  for (let i = dstHeader + 1; i < dstVals.length; i++) {
+    const row = dstVals[i];
+    if (!isBlank_(row[1]) || !isBlank_(row[5]) || !isBlank_(row[8]) || !isBlank_(row[12])) {
+      lastDataIdx = i;
+    }
+  }
+  if (lastDataIdx <= dstHeader) return 0;
+
+  const sortKeys = [];
+  for (let i = dstHeader + 1; i <= lastDataIdx; i++) {
+    const row = dstVals[i];
+    const track = normTrack_(row[12]);        // M列 EMS番号
+    const code = normCode_(row[8]);           // I列 商品コード
+    const qty = String(row[9] || '').trim();  // J列 数量
+    const arr = _emsFmtDate_(row[1]);         // B列 入荷日
+    let order = null;
+
+    if (code && qty) {
+      for (const k of codeKeys_(code)) {
+        if (track && orderByExact[track + '|' + k + '|' + qty] !== undefined) {
+          order = orderByExact[track + '|' + k + '|' + qty]; break;
+        }
+        if (track && orderByExact[track + '|' + k] !== undefined) {
+          order = orderByExact[track + '|' + k]; break;
+        }
+        if (arr && orderByFallback[arr + '|' + k + '|' + qty] !== undefined) {
+          order = orderByFallback[arr + '|' + k + '|' + qty]; break;
+        }
+        if (orderByLoose[k + '|' + qty] !== undefined) {
+          order = orderByLoose[k + '|' + qty]; break;
+        }
+      }
+    }
+
+    const originalOffset = i - dstHeader;
+    sortKeys.push([order === null ? 900000000 + originalOffset : order * 10000 + originalOffset]);
+  }
+
+  const dataStartRow = dstHeader + 2;
+  const rowCount = lastDataIdx - dstHeader;
+  const originalMaxCols = dst.getMaxColumns();
+  const helperCol = originalMaxCols + 1;
+  dst.insertColumnAfter(originalMaxCols);
+  try {
+    dst.getRange(dataStartRow, helperCol, rowCount, 1).setValues(sortKeys);
+    dst.getRange(dataStartRow, 1, rowCount, helperCol).sort({ column: helperCol, ascending: true });
+  } finally {
+    dst.deleteColumn(helperCol);
+  }
+
+  const msg = `EMSリストをEMS同期データ順に並べ替え: ${rowCount}行`;
+  if (silent) Logger.log(msg);
+  else ss.toast(msg);
+  return rowCount;
 }
 // ---- 既存行の入荷日・入荷数・重さを同期データ側の値で更新 ----
 function updateArrivalsInHatchu_(ss) {
