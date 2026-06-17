@@ -692,9 +692,9 @@ function syncDifferences() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   const r1 = syncDiffToHatchu_(ss);
-  const r2 = syncDiffToEmsList_(ss);
   const n3 = updateArrivalsInHatchu_(ss);
   const n4 = updateEmsListFromSync_(ss);   // ★EMSリスト既存行の更新
+  const r2 = syncDiffToEmsList_(ss);
 
   SpreadsheetApp.flush();
 
@@ -969,10 +969,13 @@ function updateEmsListFromSync_(ss) {
   const rowByKey = {};
   // ② 入荷日＋コード＋数量 → 行（EMS番号が空の迷子行だけ）
   const rowByFallback = {};
+  // ③ コード＋数量 → 行（日付やEMS番号まで空で入ってしまった行の補修用）
+  const rowByLoose = {};
   for (let i = dstHeader + 1; i < dstVals.length; i++) {
     const track = normTrack_(dstVals[i][12]);  // M列 EMS番号
     const code  = normCode_(dstVals[i][8]);    // I列 商品コード
     if (!code) continue;
+    const qty = String(dstVals[i][9]);          // J列 数量
     if (track) {
       codeKeys_(code).forEach(k => {
         const key = track + '|' + k;
@@ -980,10 +983,11 @@ function updateEmsListFromSync_(ss) {
       });
     } else {
       const arr = _emsFmtDate_(dstVals[i][1]); // B列 入荷日
-      const qty = String(dstVals[i][9]);       // J列 数量
       codeKeys_(code).forEach(k => {
         const key = arr + '|' + k + '|' + qty;
         if (!(key in rowByFallback)) rowByFallback[key] = i;
+        const looseKey = k + '|' + qty;
+        (rowByLoose[looseKey] = rowByLoose[looseKey] || []).push(i);
       });
     }
   }
@@ -1029,6 +1033,19 @@ function updateEmsListFromSync_(ss) {
         }
       }
     }
+
+    // 日付やEMS番号まで空で入ってしまった既存行は、コード＋数量で補修する
+    let isLoose = false;
+    if (row === undefined) {
+      const qty = String(r[8]);        // I列 Qty
+      for (const k of codeKeys_(code)) {
+        const key = k + '|' + qty;
+        const rows = rowByLoose[key];
+        if (rows && rows.length > 0) {
+          row = rows.shift(); isLoose = true; break;
+        }
+      }
+    }
     if (row === undefined) continue;
 
     UPDATE_COLS.forEach(([s, d]) => {
@@ -1040,8 +1057,8 @@ function updateEmsListFromSync_(ss) {
       }
     });
 
-    // 迷子行やったらEMS番号(M=13)も埋める
-    if (isFallback && track && isBlank_(dstVals[row][12])) {
+    // 迷子行や空欄補修行やったらEMS番号(M=13)も埋める
+    if ((isFallback || isLoose) && track && isBlank_(dstVals[row][12])) {
       dst.getRange(row + 1, 13).setValue(track);
       dstVals[row][12] = track;
       updates++;
