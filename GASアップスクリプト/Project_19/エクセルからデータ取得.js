@@ -864,7 +864,7 @@ function syncDiffToEmsList_(ss) {
   }
   if (dstHeader < 0) { Logger.log('EMSリスト: 見出し行が見つかりません'); return { added: 0, startRow: 0 }; }
 
-  const byCode = {}, byQty = {};
+  const byCode = {}, byQty = {}, byFallback = {};
   let lastDataRow = dstHeader, maxNo = 0;
   for (let i = dstHeader + 1; i < dstVals.length; i++) {
     const track = normTrack_(dstVals[i][12]);
@@ -872,7 +872,11 @@ function syncDiffToEmsList_(ss) {
     if (!track && !code) continue;
     lastDataRow = i;
     if (track && code) {
-      codeKeys_(code).forEach(k => { byCode[track + '|' + k] = true; });  // ★別名込み
+      codeKeys_(code).forEach(k => { byCode[track + '|' + k] = true; });
+    } else if (code) {                                // ★EMS番号が空の迷子行
+      const arr = _emsFmtDate_(dstVals[i][1]);        // B列 入荷日
+      const qty = String(dstVals[i][9]);              // J列 数量
+      codeKeys_(code).forEach(k => { byFallback[arr + '|' + k + '|' + qty] = true; });
     }
     byQty[track + '|' + String(dstVals[i][9]) + '|' + normText_(dstVals[i][10]).toLowerCase()] = true;
     const n = Number(dstVals[i][0]);
@@ -897,8 +901,10 @@ function syncDiffToEmsList_(ss) {
     if (!track && !code) continue;
     // ★Excel側コードの別名のどれかが既存にあれば「既存」とみなす
     const hitCode = codeKeys_(code).some(k => byCode[track + '|' + k]);
+    const _arr = _emsFmtDate_(r[0]), _qty = String(r[8]);
+    const hitFallback = codeKeys_(code).some(k => byFallback[_arr + '|' + k + '|' + _qty]);
     const kQty = track + '|' + String(r[8]) + '|' + normText_(r[10]).toLowerCase();
-    if (hitCode || byQty[kQty]) continue;
+    if (hitCode || hitFallback || byQty[kQty]) continue;
     newRows.push(r);
   }
   if (newRows.length === 0) return { added: 0, startRow: 0 };
@@ -942,60 +948,93 @@ function updateEmsListFromSync_(ss) {
   const srcVals = src.getDataRange().getValues();
   const dstVals = dst.getDataRange().getValues();
 
-  // EMSリスト側の見出し行
   let dstHeader = -1;
   for (let i = 0; i < dstVals.length; i++) {
     if (String(dstVals[i][0]).trim() === 'No.') { dstHeader = i; break; }
   }
   if (dstHeader < 0) return 0;
 
-  // EMS番号＋商品コード → 行番号（別名込み・最初の一致のみ）
+  // ① EMS番号＋商品コード → 行（ひも付け済み）
   const rowByKey = {};
+  // ② 入荷日＋コード＋数量 → 行（EMS番号が空の迷子行だけ）
+  const rowByFallback = {};
   for (let i = dstHeader + 1; i < dstVals.length; i++) {
-    const track = normTrack_(dstVals[i][12]);
-    const code = normCode_(dstVals[i][8]);
-    if (!track || !code) continue;
-    codeKeys_(code).forEach(k => {
-      const key = track + '|' + k;
-      if (!(key in rowByKey)) rowByKey[key] = i;
-    });
+    const track = normTrack_(dstVals[i][12]);  // M列 EMS番号
+    const code  = normCode_(dstVals[i][8]);    // I列 商品コード
+    if (!code) continue;
+    if (track) {
+      codeKeys_(code).forEach(k => {
+        const key = track + '|' + k;
+        if (!(key in rowByKey)) rowByKey[key] = i;
+      });
+    } else {
+      const arr = _emsFmtDate_(dstVals[i][1]); // B列 入荷日
+      const qty = String(dstVals[i][9]);       // J列 数量
+      codeKeys_(code).forEach(k => {
+        const key = arr + '|' + k + '|' + qty;
+        if (!(key in rowByFallback)) rowByFallback[key] = i;
+      });
+    }
   }
 
-  // 同期データ側の見出し行
   let srcHeader = -1;
   for (let i = 0; i < srcVals.length; i++) {
     if (String(srcVals[i][0]).trim() === '入荷') { srcHeader = i; break; }
   }
   if (srcHeader < 0) return 0;
 
-  // [同期データの列(0始), EMSリストの列(1始), 名前]
   const UPDATE_COLS = [
-    [0, 2, '入荷日'],   // A列 → B列
-    [1, 3, '発送日'],   // B列 → C列
-    [2, 5, '到着日']    // C列 → E列
+    [0, 2, '入荷日'],   // A → B
+    [1, 3, '発送日'],   // B → C
+    [2, 5, '到着日']    // C → E
   ];
 
+  const usedFallback = {};
   let updates = 0;
+
   for (let i = srcHeader + 1; i < srcVals.length; i++) {
     const r = srcVals[i];
     const track = normTrack_(r[3]);   // D列 Tracking #
-    const code = normCode_(r[7]);     // H列 ItemCode
-    if (!track || !code) continue;
+    const code  = normCode_(r[7]);    // H列 ItemCode
+    if (!code) continue;
 
+    // まずEMS番号でひも付け済みの行
     let row;
-    for (const k of codeKeys_(code)) {
-      if (rowByKey[track + '|' + k] !== undefined) { row = rowByKey[track + '|' + k]; break; }
+    if (track) {
+      for (const k of codeKeys_(code)) {
+        if (rowByKey[track + '|' + k] !== undefined) { row = rowByKey[track + '|' + k]; break; }
+      }
+    }
+
+    // 無かったら、EMS番号が空の迷子行を 入荷日＋コード＋数量 で探す
+    let isFallback = false;
+    if (row === undefined) {
+      const arr = _emsFmtDate_(r[0]);  // A列 入荷
+      const qty = String(r[8]);        // I列 Qty
+      for (const k of codeKeys_(code)) {
+        const key = arr + '|' + k + '|' + qty;
+        if (rowByFallback[key] !== undefined && !usedFallback[key]) {
+          row = rowByFallback[key]; isFallback = true; usedFallback[key] = true; break;
+        }
+      }
     }
     if (row === undefined) continue;
-    if (row === undefined) continue;  // 既存行に無い（追加処理側で入る）
 
     UPDATE_COLS.forEach(([s, d]) => {
       const v = r[s];
       if (!isBlank_(v) && !sameVal_(v, dstVals[row][d - 1])) {
         dst.getRange(row + 1, d).setValue(v);
+        dstVals[row][d - 1] = v;
         updates++;
       }
     });
+
+    // 迷子行やったらEMS番号(M=13)も埋める
+    if (isFallback && track && isBlank_(dstVals[row][12])) {
+      dst.getRange(row + 1, 13).setValue(track);
+      dstVals[row][12] = track;
+      updates++;
+    }
   }
   return updates;
 }
@@ -1508,4 +1547,84 @@ function codeKeys_(code) {
     keys.push(m[1] + '-' + m[4]);   // 短縮形を別名として追加
   }
   return keys;
+}
+
+// 日付を yyyy-MM-dd に正規化（"26/06/16(火)" みたいな文字列にも対応）
+function _emsFmtDate_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy-MM-dd');
+  const s = String(v || '').trim().replace(/\(.+?\)/, '');
+  const m = s.match(/^(\d{2,4})\/(\d{1,2})\/(\d{1,2})$/);
+  if (m) { let y = Number(m[1]); if (y < 100) y += 2000;
+    return y + '-' + ('0'+m[2]).slice(-2) + '-' + ('0'+m[3]).slice(-2); }
+  return s;
+}
+
+function EMSリスト_重複行を確認して削除() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('EMSリスト');
+  const ui = SpreadsheetApp.getUi();
+  if (!sh) { ui.alert('EMSリストが無いで'); return; }
+
+  const vals = sh.getDataRange().getValues();
+  let h = -1;
+  for (let i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === 'No.') { h = i; break; }
+  if (h < 0) { ui.alert('見出し行(No.)が見つからんで'); return; }
+
+  // 入荷日＋商品コード＋数量 でグループ化
+  const groups = {};
+  for (let i = h + 1; i < vals.length; i++) {
+    const code = normCode_(vals[i][8]);     // I列 商品コード
+    if (!code) continue;
+    const arr = _emsFmtDate_(vals[i][1]);   // B列 入荷日
+    const qty = String(vals[i][9]);         // J列 数量
+    const key = arr + '|' + code + '|' + qty;
+    (groups[key] = groups[key] || []).push(i);
+  }
+
+  // 統合先の空欄に流し込む列：B C E F G H L M N
+  const MERGE_COLS = [2, 3, 5, 6, 7, 8, 12, 13, 14];
+
+  const plans = [];
+  Object.keys(groups).forEach(key => {
+    const rows = groups[key];
+    if (rows.length < 2) return;
+    const keep = Math.min(...rows);
+    plans.push({ keep: keep, dels: rows.filter(r => r !== keep) });
+  });
+
+  if (plans.length === 0) { ui.alert('重複行は見つからんかったで'); return; }
+
+  let preview = '', delCount = 0;
+  plans.forEach(p => {
+    delCount += p.dels.length;
+    preview += `${normCode_(vals[p.keep][8])}: 行${p.keep+1}に統合 ← 行${p.dels.map(d=>d+1).join(',')}削除\n`;
+  });
+
+  const res = ui.alert(
+    '重複行クリーンアップ',
+    `重複グループ ${plans.length}件 / 削除 ${delCount}行\n\n` +
+    preview.slice(0, 1200) +
+    '\n統合先の空欄だけ、削除する行の値で埋めてから消すで。実行する？',
+    ui.ButtonSet.YES_NO
+  );
+  if (res !== ui.Button.YES) { ui.alert('やめといたで'); return; }
+
+  // 統合（keepの空欄だけ埋める）
+  plans.forEach(p => {
+    p.dels.forEach(d => {
+      MERGE_COLS.forEach(col => {
+        if (isBlank_(vals[p.keep][col-1]) && !isBlank_(vals[d][col-1])) {
+          sh.getRange(p.keep + 1, col).setValue(vals[d][col-1]);
+          vals[p.keep][col-1] = vals[d][col-1];
+        }
+      });
+    });
+  });
+
+  // 行削除（下から）
+  const delRows = [];
+  plans.forEach(p => p.dels.forEach(d => delRows.push(d)));
+  [...new Set(delRows)].sort((a,b)=>b-a).forEach(r => sh.deleteRow(r + 1));
+
+  ui.alert(`完了: ${delRows.length}行 削除したで`);
 }
