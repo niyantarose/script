@@ -1612,6 +1612,8 @@ function buildEmsCalendarSheet() {
 
       // 日付番号行（他の月の日はグレー薄表示）
       const numRow = row;
+      const numRange = sh.getRange(numRow, 1, 1, 7);
+      numRange.clearContent().setNumberFormat('0');
       for (let c = 0; c < 7; c++) {
         const d = new Date(weekStart); d.setDate(d.getDate() + c);
         const cell = sh.getRange(numRow, c + 1);
@@ -1621,10 +1623,11 @@ function buildEmsCalendarSheet() {
             cell.setBackground('#fde293').setFontWeight('bold').setFontColor('#3c4043');
           }
         } else {
-          cell.setBackground('#f8f9fa');
+          cell.clearContent().setBackground('#f8f9fa');
         }
       }
-      sh.getRange(numRow, 1, 1, 7)
+      numRange
+        .setNumberFormat('0')
         .setFontSize(14)
         .setHorizontalAlignment('right').setFontColor('#70757a');
       sh.setRowHeight(numRow, 26);
