@@ -25,6 +25,7 @@ function Excel同期メニューを追加_() {
     .addItem('差分反映のみ', 'syncDifferences')
     .addItem('EMSカレンダー更新のみ', 'syncEmsCalendar')
     .addItem('EMSリスト：重複行を確認して削除', 'EMSリスト_重複行を確認して削除')
+    .addItem('EMSリスト：下に混ざった古い行を確認して削除', 'EMSリスト_下に混ざった古い行を確認して削除')
     .addSeparator()
     .addItem('商品マスタ：足りないデータだけ発注から補完', '商品マスタ_足りないデータだけ発注から補完')
     .addItem('商品マスタ：既存データを発注から更新（重さ等）', '商品マスタ_既存データを発注から補完更新')
@@ -866,21 +867,23 @@ function syncDiffToEmsList_(ss) {
   if (dstHeader < 0) { Logger.log('EMSリスト: 見出し行が見つかりません'); return { added: 0, startRow: 0 }; }
 
   const byCode = {}, byQty = {}, byFallback = {}, byArrivalCodeQty = {};
-  let lastDataRow = dstHeader, maxNo = 0;
+  let lastDataRow = dstHeader, maxNo = 0, latestDstArrival = '';
   for (let i = dstHeader + 1; i < dstVals.length; i++) {
     const track = normTrack_(dstVals[i][12]);
     const code = normCode_(dstVals[i][8]);
     if (!track && !code) continue;
     lastDataRow = i;
+    const dstArrival = _emsFmtDate_(dstVals[i][1]);   // B列 入荷日
+    if (_emsIsDateKey_(dstArrival) && dstArrival > latestDstArrival) latestDstArrival = dstArrival;
     if (track && code) {
       codeKeys_(code).forEach(k => { byCode[track + '|' + k] = true; });
     } else if (code) {                                // ★EMS番号が空の迷子行
-      const arr = _emsFmtDate_(dstVals[i][1]);        // B列 入荷日
+      const arr = dstArrival;
       const qty = String(dstVals[i][9]);              // J列 数量
       codeKeys_(code).forEach(k => { byFallback[arr + '|' + k + '|' + qty] = true; });
     }
     if (code) {
-      const arr = _emsFmtDate_(dstVals[i][1]);         // B列 入荷日
+      const arr = dstArrival;
       const qty = String(dstVals[i][9]);               // J列 数量
       codeKeys_(code).forEach(k => { byArrivalCodeQty[arr + '|' + k + '|' + qty] = true; });
     }
@@ -905,9 +908,10 @@ function syncDiffToEmsList_(ss) {
     const track = normTrack_(r[3]);
     const code = normCode_(r[7]);
     if (!track && !code) continue;
+    const _arr = _emsFmtDate_(r[0]), _qty = String(r[8]);
+    if (latestDstArrival && _emsIsDateKey_(_arr) && _arr < latestDstArrival) continue;
     // ★Excel側コードの別名のどれかが既存にあれば「既存」とみなす
     const hitCode = codeKeys_(code).some(k => byCode[track + '|' + k]);
-    const _arr = _emsFmtDate_(r[0]), _qty = String(r[8]);
     const hitFallback = codeKeys_(code).some(k => byFallback[_arr + '|' + k + '|' + _qty]);
     const hitBlankTrackExisting = !track && codeKeys_(code).some(k => byArrivalCodeQty[_arr + '|' + k + '|' + _qty]);
     const kQty = track + '|' + String(r[8]) + '|' + normText_(r[10]).toLowerCase();
@@ -1559,11 +1563,24 @@ function codeKeys_(code) {
 // 日付を yyyy-MM-dd に正規化（"26/06/16(火)" みたいな文字列にも対応）
 function _emsFmtDate_(v) {
   if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy-MM-dd');
+  if (typeof v === 'number' && isFinite(v)) {
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 24 * 60 * 60 * 1000);
+    return Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM-dd');
+  }
   const s = String(v || '').trim().replace(/\(.+?\)/, '');
   const m = s.match(/^(\d{2,4})\/(\d{1,2})\/(\d{1,2})$/);
   if (m) { let y = Number(m[1]); if (y < 100) y += 2000;
     return y + '-' + ('0'+m[2]).slice(-2) + '-' + ('0'+m[3]).slice(-2); }
+  const jp = s.match(/^(\d{1,2})月(\d{1,2})日$/);
+  if (jp) {
+    const y = Number(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy'));
+    return y + '-' + ('0'+jp[1]).slice(-2) + '-' + ('0'+jp[2]).slice(-2);
+  }
   return s;
+}
+
+function _emsIsDateKey_(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
 }
 
 function EMSリスト_重複行を確認して削除() {
@@ -1634,4 +1651,55 @@ function EMSリスト_重複行を確認して削除() {
   [...new Set(delRows)].sort((a,b)=>b-a).forEach(r => sh.deleteRow(r + 1));
 
   ui.alert(`完了: ${delRows.length}行 削除したで`);
+}
+
+function EMSリスト_下に混ざった古い行を確認して削除() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('EMSリスト');
+  const ui = SpreadsheetApp.getUi();
+  if (!sh) { ui.alert('EMSリストが無いで'); return; }
+
+  const vals = sh.getDataRange().getValues();
+  let h = -1;
+  for (let i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === 'No.') { h = i; break; }
+  if (h < 0) { ui.alert('見出し行(No.)が見つからんで'); return; }
+
+  let latestSeen = '';
+  const targets = [];
+  for (let i = h + 1; i < vals.length; i++) {
+    const arr = _emsFmtDate_(vals[i][1]); // B列 入荷日
+    if (!_emsIsDateKey_(arr)) continue;
+    if (latestSeen && arr < latestSeen) {
+      targets.push({
+        row: i + 1,
+        arr: arr,
+        purchase: String(vals[i][5] || ''),
+        code: normCode_(vals[i][8]),
+        qty: String(vals[i][9] || ''),
+        track: normTrack_(vals[i][12])
+      });
+      continue;
+    }
+    if (arr > latestSeen) latestSeen = arr;
+  }
+
+  if (targets.length === 0) {
+    ui.alert('下に混ざった古い行は見つからんかったで');
+    return;
+  }
+
+  const preview = targets
+    .slice(0, 40)
+    .map(t => `行${t.row}: ${t.arr} ${t.purchase} ${t.code} x${t.qty} ${t.track}`)
+    .join('\n');
+  const more = targets.length > 40 ? `\n...ほか ${targets.length - 40}行` : '';
+  const res = ui.alert(
+    '下に混ざった古いEMS行を削除',
+    `新しい入荷日の下にある古い行を ${targets.length}行 見つけました。\n\n${preview}${more}\n\n削除する？`,
+    ui.ButtonSet.YES_NO
+  );
+  if (res !== ui.Button.YES) { ui.alert('やめといたで'); return; }
+
+  targets.map(t => t.row).sort((a,b)=>b-a).forEach(row => sh.deleteRow(row));
+  ui.alert(`完了: ${targets.length}行 削除したで`);
 }
