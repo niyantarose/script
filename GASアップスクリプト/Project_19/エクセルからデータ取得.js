@@ -1149,10 +1149,14 @@ function EMSリスト_空欄行をEMS同期データから補完(silent) {
     EMS_updateDatesByRows_(dst, minRow, maxRow - minRow + 1, false);
   }
 
-  const msg = `EMS空欄補完: ${updates}セル`;
+  const purchaseFilled = (typeof EMSリスト_購入No自動補完 === 'function')
+    ? EMSリスト_購入No自動補完(true)
+    : 0;
+
+  const msg = `EMS空欄補完: ${updates}セル / 購入No補完: ${purchaseFilled}件`;
   if (silent) Logger.log(msg);
   else SpreadsheetApp.getActive().toast(msg);
-  return updates;
+  return updates + purchaseFilled;
 }
 // ---- 既存行の入荷日・入荷数・重さを同期データ側の値で更新 ----
 function updateArrivalsInHatchu_(ss) {
