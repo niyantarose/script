@@ -24,6 +24,7 @@ function Excel同期メニューを追加_() {
     .addItem('Excel取込のみ', 'importSharePointExcel')
     .addItem('差分反映のみ', 'syncDifferences')
     .addItem('EMSカレンダー更新のみ', 'syncEmsCalendar')
+    .addItem('EMSリスト：重複行を確認して削除', 'EMSリスト_重複行を確認して削除')
     .addSeparator()
     .addItem('商品マスタ：足りないデータだけ発注から補完', '商品マスタ_足りないデータだけ発注から補完')
     .addItem('商品マスタ：既存データを発注から更新（重さ等）', '商品マスタ_既存データを発注から補完更新')
@@ -864,7 +865,7 @@ function syncDiffToEmsList_(ss) {
   }
   if (dstHeader < 0) { Logger.log('EMSリスト: 見出し行が見つかりません'); return { added: 0, startRow: 0 }; }
 
-  const byCode = {}, byQty = {}, byFallback = {};
+  const byCode = {}, byQty = {}, byFallback = {}, byArrivalCodeQty = {};
   let lastDataRow = dstHeader, maxNo = 0;
   for (let i = dstHeader + 1; i < dstVals.length; i++) {
     const track = normTrack_(dstVals[i][12]);
@@ -877,6 +878,11 @@ function syncDiffToEmsList_(ss) {
       const arr = _emsFmtDate_(dstVals[i][1]);        // B列 入荷日
       const qty = String(dstVals[i][9]);              // J列 数量
       codeKeys_(code).forEach(k => { byFallback[arr + '|' + k + '|' + qty] = true; });
+    }
+    if (code) {
+      const arr = _emsFmtDate_(dstVals[i][1]);         // B列 入荷日
+      const qty = String(dstVals[i][9]);               // J列 数量
+      codeKeys_(code).forEach(k => { byArrivalCodeQty[arr + '|' + k + '|' + qty] = true; });
     }
     byQty[track + '|' + String(dstVals[i][9]) + '|' + normText_(dstVals[i][10]).toLowerCase()] = true;
     const n = Number(dstVals[i][0]);
@@ -903,8 +909,9 @@ function syncDiffToEmsList_(ss) {
     const hitCode = codeKeys_(code).some(k => byCode[track + '|' + k]);
     const _arr = _emsFmtDate_(r[0]), _qty = String(r[8]);
     const hitFallback = codeKeys_(code).some(k => byFallback[_arr + '|' + k + '|' + _qty]);
+    const hitBlankTrackExisting = !track && codeKeys_(code).some(k => byArrivalCodeQty[_arr + '|' + k + '|' + _qty]);
     const kQty = track + '|' + String(r[8]) + '|' + normText_(r[10]).toLowerCase();
-    if (hitCode || hitFallback || byQty[kQty]) continue;
+    if (hitCode || hitFallback || hitBlankTrackExisting || byQty[kQty]) continue;
     newRows.push(r);
   }
   if (newRows.length === 0) return { added: 0, startRow: 0 };
