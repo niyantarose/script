@@ -26,6 +26,7 @@ function Excel同期メニューを追加_() {
     .addItem('EMSカレンダー更新のみ', 'syncEmsCalendar')
     .addItem('EMSリスト：重複行を確認して削除', 'EMSリスト_重複行を確認して削除')
     .addItem('EMSリスト：下に混ざった古い行を確認して削除', 'EMSリスト_下に混ざった古い行を確認して削除')
+    .addItem('EMSリスト：空欄行を同期データで補完', 'EMSリスト_空欄行をEMS同期データから補完')
     .addSeparator()
     .addItem('商品マスタ：足りないデータだけ発注から補完', '商品マスタ_足りないデータだけ発注から補完')
     .addItem('商品マスタ：既存データを発注から更新（重さ等）', '商品マスタ_既存データを発注から補完更新')
@@ -693,6 +694,7 @@ function syncDifferences() {
 
   const r1 = syncDiffToHatchu_(ss);
   const n3 = updateArrivalsInHatchu_(ss);
+  const nEmsFill = EMSリスト_空欄行をEMS同期データから補完(true);
   const n4 = updateEmsListFromSync_(ss);   // ★EMSリスト既存行の更新
   const r2 = syncDiffToEmsList_(ss);
 
@@ -721,7 +723,7 @@ function syncDifferences() {
 
   // EMSリストの後処理
   const emsSheet = ss.getSheetByName('EMSリスト');
-  if (emsSheet && (r2.added > 0 || n4 > 0)) {
+  if (emsSheet && (r2.added > 0 || n4 > 0 || nEmsFill > 0)) {
     runEmsPostProcess_(emsSheet, r2);
 
     if (hachu && typeof colorKeshikomiAllRows_ === 'function') {
@@ -732,6 +734,7 @@ function syncDifferences() {
 EMSリスト_購入No自動補完(true);
   Logger.log(
     `差分反映完了: 発注 ${r1.added}件追加 / EMSリスト ${r2.added}件追加 / 入荷情報 ${n3}セル更新 / EMSリスト更新 ${n4}セル`
+      + ` / EMS空欄補完 ${nEmsFill}セル`
   );
 }
 // ---- 正規化ヘルパー ----
@@ -1064,6 +1067,91 @@ function updateEmsListFromSync_(ss) {
       updates++;
     }
   }
+  return updates;
+}
+
+function EMSリスト_空欄行をEMS同期データから補完(silent) {
+  const ss = SpreadsheetApp.getActive();
+  const src = ss.getSheetByName('EMS同期データ');
+  const dst = ss.getSheetByName('EMSリスト');
+  if (!src || !dst) return 0;
+
+  const srcVals = src.getDataRange().getValues();
+  const dstVals = dst.getDataRange().getValues();
+
+  let srcHeader = -1;
+  for (let i = 0; i < srcVals.length; i++) {
+    if (String(srcVals[i][0]).trim() === '入荷') { srcHeader = i; break; }
+  }
+  let dstHeader = -1;
+  for (let i = 0; i < dstVals.length; i++) {
+    if (String(dstVals[i][0]).trim() === 'No.') { dstHeader = i; break; }
+  }
+  if (srcHeader < 0 || dstHeader < 0) return 0;
+
+  const srcByLoose = {};
+  for (let i = srcHeader + 1; i < srcVals.length; i++) {
+    const r = srcVals[i];
+    const code = normCode_(r[7]);     // H列 ItemCode
+    const qty = String(r[8]);         // I列 Qty
+    if (!code || !qty) continue;
+    if (isBlank_(r[0]) && isBlank_(r[1]) && isBlank_(r[2]) && !normTrack_(r[3])) continue;
+    codeKeys_(code).forEach(k => {
+      const key = k + '|' + qty;
+      (srcByLoose[key] = srcByLoose[key] || []).push(r);
+    });
+  }
+
+  let updates = 0;
+  const touchedRows = [];
+  for (let i = dstHeader + 1; i < dstVals.length; i++) {
+    const row = dstVals[i];
+    const code = normCode_(row[8]);   // I列 商品コード
+    const qty = String(row[9]);       // J列 数量
+    if (!code || !qty) continue;
+
+    const needsFill =
+      isBlank_(row[1]) ||             // B列 入荷日
+      isBlank_(row[2]) ||             // C列 EMS発送日
+      isBlank_(row[12]);              // M列 EMS番号
+    if (!needsFill) continue;
+
+    let srcRow;
+    for (const k of codeKeys_(code)) {
+      const rows = srcByLoose[k + '|' + qty];
+      if (rows && rows.length > 0) { srcRow = rows.shift(); break; }
+    }
+    if (!srcRow) continue;
+
+    const writes = [
+      [1, 2, srcRow[0]],              // A 入荷 -> B
+      [2, 3, srcRow[1]],              // B 出発 -> C
+      [4, 5, srcRow[2]],              // C 到着 -> E
+      [12, 13, normTrack_(srcRow[3])] // D Tracking # -> M
+    ];
+
+    let rowTouched = false;
+    writes.forEach(([idx, col, val]) => {
+      if (!isBlank_(val) && isBlank_(dstVals[i][idx])) {
+        dst.getRange(i + 1, col).setValue(val);
+        dstVals[i][idx] = val;
+        updates++;
+        rowTouched = true;
+      }
+    });
+
+    if (rowTouched) touchedRows.push(i + 1);
+  }
+
+  if (touchedRows.length && typeof EMS_updateDatesByRows_ === 'function') {
+    const minRow = Math.min(...touchedRows);
+    const maxRow = Math.max(...touchedRows);
+    EMS_updateDatesByRows_(dst, minRow, maxRow - minRow + 1, false);
+  }
+
+  const msg = `EMS空欄補完: ${updates}セル`;
+  if (silent) Logger.log(msg);
+  else SpreadsheetApp.getActive().toast(msg);
   return updates;
 }
 // ---- 既存行の入荷日・入荷数・重さを同期データ側の値で更新 ----
