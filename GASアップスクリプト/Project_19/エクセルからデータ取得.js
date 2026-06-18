@@ -2,6 +2,10 @@
 function Excel同期メニューを追加_() {
   SpreadsheetApp.getUi()
     .createMenu('手動運用')
+    .addItem('発注リスト大邱データ → 発注', '大邱_発注へ転送')
+    .addItem('EMS大邱作業データ → EMSリスト', '大邱_EMSリストへ転送')
+    .addItem('購入No補完（EMSリスト）', 'EMSリスト_購入No自動補完')
+    .addSeparator()
     .addItem('EMSカレンダーシートを更新', 'buildEmsCalendarSheet')
     .addItem('GoogleカレンダーへEMSを反映', 'syncEmsCalendar')
     .addItem('EMSリスト：重複行を確認して削除', 'EMSリスト_重複行を確認して削除')
@@ -562,3 +566,4 @@ function EMSリスト_下に混ざった古い行を確認して削除() {
   targets.map(t => t.row).sort((a,b)=>b-a).forEach(row => sh.deleteRow(row));
   ui.alert(`完了: ${targets.length}行 削除したで`);
 }
+// updated menu setup
