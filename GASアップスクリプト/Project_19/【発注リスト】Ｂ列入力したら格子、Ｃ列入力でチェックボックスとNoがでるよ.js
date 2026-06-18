@@ -437,28 +437,20 @@ function colorKeshikomiRows_(sh, startRow, numRows) {
     .getRange(startRow, cfg.STATUS_COL, numRows, 1)
     .getDisplayValues();
 
-  for (let i = 0; i < numRows; i++) {
-    const rowNo = startRow + i;
-    const status = String(statusValues[i][0] || '').trim();
-
+  const backgrounds = statusValues.map(row => {
+    const status = String(row[0] || '').trim();
     let color = null;
 
     if (status === '消込OK') {
-      color = cfg.COLORS.OK; // オレンジ
+      color = cfg.COLORS.OK;
     } else if (status.indexOf('韓国残') !== -1) {
-      color = cfg.COLORS.KOREA_REMAIN; // 黄色
-    } else {
-      color = null; // 色なし
+      color = cfg.COLORS.KOREA_REMAIN;
     }
 
-    const rowRange = sh.getRange(rowNo, startCol, 1, width);
+    return Array(width).fill(color);
+  });
 
-    if (color) {
-      rowRange.setBackground(color);
-    } else {
-      rowRange.setBackground(null);
-    }
-  }
+  sh.getRange(startRow, startCol, numRows, width).setBackgrounds(backgrounds);
 }
 
 
@@ -642,7 +634,7 @@ function 発注_チェック行をEMSリストへ送る() {
 
   // 日付表示
   dst.getRange(appendStartRow, 2, appendRows.length, 2)
-    .setNumberFormat('yyyy/m/d');
+    .setNumberFormat('yy/MM/dd(ddd)');
 
   // コピー後にチェックを外す
   if (cfg.UNCHECK_AFTER_SEND) {
