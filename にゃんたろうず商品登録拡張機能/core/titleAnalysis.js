@@ -1117,7 +1117,10 @@
 
     product.japaneseTitleLookup = lookup;
     const japaneseTitle = normalizeSheetJapaneseWorkTitle(compactSpaces(lookup.japaneseTitle || lookup.title || ''));
-    if (lookup.status === 'resolved' && japaneseTitle) {
+    // 商品ページのタイトル直下から取得した日本語タイトル(page_trusted)は最優先。外部照会では上書きしない。
+    const pageTrusted = String(rawItem?.日本語タイトル取得元 || '') === 'page_trusted'
+      && Boolean(compactSpaces(rawItem?.日本語タイトル));
+    if (lookup.status === 'resolved' && japaneseTitle && !pageTrusted) {
       product.日本語タイトル = japaneseTitle;
       product['作品名（日本語）'] = product['作品名（日本語）'] || japaneseTitle;
       product.作品名日本語 = product.作品名日本語 || japaneseTitle;

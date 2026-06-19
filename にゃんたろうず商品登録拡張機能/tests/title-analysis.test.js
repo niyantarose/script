@@ -223,4 +223,33 @@ for (const [input, expected] of jpWorkTitleCases) {
   }
 }
 
+// applyJapaneseTitleLookupToProduct: ページ直下取得(page_trusted)は外部照会で上書きしない
+const resolvedLookup = { lookup: { status: 'resolved', japaneseTitle: 'とある科学の心理掌握', normalizedSearchTitle: 'x' } };
+const lookupCases = [
+  {
+    name: 'page_trusted は維持',
+    item: { 日本語タイトル: 'とある魔術の禁書目録外伝 とある科学の心理掌握', 日本語タイトル取得元: 'page_trusted' },
+    expected: 'とある魔術の禁書目録外伝 とある科学の心理掌握',
+  },
+  {
+    name: 'page_scan は上書きされる',
+    item: { 日本語タイトル: '仮の値', 日本語タイトル取得元: 'page_scan' },
+    expected: 'とある科学の心理掌握',
+  },
+  {
+    name: 'page_trusted でも空なら補充',
+    item: { 日本語タイトル: '', 日本語タイトル取得元: 'page_trusted' },
+    expected: 'とある科学の心理掌握',
+  },
+];
+for (const c of lookupCases) {
+  const actual = ctx.applyJapaneseTitleLookupToProduct(c.item, resolvedLookup).日本語タイトル;
+  if (actual !== c.expected) {
+    failed += 1;
+    console.error(`[NG] applyJapaneseTitleLookupToProduct(${c.name}): expected="${c.expected}" actual="${actual}"`);
+  } else {
+    console.log(`[OK] applyJapaneseTitleLookupToProduct: ${c.name} -> "${actual}"`);
+  }
+}
+
 process.exit(failed ? 1 : 0);
