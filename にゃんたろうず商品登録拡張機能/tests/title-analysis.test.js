@@ -204,4 +204,23 @@ if (savePayload.action !== 'upsertProductWithLookup' || savePayload.japaneseTitl
   console.log('[OK] save payload with lookup');
 }
 
+// 日本語タイトル列: 末尾の巻数だけ除去し、親シリーズ・作品名は維持する
+const jpWorkTitleCases = [
+  ['とある魔術の禁書目録外伝 とある科学の心理掌握 (4)', 'とある魔術の禁書目録外伝 とある科学の心理掌握'],
+  ['ブルーロック (36)', 'ブルーロック'],
+  ['鬼は今日も雨を待つ 第1巻', '鬼は今日も雨を待つ'],
+  ['100%クリーンアップ 4巻', '100%クリーンアップ'],
+  ['お狐様のお気に入り', 'お狐様のお気に入り'],
+  ['とある科学の心理掌握', 'とある科学の心理掌握'],
+];
+for (const [input, expected] of jpWorkTitleCases) {
+  const actual = ctx.normalizeSheetJapaneseWorkTitle(input);
+  if (actual !== expected) {
+    failed += 1;
+    console.error(`[NG] normalizeSheetJapaneseWorkTitle("${input}"): expected="${expected}" actual="${actual}"`);
+  } else {
+    console.log(`[OK] normalizeSheetJapaneseWorkTitle: "${input}" -> "${actual}"`);
+  }
+}
+
 process.exit(failed ? 1 : 0);

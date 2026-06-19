@@ -1090,7 +1090,7 @@
     return s;
   }
 
-  /** シート「日本語タイトル」向け: (TV) 等メディア表記 */
+  /** シート「日本語タイトル」向け: (TV) 等メディア表記 + 末尾の巻数を除去（親シリーズ・作品名は維持） */
   function normalizeSheetJapaneseWorkTitle(value) {
     if (isJapaneseTitleStatusPlaceholder_(value)) return compactSpaces(value);
     let s = compactSpaces(value);
@@ -1100,6 +1100,9 @@
       s = s
         .replace(/\s*[\[(（〈【]\s*(?:TV|T\.V\.|OVA|OAD|ONA|SP|映画|電影|劇場版|剧场版|アニメ(?:版|ーション)?|ドラマ(?:版)?|真人版|Web\s*アニメ|Anime|Movie|Film)\s*[\])）〉】]/giu, '')
         .replace(/\s*[\[\(]\s*[Tt][Vv]\s*[\]\)]\s*$/u, '')
+        // 末尾の巻数表記: (4) / 第4巻 / 4巻（巻数は単巻数列が保持するため作品名から落とす）
+        .replace(/\s*[（(]\s*[0-9０-９]{1,4}\s*[）)]\s*$/u, '')
+        .replace(/\s*第?\s*[0-9０-９]{1,4}\s*[巻卷]\s*$/u, '')
         .trim();
       s = compactSpaces(s);
       if (s === prev) break;
