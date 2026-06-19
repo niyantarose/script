@@ -2723,8 +2723,20 @@ function validateClientJapaneseTitleLookup_(lookup, titleAnalysis, rowData) {
     maxOverlap = Math.max(maxOverlap, cjkCharOverlap_(q, jp));
   });
   if (maxOverlap >= 0.35) return true;
+  // \u6848A: MU/aniList \u304c resolved \u3067\u8fd4\u3057\u305f\u300c\u304b\u306a\u5165\u308a\u300d\u65e5\u672c\u8a9e\u984c\u306f\u3001\u30af\u30e9\u30a4\u30a2\u30f3\u30c8\u5074\u3067
+  // \u30b7\u30ea\u30fc\u30ba\u7167\u5408(\u4e2d\u6587\u984c\u2192associated\u4e00\u81f4)\u6e08\u307f\u306e\u305f\u3081\u3001\u6f22\u5b57\u3092\u6d41\u7528\u3057\u306a\u3044\u610f\u8a33\u30bf\u30a4\u30c8\u30eb
+  // \uff08\u4f8b: \u8033\u908a\u871c\u8a9e\u2192\u7518\u3044\u8a00\u8449\u3067\u3055\u3055\u3084\u3044\u3066, \u6f22\u5b57\u91cd\u306a\u308a0\uff09\u3067\u3082\u63a1\u7528\u3059\u308b\u3002
+  if (clientLookupSeriesVerified_(lookup) && /[\u3041-\u3096\u30a1-\u30fa\u30fc]/.test(jp)) return true;
   if (!/[\u3000-\u9fff\uf900-\ufaff]/.test(jp) && /[\u3041-\u3096\u30a1-\u30fa]/.test(jp)) return false;
   return maxOverlap >= 0.2;
+}
+
+// \u30af\u30e9\u30a4\u30a2\u30f3\u30c8(MU/aniList)\u304c resolved \u3092\u8fd4\u3057\u305f\uff1d\u4e2d\u6587\u984c\u304c associated \u7b49\u306b\u4e00\u81f4\u3057\u3066
+// \u30b7\u30ea\u30fc\u30ba\u304c\u78ba\u8a8d\u3067\u304d\u3066\u3044\u308b\u3001\u3068\u307f\u306a\u3059\uff08\u6f22\u5b57\u91cd\u306a\u308a\u306e\u4ee3\u7406\u5224\u5b9a\uff09\u3002
+function clientLookupSeriesVerified_(lookup) {
+  if (!lookup || String(lookup.status || '') !== 'resolved') return false;
+  var provider = String(lookup.provider || '').toLowerCase();
+  return provider.indexOf('mangaupdate') >= 0 || provider.indexOf('anilist') >= 0;
 }
 
 function prepareItemWithJapaneseTitleLookup_(item) {
