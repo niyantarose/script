@@ -700,6 +700,11 @@
     // 信頼度の高いプロバイダーは検証スキップ（辞書一致など）
     const trustedProviders = new Set(['titleAliasDictionary', '自社タイトル別名辞書', 'chilchil']);
     if (trustedProviders.has(String(provider || ''))) return true;
+    // MU/aniList はシリーズ照合（中文題→associated一致）を経て解決するDBなので、
+    // かな入りの日本語題なら、漢字を流用しない意訳タイトル
+    // （例: 耳邊蜜語→甘い言葉でささやいて, 漢字重なり0）でも漢字重なり検証をスキップして信頼する。
+    const providerLc = String(provider || '').toLowerCase();
+    if ((providerLc.indexOf('mangaupdate') >= 0 || providerLc.indexOf('anilist') >= 0) && _hasJapaneseKana(jp)) return true;
     // クエリから漢字を集める
     const queries = Array.isArray(originalQueries) ? originalQueries : [originalQueries];
     const queryHan = [];

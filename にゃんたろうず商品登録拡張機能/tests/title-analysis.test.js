@@ -252,4 +252,22 @@ for (const c of lookupCases) {
   }
 }
 
+// validateJapaneseTitleAgainstQuery_: MU/aniList のかな入り意訳タイトルは漢字重なり0でも採用
+const vfn = ctx.validateJapaneseTitleAgainstQuery;
+const valCases = [
+  { name: 'MU意訳(かな)overlap0→採用', jp: '甘い言葉でささやいて', q: ['耳邊蜜語'], provider: 'mangaUpdates(extension)', expected: true },
+  { name: 'aniList意訳(かな)overlap0→採用', jp: '甘い言葉でささやいて', q: ['耳邊蜜語'], provider: 'aniList(via_mangaupdatesClient)', expected: true },
+  { name: '非MU意訳(かな)overlap0→却下', jp: '甘い言葉でささやいて', q: ['耳邊蜜語'], provider: 'someProvider', expected: false },
+  { name: '通常の漢字重なり(非MU)→採用', jp: '葬送のフリーレン', q: ['葬送的芙莉蓮'], provider: 'gas', expected: true },
+];
+for (const c of valCases) {
+  const actual = vfn(c.jp, c.q, c.provider);
+  if (actual !== c.expected) {
+    failed += 1;
+    console.error(`[NG] validateJapaneseTitleAgainstQuery(${c.name}): expected=${c.expected} actual=${actual}`);
+  } else {
+    console.log(`[OK] validateJapaneseTitleAgainstQuery: ${c.name}`);
+  }
+}
+
 process.exit(failed ? 1 : 0);
