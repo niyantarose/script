@@ -2674,13 +2674,14 @@ function japaneseTitleLookupStatusLabel_(lookup) {
   return result.status || JAPANESE_TITLE_NOT_LOOKED_UP_LABEL;
 }
 
-function applyJapaneseTitleLookupToRowData_(rowData, lookup, titleAnalysis) {
+function applyJapaneseTitleLookupToRowData_(rowData, lookup, titleAnalysis, preservePageTitle) {
   const result = normalizeLookupResult_(lookup);
   const next = Object.assign({}, rowData || {});
   if (!result) return finalizeSheetWorkTitleColumns_(next);
 
   if (result.status === 'resolved' && result.japaneseTitle) {
-    next['日本語タイトル'] = result.japaneseTitle;
+    // 商品ページ直下から取得した日本語タイトル(page_trusted)は最優先。外部照会では上書きしない。
+    if (!preservePageTitle) next['日本語タイトル'] = result.japaneseTitle;
     if (!String(next['作品名（日本語）'] || '').trim()) next['作品名（日本語）'] = result.japaneseTitle;
     if (!String(next['作品名日本語'] || '').trim()) next['作品名日本語'] = result.japaneseTitle;
   } else if (isJapaneseTitleLookupStatusValue_(next['日本語タイトル'])) {
@@ -2767,7 +2768,10 @@ function prepareItemWithJapaneseTitleLookup_(item) {
   } else {
     lookup = clientLookup;
   }
-  const rowData = applyJapaneseTitleLookupToRowData_(extractRowData_(item), lookup, titleAnalysis);
+  const __rawItem = item && (item.rawItem || item);
+  const __pageTrusted = String((__rawItem && __rawItem['日本語タイトル取得元']) || '') === 'page_trusted'
+    && !!String(extractRowData_(item)['日本語タイトル'] || '').trim();
+  const rowData = applyJapaneseTitleLookupToRowData_(extractRowData_(item), lookup, titleAnalysis, __pageTrusted);
   return Object.assign({}, item, {
     rowData: rowData,
     japaneseTitleLookup: lookup
