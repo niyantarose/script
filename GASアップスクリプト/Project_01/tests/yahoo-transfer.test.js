@@ -55,4 +55,17 @@ eq('発売日', mapped['発売日'], '2026/06/18');
 eq('JANコード', mapped['JANコード'], '9784000000000');
 eq('配送グループ管理番号', mapped['配送グループ管理番号'], '佐川');
 
+// 送信計画: 重複/コード空を除外（collected は mapped 済みオブジェクトを持つ）
+const mk = (code, title) => ({
+  sheet:'台湾まんが', rowIndex:10,
+  mapped: { '商品名':title, '商品コード':code, '発売日':'2026/06/18', 'JANコード':'', '配送グループ管理番号':'佐川' },
+});
+const collected = [ mk('TWS0001-CM-01','A'), mk('TWS0001-CM-01','A-dup'), mk('','B'), mk('TWS0002-CM-01','C') ];
+const plan = ctx.yt_送信計画を作る_(collected, ['TWS0001-CM-01']);
+// 1件目は送信先既存で除外、2件目は同一実行重複で除外、3件目はコード空、4件目のみ送信
+eq('送信件数', plan.toSend.length, 1);
+eq('送信コード', plan.toSend[0].codeKey, 'TWS0002-CM-01');
+eq('重複スキップ件数', plan.skipDup, 2);
+eq('コード空スキップ件数', plan.skipNoCode, 1);
+
 process.exit(failed ? 1 : 0);

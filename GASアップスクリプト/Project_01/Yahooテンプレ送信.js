@@ -66,6 +66,25 @@ function yt_行から送信値_(rowValues, headerMap) {
   return out;
 }
 
+function yt_送信計画を作る_(collected, existingCodeKeys) {
+  var seen = {};
+  (existingCodeKeys || []).forEach(function (k) {
+    var key = yt_商品コードキー_(k);
+    if (key) seen[key] = true;
+  });
+  var toSend = [], skipDup = 0, skipNoCode = 0;
+  for (var i = 0; i < collected.length; i++) {
+    var c = collected[i];
+    var mapped = c.mapped;
+    var codeKey = yt_商品コードキー_(mapped['商品コード']);
+    if (!codeKey) { skipNoCode++; continue; }
+    if (seen[codeKey]) { skipDup++; continue; }
+    seen[codeKey] = true;
+    toSend.push({ sheet: c.sheet, rowIndex: c.rowIndex, mapped: mapped, codeKey: codeKey });
+  }
+  return { toSend: toSend, skipDup: skipDup, skipNoCode: skipNoCode };
+}
+
 // 構造確認: 各ソースタブと送信先の検出列をLoggerに出す（候補名が実ヘッダーに当たっているか確認用）
 function 台湾_Yahoo送信_構造を確認() {
   var ss = SpreadsheetApp.getActive();
