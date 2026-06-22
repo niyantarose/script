@@ -46,3 +46,22 @@ function yt_列を解決_(headerMap, candidates) {
   }
   return -1;
 }
+
+function yt_商品コードキー_(v) {
+  return String(v == null ? '' : v)
+    .normalize('NFKC')
+    .replace(/[‐‑‒–—―−ー]/g, '-')   // 各種ダッシュ/長音をハイフンに
+    .replace(/[\s　]+/g, '')
+    .toUpperCase()
+    .trim();
+}
+
+function yt_行から送信値_(rowValues, headerMap) {
+  var out = {};
+  var fields = YAHOO_TRANSFER_CFG.fieldCandidates;
+  Object.keys(fields).forEach(function (yahooField) {
+    var col = yt_列を解決_(headerMap, fields[yahooField]);
+    out[yahooField] = (col >= 0 && col < rowValues.length) ? rowValues[col] : '';
+  });
+  return out;
+}
