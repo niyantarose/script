@@ -129,6 +129,10 @@ function onOpen() {
     .addSeparator()
     .addItem('🔧 トリガーを再設定（重複削除）', 'トリガーを設定')
 
+    .addSeparator()
+    .addItem('📤 Yahooテンプレへ送信（チェック行）', '台湾_Yahooテンプレへ送信')
+    .addItem('🔎 Yahoo送信 構造を確認', '台湾_Yahoo送信_構造を確認')
+
     .addToUi();
 }
 
