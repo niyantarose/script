@@ -1,0 +1,3 @@
+# Node専用テスト等はGASへ push しない（require/process等でGASが壊れるため）
+**/*.test.js
+tests/**
