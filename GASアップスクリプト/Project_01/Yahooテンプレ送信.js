@@ -65,3 +65,39 @@ function yt_行から送信値_(rowValues, headerMap) {
   });
   return out;
 }
+
+// 構造確認: 各ソースタブと送信先の検出列をLoggerに出す（候補名が実ヘッダーに当たっているか確認用）
+function 台湾_Yahoo送信_構造を確認() {
+  var ss = SpreadsheetApp.getActive();
+  var cfg = YAHOO_TRANSFER_CFG;
+  var lines = [];
+
+  cfg.srcSheets.forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    if (!sh) { lines.push('[ソース欠落] ' + name); return; }
+    var headerRows = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues();
+    var map = yt_ヘッダー名マップ_(headerRows);
+    var detail = Object.keys(cfg.fieldCandidates).map(function (f) {
+      var c = yt_列を解決_(map, cfg.fieldCandidates[f]);
+      return f + '=' + (c >= 0 ? '列' + (c + 1) : '×なし');
+    }).join(' / ');
+    lines.push('[ソース] ' + name + ' : ' + detail);
+  });
+
+  var dss = SpreadsheetApp.openById(cfg.destId);
+  var dsh = dss.getSheetByName(cfg.destSheet);
+  if (!dsh) {
+    lines.push('[送信先欠落] ' + cfg.destSheet);
+  } else {
+    var dHeader = dsh.getRange(1, 1, cfg.destHeaderRows, dsh.getLastColumn()).getDisplayValues();
+    var dMap = yt_ヘッダー名マップ_(dHeader);
+    var dDetail = Object.keys(cfg.fieldCandidates).map(function (f) {
+      var c = yt_列を解決_(dMap, [f]);
+      return f + '=' + (c >= 0 ? '列' + (c + 1) : '×なし');
+    }).join(' / ');
+    lines.push('[送信先] ' + cfg.destSheet + ' : ' + dDetail);
+  }
+
+  Logger.log(lines.join('\n'));
+  SpreadsheetApp.getActive().toast('構造確認をログ出力しました（実行ログを確認）');
+}
