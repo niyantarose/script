@@ -23,7 +23,7 @@ vm.runInContext(fs.readFileSync(path.join(root, 'popup/taiwan/popup.books.js'), 
   filename: 'popup/taiwan/popup.books.js',
 });
 
-const { detectEditionType, deriveTaiwanVolumeColumns_ } = ctx;
+const { detectEditionType, deriveTaiwanVolumeColumns_, buildCommonBookSheetRow } = ctx;
 
 const editionCases = [
   {
@@ -75,6 +75,18 @@ for (const tc of volumeCases) {
       throw new Error(`${tc.name}: ${key} expected ${tc.expected[key]}, got ${actual[key]}`);
     }
   }
+}
+
+// 形態列キーは半角カッコ（シート列名）を主とする
+const editionRow = buildCommonBookSheetRow({
+  商品名: '綠蔭之冠1+2小說限量特裝版',
+  原題商品タイトル: '綠蔭之冠1+2小說限量特裝版',
+});
+if (editionRow['形態(通常/初回限定/特装)'] !== '特装版') {
+  throw new Error(`形態(半角) expected 特装版, got ${editionRow['形態(通常/初回限定/特装)']}`);
+}
+if (editionRow['形態（通常/初回限定/特装）'] !== '特装版') {
+  throw new Error(`形態(全角) expected 特装版, got ${editionRow['形態（通常/初回限定/特装）']}`);
 }
 
 console.log('volume-edition.test.js: ok');

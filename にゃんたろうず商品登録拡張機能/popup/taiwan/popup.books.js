@@ -223,6 +223,7 @@ function buildCommonBookSheetRow(product, overrides = {}) {
     'セット巻数開始番号': 巻数列.セット巻数開始番号,
     'セット巻数終了番号': 巻数列.セット巻数終了番号,
     'カテゴリ': category,
+    '形態(通常/初回限定/特装)': detectEditionType(product),
     '形態（通常/初回限定/特装）': detectEditionType(product),
     '配送パターン': trimValue(product?.配送パターン || ''),
     '特典メモ': '',

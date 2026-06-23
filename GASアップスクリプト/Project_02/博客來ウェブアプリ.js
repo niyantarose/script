@@ -3420,6 +3420,45 @@ function bookCodeBuildFinalCode_(sheetName, rowData, workId) {
   return volumeCode ? baseCode + '-' + volumeCode : baseCode;
 }
 
+function detectEditionShapeFromRowData_(rowData) {
+  const existing = bookCodeFirstNonEmpty_(
+    rowData['形態(通常/初回限定/特装)'],
+    rowData['形態（通常/初回限定/特装）'],
+    rowData['形態']
+  );
+  if (existing) return existing;
+
+  const text = [
+    rowData['原題商品タイトル'],
+    rowData['原題タイトル'],
+    rowData['タイトル'],
+    rowData['商品名'],
+    rowData['特典メモ'],
+    rowData['商品説明'],
+  ].map(bookCodeNormalize_).filter(Boolean).join('\n');
+  if (!text) return '';
+
+  if (/特裝|特装/.test(text)) return '特装版';
+  if (/初回限定|首刷限定|首刷贈品|首刷赠品|予約限定/.test(text)) return '初版限定版';
+  if (/限定版/.test(text)) return '限定版';
+  return '通常版';
+}
+
+function enrichEditionShapeForRowData_(rowData) {
+  if (!rowData || typeof rowData !== 'object') return false;
+  const shape = detectEditionShapeFromRowData_(rowData);
+  if (!shape) return false;
+  const had = bookCodeFirstNonEmpty_(
+    rowData['形態(通常/初回限定/特装)'],
+    rowData['形態（通常/初回限定/特装）'],
+    rowData['形態']
+  );
+  if (had) return false;
+  rowData['形態(通常/初回限定/特装)'] = shape;
+  rowData['形態（通常/初回限定/特装）'] = shape;
+  return true;
+}
+
 function prepareBookCodeFieldsForItem_(ss, item, runtime) {
   if (!item) return item;
   const sheetName = resolveSheetName_(item);
@@ -3427,6 +3466,8 @@ function prepareBookCodeFieldsForItem_(ss, item, runtime) {
 
   const rowData = extractRowData_(item);
   if (!rowData || typeof rowData !== 'object') return item;
+
+  enrichEditionShapeForRowData_(rowData);
 
   const work = bookCodeLookupOrCreateWork_(ss, rowData, runtime || createBookCodeRuntime_(ss));
   const workId = bookCodeWorkId4_(work && work.id);
@@ -4453,7 +4494,12 @@ function writeRows_(sheet, lastColumn, targetRows, rows, textColumnIndexes, urlL
 }
 
 function normalizeHeader_(value) {
-  return String(value || '').trim();
+  return String(value || '')
+    .trim()
+    .replace(/[（]/g, '(')
+    .replace(/[）]/g, ')')
+    .replace(/[［【]/g, '[')
+    .replace(/[］】]/g, ']');
 }
 
 function toCellValue_(value) {
