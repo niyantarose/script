@@ -18,13 +18,11 @@ function チェックを入れた行を商品マスタへ登録(){
     const rows = hachu.getRange(base, 1, n, hachu.getLastColumn()).getValues();
     const checkVals = hachu.getRange(base, chkCol, n, 1).getValues();
 
-    const {seen} = _masterSeen_(master);
     const isChecked = v => v===true || v==='TRUE' || v==='true' || v===1;
 
-    const toAdd = [];   // [code, vendor, name, item, price, weight] ← No.は書かへん
+    const candidates = [];   // [code, vendor, name, item, price, weight] ← No.は書かへん
     const newChecks = checkVals.map(r => r.slice());
     const incomplete = [];
-    let add=0, up=0, wUp=0, skip=0;
 
     for (let i=0;i<n;i++){
       if (!isChecked(checkVals[i][0])) continue;
@@ -36,37 +34,19 @@ function チェックを入れた行を商品マスタへ登録(){
       const price  = rows[i][CFG.HACHU_PRICE  - 1];
       const weight = rows[i][CFG.HACHU_WEIGHT - 1];   // ★重さ
 
-      if (!code || !vendor){ incomplete.push(base + i); continue; }
+      if (!code){ incomplete.push(base + i); continue; }
 
-      const key = code + CFG.SEP + vendor;
-      if (!seen.has(key)){
-        toAdd.push([code, vendor, name, item, price, weight]);   // ★6列
-        seen.add(key);
-        add++;
-      } else {
-        let touched = false;
-        if (CFG.UPDATE_PRICE_IF_DIFF && price!=='' && price!==null){
-          if (_updateMasterFieldIfDiff_(master, code, vendor, CFG.M_PRICE, price)){ up++; touched = true; }
-        }
-        if (weight!=='' && weight!==null){                        // ★重さも更新
-          if (_updateMasterFieldIfDiff_(master, code, vendor, CFG.M_WEIGHT, weight)){ wUp++; touched = true; }
-        }
-        if (!touched) skip++;
-      }
+      candidates.push([code, vendor, name, item, price, weight]);   // ★6列
       newChecks[i][0] = false;
     }
 
-    if (toAdd.length){
-      const writeRow = _masterNextRow_(master);
-      master.getRange(writeRow, CFG.M_CODE, toAdd.length, 6)   // ★B〜Gの6列に拡大
-            .setValues(toAdd);
-    }
+    const result = 商品マスタ_候補行を商品コードで反映_(master, candidates);
 
     hachu.getRange(base, chkCol, n, 1).setValues(newChecks);
 
-    let msg = `チェック行を登録\n追加 ${add} / 価格更新 ${up} / 重さ更新 ${wUp} / 既存スキップ ${skip}`;
+    let msg = `チェック行を登録\n追加 ${result.added} / 更新行 ${result.updatedRows} / 更新セル ${result.updatedCells} / 統合 ${result.uniqueGroups}`;
     if (incomplete.length){
-      msg += `\n\n⚠ コードか業者が空で登録できんかった行(チェックは残してある):\n  ${incomplete.join(', ')} 行目`;
+      msg += `\n\n⚠ 商品コードが空で登録できんかった行(チェックは残してある):\n  ${incomplete.join(', ')} 行目`;
     }
     ui.alert(msg);
 
@@ -82,9 +62,9 @@ function _updateMasterFieldIfDiff_(master, code, vendor, fieldCol, value){
   const n = last - CFG.MASTER_HEADER_ROW;
   if (n <= 0) return false;
   const v = master.getRange(base, 1, n, master.getLastColumn()).getValues();
+  const targetKey = _masterPrimaryCodeKey_(code);
   for (let i=0;i<n;i++){
-    if (String(v[i][CFG.M_CODE-1]||'').trim()===code &&
-        String(v[i][CFG.M_VENDOR-1]||'').trim()===vendor){
+    if (_masterPrimaryCodeKey_(v[i][CFG.M_CODE-1]) === targetKey){
       if (v[i][fieldCol-1] !== value){
         master.getRange(base+i, fieldCol).setValue(value);
         return true;
@@ -104,4 +84,3 @@ function setupマスタ補完トリガー(){
   SpreadsheetApp.getActive().toast('5分おきのマスタ補完トリガーを仕込んだで');
 }
 function マスタ補完_定期(){ マスタ自動補完_(true); }   // silent
-

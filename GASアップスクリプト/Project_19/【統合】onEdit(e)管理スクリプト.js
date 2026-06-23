@@ -7,6 +7,32 @@ function onEdit(e) {
 
   try {
     // =====================================================
+    // 発注リスト大邱データ：F列に発注NOが入ったら一意の連番を付ける
+    // =====================================================
+    if (sheetName === DAEGU_CFG.HACHU_SRC) {
+      _autoFillArrivalDateFromQty_(sh, range, 4, 3, 6, 1, 6); // D入荷数 -> C入荷日 + Aチェック
+      autofillHachuByCfg_(e, DAEGU_HACHU_MASTER_CFG);
+      大邱発注_onEdit採番_(e);
+      大邱発注_WX自動計算_(sh, range);
+      return;
+    }
+
+    // =====================================================
+    // EMS大邱側：EMS番号/商品コード/数量/購入Noが変わったら韓国側残り数量を再計算
+    // =====================================================
+    if (sheetName === DAEGU_CFG.EMS_SRC) {
+      const editStartCol = range.getColumn();
+      const editEndCol = range.getLastColumn();
+      if (_rangeHitsAnyCol_(editStartCol, editEndCol, [9, 12, 13])) {
+        EMS大邱_QRS自動計算_(sh, range);
+      }
+      if (_rangeHitsAnyCol_(editStartCol, editEndCol, [4, 8, 9, 20])) {
+        大邱発注_チェックと残り数量を設置();
+      }
+      return;
+    }
+
+    // =====================================================
     // 発注シート側の処理
     // =====================================================
     if (sheetName === HATCHU_CFG.SHEET_NAME) {
@@ -14,6 +40,13 @@ function onEdit(e) {
       const editEndCol = range.getLastColumn();
       const editStartRow = range.getRow();
       const editNumRows = range.getNumRows();
+      const hitPurchaseNo = _rangeHitsCol_(editStartCol, editEndCol, HATCHU_GROUP_COL);
+
+      _autoFillArrivalDateFromQty_(sh, range, 5, 4, 6, HATCHU_CFG.COL_CHK, HATCHU_GROUP_COL); // E入荷数 -> D入荷日 + Aチェック
+
+      if (hitPurchaseNo) {
+        発注_onEdit購入No採番_(e);
+      }
 
       if (
         _rangeHitsCol_(editStartCol, editEndCol, CFG.HACHU_CODE) ||
@@ -28,6 +61,7 @@ function onEdit(e) {
         editStartCol === HATCHU_CFG.COL_CHK &&
         editEndCol === HATCHU_CFG.COL_CHK;
 
+      let refreshGroupBorders = hitPurchaseNo;
       if (!onlyCheckboxCol) {
         const startRow = Math.max(HATCHU_CFG.START_ROW, editStartRow - 2);
         const endRow = Math.min(
@@ -38,6 +72,7 @@ function onEdit(e) {
 
         if (numRows > 0) {
           HATCHU_processBordersAndCheckboxes_(sh, startRow, numRows);
+          refreshGroupBorders = true;
         }
       }
 
@@ -46,7 +81,7 @@ function onEdit(e) {
         applyKeshikomiColorForEditedRows_(sh, editStartRow, editNumRows);
       }
 
-      if (_rangeHitsCol_(editStartCol, editEndCol, HATCHU_GROUP_COL)) {
+      if (refreshGroupBorders) {
         発注_drawGroupBorders_(sh);
       }
 
@@ -66,16 +101,21 @@ function onEdit(e) {
     const isEmsList =
       typeof KESHIKOMI_COLOR_CFG !== 'undefined' &&
       sheetName === KESHIKOMI_COLOR_CFG.EMS_SHEET_NAME;
+    const hitShippingCount =
+      isEmsList &&
+      _rangeHitsAnyCol_(range.getColumn(), range.getLastColumn(), [6, 9, 10, 13]);
 
     if (!hitDate && !hitEms) {
-      if (isEmsList && typeof colorKeshikomiAllRows_ === 'function') {
-  SpreadsheetApp.flush();
+      if (hitShippingCount && typeof 発注_EMS発送数数式を一括修正 === 'function') {
+        発注_EMS発送数数式を一括修正();
+      } else if (isEmsList && typeof colorKeshikomiAllRows_ === 'function') {
+        SpreadsheetApp.flush();
 
-  const orderSheet = e.source.getSheetByName(KESHIKOMI_COLOR_CFG.SHEET_NAME);
-  if (orderSheet) {
-    colorKeshikomiAllRows_(orderSheet);
-  }
-}
+        const orderSheet = e.source.getSheetByName(KESHIKOMI_COLOR_CFG.SHEET_NAME);
+        if (orderSheet) {
+          colorKeshikomiAllRows_(orderSheet);
+        }
+      }
       return;
     }
 
@@ -103,7 +143,9 @@ function onEdit(e) {
         );
       }
 
-      if (isEmsList && typeof colorKeshikomiAllRows_ === 'function') {
+      if (hitShippingCount && typeof 発注_EMS発送数数式を一括修正 === 'function') {
+        発注_EMS発送数数式を一括修正();
+      } else if (isEmsList && typeof colorKeshikomiAllRows_ === 'function') {
         SpreadsheetApp.flush();
 
         const orderSheet = e.source.getSheetByName(KESHIKOMI_COLOR_CFG.SHEET_NAME);
@@ -128,6 +170,614 @@ function onEdit(e) {
 function _rangeHitsCol_(startCol, endCol, targetCol) {
   targetCol = Number(targetCol);
   return !!targetCol && startCol <= targetCol && targetCol <= endCol;
+}
+
+function _rangeHitsAnyCol_(startCol, endCol, targetCols) {
+  return targetCols.some(col => _rangeHitsCol_(startCol, endCol, col));
+}
+
+function EMS大邱_QRS自動計算_(sh, range) {
+  if (!sh || !range || sh.getName() !== DAEGU_CFG.EMS_SRC) return 0;
+  const rawEndRow = range.getLastRow();
+  if (rawEndRow < 3) return 0;
+  const startRow = Math.max(3, range.getRow());
+  return EMS大邱_QRS行範囲を再計算_(sh, startRow, rawEndRow - startRow + 1);
+}
+
+function EMS大邱_QRSを全体再計算() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(DAEGU_CFG.EMS_SRC);
+  if (!sh) {
+    SpreadsheetApp.getUi().alert('「' + DAEGU_CFG.EMS_SRC + '」が見つかりません。');
+    return;
+  }
+
+  const lastRow = EMS大邱_QRS最終データ行_(sh);
+  if (lastRow < 3) {
+    ss.toast('EMS大邱作業データ: 再計算対象がありません。');
+    return 0;
+  }
+
+  const count = EMS大邱_QRS行範囲を再計算_(sh, 3, lastRow - 2);
+  ss.toast('EMS大邱 N/Q/R/Sを再計算しました: ' + count + '行');
+  return count;
+}
+
+function EMS大邱_NQRSを全体再計算() {
+  return EMS大邱_QRSを全体再計算();
+}
+
+function EMS大邱_QRS最終データ行_(sh) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 3) return 2;
+  const numRows = lastRow - 2;
+  const values = sh.getRange(3, 1, numRows, 20).getDisplayValues();
+  const checkIndexes = [0, 3, 7, 8, 11, 12, 19]; // A/D/H/I/L/M/T
+
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (checkIndexes.some(idx => String(values[i][idx] || '').trim() !== '')) {
+      return 3 + i;
+    }
+  }
+  return 2;
+}
+
+function EMS大邱_QRS行範囲を再計算_(sh, startRow, numRows) {
+  if (!sh || numRows <= 0) return 0;
+  const firstRow = Math.max(3, startRow);
+  const count = numRows - (firstRow - startRow);
+  if (count <= 0) return 0;
+
+  const rows = sh.getRange(firstRow, 1, count, 13).getDisplayValues();
+  const nValues = [];
+  const qrsValues = rows.map(row => {
+    const qty = EMS大邱_QRS数値_(row[8]);       // I 数量
+    const weight = EMS大邱_QRS数値_(row[11]);  // L weight(g)
+    const unitPrice = EMS大邱_QRS数値_(row[12]); // M Unit Price
+
+    const amountWon = (qty !== null && unitPrice !== null) ? unitPrice * qty : '';
+    const totalWeight = (qty !== null && weight !== null) ? qty * weight : '';
+    const billedPrice = (unitPrice !== null) ? unitPrice * 0.1 : '';
+    const billedAmount = (qty !== null && billedPrice !== '') ? billedPrice * qty : '';
+
+    nValues.push([amountWon]);
+    return [totalWeight, billedPrice, billedAmount];
+  });
+
+  sh.getRange(firstRow, 14, nValues.length, 1).setValues(nValues); // N Amount(Won)
+  sh.getRange(firstRow, 17, qrsValues.length, 3).setValues(qrsValues); // Q:R:S
+  return qrsValues.length;
+}
+
+function EMS大邱_QRS数値_(value) {
+  if (typeof value === 'number' && isFinite(value)) return value;
+  const text = String(value == null ? '' : value)
+    .normalize('NFKC')
+    .replace(/,/g, '')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/[^\d.+-]/g, '');
+  if (!text || text === '-' || text === '+' || text === '.' || text === '+.' || text === '-.') return null;
+  const num = Number(text);
+  return isFinite(num) ? num : null;
+}
+
+function 大邱発注_WX自動計算_(sh, range) {
+  if (!sh || !range || sh.getName() !== DAEGU_CFG.HACHU_SRC) return 0;
+
+  const sc = range.getColumn();
+  const ec = range.getLastColumn();
+  const editedW3 = range.getRow() <= 3 && range.getLastRow() >= 3 && sc <= 23 && ec >= 23;
+  if (editedW3) return 大邱発注_WXを全体再計算_シート_(sh, false);
+
+  if (_rangeHitsAnyCol_(sc, ec, [
+    6,  // F 発注NO
+    12, // L 数量
+    16, // P 価格
+    DAEGU_HACHU_MASTER_CFG.HACHU_CODE,
+    DAEGU_HACHU_MASTER_CFG.HACHU_VENDOR
+  ])) {
+    return 大邱発注_WXを全体再計算_シート_(sh, false);
+  }
+  return 0;
+}
+
+function 大邱発注_WXを全体再計算() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(DAEGU_CFG.HACHU_SRC);
+  if (!sh) {
+    SpreadsheetApp.getUi().alert('「' + DAEGU_CFG.HACHU_SRC + '」が見つかりません。');
+    return;
+  }
+  return 大邱発注_WXを全体再計算_シート_(sh, true);
+}
+
+function 大邱発注_QSWXを全体再計算() {
+  return 大邱発注_WXを全体再計算();
+}
+
+function 大邱発注_WXを全体再計算_シート_(sh, notify) {
+  const lastRow = 大邱発注_WX最終データ行_(sh);
+  if (lastRow < 6) {
+    if (notify) SpreadsheetApp.getActive().toast('発注リスト大邱データ: 再計算対象がありません。');
+    return 0;
+  }
+
+  const count = 大邱発注_WX行範囲を再計算_(sh, 6, lastRow - 5);
+  if (notify) SpreadsheetApp.getActive().toast('発注リスト大邱データ Q/S/W/Xを再計算しました: ' + count + '行');
+  return count;
+}
+
+function 大邱発注_WX最終データ行_(sh) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 6) return 5;
+  const numRows = lastRow - 5;
+  const values = sh.getRange(6, 1, numRows, 24).getDisplayValues();
+  const checkIndexes = [5, 10, 11, 15, 16, 18, 22, 23]; // F/K/L/P/Q/S/W/X
+
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (checkIndexes.some(idx => String(values[i][idx] || '').trim() !== '')) {
+      return 6 + i;
+    }
+  }
+  return 5;
+}
+
+function 大邱発注_WX行範囲を再計算_(sh, startRow, numRows) {
+  if (!sh || numRows <= 0) return 0;
+  const firstRow = Math.max(6, startRow);
+  const count = numRows - (firstRow - startRow);
+  if (count <= 0) return 0;
+
+  const rate = 大邱発注_WX数値_(sh.getRange(3, 23).getValue()); // W3
+  const rows = sh.getRange(firstRow, 1, count, 24).getDisplayValues();
+  const qValues = [];
+  const sValues = [];
+  const wxValues = [];
+  const calcRows = rows.map(row => {
+    const qty = 大邱発注_WX数値_(row[11]);   // L 数量
+    const price = 大邱発注_WX数値_(row[15]); // P 価格
+    const orderNo = row[5];                  // F 発注NO
+
+    const rowSubtotal = (qty !== null && price !== null) ? qty * price : '';
+    const billedPrice = (price !== null && rate !== null) ? price * rate : '';
+    const billedAmount = (billedPrice !== '' && qty !== null) ? billedPrice * qty : '';
+    const key = (typeof 大邱発注_カートグループキー_ === 'function')
+      ? 大邱発注_カートグループキー_(orderNo)
+      : '';
+
+    qValues.push([rowSubtotal]);
+    sValues.push(['']);
+    wxValues.push([billedPrice, billedAmount]);
+    return { key: key, subtotal: rowSubtotal };
+  });
+
+  let curKey = '';
+  let groupLast = -1;
+  let groupSum = 0;
+  let groupHasAmount = false;
+  const flushGroup = () => {
+    if (curKey && groupLast >= 0 && groupHasAmount) {
+      sValues[groupLast][0] = groupSum;
+    }
+  };
+
+  for (let i = 0; i < calcRows.length; i++) {
+    const row = calcRows[i];
+    if (!row.key) {
+      flushGroup();
+      curKey = '';
+      groupLast = -1;
+      groupSum = 0;
+      groupHasAmount = false;
+      continue;
+    }
+
+    if (row.key !== curKey) {
+      flushGroup();
+      curKey = row.key;
+      groupSum = 0;
+      groupHasAmount = false;
+    }
+
+    if (row.subtotal !== '') {
+      groupSum += row.subtotal;
+      groupHasAmount = true;
+    }
+    groupLast = i;
+  }
+  flushGroup();
+
+  sh.getRange(firstRow, 17, qValues.length, 1).setValues(qValues); // Q 小計
+  sh.getRange(firstRow, 19, sValues.length, 1).setValues(sValues); // S 支払金額
+  sh.getRange(firstRow, 23, wxValues.length, 2).setValues(wxValues); // W:X
+  return qValues.length;
+}
+
+function 大邱発注_WX数値_(value) {
+  if (typeof value === 'number' && isFinite(value)) return value;
+  const raw = String(value == null ? '' : value).normalize('NFKC');
+  const text = raw
+    .replace(/,/g, '')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/[^\d.+%-]/g, '');
+  if (!text || text === '-' || text === '+' || text === '.' || text === '+.' || text === '-.' || text === '%') return null;
+
+  const hasPercent = text.indexOf('%') >= 0;
+  const num = Number(text.replace(/%/g, ''));
+  if (!isFinite(num)) return null;
+  return hasPercent ? num / 100 : num;
+}
+
+function _autoFillArrivalDateFromQty_(sh, range, qtyCol, dateCol, startRow, checkboxCol, requiredValueCol) {
+  if (!_rangeHitsCol_(range.getColumn(), range.getLastColumn(), qtyCol)) return;
+
+  const firstRow = startRow;
+  const lastRow = Math.max(range.getLastRow(), sh.getLastRow());
+  if (lastRow < firstRow) return;
+
+  const numRows = lastRow - firstRow + 1;
+  const qtyVals = sh.getRange(firstRow, qtyCol, numRows, 1).getDisplayValues();
+  const dateRange = sh.getRange(firstRow, dateCol, numRows, 1);
+  const dateVals = dateRange.getValues();
+  const dateDisplayVals = dateRange.getDisplayValues();
+  const today = _todayOnly_();
+  let changed = false;
+
+  for (let i = 0; i < numRows; i++) {
+    const qty = String(qtyVals[i][0] || '').replace(/,/g, '').trim();
+    const hasDate = String(dateDisplayVals[i][0] || '').trim() !== '';
+    if (qty && qty !== '0' && !hasDate) {
+      dateVals[i][0] = today;
+      changed = true;
+    }
+  }
+
+  if (changed) dateRange.setValues(dateVals);
+  if (checkboxCol) {
+    _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol);
+  }
+}
+
+function _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol) {
+  const firstRow = Math.max(startRow, range.getRow());
+  const lastRow = Math.min(range.getLastRow(), sh.getLastRow());
+  if (lastRow < firstRow) return 0;
+
+  const numRows = lastRow - firstRow + 1;
+  const qtyVals = sh.getRange(firstRow, qtyCol, numRows, 1).getDisplayValues();
+  const requiredVals = requiredValueCol
+    ? sh.getRange(firstRow, requiredValueCol, numRows, 1).getDisplayValues()
+    : null;
+  const checkRange = sh.getRange(firstRow, checkboxCol, numRows, 1);
+  const checkVals = checkRange.getValues();
+  const validations = checkRange.getDataValidations();
+  const checkboxRule = SpreadsheetApp.newDataValidation().requireCheckbox().build();
+  let validationChanged = false;
+  let valueChanged = false;
+  let checked = 0;
+
+  for (let i = 0; i < numRows; i++) {
+    const qty = String(qtyVals[i][0] || '').replace(/,/g, '').trim();
+    if (!qty || qty === '0') continue;
+
+    if (requiredVals && String(requiredVals[i][0] || '').trim() === '') continue;
+
+    const rule = validations[i][0];
+    if (!rule || rule.getCriteriaType() !== SpreadsheetApp.DataValidationCriteria.CHECKBOX) {
+      validations[i][0] = checkboxRule;
+      validationChanged = true;
+    }
+
+    if (checkVals[i][0] !== true) {
+      checkVals[i][0] = true;
+      valueChanged = true;
+      checked++;
+    }
+  }
+
+  if (validationChanged) checkRange.setDataValidations(validations);
+  if (valueChanged) checkRange.setValues(checkVals);
+  return checked;
+}
+
+function _todayOnly_() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+function 入荷数あり行_入荷日を補完() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const sh = ss.getActiveSheet();
+  const sheetName = sh.getName();
+  let cfg = null;
+
+  if (sheetName === DAEGU_CFG.HACHU_SRC) {
+    cfg = { label: DAEGU_CFG.HACHU_SRC, startRow: 6, qtyCol: 4, dateCol: 3 };
+  } else if (sheetName === CFG.HACHU_SHEET) {
+    cfg = { label: CFG.HACHU_SHEET, startRow: 6, qtyCol: 5, dateCol: 4 };
+  }
+
+  if (!cfg) {
+    ui.alert('発注リスト大邱データ、または発注シートで実行してください。');
+    return;
+  }
+
+  const count = _fillArrivalDatesForAllQtyRows_(sh, cfg.qtyCol, cfg.dateCol, cfg.startRow);
+  ss.toast(cfg.label + ': 入荷日を補完しました ' + count + '行');
+}
+
+function _fillArrivalDatesForAllQtyRows_(sh, qtyCol, dateCol, startRow) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < startRow) return 0;
+
+  const numRows = lastRow - startRow + 1;
+  const qtyVals = sh.getRange(startRow, qtyCol, numRows, 1).getDisplayValues();
+  const dateRange = sh.getRange(startRow, dateCol, numRows, 1);
+  const dateVals = dateRange.getValues();
+  const dateDisplayVals = dateRange.getDisplayValues();
+  const today = _todayOnly_();
+  let changed = 0;
+
+  for (let i = 0; i < numRows; i++) {
+    const qty = String(qtyVals[i][0] || '').replace(/,/g, '').trim();
+    const hasDate = String(dateDisplayVals[i][0] || '').trim() !== '';
+    if (qty && qty !== '0' && !hasDate) {
+      dateVals[i][0] = today;
+      changed++;
+    }
+  }
+
+  if (changed) dateRange.setValues(dateVals);
+  return changed;
+}
+
+function チェック行_入荷数を発注数量にする() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const sh = ss.getActiveSheet();
+  const sheetName = sh.getName();
+  let cfg = null;
+
+  if (sheetName === DAEGU_CFG.HACHU_SRC) {
+    cfg = {
+      label: DAEGU_CFG.HACHU_SRC,
+      startRow: 6,
+      checkCol: 1,
+      dateCol: 3,       // C 入荷日
+      arrivalQtyCol: 4, // D 入荷数
+      orderQtyCol: 12   // L 発注数量
+    };
+  } else if (sheetName === CFG.HACHU_SHEET) {
+    cfg = {
+      label: CFG.HACHU_SHEET,
+      startRow: 6,
+      checkCol: 1,
+      dateCol: 4,       // D 入荷日
+      arrivalQtyCol: 5, // E 入荷数
+      orderQtyCol: 13   // M 発注数量
+    };
+  }
+
+  if (!cfg) {
+    ui.alert('発注リスト大邱データ、または発注シートで実行してください。');
+    return;
+  }
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < cfg.startRow) {
+    ss.toast(cfg.label + ': 対象行がありません。');
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(2000)) {
+    ss.toast('他の処理が実行中です。少し待ってもう一回実行してください。');
+    return;
+  }
+
+  try {
+    const n = lastRow - cfg.startRow + 1;
+    const checkRange = sh.getRange(cfg.startRow, cfg.checkCol, n, 1);
+    const checks = checkRange.getValues();
+    const datesRange = sh.getRange(cfg.startRow, cfg.dateCol, n, 1);
+    const dates = datesRange.getValues();
+    const arrivalRange = sh.getRange(cfg.startRow, cfg.arrivalQtyCol, n, 1);
+    const arrivals = arrivalRange.getValues();
+    const orders = sh.getRange(cfg.startRow, cfg.orderQtyCol, n, 1).getValues();
+    const today = _todayOnly_();
+
+    let checked = 0;
+    let updated = 0;
+    let skippedNoQty = 0;
+
+    for (let i = 0; i < n; i++) {
+      if (checks[i][0] !== true) continue;
+      checked++;
+
+      const orderQty = orders[i][0];
+      const hasOrderQty = orderQty !== '' && orderQty !== null && typeof orderQty !== 'undefined';
+      if (!hasOrderQty) {
+        skippedNoQty++;
+        continue;
+      }
+
+      arrivals[i][0] = orderQty;
+      if (dates[i][0] === '' || dates[i][0] === null) {
+        dates[i][0] = today;
+      }
+      checks[i][0] = false;
+      updated++;
+    }
+
+    if (!checked) {
+      ss.toast(cfg.label + ': チェックされた行がありません。');
+      return;
+    }
+
+    arrivalRange.setValues(arrivals);
+    datesRange.setValues(dates);
+    checkRange.setValues(checks);
+    SpreadsheetApp.flush();
+    const filledDates = _fillArrivalDatesForAllQtyRows_(sh, cfg.arrivalQtyCol, cfg.dateCol, cfg.startRow);
+
+    if (sheetName === DAEGU_CFG.HACHU_SRC && typeof 大邱発注_チェックと残り数量を設置 === 'function') {
+      大邱発注_チェックと残り数量を設置();
+    } else if (sheetName === CFG.HACHU_SHEET && typeof colorKeshikomiAllRows_ === 'function') {
+      colorKeshikomiAllRows_(sh);
+    }
+
+    ss.toast(cfg.label + ': 入荷数を発注数量にしました ' + updated + '行 / 入荷日補完 ' + filledDates + '行 / 数量なしスキップ ' + skippedNoQty + '行');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function autoRefreshShippingCountsOnChange(e) {
+  const changeType = String((e && e.changeType) || '');
+  if (changeType === 'EDIT' || changeType === 'FORMAT') return;
+
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getActiveSheet();
+  const sheetName = sh ? sh.getName() : '';
+  const targetSheets = [
+    DAEGU_CFG.HACHU_SRC,
+    DAEGU_CFG.EMS_SRC,
+    DAEGU_CFG.HACHU_DST,
+    DAEGU_CFG.EMS_DST
+  ];
+  if (sheetName && targetSheets.indexOf(sheetName) < 0) return;
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(1000)) return;
+  try {
+    if (typeof 大邱発注_チェックと残り数量を設置 === 'function') {
+      大邱発注_チェックと残り数量を設置();
+    }
+    if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
+      発注_EMS発送数数式を一括修正();
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function 発送数自動再計算トリガーを設置() {
+  const ss = SpreadsheetApp.getActive();
+  const handler = 'autoRefreshShippingCountsOnChange';
+  let deleted = 0;
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === handler) {
+      ScriptApp.deleteTrigger(trigger);
+      deleted++;
+    }
+  });
+  ScriptApp.newTrigger(handler).forSpreadsheet(ss).onChange().create();
+  ss.toast('発送数の自動再計算トリガーを設置しました。旧トリガー削除: ' + deleted + '件');
+}
+
+function 発注_購入No情報_(value) {
+  if (typeof 大邱発注_発注No情報_ === 'function') {
+    return 大邱発注_発注No情報_(value);
+  }
+  const raw = String(value || '')
+    .trim()
+    .replace(/[＿]/g, '_')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/_+/g, '_');
+  if (!raw || /発注NO|OrderNo|DorderDate/i.test(raw)) return null;
+
+  const m = raw.match(/^(.+\d{6,8})_([^_]+)(?:_(\d+)(?:_\d+)*)?$/);
+  if (m) {
+    const seq = Number(m[3]) || 0;
+    const base = m[1] + '_' + m[2];
+    return { base: base, seq: seq, numbered: seq > 0, normalized: seq > 0 ? base + '_' + seq : base };
+  }
+  return { base: raw.replace(/_+$/, ''), seq: 0, numbered: false, normalized: raw.replace(/_+$/, '') };
+}
+
+function 発注_連番管理_() {
+  if (typeof 大邱発注_連番管理_ === 'function') {
+    return 大邱発注_連番管理_();
+  }
+  const used = {};
+  const next = {};
+  const has = (base, seq) => !!(used[base] && used[base][seq]);
+  const reserve = (base, seq) => {
+    if (!base || !seq) return;
+    if (!used[base]) used[base] = {};
+    used[base][seq] = true;
+    if (!next[base] || next[base] <= seq) next[base] = seq + 1;
+  };
+  const takeNext = base => {
+    if (!next[base]) next[base] = 1;
+    while (has(base, next[base])) next[base]++;
+    const seq = next[base];
+    reserve(base, seq);
+    return seq;
+  };
+  return {
+    reserve: reserve,
+    assign: info => {
+      if (info.numbered && !has(info.base, info.seq)) {
+        reserve(info.base, info.seq);
+        return info.seq;
+      }
+      return takeNext(info.base);
+    }
+  };
+}
+
+function 発注_onEdit購入No採番_(e) {
+  if (!e || !e.range) return;
+
+  const col = HATCHU_GROUP_COL; // G列 購入No
+  const sc = e.range.getColumn();
+  const ec = e.range.getLastColumn();
+  if (sc > col || ec < col) return;
+
+  const sh = e.range.getSheet();
+  const editStart = Math.max(HATCHU_CFG.START_ROW, e.range.getRow());
+  const editEnd = Math.max(editStart - 1, e.range.getLastRow());
+  if (editEnd < HATCHU_CFG.START_ROW) return;
+
+  const numRows = editEnd - editStart + 1;
+  if (numRows <= 0) return;
+
+  const cells = sh.getRange(editStart, col, numRows, 1);
+  const vals = cells.getValues();
+  const tracker = 発注_連番管理_();
+  const lastRow = sh.getLastRow();
+  if (lastRow < HATCHU_CFG.START_ROW) return;
+
+  const allVals = sh.getRange(HATCHU_CFG.START_ROW, col, lastRow - HATCHU_CFG.START_ROW + 1, 1).getValues();
+  for (let i = 0; i < allVals.length; i++) {
+    const rowNo = HATCHU_CFG.START_ROW + i;
+    if (editStart <= rowNo && rowNo <= editEnd) continue;
+
+    const info = 発注_購入No情報_(allVals[i][0]);
+    if (!info) continue;
+    if (info.numbered) {
+      tracker.reserve(info.base, info.seq);
+    } else {
+      tracker.reserve(info.base, 1);
+    }
+  }
+
+  let changed = false;
+  for (let i = 0; i < vals.length; i++) {
+    const info = 発注_購入No情報_(vals[i][0]);
+    if (!info) continue;
+
+    const seq = tracker.assign(info);
+    const fixed = info.base + '_' + seq;
+    if (String(vals[i][0] || '').trim() !== fixed) {
+      vals[i][0] = fixed;
+      changed = true;
+    }
+  }
+
+  if (changed) cells.setValues(vals);
 }
 // =====================================================
 // 発注シート：チェックボックスと罫線の一括高速処理ロジック
@@ -246,6 +896,17 @@ const CFG = {
   SEP: '│'
 };
 
+const DAEGU_HACHU_MASTER_CFG = {
+  HACHU_SHEET: '発注リスト大邱データ',
+  HACHU_HEADER_ROW: 5,
+  HACHU_CODE: 11,    // K列 商品コード
+  HACHU_VENDOR: 8,   // H列 業者
+  HACHU_NAME: 9,     // I列 商品名
+  HACHU_ITEM: 14,    // N列 品目
+  HACHU_WEIGHT: 15,  // O列 重さ
+  HACHU_PRICE: 16    // P列 価格
+};
+
 /************************************************************
  * 商品マスタ 既存データ補完設定
  * 今は「重さ」だけ。
@@ -276,9 +937,11 @@ const MASTER_SYNC_FIELD_RULES = [
 
 /**
  * 発注シートの既存データから商品マスタを一括補完・更新する
- * キー：商品コード + 業者
+ * 現在は発注リスト大邱データを正として、商品コードだけで商品マスタを更新する
  */
 function 商品マスタ_既存データを発注から補完更新(silent) {
+  return 商品マスタ_発注大邱から更新(silent);
+
   const ss = SpreadsheetApp.getActive();
   const cfg = (typeof CFG !== 'undefined') ? CFG : {};
 
@@ -555,86 +1218,318 @@ function _補完_normCell_(v) {
 
 function _masterMap(){
   const sh=SpreadsheetApp.getActive().getSheetByName(CFG.MASTER_SHEET), last=sh.getLastRow();
-  const info={}, byKey={}, byKeyW={}, byCode={};
-  if(last<=CFG.MASTER_HEADER_ROW) return {info,byKey,byKeyW,byCode};
+  const info={}, byKey={}, byKeyW={}, byCode={}, bestByCode={};
+  if(last<=CFG.MASTER_HEADER_ROW) return {info,byKey,byKeyW,byCode,bestByCode};
   const n=last-CFG.MASTER_HEADER_ROW, base=CFG.MASTER_HEADER_ROW+1;
   const v=sh.getRange(base,1,n,sh.getLastColumn()).getValues();
-  for(const r of v){
-    const c=String(r[CFG.M_CODE-1]).trim(); if(!c) continue;
-    const nm=r[CFG.M_NAME-1], it=r[CFG.M_ITEM-1];
-    const ve=String(r[CFG.M_VENDOR-1]).trim(), p=r[CFG.M_PRICE-1];
-    const w=r[CFG.M_WEIGHT-1];                                  // ★重さ
-    if(!info[c]) info[c]={name:nm,item:it};
-    byKey[c+CFG.SEP+ve]=p;
-    byKeyW[c+CFG.SEP+ve]=w;                                     // ★重さ用の対応表
-    (byCode[c]=byCode[c]||[]).push({vendor:ve, price:p, weight:w});
+  for(let i=0;i<v.length;i++){
+    const r=v[i];
+    const rawCode=String(r[CFG.M_CODE-1]||'').trim(); if(!rawCode) continue;
+    const rec={
+      code: rawCode,
+      vendor: String(r[CFG.M_VENDOR-1]||'').trim(),
+      name: r[CFG.M_NAME-1],
+      item: r[CFG.M_ITEM-1],
+      price: r[CFG.M_PRICE-1],
+      weight: r[CFG.M_WEIGHT-1],
+      row: base+i
+    };
+    const keys=_masterCodeKeys_(rawCode);
+    keys.forEach(c=>{
+      bestByCode[c]=_masterMergeLatestRecord_(bestByCode[c], rec);
+      if(_masterHasValue_(rec.price) || !(c in byKey)) byKey[c]=rec.price;
+      if(_masterHasValue_(rec.weight) || !(c in byKeyW)) byKeyW[c]=rec.weight;
+    });
   }
-  return {info,byKey,byKeyW,byCode};
+
+  Object.keys(bestByCode).forEach(c=>{
+    const rec=bestByCode[c];
+    info[c]={name: rec.name || '', item: rec.item || ''};
+    byCode[c]=[rec];
+  });
+  return {info,byKey,byKeyW,byCode,bestByCode};
+}
+
+function _masterCodeKeys_(code) {
+  const keys = [];
+  const raw = String(code || '').trim();
+  if (raw) keys.push(raw);
+  if (typeof normCode_ === 'function') {
+    const norm = normCode_(raw);
+    if (norm && keys.indexOf(norm) < 0) keys.push(norm);
+  }
+  return keys;
+}
+
+function _masterPrimaryCodeKey_(code) {
+  const keys = _masterCodeKeys_(code);
+  return keys.length ? keys[keys.length - 1] : '';
+}
+
+function _masterHasValue_(value) {
+  return value !== '' && value !== null && typeof value !== 'undefined' && String(value).trim() !== '';
+}
+
+function _masterMergeLatestRecord_(oldRec, newRec) {
+  const rec = oldRec ? Object.assign({}, oldRec) : { code: newRec.code };
+  ['vendor', 'name', 'item', 'price', 'weight'].forEach(field => {
+    if (_masterHasValue_(newRec[field])) rec[field] = newRec[field];
+  });
+  rec.row = newRec.row;
+  return rec;
+}
+
+function _masterGetByCode_(map, code) {
+  const primary = _masterPrimaryCodeKey_(code);
+  if (primary && map[primary] !== undefined) return map[primary];
+  const keys = _masterCodeKeys_(code);
+  for (let i=0;i<keys.length;i++) {
+    if (map[keys[i]] !== undefined) return map[keys[i]];
+  }
+  return undefined;
+}
+
+function _masterGetVendorValue_(map, code, vendor) {
+  const primary = _masterPrimaryCodeKey_(code);
+  if (primary && map[primary] !== undefined) return map[primary];
+  const keys = _masterCodeKeys_(code);
+  for (let i=0;i<keys.length;i++) {
+    if (map[keys[i]] !== undefined) return map[keys[i]];
+    const key = keys[i] + CFG.SEP + String(vendor || '').trim();
+    if (map[key] !== undefined) return map[key];
+  }
+  return undefined;
+}
+
+function 商品マスタ_発注大邱から更新(silent) {
+  return 商品マスタ_発注ソースから更新_(DAEGU_HACHU_MASTER_CFG, '発注リスト大邱データ', silent);
+}
+
+function 商品マスタ_発注ソースから更新_(sourceCfg, sourceLabel, silent) {
+  const ss = SpreadsheetApp.getActive();
+  const source = ss.getSheetByName(sourceCfg.HACHU_SHEET);
+  const master = ss.getSheetByName(CFG.MASTER_SHEET);
+  const say = msg => { if (silent) Logger.log(msg); else SpreadsheetApp.getUi().alert(msg); };
+
+  if (!source) {
+    say(sourceLabel + 'シートが見つからんで');
+    return;
+  }
+  if (!master) {
+    say('商品マスタシートが見つからんで');
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(15000)) {
+    say('今ほかの処理が動いてるみたい。少し待ってもう一回。');
+    return;
+  }
+
+  try {
+    SpreadsheetApp.flush();
+
+    const sourceStart = sourceCfg.HACHU_HEADER_ROW + 1;
+    const sourceLast = source.getLastRow();
+    if (sourceLast < sourceStart) {
+      say(sourceLabel + 'にデータが無いで');
+      return;
+    }
+
+    const sourceWidth = Math.max(
+      sourceCfg.HACHU_CODE,
+      sourceCfg.HACHU_VENDOR,
+      sourceCfg.HACHU_NAME,
+      sourceCfg.HACHU_ITEM,
+      sourceCfg.HACHU_PRICE,
+      sourceCfg.HACHU_WEIGHT || 0
+    );
+    const sourceValues = source
+      .getRange(sourceStart, 1, sourceLast - sourceStart + 1, sourceWidth)
+      .getValues();
+
+    const sourceByCode = {};
+    for (let i = 0; i < sourceValues.length; i++) {
+      const r = sourceValues[i];
+      const code = String(r[sourceCfg.HACHU_CODE - 1] || '').trim();
+      if (!code || /^(商品コード|code)$/i.test(code)) continue;
+
+      const rec = {
+        code,
+        vendor: String(r[sourceCfg.HACHU_VENDOR - 1] || '').trim(),
+        name: r[sourceCfg.HACHU_NAME - 1],
+        item: r[sourceCfg.HACHU_ITEM - 1],
+        price: r[sourceCfg.HACHU_PRICE - 1],
+        weight: sourceCfg.HACHU_WEIGHT ? r[sourceCfg.HACHU_WEIGHT - 1] : '',
+        row: sourceStart + i
+      };
+
+      const hasData = ['vendor', 'name', 'item', 'price', 'weight']
+        .some(field => _masterHasValue_(rec[field]));
+      if (!hasData) continue;
+
+      const key = _masterPrimaryCodeKey_(code);
+      if (!key) continue;
+      sourceByCode[key] = _masterMergeLatestRecord_(sourceByCode[key], rec);
+      sourceByCode[key].code = code;
+    }
+
+    const sourceRecords = Object.keys(sourceByCode)
+      .map(key => sourceByCode[key])
+      .sort((a, b) => (a.row || 0) - (b.row || 0));
+
+    if (sourceRecords.length === 0) {
+      say(sourceLabel + 'に商品マスタへ反映できる商品コードが無いで');
+      return;
+    }
+
+    const mStart = CFG.MASTER_HEADER_ROW + 1;
+    const mLast = master.getLastRow();
+    const mRows = Math.max(0, mLast - CFG.MASTER_HEADER_ROW);
+    const masterByCode = {};
+    let masterValues = [];
+
+    if (mRows > 0) {
+      masterValues = master.getRange(mStart, CFG.M_CODE, mRows, 6).getValues();
+      for (let i = 0; i < masterValues.length; i++) {
+        const code = String(masterValues[i][0] || '').trim();
+        const key = _masterPrimaryCodeKey_(code);
+        if (key) masterByCode[key] = { offset: i, row: mStart + i };
+      }
+    }
+
+    const fields = [
+      { name: 'code', index: 0 },
+      { name: 'vendor', index: 1 },
+      { name: 'name', index: 2 },
+      { name: 'item', index: 3 },
+      { name: 'price', index: 4 },
+      { name: 'weight', index: 5 }
+    ];
+
+    const toAdd = [];
+    let matched = 0;
+    let updatedRows = 0;
+    let updatedCells = 0;
+
+    sourceRecords.forEach(rec => {
+      const key = _masterPrimaryCodeKey_(rec.code);
+      const existing = masterByCode[key];
+
+      if (!existing) {
+        toAdd.push([
+          rec.code,
+          rec.vendor || '',
+          _masterHasValue_(rec.name) ? rec.name : '',
+          _masterHasValue_(rec.item) ? rec.item : '',
+          _masterHasValue_(rec.price) ? rec.price : '',
+          _masterHasValue_(rec.weight) ? rec.weight : ''
+        ]);
+        masterByCode[key] = { offset: -1, row: -1 };
+        return;
+      }
+
+      matched++;
+      let rowChanged = false;
+      const row = masterValues[existing.offset];
+
+      fields.forEach(field => {
+        const nextValue = rec[field.name];
+        if (!_masterHasValue_(nextValue)) return;
+
+        const currentText = String(row[field.index] ?? '').trim();
+        const nextText = String(nextValue ?? '').trim();
+        if (currentText === nextText) return;
+
+        row[field.index] = nextValue;
+        updatedCells++;
+        rowChanged = true;
+      });
+
+      if (rowChanged) updatedRows++;
+    });
+
+    if (mRows > 0 && updatedCells > 0) {
+      master.getRange(mStart, CFG.M_CODE, mRows, 6).setValues(masterValues);
+    }
+
+    if (toAdd.length > 0) {
+      const writeRow = Math.max(master.getLastRow() + 1, mStart);
+      master.getRange(writeRow, CFG.M_CODE, toAdd.length, 6).setValues(toAdd);
+    }
+
+    SpreadsheetApp.flush();
+
+    const uniqueResult = (typeof 商品マスタ_商品コード一意化_実行_ === 'function')
+      ? 商品マスタ_商品コード一意化_実行_(master)
+      : { groups: 0, deleted: 0 };
+
+    say(
+      '商品マスタを' + sourceLabel + 'から更新したで\n\n' +
+      `大邱側の商品コード：${sourceRecords.length}件\n` +
+      `商品マスタ既存一致：${matched}件\n` +
+      `追加：${toAdd.length}件\n` +
+      `更新行：${updatedRows}件\n` +
+      `更新セル：${updatedCells}件\n` +
+      `商品コード統合：${uniqueResult.groups}件\n` +
+      `重複削除：${uniqueResult.deleted}行\n\n` +
+      '空欄の項目は商品マスタ側の値を残しています。'
+    );
+
+    return {
+      source: sourceRecords.length,
+      matched,
+      added: toAdd.length,
+      updatedRows,
+      updatedCells,
+      uniqueGroups: uniqueResult.groups,
+      deleted: uniqueResult.deleted
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function autofillHachu(e){
-  const sh=e.range.getSheet(); if(sh.getName()!==CFG.HACHU_SHEET) return;
-  const row=e.range.getRow(); if(row<=CFG.HACHU_HEADER_ROW) return;
-  const col=e.range.getColumn(); if(col!==CFG.HACHU_CODE && col!==CFG.HACHU_VENDOR) return;
+  autofillHachuByCfg_(e, CFG);
+}
 
-  const code=String(sh.getRange(row,CFG.HACHU_CODE).getValue()).trim(); if(!code) return;
-  let vendor=String(sh.getRange(row,CFG.HACHU_VENDOR).getValue()).trim();
+function autofillHachuByCfg_(e, sheetCfg){
+  if(!e || !e.range || !sheetCfg) return;
+  const sh=e.range.getSheet(); if(sh.getName()!==sheetCfg.HACHU_SHEET) return;
+  const startCol=e.range.getColumn(), endCol=e.range.getLastColumn();
+  if(!_rangeHitsAnyCol_(startCol,endCol,[sheetCfg.HACHU_CODE,sheetCfg.HACHU_VENDOR])) return;
+  const firstRow=Math.max(sheetCfg.HACHU_HEADER_ROW+1,e.range.getRow());
+  const lastRow=e.range.getLastRow();
+  if(lastRow<firstRow) return;
+  const master=_masterMap();
+  for(let row=firstRow;row<=lastRow;row++){
+    const code=String(sh.getRange(row,sheetCfg.HACHU_CODE).getValue()).trim(); if(!code) continue;
+    let vendor=String(sh.getRange(row,sheetCfg.HACHU_VENDOR).getValue()).trim();
+    const rec=_masterGetByCode_(master.bestByCode, code);
+    if(!rec) continue;
 
-  const {info,byKey,byKeyW,byCode}=_masterMap();
+    if(_masterHasValue_(rec.name)) sh.getRange(row,sheetCfg.HACHU_NAME).setValue(rec.name);
+    if(_masterHasValue_(rec.item)) sh.getRange(row,sheetCfg.HACHU_ITEM).setValue(rec.item);
+    if(!vendor && _masterHasValue_(rec.vendor)){
+      vendor=String(rec.vendor || '').trim();
+      sh.getRange(row,sheetCfg.HACHU_VENDOR).setValue(vendor);
+    }
 
-  if(info[code]){
-    sh.getRange(row,CFG.HACHU_NAME).setValue(info[code].name);
-    sh.getRange(row,CFG.HACHU_ITEM).setValue(info[code].item);
-  }
-
-  let price=null, weight=null;
-  if(vendor && byKey[code+CFG.SEP+vendor]!==undefined){
-    price=byKey[code+CFG.SEP+vendor];
-    weight=byKeyW[code+CFG.SEP+vendor];                         // ★
-  } else if(byCode[code] && byCode[code].length===1){
-    if(!vendor){ vendor=byCode[code][0].vendor; sh.getRange(row,CFG.HACHU_VENDOR).setValue(vendor); }
-    price=byCode[code][0].price;
-    weight=byCode[code][0].weight;                              // ★
-  }
-  if(price!==null && price!=='') sh.getRange(row,CFG.HACHU_PRICE).setValue(price);
-  if(weight!==null && weight!=='' && typeof weight!=='undefined'){
-    sh.getRange(row,CFG.HACHU_WEIGHT).setValue(weight);         // ★P列に重さ
+    if(_masterHasValue_(rec.price)) sh.getRange(row,sheetCfg.HACHU_PRICE).setValue(rec.price);
+    if(_masterHasValue_(rec.weight)) sh.getRange(row,sheetCfg.HACHU_WEIGHT).setValue(rec.weight);
   }
 }
 
 function registerToMaster(){
-  const ss=SpreadsheetApp.getActive(), hachu=ss.getSheetByName(CFG.HACHU_SHEET), ui=SpreadsheetApp.getUi();
-  const last=hachu.getLastRow(); if(last<=CFG.HACHU_HEADER_ROW){ui.alert('発注データが無いで');return;}
-  const n=last-CFG.HACHU_HEADER_ROW, c=x=>hachu.getRange(CFG.HACHU_HEADER_ROW+1,x,n,1).getValues().map(r=>r[0]);
-  const codes=c(CFG.HACHU_CODE), vendors=c(CFG.HACHU_VENDOR), names=c(CFG.HACHU_NAME), items=c(CFG.HACHU_ITEM), prices=c(CFG.HACHU_PRICE);
-  const master=ss.getSheetByName(CFG.MASTER_SHEET);
-  const {byKey}=_masterMap(); let add=0, up=0;
-
-  for(let i=0;i<n;i++){
-    const code=String(codes[i]).trim(); if(!code) continue;
-    const vendor=String(vendors[i]).trim();
-    const key=code+CFG.SEP+vendor;
-    if(byKey[key]===undefined){
-      const r=master.getLastRow()+1;
-      master.getRange(r,CFG.M_CODE).setValue(code);
-      master.getRange(r,CFG.M_NAME).setValue(names[i]);
-      master.getRange(r,CFG.M_ITEM).setValue(items[i]);
-      master.getRange(r,CFG.M_VENDOR).setValue(vendor);
-      master.getRange(r,CFG.M_PRICE).setValue(prices[i]);
-      if(CFG.M_NO) master.getRange(r,CFG.M_NO).setValue(r-CFG.MASTER_HEADER_ROW);
-      byKey[key]=prices[i]; add++;
-    } else if(CFG.UPDATE_PRICE_IF_DIFF && prices[i]!=='' && byKey[key]!==prices[i]){
-      _updateMasterPrice(master,code,vendor,prices[i]); byKey[key]=prices[i]; up++;
-    }
-  }
-  ui.alert(`登録完了\n商品マスタ 追加 ${add} / 価格更新 ${up}`);
+  return 商品マスタ_発注大邱から更新(false);
 }
 function _updateMasterPrice(master,code,vendor,price){
   const last=master.getLastRow(), n=last-CFG.MASTER_HEADER_ROW; if(n<=0) return;
   const base=CFG.MASTER_HEADER_ROW+1;
   const cs=master.getRange(base,CFG.M_CODE,n,1).getValues();
-  const vs=master.getRange(base,CFG.M_VENDOR,n,1).getValues();
-  for(let i=0;i<n;i++) if(String(cs[i][0]).trim()===code && String(vs[i][0]).trim()===vendor){
+  const targetKey = _masterPrimaryCodeKey_(code);
+  for(let i=0;i<n;i++) if(_masterPrimaryCodeKey_(cs[i][0])===targetKey){
     master.getRange(base+i,CFG.M_PRICE).setValue(price); return;
   }
 }
@@ -666,6 +1561,16 @@ function _masterNextRow_(master) {
 // グループの基準列を選ぶ:3=発注日(C) / 7=購入No(G)
 const HATCHU_GROUP_COL = 7;   // ← 購入Noで囲みたいなら 7 に変える
 
+function 発注_カートグループキー_(value) {
+  const info = 発注_購入No情報_(value);
+  if (info) return info.base;
+  return String(value || '')
+    .trim()
+    .replace(/[＿]/g, '_')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/_+/g, '_');
+}
+
 // 発注シート:基準列が同じ連続行を太枠で囲む(中の格子は残す)
 function 発注_drawGroupBorders_(sh) {
   const startRow = HATCHU_CFG.START_ROW;          // 7
@@ -676,7 +1581,7 @@ function 発注_drawGroupBorders_(sh) {
   const maxCol = Number(HATCHU_CFG.MAX_COL || HATCHU_CFG.BORDER_COLS || 28);
 
   const keys = sh.getRange(startRow, HATCHU_GROUP_COL, numRows, 1)
-                 .getDisplayValues().map(r => String(r[0] || '').trim());
+                 .getDisplayValues().map(r => 発注_カートグループキー_(r[0]));
 
   let gStart = null, cur = '';
   for (let i = 0; i <= numRows; i++) {
@@ -709,6 +1614,130 @@ function 発注_グループ罫線() {
   if (numRows > 0) HATCHU_processBordersAndCheckboxes_(sh, HATCHU_CFG.START_ROW, numRows);
   発注_drawGroupBorders_(sh);
   SpreadsheetApp.getActive().toast('グループの太枠を更新したで');
+}
+
+function 商品マスタ_候補行を商品コードで反映_(master, candidates) {
+  const sourceByCode = {};
+
+  candidates.forEach((row, idx) => {
+    const code = String(row[0] || '').trim();
+    const key = _masterPrimaryCodeKey_(code);
+    if (!key) return;
+
+    const rec = {
+      code,
+      vendor: row[1],
+      name: row[2],
+      item: row[3],
+      price: row[4],
+      weight: row[5],
+      row: idx + 1
+    };
+
+    const hasData = ['vendor', 'name', 'item', 'price', 'weight']
+      .some(field => _masterHasValue_(rec[field]));
+    if (!hasData) return;
+
+    sourceByCode[key] = _masterMergeLatestRecord_(sourceByCode[key], rec);
+    sourceByCode[key].code = code;
+  });
+
+  const sourceRecords = Object.keys(sourceByCode)
+    .map(key => sourceByCode[key])
+    .sort((a, b) => (a.row || 0) - (b.row || 0));
+
+  if (sourceRecords.length === 0) {
+    return { source: 0, matched: 0, added: 0, updatedRows: 0, updatedCells: 0, uniqueGroups: 0, deleted: 0 };
+  }
+
+  const mStart = CFG.MASTER_HEADER_ROW + 1;
+  const mRows = Math.max(0, master.getLastRow() - CFG.MASTER_HEADER_ROW);
+  const masterByCode = {};
+  let masterValues = [];
+
+  if (mRows > 0) {
+    masterValues = master.getRange(mStart, CFG.M_CODE, mRows, 6).getValues();
+    for (let i = 0; i < masterValues.length; i++) {
+      const key = _masterPrimaryCodeKey_(masterValues[i][0]);
+      if (key) masterByCode[key] = { offset: i, row: mStart + i };
+    }
+  }
+
+  const fields = [
+    { name: 'code', index: 0 },
+    { name: 'vendor', index: 1 },
+    { name: 'name', index: 2 },
+    { name: 'item', index: 3 },
+    { name: 'price', index: 4 },
+    { name: 'weight', index: 5 }
+  ];
+
+  const toAdd = [];
+  let matched = 0;
+  let updatedRows = 0;
+  let updatedCells = 0;
+
+  sourceRecords.forEach(rec => {
+    const key = _masterPrimaryCodeKey_(rec.code);
+    const existing = masterByCode[key];
+
+    if (!existing) {
+      toAdd.push([
+        rec.code,
+        _masterHasValue_(rec.vendor) ? rec.vendor : '',
+        _masterHasValue_(rec.name) ? rec.name : '',
+        _masterHasValue_(rec.item) ? rec.item : '',
+        _masterHasValue_(rec.price) ? rec.price : '',
+        _masterHasValue_(rec.weight) ? rec.weight : ''
+      ]);
+      masterByCode[key] = { offset: -1, row: -1 };
+      return;
+    }
+
+    matched++;
+    let rowChanged = false;
+    const row = masterValues[existing.offset];
+
+    fields.forEach(field => {
+      const nextValue = rec[field.name];
+      if (!_masterHasValue_(nextValue)) return;
+
+      const currentText = String(row[field.index] ?? '').trim();
+      const nextText = String(nextValue ?? '').trim();
+      if (currentText === nextText) return;
+
+      row[field.index] = nextValue;
+      updatedCells++;
+      rowChanged = true;
+    });
+
+    if (rowChanged) updatedRows++;
+  });
+
+  if (mRows > 0 && updatedCells > 0) {
+    master.getRange(mStart, CFG.M_CODE, mRows, 6).setValues(masterValues);
+  }
+
+  if (toAdd.length > 0) {
+    const writeRow = _masterNextRow_(master);
+    master.getRange(writeRow, CFG.M_CODE, toAdd.length, 6).setValues(toAdd);
+  }
+
+  SpreadsheetApp.flush();
+
+  const uniqueResult = (typeof 商品マスタ_商品コード一意化_実行_ === 'function')
+    ? 商品マスタ_商品コード一意化_実行_(master)
+    : { groups: 0, deleted: 0 };
+
+  return {
+    source: sourceRecords.length,
+    matched,
+    added: toAdd.length,
+    updatedRows,
+    updatedCells,
+    uniqueGroups: uniqueResult.groups,
+    deleted: uniqueResult.deleted
+  };
 }
 
 // onEditから呼ぶ用:監視列を触ったときだけ全体補完を起動
@@ -764,7 +1793,7 @@ function マスタ自動補完_編集範囲_(range, silent) {
       const price = r[CFG.HACHU_PRICE - 1];
       const weight = CFG.HACHU_WEIGHT ? r[CFG.HACHU_WEIGHT - 1] : '';
 
-      if (!code || !vendor || !name) continue;
+      if (!code || !name) continue;
       if (price === '' || price === null || typeof price === 'undefined') continue;
 
       candidates.push([code, vendor, name, item, price, weight]);
@@ -772,26 +1801,18 @@ function マスタ自動補完_編集範囲_(range, silent) {
 
     if (candidates.length === 0) return 0;
 
-    const { seen } = _masterSeen_(master);
-    const toAdd = [];
+    const result = 商品マスタ_候補行を商品コードで反映_(master, candidates);
+    const changed = result.added + result.updatedRows + result.uniqueGroups;
 
-    for (const row of candidates) {
-      const key = row[0] + CFG.SEP + row[1];
-      if (seen.has(key)) continue;
-      seen.add(key);
-      toAdd.push(row);
-    }
-
-    if (toAdd.length === 0) return 0;
-
-    const writeRow = _masterNextRow_(master);
-    master.getRange(writeRow, CFG.M_CODE, toAdd.length, 6).setValues(toAdd);
+    if (changed === 0) return 0;
 
     if (!silent) {
-      SpreadsheetApp.getActive().toast(`商品マスタに自動登録：${toAdd.length}件`);
+      SpreadsheetApp.getActive().toast(
+        `商品マスタ更新：追加 ${result.added} / 更新 ${result.updatedRows} / 統合 ${result.uniqueGroups}`
+      );
     }
 
-    return toAdd.length;
+    return changed;
   } finally {
     lock.releaseLock();
   }
@@ -808,8 +1829,6 @@ function マスタ自動補完_(silent) {
 
     if (!hachu || !master) return 0;
 
-    const { seen } = _masterSeen_(master);
-
     const hStart = CFG.HACHU_HEADER_ROW + 1;
     const hLast  = hachu.getLastRow();
     if (hLast < hStart) return 0;
@@ -820,7 +1839,7 @@ function マスタ自動補完_(silent) {
       .getRange(hStart, 1, hLast - hStart + 1, hachu.getLastColumn())
       .getValues();
 
-    const toAdd = []; // [code, vendor, name, item, price, weight]
+    const candidates = []; // [code, vendor, name, item, price, weight]
 
     for (const r of hv) {
       const code   = String(r[CFG.HACHU_CODE   - 1] || '').trim();
@@ -830,29 +1849,25 @@ function マスタ自動補完_(silent) {
       const price  = r[CFG.HACHU_PRICE  - 1];
       const weight = CFG.HACHU_WEIGHT ? r[CFG.HACHU_WEIGHT - 1] : '';
 
-      if (!code || !vendor || !name) continue;
+      if (!code || !name) continue;
       if (price === '' || price === null) continue;
 
-      const key = code + CFG.SEP + vendor;
-      if (seen.has(key)) continue;
-
-      seen.add(key);
-      toAdd.push([code, vendor, name, item, price, weight]);
+      candidates.push([code, vendor, name, item, price, weight]);
     }
 
-    if (toAdd.length === 0) return 0;
+    if (candidates.length === 0) return 0;
 
-    const writeRow = _masterNextRow_(master);
-
-    // B〜Gへ登録
-    master.getRange(writeRow, CFG.M_CODE, toAdd.length, 6)
-      .setValues(toAdd);
+    const result = 商品マスタ_候補行を商品コードで反映_(master, candidates);
+    const changed = result.added + result.updatedRows + result.uniqueGroups;
+    if (changed === 0) return 0;
 
     if (!silent) {
-      SpreadsheetApp.getActive().toast(`商品マスタに自動登録：${toAdd.length}件`);
+      SpreadsheetApp.getActive().toast(
+        `商品マスタ更新：追加 ${result.added} / 更新 ${result.updatedRows} / 統合 ${result.uniqueGroups}`
+      );
     }
 
-    return toAdd.length;
+    return changed;
 
   } finally {
     lock.releaseLock();
@@ -860,8 +1875,7 @@ function マスタ自動補完_(silent) {
 }
 
 function 商品マスタ_発注シートから今すぐ補完登録() {
-  const n = マスタ自動補完_(false);
-  SpreadsheetApp.getUi().alert(`商品マスタ補完完了：${n}件追加`);
+  return 商品マスタ_発注大邱から更新(false);
 }
 
 function _masterSeen_(master) {
@@ -879,17 +1893,18 @@ function _masterSeen_(master) {
 
   for (let i = 0; i < vals.length; i++) {
     const code = String(vals[i][CFG.M_CODE - 1] || '').trim();
-    const vendor = String(vals[i][CFG.M_VENDOR - 1] || '').trim();
+    const key = _masterPrimaryCodeKey_(code);
 
-    if (!code || !vendor) continue;
-
-    seen.add(code + CFG.SEP + vendor);
+    if (!key) continue;
+    seen.add(key);
   }
 
   return { seen };
 }
 
 function 商品マスタ_重さだけ発注から補完更新() {
+  return 商品マスタ_発注大邱から更新(false);
+
   const ss = SpreadsheetApp.getActive();
   const hachu = ss.getSheetByName(CFG.HACHU_SHEET);
   const master = ss.getSheetByName(CFG.MASTER_SHEET);
@@ -975,6 +1990,8 @@ function 商品マスタ_重さだけ発注から補完更新() {
 }
 
 function 商品マスタ_足りないデータだけ発注から補完(silent) {
+  return 商品マスタ_発注大邱から更新(silent);
+
   const ss = SpreadsheetApp.getActive();
   const hachu = ss.getSheetByName(CFG.HACHU_SHEET);
   const master = ss.getSheetByName(CFG.MASTER_SHEET);

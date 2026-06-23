@@ -9,7 +9,7 @@ function 発注_商品マスタから一括データ補完() {
   if (last < start) { ui.alert('発注データが無いで'); return; }
   const n = last - CFG.HACHU_HEADER_ROW;
 
-  const { info, byKey, byKeyW, byCode } = _masterMap();
+  const { bestByCode } = _masterMap();
 
   const get = c => hachu.getRange(start, c, n, 1).getValues();
   const codeCol   = get(CFG.HACHU_CODE);
@@ -25,30 +25,21 @@ function 発注_商品マスタから一括データ補完() {
   for (let i = 0; i < n; i++) {
     const code = String(codeCol[i][0] || '').trim();
     if (!code) continue;
-    if (!info[code] && !byCode[code]) { noMatch++; continue; }  // マスタに無いコード
+    const rec = _masterGetByCode_(bestByCode, code);
+    if (!rec) { noMatch++; continue; }  // マスタに無いコード
 
     let vendor = String(vendorCol[i][0] || '').trim();
-    if (!vendor && byCode[code] && byCode[code].length === 1) {
-      vendor = String(byCode[code][0].vendor || '').trim();
+    if (!vendor && _masterHasValue_(rec.vendor)) {
+      vendor = String(rec.vendor || '').trim();
       if (vendor) { vendorCol[i][0] = vendor; filled++; }
     }
 
-    if (info[code]) {
-      if (blank(nameCol[i][0]) && info[code].name !== '') { nameCol[i][0] = info[code].name; filled++; }
-      if (blank(itemCol[i][0]) && info[code].item !== '') { itemCol[i][0] = info[code].item; filled++; }
-    }
+    if (blank(nameCol[i][0]) && _masterHasValue_(rec.name)) { nameCol[i][0] = rec.name; filled++; }
+    if (blank(itemCol[i][0]) && _masterHasValue_(rec.item)) { itemCol[i][0] = rec.item; filled++; }
 
-    let price = null, weight = null;
-    if (vendor && byKey[code + CFG.SEP + vendor] !== undefined) {
-      price  = byKey[code + CFG.SEP + vendor];
-      weight = byKeyW[code + CFG.SEP + vendor];
-    } else if (byCode[code] && byCode[code].length === 1) {
-      price  = byCode[code][0].price;
-      weight = byCode[code][0].weight;
-    }
-    if (price  !== null && price  !== '' && blank(priceCol[i][0]))  { priceCol[i][0]  = price;  filled++; }
-    if (weight !== null && weight !== '' && typeof weight !== 'undefined' && blank(weightCol[i][0])) {
-      weightCol[i][0] = weight; filled++;
+    if (_masterHasValue_(rec.price) && blank(priceCol[i][0]))  { priceCol[i][0]  = rec.price;  filled++; }
+    if (_masterHasValue_(rec.weight) && blank(weightCol[i][0])) {
+      weightCol[i][0] = rec.weight; filled++;
     }
   }
 

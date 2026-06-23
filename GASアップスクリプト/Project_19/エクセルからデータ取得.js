@@ -2,18 +2,38 @@
 function Excel同期メニューを追加_() {
   SpreadsheetApp.getUi()
     .createMenu('手動運用')
+    .addItem('表示：最終データ行へ移動', '最終データ行へ移動')
+    .addSeparator()
+    .addItem('発注リスト大邱：一意No採番', '大邱発注_一意Noを採番')
+    .addItem('発注リスト大邱：グループ罫線', '大邱発注_グループ罫線')
+    .addItem('発注リスト大邱：チェック＆残り数量＆消込色を設置', '大邱発注_チェックと残り数量を設置')
+    .addItem('入荷数あり行：入荷日を補完', '入荷数あり行_入荷日を補完')
+    .addItem('チェック行：入荷数を発注数量にする', 'チェック行_入荷数を発注数量にする')
+    .addItem('発注リスト大邱：Q/S/W/Xを再計算', '大邱発注_WXを全体再計算')
+    .addItem('発注リスト大邱：チェック行をEMS大邱へ送る', '大邱発注_チェック行をEMS大邱へ送る')
+    .addItem('大邱：発注No枝番をEMS大邱まで一括修正', '大邱_発注EMS枝番を一括修正')
+    .addItem('大邱データに発注/EMSリストを合わせる', '大邱データに発注とEMSを合わせる')
+    .addItem('EMS大邱：購入Noを初回補完（発注大邱から）', 'EMS大邱_購入No初回補完')
+    .addItem('EMS大邱：N/Q/R/Sを再計算', 'EMS大邱_QRSを全体再計算')
+    .addItem('EMS大邱：EMS番号ごとの罫線を更新', 'EMS大邱_EMS番号ごとに罫線を更新')
     .addItem('発注リスト大邱データ → 発注', '大邱_発注へ転送')
     .addItem('EMS大邱作業データ → EMSリスト', '大邱_EMSリストへ転送')
+    .addItem('EMS番号：大邱/EMSリストを正規化', 'EMS番号_大邱とEMSリストを正規化')
+    .addItem('EMSリスト：大邱と箱数を照合', 'EMSリスト_大邱と箱数を照合')
+    .addItem('EMSリスト：大邱から不足行を確認して復元', 'EMSリスト_大邱から不足行を確認して復元')
+    .addItem('EMSリスト：発送日基準に並べ替え', 'EMSリスト_発送日基準に並べ替え')
+    .addItem('EMSリスト：品目を生データ化（関数を外す）', 'EMSリスト_品目を生データ化')
     .addItem('購入No補完（EMSリスト）', 'EMSリスト_購入No自動補完')
+    .addItem('発注：EMS発送数を再計算', '発注_EMS発送数数式を一括修正')
+    .addItem('発送数：自動再計算トリガーを設置', '発送数自動再計算トリガーを設置')
     .addSeparator()
     .addItem('EMSカレンダーシートを更新', 'buildEmsCalendarSheet')
     .addItem('GoogleカレンダーへEMSを反映', 'syncEmsCalendar')
     .addItem('EMSリスト：重複行を確認して削除', 'EMSリスト_重複行を確認して削除')
     .addItem('EMSリスト：下に混ざった古い行を確認して削除', 'EMSリスト_下に混ざった古い行を確認して削除')
     .addSeparator()
-    .addItem('商品マスタ：足りないデータだけ発注から補完', '商品マスタ_足りないデータだけ発注から補完')
-    .addItem('商品マスタ：既存データを発注から更新（重さ等）', '商品マスタ_既存データを発注から補完更新')
-    .addItem('商品マスタ：重複行を確認して削除', '商品マスタ_重複行を確認して削除')
+    .addItem('商品マスタ：発注大邱データから更新', '商品マスタ_発注大邱から更新')
+    .addItem('商品マスタ：商品コードを一意化', '商品マスタ_商品コードを一意化')
     .addSeparator()
     .addItem('旧Excel同期トリガーを削除', '旧Excel同期トリガーを削除')
     .addToUi();
@@ -48,10 +68,21 @@ function syncAll() {
 
 // ---- 正規化ヘルパー ----
 function normCode_(v) {
-  return String(v || '').trim().toUpperCase().replace(/_/g, '-');
+  return String(v || '')
+    .normalize('NFKC')
+    .replace(/[‐‑‒–—―−]/g, '-')
+    .replace(/[＿]/g, '_')
+    .replace(/[\s\u3000]+/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/_/g, '-')
+    .replace(/-+/g, '-');
 }
 function normTrack_(v) {
-  return String(v || '').replace(/[\s\u3000]/g, '').toUpperCase();
+  return String(v || '')
+    .normalize('NFKC')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 }
 
 function isBlank_(v) {
@@ -63,7 +94,7 @@ const EMS_CAL_CFG = {
   CALENDAR_NAME: 'EMS追跡',
   MARKER: '[EMS-SYNC]',  // スクリプトが作ったイベントの目印
   COLORS: {
-    '未着':       CalendarApp.EventColor.RED,
+    '未着':       CalendarApp.EventColor.BLUE,
     '輸送中':     CalendarApp.EventColor.ORANGE,
     '在庫反映済み': CalendarApp.EventColor.GREEN
   }
@@ -87,8 +118,9 @@ function syncEmsCalendar() {
     const r = vals[i];
     const track = normTrack_(r[12]);              // M列 EMS番号
     if (!track) continue;
-    const ship = r[2], arrive = r[4];             // C列 発送日 / E列 到着日
-    if (!(ship instanceof Date)) continue;        // 発送日が無い行はスキップ
+    const ship = _emsDateOnly_(r[2]);             // C列 発送日
+    const arrive = _emsDateOnly_(r[4]);           // E列 到着日
+    if (!ship) continue;                          // 発送日が無い行はスキップ
     const key = track + '|' + String(r[13]);      // Box No.込みでキー化
     if (!groups[key]) {
       groups[key] = {
@@ -99,6 +131,9 @@ function syncEmsCalendar() {
         status: String(r[6] || '').trim(),        // G列 ステータス
         items: [], qty: 0
       };
+    } else {
+      if (ship < groups[key].ship) groups[key].ship = ship;
+      if (arrive && (!groups[key].arrive || arrive > groups[key].arrive)) groups[key].arrive = arrive;
     }
     groups[key].items.push(`${r[8]} ×${r[9]}（${r[10]}）`); // 商品コード×数量（品目）
     groups[key].qty += Number(r[9]) || 0;
@@ -131,7 +166,9 @@ function syncEmsCalendar() {
       g.items.join('\n');
 
     const ev = cal.createAllDayEvent(title, start, end, { description: desc });
-    const color = (endBase < today)                        // ★到着済みはグレー
+    const status = String(g.status || '').trim();
+    const isInactive = status === '在庫反映済み' || (g.arrive instanceof Date && g.arrive < today);
+    const color = isInactive                               // ★到着済み/在庫反映済みはグレー
       ? CalendarApp.EventColor.GRAY
       : EMS_CAL_CFG.COLORS[g.status];
     if (color) ev.setColor(color);
@@ -146,36 +183,55 @@ function getEmsBoxGroups_(ss) {
   const sh = ss.getSheetByName('EMSリスト');
   if (!sh) return {};
   const vals = sh.getDataRange().getValues();
+  const displayVals = sh.getDataRange().getDisplayValues();
   let header = -1;
   for (let i = 0; i < vals.length; i++) {
     if (String(vals[i][0]).trim() === 'No.') { header = i; break; }
   }
   if (header < 0) return {};
 
-  // M列（EMS番号）の背景色＝EMSリストの箱グループ色を帯にも使う
-  const emsBgs = sh.getRange(1, 13, vals.length, 1).getBackgrounds();
+  // M:N列（EMS番号/Box No.）の背景色＝EMSリストの箱グループ色を帯にも使う
+  const emsBgs = sh.getRange(1, 13, vals.length, 2).getBackgrounds();
 
   const groups = {};
+  const trackArrivals = {};
   for (let i = header + 1; i < vals.length; i++) {
     const r = vals[i];
+    const d = displayVals[i];
     const track = normTrack_(r[12]);
     if (!track) continue;
-    const ship = r[2], arrive = r[4];
-    if (!(ship instanceof Date)) continue;
-    const key = track + '|' + String(r[13]);
+    const ship = _emsDateOnly_(r[2]) || _emsDateOnly_(d[2]);
+    const arrive = _emsDateOnly_(r[4]) || _emsDateOnly_(d[4]);
+    if (arrive && (!trackArrivals[track] || arrive > trackArrivals[track])) {
+      trackArrivals[track] = arrive;
+    }
+    if (!ship) continue;
+    const box = String(r[13] || d[13] || '1').trim();
+    const key = track + '|' + box;
+    const rowColor = _emsCalendarFirstUsefulBg_(emsBgs[i][1], emsBgs[i][0]);
     if (!groups[key]) {
       groups[key] = {
-        track: track, box: r[13], ship: ship,
+        track: track, box: box, ship: ship,
         arrive: (arrive instanceof Date) ? arrive : null,
         status: String(r[6] || '').trim(),
-        color: emsBgs[i][0],
+        color: rowColor,
         items: [], qty: 0
       };
+    } else {
+      if (ship < groups[key].ship) groups[key].ship = ship;
+      if (arrive && (!groups[key].arrive || arrive > groups[key].arrive)) groups[key].arrive = arrive;
+      if (_emsCalendarHasUsefulBg_(rowColor) && !_emsCalendarHasUsefulBg_(groups[key].color)) {
+        groups[key].color = rowColor;
+      }
     }
     groups[key].items.push(`${r[8]} ×${r[9]}（${r[10]}）`);
     groups[key].qty += Number(r[9]) || 0;
     if (String(r[6]).trim() === '未着') groups[key].status = '未着';
   }
+  Object.keys(groups).forEach(key => {
+    const g = groups[key];
+    if (!g.arrive && trackArrivals[g.track]) g.arrive = trackArrivals[g.track];
+  });
   return groups;
 }
 
@@ -189,13 +245,14 @@ function buildEmsCalendarSheet() {
   if (boxes.length === 0) { ss.toast('EMSデータがありません'); return; }
 
   const fmt = d => Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM-dd');
+  const fmtMd = d => Utilities.formatDate(d, 'Asia/Tokyo', 'M/d');
   const STYLE = {
-    '未着':         { bg: '#d93025', font: '#ffffff' },
+    '未着':         { bg: '#dadce0', font: '#3c4043' },
     '輸送中':       { bg: '#f29900', font: '#ffffff' },
     '在庫反映済み': { bg: '#b7dec7', font: '#3c4043' },
     'default':      { bg: '#dadce0', font: '#3c4043' }
   };
-  const PAST_STYLE = { bg: '#e8eaed', font: '#9aa0a6' }; // 到着済みのグレーアウト
+  const PAST_STYLE = { bg: '#e8eaed', font: '#9aa0a6' };
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
 
@@ -204,23 +261,25 @@ function buildEmsCalendarSheet() {
   const winEnd = new Date(today.getFullYear(), today.getMonth() + EMS_CAL_VIEW.MONTHS_FWD + 1, 0);
 
   // 箱の整形＋ウィンドウ外を除外
-  boxes.forEach(b => { b.end = b.arrive || b.ship; });
+  boxes.forEach(b => {
+    const status = String(b.status || '').trim();
+    b.statusNorm = status;
+    b.isOpenEnded = status === '未着' && !(b.arrive instanceof Date);
+    b.end = b.arrive || (b.isOpenEnded ? winEnd : b.ship);
+  });
   boxes = boxes.filter(b => b.end >= winStart && b.ship <= winEnd);
 
   boxes.forEach(b => {
-    b.isPast = b.end < today;
-    if (b.isPast) {
-      // 到着済みは今まで通りグレー
-      b.style = PAST_STYLE;
-    } else {
-      // EMSリストのM列の色をそのまま帯に使う（色が無ければステータス色にフォールバック）
-      const hasColor = b.color && String(b.color).toLowerCase() !== '#ffffff';
-      b.style = hasColor
-        ? { bg: b.color, font: '#3c4043' }
-        : (STYLE[b.status] || STYLE['default']);
-    }
+    const status = b.statusNorm || String(b.status || '').trim();
+    b.isPast = b.arrive instanceof Date && b.arrive < today;
+    const isInactive = status === '在庫反映済み' || status === '到着済み' || b.isPast;
+    const hasColor = _emsCalendarHasUsefulBg_(b.color);
+    b.style = isInactive
+      ? PAST_STYLE
+      : (hasColor ? { bg: b.color, font: '#3c4043' } : STYLE['default']);
+    const arriveText = b.arrive instanceof Date ? fmt(b.arrive) : (b.isOpenEnded ? '未定' : fmt(b.end));
     b.note = `【${b.status || '?'}】${b.track} Box${b.box}\n` +
-             `発送: ${fmt(b.ship)} → 到着: ${fmt(b.end)}\n` +
+             `発送: ${fmt(b.ship)} → 到着: ${arriveText}\n` +
              `${b.qty}点\n` + b.items.join('\n');
   });
 
@@ -236,9 +295,10 @@ function buildEmsCalendarSheet() {
 
   // 帯の長さに応じたラベル（ステータスは常に先頭に表示）
   const bandLabel = (b, days) => {
-    if (days >= 4) return `【${b.status || '?'}】${b.track} B${b.box}（${b.qty}点）`;
-    if (days >= 2) return `【${b.status || '?'}】${b.track} B${b.box}`;
-    return `【${b.status || '?'}】${b.track}`;
+    const arrive = b.arrive ? `${fmtMd(b.end)}着 ` : '';
+    if (days >= 4) return `【${b.status || '?'}】${arrive}${b.track} B${b.box}（${b.qty}点）`;
+    if (days >= 2) return `【${b.status || '?'}】${arrive}${b.track} B${b.box}`;
+    return `【${b.status || '?'}】${arrive}${b.track}`;
   };
 
   let sh = ss.getSheetByName('EMSカレンダー');
@@ -257,6 +317,7 @@ function buildEmsCalendarSheet() {
     const daysInMonth = new Date(y, mo + 1, 0).getDate();
     const monthEnd = new Date(y, mo, daysInMonth);
     const blockStart = row;
+    const todayHighlights = [];
 
     sh.getRange(row, 1, 1, 7).merge().setValue(`'${y}年${mo + 1}月`)
       .setFontSize(16).setFontWeight('bold')
@@ -281,14 +342,13 @@ function buildEmsCalendarSheet() {
       const numRow = row;
       const numRange = sh.getRange(numRow, 1, 1, 7);
       numRange.clearContent().setNumberFormat('0');
+      let todayCol = 0;
       for (let c = 0; c < 7; c++) {
         const d = new Date(weekStart); d.setDate(d.getDate() + c);
         const cell = sh.getRange(numRow, c + 1);
         if (d.getMonth() === mo) {
           cell.setValue(d.getDate());
-          if (fmt(d) === fmt(today)) {
-            cell.setBackground('#fde293').setFontWeight('bold').setFontColor('#3c4043');
-          }
+          if (_emsSameDate_(d, today)) todayCol = c + 1;
         } else {
           cell.clearContent().setBackground('#f8f9fa');
         }
@@ -297,6 +357,12 @@ function buildEmsCalendarSheet() {
         .setNumberFormat('0')
         .setFontSize(14)
         .setHorizontalAlignment('right').setFontColor('#70757a');
+      if (todayCol) {
+        sh.getRange(numRow, todayCol)
+          .setBackground('#fde293')
+          .setFontWeight('bold')
+          .setFontColor('#3c4043');
+      }
       sh.setRowHeight(numRow, 26);
       row++;
 
@@ -313,7 +379,14 @@ function buildEmsCalendarSheet() {
 
       const maxLane = segs.reduce((m, x) => Math.max(m, x.b.lane), -1);
       const laneRows = Math.max(maxLane + 1, 1);
-    for (let L = 0; L < laneRows; L++) sh.setRowHeight(row + L, 32);  // ★32に
+      for (let L = 0; L < laneRows; L++) sh.setRowHeight(row + L, 32);  // ★32に
+      if (todayCol) todayHighlights.push({ row: numRow, col: todayCol, rows: laneRows + 2 });
+
+      // 1日ごとの外枠。日付行＋帯行＋余白行を曜日列ごとに囲む。
+      for (let c = 1; c <= 7; c++) {
+        sh.getRange(numRow, c, laneRows + 2, 1)
+          .setBorder(true, true, true, true, null, null, '#d0d7de', SpreadsheetApp.BorderStyle.SOLID);
+      }
 
       segs.forEach(x => {
         const c1 = Math.floor((x.s - weekStart) / 86400000) + 1;
@@ -323,7 +396,7 @@ function buildEmsCalendarSheet() {
         if (days > 1) range.merge();
         range.setValue(bandLabel(x.b, days))
           .setBackground(x.b.style.bg).setFontColor(x.b.style.font)
-          .setFontSize(12)   // ★12ptに
+          .setFontSize(12)
           .setVerticalAlignment('middle')
           .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP)
           .setNote(x.b.note);
@@ -339,12 +412,20 @@ function buildEmsCalendarSheet() {
 
     sh.getRange(blockStart, 1, row - blockStart, 7)
       .setBorder(true, true, true, true, true, null, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
+    todayHighlights.forEach(h => {
+      sh.getRange(h.row, h.col)
+        .setBackground('#fde293')
+        .setFontWeight('bold')
+        .setFontColor('#3c4043');
+      sh.getRange(h.row, h.col, h.rows, 1)
+        .setBorder(true, true, true, true, null, null, '#f9ab00', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+    });
 
     row++;
     cur = new Date(y, mo + 1, 1);
   }
 
- for (let c = 1; c <= 7; c++) sh.setColumnWidth(c, 180);  // ★180に
+  for (let c = 1; c <= 7; c++) sh.setColumnWidth(c, 200);
   sh.setHiddenGridlines(true);
   ss.toast('EMSカレンダーを更新したで');
 }
@@ -412,14 +493,113 @@ function Googleカレンダーをシートに同期() {
   );
 }
 
-// 商品コードの別名展開（KRSJCM03-0506-06 → KRSJCM03-06 も同一とみなす）
+function _emsDateOnly_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  if (typeof value === 'number' && isFinite(value)) {
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.round(value) * 24 * 60 * 60 * 1000);
+    return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  }
+
+  const raw = String(value || '').normalize('NFKC').trim();
+  if (!raw) return null;
+  const text = raw
+    .replace(/\(.+?\)/g, '')
+    .replace(/（.+?）/g, '')
+    .replace(/[年月]/g, '/')
+    .replace(/日/g, '')
+    .replace(/到着/g, '')
+    .replace(/着/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+
+  let m = text.match(/^(\d{2,4})[\/.-](\d{1,2})[\/.-](\d{1,2})$/);
+  if (m) {
+    let y = Number(m[1]);
+    if (y < 100) y += 2000;
+    return new Date(y, Number(m[2]) - 1, Number(m[3]));
+  }
+
+  m = text.match(/^(\d{1,2})[\/.-](\d{1,2})$/);
+  if (m) {
+    const y = Number(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy'));
+    return new Date(y, Number(m[1]) - 1, Number(m[2]));
+  }
+
+  m = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+
+  m = text.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (m) return new Date(2000 + Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+
+  m = text.match(/(?:^|[^\d])(\d{2,4})[\/.-](\d{1,2})[\/.-](\d{1,2})(?:$|[^\d])/);
+  if (m) {
+    let y = Number(m[1]);
+    if (y < 100) y += 2000;
+    return new Date(y, Number(m[2]) - 1, Number(m[3]));
+  }
+
+  m = text.match(/(?:^|[^\d])(\d{1,2})[\/.-](\d{1,2})(?:$|[^\d])/);
+  if (m) {
+    const y = Number(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy'));
+    return new Date(y, Number(m[1]) - 1, Number(m[2]));
+  }
+
+  return null;
+}
+
+function _emsSameDate_(a, b) {
+  return a instanceof Date && b instanceof Date &&
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+}
+
+function _emsCalendarHasUsefulBg_(color) {
+  const c = String(color || '').trim().toLowerCase();
+  if (!c) return false;
+  const ignored = {
+    '#ffffff': true,
+    '#fff': true
+  };
+  return !ignored[c];
+}
+
+function _emsCalendarFirstUsefulBg_() {
+  for (let i = 0; i < arguments.length; i++) {
+    const color = arguments[i];
+    if (_emsCalendarHasUsefulBg_(color)) return color;
+  }
+  return '';
+}
+
+function _codePushUnique_(keys, key) {
+  if (key && keys.indexOf(key) < 0) keys.push(key);
+}
+
+// 商品コードの別名展開
+// 例: KRSJCM03-0506_06 / KRSJCM03-0506-06 / KRSJCM03-06 を同一候補にする。
+//     KRSJCM03-0506S はセット品なので短縮せず別物のまま。
 function codeKeys_(code) {
   const c = normCode_(code);
+  if (!c) return [];
   const keys = [c];
-  const m = c.match(/^(.+)-(\d{2})(\d{2})-(\d{2})$/);
-  if (m && (m[4] === m[2] || m[4] === m[3])) {
-    keys.push(m[1] + '-' + m[4]);   // 短縮形を別名として追加
+
+  const extended = c.match(/^(.+)-(\d{2})(\d{2})-(\d{2})$/);
+  if (extended && (extended[4] === extended[2] || extended[4] === extended[3])) {
+    _codePushUnique_(keys, extended[1] + '-' + extended[4]);             // KRSJCM03-06
+    _codePushUnique_(keys, extended[1] + '-' + extended[2] + extended[3]); // KRSJCM03-0506
+    return keys;
   }
+
+  const pair = c.match(/^(.+)-(\d{2})(\d{2})$/);
+  if (pair) {
+    _codePushUnique_(keys, pair[1] + '-' + pair[2]); // KRSJCM03-05
+    _codePushUnique_(keys, pair[1] + '-' + pair[3]); // KRSJCM03-06
+  }
+
   return keys;
 }
 
@@ -446,6 +626,28 @@ function _emsIsDateKey_(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
 }
 
+function EMSリスト_安定重複キー_(row) {
+  const track = normTrack_(row[12]);                 // M列 EMS番号
+  const purchase = (typeof EMS_転送購入Noキー_ === 'function')
+    ? EMS_転送購入Noキー_(row[5])                   // F列 購入No
+    : String(row[5] || '').trim().replace(/[\s\u3000]+/g, '');
+  const code = normCode_(row[8]);                    // I列 商品コード
+  const qty = (typeof EMS_転送数量キー_ === 'function')
+    ? EMS_転送数量キー_(row[9])                      // J列 数量
+    : String(row[9] || '').normalize('NFKC').replace(/,/g, '').replace(/[\s\u3000]+/g, '').trim();
+  if (!track || !code || !qty) return '';
+  return [track, purchase, code, qty].join('|');
+}
+
+function EMSリスト_安定重複表示_(row) {
+  return [
+    normTrack_(row[12]) || '(EMS番号空)',
+    String(row[5] || '').trim() || '(購入No空)',
+    normCode_(row[8]) || '(コード空)',
+    'x' + String(row[9] || '').trim()
+  ].join(' / ');
+}
+
 function EMSリスト_重複行を確認して削除() {
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName('EMSリスト');
@@ -457,14 +659,12 @@ function EMSリスト_重複行を確認して削除() {
   for (let i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === 'No.') { h = i; break; }
   if (h < 0) { ui.alert('見出し行(No.)が見つからんで'); return; }
 
-  // 入荷日＋商品コード＋数量 でグループ化
+  // EMS番号＋購入No＋商品コード＋数量 でグループ化。
+  // 入荷日やコードだけでは、別のEMS箱に入った同一商品まで消えるので使わない。
   const groups = {};
   for (let i = h + 1; i < vals.length; i++) {
-    const code = normCode_(vals[i][8]);     // I列 商品コード
-    if (!code) continue;
-    const arr = _emsFmtDate_(vals[i][1]);   // B列 入荷日
-    const qty = String(vals[i][9]);         // J列 数量
-    const key = arr + '|' + code + '|' + qty;
+    const key = EMSリスト_安定重複キー_(vals[i]);
+    if (!key) continue;
     (groups[key] = groups[key] || []).push(i);
   }
 
@@ -484,14 +684,14 @@ function EMSリスト_重複行を確認して削除() {
   let preview = '', delCount = 0;
   plans.forEach(p => {
     delCount += p.dels.length;
-    preview += `${normCode_(vals[p.keep][8])}: 行${p.keep+1}に統合 ← 行${p.dels.map(d=>d+1).join(',')}削除\n`;
+    preview += `${EMSリスト_安定重複表示_(vals[p.keep])}: 行${p.keep+1}に統合 ← 行${p.dels.map(d=>d+1).join(',')}削除\n`;
   });
 
   const res = ui.alert(
     '重複行クリーンアップ',
     `重複グループ ${plans.length}件 / 削除 ${delCount}行\n\n` +
     preview.slice(0, 1200) +
-    '\n統合先の空欄だけ、削除する行の値で埋めてから消すで。実行する？',
+    '\n同じEMS番号＋購入No＋商品コード＋数量だけを対象にします。統合先の空欄だけ、削除する行の値で埋めてから消すで。実行する？',
     ui.ButtonSet.YES_NO
   );
   if (res !== ui.Button.YES) { ui.alert('やめといたで'); return; }
@@ -529,18 +729,29 @@ function EMSリスト_下に混ざった古い行を確認して削除() {
 
   let latestSeen = '';
   const targets = [];
+  const firstByStableKey = {};
+  for (let i = h + 1; i < vals.length; i++) {
+    const key = EMSリスト_安定重複キー_(vals[i]);
+    if (key && firstByStableKey[key] === undefined) firstByStableKey[key] = i;
+  }
+
   for (let i = h + 1; i < vals.length; i++) {
     const arr = _emsFmtDate_(vals[i][1]); // B列 入荷日
     if (!_emsIsDateKey_(arr)) continue;
     if (latestSeen && arr < latestSeen) {
-      targets.push({
-        row: i + 1,
-        arr: arr,
-        purchase: String(vals[i][5] || ''),
-        code: normCode_(vals[i][8]),
-        qty: String(vals[i][9] || ''),
-        track: normTrack_(vals[i][12])
-      });
+      const key = EMSリスト_安定重複キー_(vals[i]);
+      const first = key ? firstByStableKey[key] : undefined;
+      if (first !== undefined && first < i) {
+        targets.push({
+          row: i + 1,
+          firstRow: first + 1,
+          arr: arr,
+          purchase: String(vals[i][5] || ''),
+          code: normCode_(vals[i][8]),
+          qty: String(vals[i][9] || ''),
+          track: normTrack_(vals[i][12])
+        });
+      }
       continue;
     }
     if (arr > latestSeen) latestSeen = arr;
@@ -553,12 +764,12 @@ function EMSリスト_下に混ざった古い行を確認して削除() {
 
   const preview = targets
     .slice(0, 40)
-    .map(t => `行${t.row}: ${t.arr} ${t.purchase} ${t.code} x${t.qty} ${t.track}`)
+    .map(t => `行${t.row}: ${t.arr} ${t.purchase} ${t.code} x${t.qty} ${t.track}（上の行${t.firstRow}と同一）`)
     .join('\n');
   const more = targets.length > 40 ? `\n...ほか ${targets.length - 40}行` : '';
   const res = ui.alert(
     '下に混ざった古いEMS行を削除',
-    `新しい入荷日の下にある古い行を ${targets.length}行 見つけました。\n\n${preview}${more}\n\n削除する？`,
+    `新しい入荷日の下にある古い行のうち、同じEMS番号＋購入No＋商品コード＋数量が上にもある行だけ ${targets.length}行 見つけました。\n\n${preview}${more}\n\n削除する？`,
     ui.ButtonSet.YES_NO
   );
   if (res !== ui.Button.YES) { ui.alert('やめといたで'); return; }

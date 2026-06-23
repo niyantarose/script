@@ -468,6 +468,79 @@ function 消込判定の色を更新する() {
   SpreadsheetApp.getActive().toast('消込判定の色を更新しました。');
 }
 
+function 発注_EMS発送数数式を一括修正() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('発注');
+  const ems = ss.getSheetByName('EMSリスト');
+  if (!sh) {
+    SpreadsheetApp.getUi().alert('発注シートが見つかりません。');
+    return;
+  }
+  if (!ems) {
+    SpreadsheetApp.getUi().alert('EMSリストが見つかりません。');
+    return;
+  }
+
+  const startRow = 7;
+  const maxRows = sh.getMaxRows();
+  if (maxRows < startRow) {
+    SpreadsheetApp.getActive().toast('発注データがありません。');
+    return;
+  }
+
+  const emsRows = {};
+  let emsItemId = 0;
+  const eLast = ems.getLastRow();
+  if (eLast >= startRow) {
+    const eVals = ems.getRange(startRow, 1, eLast - startRow + 1, Math.max(ems.getLastColumn(), 13)).getValues();
+    eVals.forEach(r => {
+      const no = H2E_cleanPurchaseNo_(r[5]);   // F 購入No
+      const code = H2E_cleanCode_(r[8]);       // I 商品コード
+      const qty = Number(H2E_cleanQty_(r[9])) || 0; // J 数量
+      const track = H2E_cleanTrack_(r[12]);     // M EMS番号
+      if (!track || !no || !code || !qty) return;
+      const item = {
+        id: emsItemId++,
+        keys: (typeof codeKeys_ === 'function') ? codeKeys_(code) : [normCode_(code)],
+        qty: qty
+      };
+      H2E_purchaseNoIndexKeys_(no).forEach(noKey => {
+        (emsRows[noKey] = emsRows[noKey] || []).push(item);
+      });
+    });
+  }
+
+  const hVals = sh.getRange(startRow, 1, maxRows - startRow + 1, Math.max(sh.getLastColumn(), 25)).getValues();
+  const out = hVals.map(r => {
+    const no = H2E_cleanPurchaseNo_(r[6]);     // G 購入No
+    const code = H2E_cleanCode_(r[11]);        // L 商品コード
+    if (!no || !code) return [''];
+
+    const keys = new Set((typeof codeKeys_ === 'function') ? codeKeys_(code) : [normCode_(code)]);
+    const counted = {};
+    let sum = 0;
+    H2E_purchaseNoOrderKeys_(no).forEach(noKey => {
+      (emsRows[noKey] || []).forEach(item => {
+        if (counted[item.id]) return;
+        if (!item.keys.some(k => keys.has(k))) return;
+        counted[item.id] = true;
+        sum += item.qty;
+      });
+    });
+    return [sum || ''];
+  });
+
+  // Y列(25)を一度クリアして、EMS番号あり＋商品コード別名を吸収した集計値を入れる
+  sh.getRange(startRow, 25, maxRows - startRow + 1, 1).clearContent();
+  sh.getRange(startRow, 25, out.length, 1).setValues(out);
+  SpreadsheetApp.flush();
+  if (typeof colorKeshikomiAllRows_ === 'function') {
+    colorKeshikomiAllRows_(sh);
+  }
+
+  SpreadsheetApp.getActive().toast('発注Y列(EMS発送数)をEMS番号あり＋商品コード別名＋旧Wata番号込みで再計算しました。');
+}
+
 // =====================================================
 // 発注チェック行 → EMSリストへ転送
 // =====================================================
@@ -563,16 +636,16 @@ function 発注_チェック行をEMSリストへ送る() {
 
     const row = srcValues[i];
 
-    const purchaseNo = String(row[colPurchaseNo - 1] || '').trim();
-    const code = String(row[colCode - 1] || '').trim();
-    const qty = String(row[colQty - 1] || '').trim();
+    const purchaseNo = H2E_cleanPurchaseNo_(row[colPurchaseNo - 1]);
+    const code = H2E_cleanCode_(row[colCode - 1]);
+    const qty = H2E_cleanQty_(row[colQty - 1]);
 
     if (!purchaseNo || !code) {
       skippedNoData++;
       continue;
     }
 
-    const key = purchaseNo + '-' + code;
+    const key = H2E_transferKey_(purchaseNo, code);
 
     if (cfg.SKIP_DUPLICATES && existingKeys.has(key)) {
       skippedDuplicate++;
@@ -684,6 +757,116 @@ function H2E_normHeader_(v) {
     .toLowerCase();
 }
 
+function H2E_cleanPurchaseNo_(v) {
+  if (typeof EMS_転送購入Noキー_ === 'function') return EMS_転送購入Noキー_(v);
+  return String(v || '')
+    .trim()
+    .replace(/[＿]/g, '_')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/_+/g, '_');
+}
+
+function H2E_addUnique_(list, value) {
+  const v = String(value || '').trim();
+  if (v && list.indexOf(v) < 0) list.push(v);
+}
+
+function H2E_parsePurchaseNoForMatch_(value) {
+  const clean = H2E_cleanPurchaseNo_(value);
+  if (!clean || /発注NO|OrderNo|DorderDate/i.test(clean)) return null;
+
+  const m = clean.match(/^(?:[A-Za-z]+)?(\d{6}|\d{8})_([^_]+)(?:_(\d+)(?:_\d+)*)?$/);
+  if (!m) return null;
+
+  const date = m[1].length === 6 ? '20' + m[1] : m[1];
+  const base = date + '_' + m[2];
+  const seq = m[3] || '';
+  return {
+    base: base,
+    seq: seq,
+    numbered: !!seq,
+    normalized: seq ? base + '_' + seq : base
+  };
+}
+
+function H2E_purchaseNoVariants_(value) {
+  const clean = H2E_cleanPurchaseNo_(value);
+  const exact = [];
+  const base = [];
+  let numbered = false;
+
+  H2E_addUnique_(exact, clean);
+
+  if (typeof 発注_購入No情報_ === 'function') {
+    const info = 発注_購入No情報_(clean);
+    if (info) {
+      H2E_addUnique_(exact, info.normalized);
+      H2E_addUnique_(base, info.base);
+      numbered = numbered || !!info.numbered;
+    }
+  }
+
+  const parsed = H2E_parsePurchaseNoForMatch_(clean);
+  if (parsed) {
+    H2E_addUnique_(exact, parsed.normalized);
+    H2E_addUnique_(base, parsed.base);
+    numbered = numbered || parsed.numbered;
+  }
+
+  return { exact: exact, base: base, numbered: numbered };
+}
+
+function H2E_purchaseNoIndexKeys_(value) {
+  const v = H2E_purchaseNoVariants_(value);
+  const keys = [];
+  v.exact.forEach(key => H2E_addUnique_(keys, key));
+  v.base.forEach(key => H2E_addUnique_(keys, key));
+  return keys;
+}
+
+function H2E_purchaseNoOrderKeys_(value) {
+  const v = H2E_purchaseNoVariants_(value);
+  const keys = [];
+  v.exact.forEach(key => H2E_addUnique_(keys, key));
+  if (!v.numbered) {
+    v.base.forEach(key => H2E_addUnique_(keys, key));
+  }
+  return keys;
+}
+
+function H2E_cleanCode_(v) {
+  if (typeof 大邱_表示コード_ === 'function') return 大邱_表示コード_(v);
+  if (typeof normCode_ === 'function') return normCode_(v);
+  return String(v || '')
+    .normalize('NFKC')
+    .replace(/[‐‑‒–—―−]/g, '-')
+    .replace(/[＿]/g, '_')
+    .replace(/[\s\u3000]+/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+function H2E_cleanQty_(v) {
+  if (typeof EMS_転送数量キー_ === 'function') return EMS_転送数量キー_(v);
+  return String(v || '')
+    .normalize('NFKC')
+    .replace(/,/g, '')
+    .replace(/[\s\u3000]+/g, '')
+    .trim();
+}
+
+function H2E_cleanTrack_(v) {
+  if (typeof normTrack_ === 'function') return normTrack_(v);
+  return String(v || '')
+    .normalize('NFKC')
+    .replace(/[\s\u3000]+/g, '')
+    .trim();
+}
+
+function H2E_transferKey_(purchaseNo, code) {
+  return H2E_cleanPurchaseNo_(purchaseNo) + '|' + H2E_cleanCode_(code);
+}
+
 
 function H2E_today_() {
   const now = new Date();
@@ -710,11 +893,11 @@ function H2E_getExistingEmsKeys_(dst) {
     .getDisplayValues();
 
   for (let i = 0; i < numRows; i++) {
-    const purchaseNo = String(purchaseValues[i][0] || '').trim();
-    const code = String(codeValues[i][0] || '').trim();
+    const purchaseNo = H2E_cleanPurchaseNo_(purchaseValues[i][0]);
+    const code = H2E_cleanCode_(codeValues[i][0]);
 
     if (purchaseNo && code) {
-      set.add(purchaseNo + '-' + code);
+      set.add(H2E_transferKey_(purchaseNo, code));
     }
   }
 

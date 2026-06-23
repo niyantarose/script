@@ -11,7 +11,7 @@ function 件数チェック() {
     ? hachu.getRange(hStart, 1, hLast - hStart + 1, hachu.getLastColumn()).getValues()
     : [];
 
-  // 発注の「コード+業者」ユニーク集合（行番号も覚えとく）
+  // 発注の「商品コード」ユニーク集合（行番号も覚えとく）
   const hachuKeys = new Map();   // key -> {code,vendor,name,row}
   let hachuLineCount = 0;        // コードが入ってる実データ行数
   hRows.forEach((r, i) => {
@@ -20,7 +20,8 @@ function 件数チェック() {
     hachuLineCount++;
     const vendor = String(r[CFG.HACHU_VENDOR - 1] || '').trim();
     const name = String(r[CFG.HACHU_NAME - 1] || '').trim();
-    const key = code + CFG.SEP + vendor;
+    const key = _masterPrimaryCodeKey_(code);
+    if (!key) return;
     if (!hachuKeys.has(key)) {
       hachuKeys.set(key, { code, vendor, name, row: hStart + i });
     }
@@ -39,8 +40,8 @@ function 件数チェック() {
     const code = String(r[CFG.M_CODE - 1] || '').trim();
     if (!code) return;
     masterLineCount++;
-    const vendor = String(r[CFG.M_VENDOR - 1] || '').trim();
-    masterKeys.add(code + CFG.SEP + vendor);
+    const key = _masterPrimaryCodeKey_(code);
+    if (key) masterKeys.add(key);
   });
 
   // ---- 突き合わせ ----
@@ -54,7 +55,7 @@ function 件数チェック() {
     const code = String(r[CFG.M_CODE - 1] || '').trim();
     if (!code) return;
     const vendor = String(r[CFG.M_VENDOR - 1] || '').trim();
-    const key = code + CFG.SEP + vendor;
+    const key = _masterPrimaryCodeKey_(code);
     if (!hachuKeys.has(key)) {
       onlyInMaster.push({ code, vendor, name: String(r[CFG.M_NAME - 1] || '').trim() });
     }
@@ -63,7 +64,7 @@ function 件数チェック() {
   // ---- 結果まとめ ----
   let msg = '';
   msg += `発注 実データ行   : ${hachuLineCount}\n`;
-  msg += `発注 ユニーク数   : ${hachuKeys.size}（コード+業者）\n`;
+  msg += `発注 ユニーク数   : ${hachuKeys.size}（商品コード）\n`;
   msg += `マスタ 件数       : ${masterLineCount}\n`;
   msg += `重複でスキップ    : ${hachuLineCount - hachuKeys.size} 行\n`;
   msg += `─────────────\n`;

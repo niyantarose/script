@@ -5,6 +5,7 @@
  * A列：No.（商品点数カウンタ）
  * C列：EMS発送日
  * D列：ステータス列（⇒）
+ * E列：EMS到着日（発送日+3日で予定日を自動補完）
  * L列：EMS番号（12番目の列）
  * M列：Box No.（13番目の列）
  ************************************************************/
@@ -19,6 +20,7 @@ const EMS_CFG = {
   COL_NO: 1,         // A列：No.
   COL_EMS_DATE: 3,   // C列：EMS発送日
   COL_STATUS: 4,     // D列：⇒
+  COL_ARRIVAL_DATE: 5, // E列：EMS到着日
 
   COL_EMS_NO: 13,    // M列：EMS番号
   COL_BOX_NO: 14,    // N列：Box No.
@@ -39,7 +41,8 @@ const EMS_CFG = {
 
   CHUNK_SIZE: 3000,
 
-  CLEAR_STATUS_WHEN_NO_DATE: false,
+  CLEAR_STATUS_WHEN_NO_DATE: true,
+  ARRIVAL_LEAD_DAYS: 3,
   AUTO_BOX_ON_EDIT: false,
   ONEDIT_MAX_ROWS: 100
 };
@@ -111,6 +114,54 @@ function EMS_全体更新() {
   } finally {
     lock.releaseLock();
   }
+}
+
+function EMSリスト_発送日基準に並べ替え() {
+  const sh = SpreadsheetApp.getActiveSheet();
+  if (!EMS_isTargetSheet_(sh)) {
+    SpreadsheetApp.getUi().alert('EMSリストで実行してください。');
+    return;
+  }
+
+  const cfg = EMS_CFG;
+  const lastRow = EMS_findLastDataRow_(sh);
+  if (lastRow < cfg.START_ROW) {
+    SpreadsheetApp.getActive().toast('並べ替え対象のデータ行がありません。');
+    return;
+  }
+
+  const numRows = lastRow - cfg.START_ROW + 1;
+  const lastCol = sh.getLastColumn();
+
+  sh.getRange(cfg.START_ROW, 1, numRows, lastCol).sort([
+    { column: cfg.COL_EMS_DATE, ascending: true },
+    { column: cfg.COL_EMS_NO, ascending: true },
+    { column: cfg.COL_NO, ascending: true },
+  ]);
+
+  SpreadsheetApp.flush();
+  EMS_updateAllSheet_(sh, false);
+  EMS_updateBordersByEmsNo_(sh);
+
+  SpreadsheetApp.getActive().toast('EMSリストをEMS発送日基準で並べ替えました。');
+}
+
+function EMS_findLastDataRow_(sh) {
+  const cfg = EMS_CFG;
+  const lastRow = sh.getLastRow();
+  if (lastRow < cfg.START_ROW) return cfg.START_ROW - 1;
+
+  const numRows = lastRow - cfg.START_ROW + 1;
+  const maxCol = Math.max(cfg.COL_EMS_NO, 13);
+  const values = sh.getRange(cfg.START_ROW, 1, numRows, maxCol).getDisplayValues();
+  const checkIdx = [0, 1, 2, 5, 8, 9, 12]; // A/B/C/F/I/J/M
+
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (checkIdx.some(idx => String(values[i][idx] || '').trim() !== '')) {
+      return cfg.START_ROW + i;
+    }
+  }
+  return cfg.START_ROW - 1;
 }
 
 
@@ -190,7 +241,7 @@ function EMS_updateOnlySelectedDates_(sh, targetDateSet) {
     const row = values[i];
 
     const dateKey = EMS_norm_(row[cfg.IDX_DATE]);      // C列
-    const emsNo = EMS_norm_(row[cfg.IDX_EMS_NO]);      // M列
+    const emsNo = EMS_normTrack_(row[cfg.IDX_EMS_NO]); // M列
     const currentStatus = row[cfg.IDX_STATUS];         // D列
 
     // A列No.は全体通し番号にするため、全行のEMS番号を数える
@@ -275,7 +326,7 @@ function EMS_updateBordersBySelectedDatesAndEmsNo_(sh, targetDateSet) {
   const emsValues = sh
     .getRange(startRow, cfg.COL_EMS_NO, numRows, 1)
     .getDisplayValues()
-    .map(r => EMS_norm_(r[0]));
+    .map(r => EMS_normTrack_(r[0]));
 
   // 対象発送日の行だけ、まず罫線を消す
   for (let i = 0; i < numRows; i++) {
@@ -430,17 +481,22 @@ function EMS_loadData_(sh) {
   const values = sh.getRange(cfg.START_ROW, cfg.READ_START_COL, numRows, cfg.READ_COLS).getDisplayValues();
 
   const keys = [];
-  let currentDateKey = '';
 
   for (let i = 0; i < values.length; i++) {
-    const dateCell = EMS_norm_(values[i][cfg.IDX_DATE]);
-    if (dateCell) {
-      currentDateKey = dateCell;
-    }
-    keys.push(currentDateKey || '日付未入力');
+    keys.push(EMS_boxDateKeyFromRow_(values[i]));
   }
 
   return { values, keys };
+}
+
+function EMS_boxDateKeyFromRow_(row) {
+  const cfg = EMS_CFG;
+  const shipDate = EMS_norm_(row[cfg.IDX_DATE]); // C列 EMS発送日
+  if (shipDate) return shipDate;
+
+  // EMS発送日が空欄なら、まだ箱に入っていない扱い。
+  // B列の入荷日は箱番号・色・罫線の判定には使わない。
+  return '';
 }
 
 
@@ -458,14 +514,16 @@ function EMS_writeForTargetKeys_(sh, values, keys, targetKeys) {
   for (let i = 0; i < values.length; i++) {
     const dateKey = keys[i];
     const row = values[i];
-    const emsNo = EMS_norm_(row[cfg.IDX_EMS_NO]);
+    const emsNo = EMS_normTrack_(row[cfg.IDX_EMS_NO]);
 
     let boxNo = '';
     let colorIdx = -1;
 
     if (emsNo) {
       totalItemCount++;
+    }
 
+    if (emsNo && dateKey) {
       if (!boxMapByDate.has(dateKey)) {
         boxMapByDate.set(dateKey, new Map());
       }
@@ -494,10 +552,13 @@ function EMS_writeForTargetKeys_(sh, values, keys, targetKeys) {
     const statusValue = dateCell ? '⇒' : (cfg.CLEAR_STATUS_WHEN_NO_DATE ? '' : currentStatus);
 
     let noValue = ''; 
-    let bg = Array(cfg.COLOR_COLS).fill(null);
+    let bg = Array(cfg.COLOR_COLS).fill('#ffffff');
 
     if (emsNo) {
       noValue = totalItemCount; 
+    }
+
+    if (emsNo && dateKey) {
       countedBoxKeySet.add(dateKey + '||' + emsNo);
 
       // 50色を箱グループの登場順に順繰りで使う
@@ -598,6 +659,93 @@ function EMS_updateStatusOnlyForEditedRows_(sh, editedRange) {
   });
 
   statusRange.setValues(newStatuses);
+  EMS_fillArrivalEstimateRows_(sh, startRow, numRows, false);
+  EMS_updateAllSheet_(sh, false);
+  EMS_updateBordersByEmsNo_(sh);
+}
+
+function EMS_到着予定日を補完() {
+  const sh = SpreadsheetApp.getActiveSheet();
+  if (!EMS_isTargetSheet_(sh)) {
+    SpreadsheetApp.getUi().alert('EMSリストで実行してください。');
+    return;
+  }
+
+  const cfg = EMS_CFG;
+  const lastRow = EMS_findLastDataRow_(sh);
+  if (lastRow < cfg.START_ROW) {
+    SpreadsheetApp.getActive().toast('補完対象の行がありません。');
+    return;
+  }
+
+  const count = EMS_fillArrivalEstimateRows_(sh, cfg.START_ROW, lastRow - cfg.START_ROW + 1, false);
+  SpreadsheetApp.getActive().toast(`EMS到着予定日を補完しました：${count}件`);
+}
+
+function EMS_fillArrivalEstimateRows_(sh, startRow, numRows, overwrite) {
+  const cfg = EMS_CFG;
+  if (numRows <= 0) return 0;
+
+  const shipRange = sh.getRange(startRow, cfg.COL_EMS_DATE, numRows, 1);
+  const shipValues = shipRange.getValues();
+  const shipDisplays = shipRange.getDisplayValues();
+  const arrivalRange = sh.getRange(startRow, cfg.COL_ARRIVAL_DATE, numRows, 1);
+  const arrivalValues = arrivalRange.getValues();
+  const arrivalDisplays = arrivalRange.getDisplayValues();
+
+  let changed = false;
+  let count = 0;
+  for (let i = 0; i < numRows; i++) {
+    const shipDate = EMS_toDateOnly_(shipValues[i][0]) || EMS_toDateOnly_(shipDisplays[i][0]);
+    if (!shipDate) continue;
+    const hasArrival = EMS_norm_(arrivalDisplays[i][0]) !== '';
+    if (hasArrival && !overwrite) continue;
+
+    arrivalValues[i][0] = EMS_addDays_(shipDate, cfg.ARRIVAL_LEAD_DAYS);
+    changed = true;
+    count++;
+  }
+
+  if (changed) arrivalRange.setValues(arrivalValues);
+  return count;
+}
+
+function EMS_addDays_(date, days) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function EMS_toDateOnly_(value) {
+  if (typeof _emsDateOnly_ === 'function') return _emsDateOnly_(value);
+
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+  if (typeof value === 'number' && isFinite(value)) {
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.round(value) * 24 * 60 * 60 * 1000);
+    return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  }
+
+  const text = String(value || '')
+    .normalize('NFKC')
+    .replace(/\(.+?\)/g, '')
+    .replace(/（.+?）/g, '')
+    .replace(/[年月]/g, '/')
+    .replace(/日/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+  if (!text) return null;
+
+  let m = text.match(/^(\d{2,4})[\/.-](\d{1,2})[\/.-](\d{1,2})$/);
+  if (m) {
+    let y = Number(m[1]);
+    if (y < 100) y += 2000;
+    return new Date(y, Number(m[2]) - 1, Number(m[3]));
+  }
+
+  m = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+
+  return null;
 }
 
 
@@ -634,6 +782,14 @@ function EMS_rangeHitsColumn_(range, col) {
 function EMS_norm_(value) {
   return String(value == null ? '' : value).replace(/\u00A0/g, ' ').trim();
 }
+
+function EMS_normTrack_(value) {
+  if (typeof normTrack_ === 'function') return normTrack_(value);
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
 // =====================================================
 // EMS番号ごとに見やすい罫線を入れる
 // 同じEMS番号の連続行を1グループとして外枠を太くする
@@ -665,28 +821,34 @@ function EMS_updateBordersByEmsNo_(sh) {
   const allRange = sh.getRange(startRow, startCol, numRows, colCount);
   allRange.setBorder(false, false, false, false, false, false);
 
-  const emsValues = sh
-    .getRange(startRow, emsNoCol, numRows, 1)
-    .getDisplayValues()
-    .map(r => String(r[0] || '').trim());
+  const values = sh
+    .getRange(startRow, 1, numRows, Math.max(emsNoCol, cfg.COL_ARRIVAL_DATE))
+    .getDisplayValues();
+  const groupKeys = values.map(row => {
+    const emsNo = EMS_normTrack_(row[emsNoCol - 1]);
+    if (!emsNo) return '';
+    const dateKey = EMS_boxDateKeyFromRow_(row);
+    if (!dateKey) return '';
+    return dateKey + '||' + emsNo;
+  });
 
   let groupStartIndex = null;
-  let currentEmsNo = '';
+  let currentGroupKey = '';
 
   for (let i = 0; i <= numRows; i++) {
     const isEnd = i === numRows;
-    const emsNo = isEnd ? '' : emsValues[i];
+    const groupKey = isEnd ? '' : groupKeys[i];
 
     if (groupStartIndex === null) {
-      if (!isEnd && emsNo !== '') {
+      if (!isEnd && groupKey !== '') {
         groupStartIndex = i;
-        currentEmsNo = emsNo;
+        currentGroupKey = groupKey;
       }
       continue;
     }
 
-    // EMS番号が変わった、または最後まで来たら1グループ確定
-    if (isEnd || emsNo !== currentEmsNo) {
+    // EMS発送日（なければB列日付）＋EMS番号が変わったら1グループ確定
+    if (isEnd || groupKey !== currentGroupKey) {
       const groupStartRow = startRow + groupStartIndex;
       const groupRowCount = i - groupStartIndex;
 
@@ -708,12 +870,12 @@ function EMS_updateBordersByEmsNo_(sh) {
       );
 
       // 次のグループ開始
-      if (!isEnd && emsNo !== '') {
+      if (!isEnd && groupKey !== '') {
         groupStartIndex = i;
-        currentEmsNo = emsNo;
+        currentGroupKey = groupKey;
       } else {
         groupStartIndex = null;
-        currentEmsNo = '';
+        currentGroupKey = '';
       }
     }
   }
@@ -750,10 +912,7 @@ function EMS_EMS番号の空白を削除() {
   const newValues = values.map(row => {
     const original = String(row[0] || '');
 
-    const cleaned = original
-      .replace(/ /g, '')        // 半角スペース
-      .replace(/　/g, '')       // 全角スペース
-      .replace(/\u00A0/g, '');  // ノーブレークスペース
+    const cleaned = EMS_normTrack_(original);
 
     if (original !== cleaned) changedCount++;
 

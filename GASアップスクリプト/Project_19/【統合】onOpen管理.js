@@ -7,6 +7,7 @@ function onOpen() {
 
     // EMSリスト用
 .addItem('No・Box・色・罫線を全体更新', 'EMS_全体更新')
+.addItem('EMS発送日から到着予定日を補完', 'EMS_到着予定日を補完')
 .addItem('EMS番号ごとの罫線を更新', 'EMS_EMS番号ごとに罫線を更新')
 .addItem('選択発送日のEMS番号ごとに罫線を更新', 'EMS_選択発送日_EMS番号ごとに罫線を更新')
 .addItem('選択行の発送日グループを更新', 'EMS_選択行の発送日だけ更新')
@@ -23,4 +24,8 @@ function onOpen() {
 .addItem('消込判定の色を更新', 'manualUpdateKeshikomiColors')
 
     .addToUi();
+
+  if (typeof 最終データ行へ移動_自動 === 'function') {
+    最終データ行へ移動_自動();
+  }
 }
