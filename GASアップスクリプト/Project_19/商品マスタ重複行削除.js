@@ -39,11 +39,11 @@ function 商品マスタ_商品コードを一意化() {
   const response = ui.alert(
     '商品マスタを商品コードごとに1行へ統合しますか？',
     '同じ商品コードは一番下の行を残し、上の行から足りない値だけ補完してから削除します。\n' +
-      '商品コードが「-」だけの行は商品コードなしとして整理対象にします。\n' +
+      '商品コードが空、または「-」だけの行は商品コードなしとして整理対象にします。\n' +
       '通常の商品コード内の「-」は消さずに残します。\n' +
       '価格・重さ・品目などは、下にある新しい値を優先します。\n\n' +
       '重複コード: ' + plan.groups.length + '件\n' +
-      '「-」だけの行: ' + plan.invalidRows.length + '行\n' +
+      '商品コードなし行: ' + plan.invalidRows.length + '行\n' +
       '削除対象: ' + plan.deleteRows.length + '行\n\n' +
       preview + omitted,
     ui.ButtonSet.OK_CANCEL
@@ -105,13 +105,14 @@ function 商品マスタ_商品コード一意化_計画_(sheet) {
   if (lastRow < startRow) return { groups: [], deleteRows: [] };
 
   const numRows = lastRow - cfg.headerRow;
-  const values = sheet.getRange(startRow, cfg.firstCol, numRows, cfg.width).getValues();
+  const fullWidth = 商品マスタ_一意化対象幅_(sheet, cfg);
+  const values = sheet.getRange(startRow, cfg.firstCol, numRows, fullWidth).getValues();
   const groupsByCode = {};
   const invalidRows = [];
 
   values.forEach((row, index) => {
     const rowNumber = startRow + index;
-    if (商品マスタ_削除対象商品コード_(row[0])) {
+    if (商品マスタ_削除対象商品コード_(row[0]) || 商品マスタ_商品コード空データ行_(row)) {
       invalidRows.push(rowNumber);
       return;
     }
@@ -126,7 +127,7 @@ function 商品マスタ_商品コード一意化_計画_(sheet) {
     }
     groupsByCode[key].rows.push({
       row: rowNumber,
-      values: row.slice()
+      values: row.slice(0, cfg.width)
     });
   });
 
@@ -170,6 +171,11 @@ function 商品マスタ_一意化設定_() {
   };
 }
 
+function 商品マスタ_一意化対象幅_(sheet, cfg) {
+  const lastCol = Math.max(sheet.getLastColumn(), cfg.firstCol + cfg.width - 1);
+  return Math.max(cfg.width, lastCol - cfg.firstCol + 1);
+}
+
 function 商品マスタ_商品コードキー_(value) {
   if (typeof _masterPrimaryCodeKey_ === 'function') return _masterPrimaryCodeKey_(value);
   let text = String(value == null ? '' : value).trim();
@@ -194,6 +200,11 @@ function 商品マスタ_削除対象商品コード_(value) {
     .replace(/[\s\u00A0\u3000]+/g, '')
     .replace(/_/g, '-')
     .replace(/-+/g, '-') === '-';
+}
+
+function 商品マスタ_商品コード空データ行_(row) {
+  if (String(row[0] == null ? '' : row[0]).trim() !== '') return false;
+  return row.slice(1).some(商品マスタ_値あり_);
 }
 
 function 商品マスタ_値あり_(value) {
@@ -223,7 +234,8 @@ function 商品マスタ_商品コード一意化_高速整理_(sheet) {
   if (lastRow < startRow) return { groups: 0, deleted: 0, invalid: 0, mode: 'rewrite' };
 
   const numRows = lastRow - cfg.headerRow;
-  const values = sheet.getRange(startRow, cfg.firstCol, numRows, cfg.width).getValues();
+  const fullWidth = 商品マスタ_一意化対象幅_(sheet, cfg);
+  const values = sheet.getRange(startRow, cfg.firstCol, numRows, fullWidth).getValues();
   const groupsByCode = {};
   let invalid = 0;
   let dataRows = 0;
@@ -233,6 +245,10 @@ function 商品マスタ_商品コード一意化_高速整理_(sheet) {
     if (hasAnyValue) dataRows++;
 
     if (商品マスタ_削除対象商品コード_(row[0])) {
+      invalid++;
+      return;
+    }
+    if (商品マスタ_商品コード空データ行_(row)) {
       invalid++;
       return;
     }
@@ -246,14 +262,14 @@ function 商品マスタ_商品コード一意化_高速整理_(sheet) {
         codeText: String(row[0] || '').trim(),
         latestIndex: index,
         sourceCount: 0,
-        merged: Array(cfg.width).fill('')
+        merged: Array(fullWidth).fill('')
       };
     }
 
     const group = groupsByCode[key];
     group.latestIndex = index;
     group.sourceCount++;
-    for (let c = 0; c < cfg.width; c++) {
+    for (let c = 0; c < fullWidth; c++) {
       if (商品マスタ_値あり_(row[c])) group.merged[c] = row[c];
     }
   });
@@ -264,11 +280,11 @@ function 商品マスタ_商品コード一意化_高速整理_(sheet) {
   const output = groups.map(group => group.merged);
 
   if (output.length > 0) {
-    sheet.getRange(startRow, cfg.firstCol, output.length, cfg.width).setValues(output);
+    sheet.getRange(startRow, cfg.firstCol, output.length, fullWidth).setValues(output);
   }
 
   if (numRows > output.length) {
-    sheet.getRange(startRow + output.length, cfg.firstCol, numRows - output.length, cfg.width).clearContent();
+    sheet.getRange(startRow + output.length, cfg.firstCol, numRows - output.length, fullWidth).clearContent();
   }
 
   const duplicateGroups = groups.filter(group => group.sourceCount > 1).length;
