@@ -31,9 +31,9 @@ function Excel同期メニューを追加_() {
     .addItem('GoogleカレンダーへEMSを反映', 'syncEmsCalendar')
     .addItem('EMSリスト：重複行を確認して削除', 'EMSリスト_重複行を確認して削除')
     .addItem('EMSリスト：下に混ざった古い行を確認して削除', 'EMSリスト_下に混ざった古い行を確認して削除')
+    .addItem('商品マスタ：重複/商品コードなしを整理', '商品マスタ_商品コードを一意化')
     .addSeparator()
     .addItem('商品マスタ：発注大邱データから更新', '商品マスタ_発注大邱から更新')
-    .addItem('商品マスタ：商品コードを一意化', '商品マスタ_商品コードを一意化')
     .addSeparator()
     .addItem('旧Excel同期トリガーを削除', '旧Excel同期トリガーを削除')
     .addToUi();
