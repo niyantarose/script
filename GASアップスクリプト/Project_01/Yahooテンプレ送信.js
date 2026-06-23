@@ -16,6 +16,7 @@ var YAHOO_TRANSFER_CFG = {
     '発売日': ['発売日'],
     'JANコード': ['ISBN'],
     '配送グループ管理番号': ['配送パターン'],
+    '商品情報': ['商品説明', '商品情報'],
   },
 };
 
@@ -66,23 +67,30 @@ function yt_行から送信値_(rowValues, headerMap) {
   return out;
 }
 
-function yt_送信計画を作る_(collected, existingCodeKeys) {
-  var seen = {};
-  (existingCodeKeys || []).forEach(function (k) {
+// 既存商品コード(→送信先行番号)のmapを使い、append（新規）と update（既存行の空セル補充）に振り分ける。
+// existingCodeRowMap: { 商品コードキー: 送信先行番号 }
+function yt_送信計画を作る_(collected, existingCodeRowMap) {
+  var map = {};
+  Object.keys(existingCodeRowMap || {}).forEach(function (k) {
     var key = yt_商品コードキー_(k);
-    if (key) seen[key] = true;
+    if (key) map[key] = existingCodeRowMap[k];
   });
-  var toSend = [], skipDup = 0, skipNoCode = 0;
+  var seen = {};
+  var toAppend = [], toUpdate = [], skipDup = 0, skipNoCode = 0;
   for (var i = 0; i < collected.length; i++) {
     var c = collected[i];
     var mapped = c.mapped;
     var codeKey = yt_商品コードキー_(mapped['商品コード']);
     if (!codeKey) { skipNoCode++; continue; }
-    if (seen[codeKey]) { skipDup++; continue; }
+    if (seen[codeKey]) { skipDup++; continue; }   // 同一実行内の重複
     seen[codeKey] = true;
-    toSend.push({ sheet: c.sheet, rowIndex: c.rowIndex, mapped: mapped, codeKey: codeKey });
+    if (Object.prototype.hasOwnProperty.call(map, codeKey)) {
+      toUpdate.push({ sheet: c.sheet, rowIndex: c.rowIndex, mapped: mapped, codeKey: codeKey, destRow: map[codeKey] });
+    } else {
+      toAppend.push({ sheet: c.sheet, rowIndex: c.rowIndex, mapped: mapped, codeKey: codeKey });
+    }
   }
-  return { toSend: toSend, skipDup: skipDup, skipNoCode: skipNoCode };
+  return { toAppend: toAppend, toUpdate: toUpdate, skipDup: skipDup, skipNoCode: skipNoCode };
 }
 
 // 構造確認: 各ソースタブと送信先の検出列をLoggerに出す（候補名が実ヘッダーに当たっているか確認用）
@@ -146,12 +154,25 @@ function 台湾_Yahooテンプレへ送信() {
       ui.alert('送信先に必須列が見つかりません（不足: ' + missing.join(', ') + '）。'); return;
     }
 
-    // 2) 送信先の既存商品コードキー
+    // 2) 送信先の既存行を読む（商品コードキー→行番号 と、各マッピング列の現在表示値）
     var dLast = dsh.getLastRow();
-    var existingKeys = [];
+    var fieldList = Object.keys(destCols);
+    var existingCodeRow = {};   // codeKey -> 送信先行番号
+    var existingCellVals = {};  // codeKey -> { field: 現在の表示値 }
     if (dLast >= cfg.destDataStartRow) {
-      var codeColVals = dsh.getRange(cfg.destDataStartRow, destCols['商品コード'] + 1, dLast - cfg.destDataStartRow + 1, 1).getDisplayValues();
-      existingKeys = codeColVals.map(function (r) { return yt_商品コードキー_(r[0]); }).filter(Boolean);
+      var colIdxList = fieldList.map(function (f) { return destCols[f]; });
+      var minCol = Math.min.apply(null, colIdxList);
+      var maxCol = Math.max.apply(null, colIdxList);
+      var block = dsh.getRange(cfg.destDataStartRow, minCol + 1, dLast - cfg.destDataStartRow + 1, maxCol - minCol + 1).getDisplayValues();
+      for (var r = 0; r < block.length; r++) {
+        var brow = block[r];
+        var codeKey = yt_商品コードキー_(brow[destCols['商品コード'] - minCol]);
+        if (!codeKey || (codeKey in existingCodeRow)) continue; // 最初の行を採用
+        existingCodeRow[codeKey] = cfg.destDataStartRow + r;
+        var vals = {};
+        fieldList.forEach(function (f) { vals[f] = brow[destCols[f] - minCol]; });
+        existingCellVals[codeKey] = vals;
+      }
     }
 
     // 3) 台湾系タブを横断してチェックON行を収集
@@ -177,35 +198,54 @@ function 台湾_Yahooテンプレへ送信() {
 
     if (collected.length === 0) { ss.toast('チェックON行がありません。'); return; }
 
-    // 4) 送信計画（重複/コード空スキップ）
-    var plan = yt_送信計画を作る_(collected, existingKeys);
-    if (plan.toSend.length === 0) {
+    // 4) 送信計画（既存=空セル補充 / 新規=追記）
+    var plan = yt_送信計画を作る_(collected, existingCodeRow);
+    if (plan.toAppend.length === 0 && plan.toUpdate.length === 0) {
       ss.toast('送信対象なし（重複' + plan.skipDup + ' / コード無し' + plan.skipNoCode + '）。'); return;
     }
 
     // 5) 確認ダイアログ
-    var preview = plan.toSend.slice(0, 10).map(function (o) {
-      return o.codeKey + ' / ' + String(o.mapped['商品名'] || '').slice(0, 30);
+    var previewItems = plan.toAppend.concat(plan.toUpdate);
+    var preview = previewItems.slice(0, 10).map(function (o) {
+      return (o.destRow ? '[補充]' : '[新規]') + ' ' + o.codeKey + ' / ' + String(o.mapped['商品名'] || '').slice(0, 28);
     }).join('\n');
     var res = ui.alert('Yahooテンプレへ送信',
-      plan.toSend.length + '件を「' + cfg.destSheet + '」の最終行の下へ追記します。\n' +
+      '新規追記 ' + plan.toAppend.length + '件 / 既存の空セル補充 ' + plan.toUpdate.length + '件 を「' + cfg.destSheet + '」に書き込みます。\n' +
       '（重複スキップ ' + plan.skipDup + ' / コード無しスキップ ' + plan.skipNoCode + '）\n\n' +
-      preview + (plan.toSend.length > 10 ? '\n…ほか' : '') + '\n\n実行する？',
+      preview + (previewItems.length > 10 ? '\n…ほか' : '') + '\n\n実行する？',
       ui.ButtonSet.YES_NO);
     if (res !== ui.Button.YES) { ui.alert('やめました。'); return; }
 
-    // 6) 追記（送信先の各列へ列ごとに書込）
-    var startRow = Math.max(dLast + 1, cfg.destDataStartRow);
-    var n = plan.toSend.length;
-    Object.keys(destCols).forEach(function (f) {
-      var colVals = plan.toSend.map(function (o) { return [o.mapped[f] != null ? o.mapped[f] : '']; });
-      dsh.getRange(startRow, destCols[f] + 1, n, 1).setValues(colVals);
+    // 6a) 既存行: 空セルだけ補充（値が入っているセルは触らない）
+    var filledCells = 0;
+    plan.toUpdate.forEach(function (o) {
+      var cur = existingCellVals[o.codeKey] || {};
+      fieldList.forEach(function (f) {
+        var existingVal = String(cur[f] == null ? '' : cur[f]).trim();
+        var newVal = o.mapped[f];
+        if (existingVal === '' && newVal != null && String(newVal).trim() !== '') {
+          dsh.getRange(o.destRow, destCols[f] + 1).setValue(newVal);
+          filledCells++;
+        }
+      });
     });
+
+    // 6b) 新規: 最終データ行の下へ追記
+    if (plan.toAppend.length > 0) {
+      var startRow = Math.max(dLast + 1, cfg.destDataStartRow);
+      var n = plan.toAppend.length;
+      fieldList.forEach(function (f) {
+        var colVals = plan.toAppend.map(function (o) { return [o.mapped[f] != null ? o.mapped[f] : '']; });
+        dsh.getRange(startRow, destCols[f] + 1, n, 1).setValues(colVals);
+      });
+    }
     SpreadsheetApp.flush();
 
-    // 7) 送信成功した行のA列チェックをOFF
+    // 7) 処理した行のA列チェックをOFF（新規・補充とも）
     var bySheet = {};
-    plan.toSend.forEach(function (o) { (bySheet[o.sheet] = bySheet[o.sheet] || []).push(o.rowIndex); });
+    plan.toAppend.concat(plan.toUpdate).forEach(function (o) {
+      (bySheet[o.sheet] = bySheet[o.sheet] || []).push(o.rowIndex);
+    });
     Object.keys(bySheet).forEach(function (name) {
       var sh = ss.getSheetByName(name);
       if (!sh) return;
@@ -214,7 +254,7 @@ function 台湾_Yahooテンプレへ送信() {
       });
     });
 
-    ss.toast('Yahooへ送信 ' + n + '件 / 重複' + plan.skipDup + ' / コード無し' + plan.skipNoCode);
+    ss.toast('Yahoo送信: 新規 ' + plan.toAppend.length + '件 / 補充 ' + plan.toUpdate.length + '件(' + filledCells + 'セル) / 重複' + plan.skipDup + ' / コード無し' + plan.skipNoCode);
   } finally {
     lock.releaseLock();
   }
