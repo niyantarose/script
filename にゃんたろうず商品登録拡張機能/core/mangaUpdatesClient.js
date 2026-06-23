@@ -23,8 +23,40 @@
     map.set(key, value);
   }
 
-  function hasJapaneseTitleSignal(value) {
+  function hasKanaJapaneseSignal(value) {
     return /[\u3041-\u3096\u30A1-\u30FA\u30FC\u309D\u309E\u3005\u3006\u3007]/.test(String(value || ''));
+  }
+
+  function hasJapaneseTitleSignal(value) {
+    var s = String(value || '');
+    if (hasKanaJapaneseSignal(s)) return true;
+    // カナ無しの日本語漢字題（例: K-9 警視庁公安部公安第9課異能対策係）
+    if (/[\u3400-\u4DBF\u4E00-\u9FFF]/.test(s)) return true;
+    return false;
+  }
+
+  function pickPreferredJapaneseCandidate(candidates, echoQueries) {
+    var list = candidates || [];
+    if (!list.length) return '';
+    // 原語題（中文原題など）がクエリと一致してエコーされている場合は除外する。
+    // 例: 中華漫画の Associated に「中文原題 + 日本語ライセンス題」が並ぶケースで
+    // 中文原題ではなく日本語題を採用するため。字体差のある日本語漢字題は除外しない。
+    var skip = {};
+    var qs = Array.isArray(echoQueries) ? echoQueries : (echoQueries ? [echoQueries] : []);
+    var i;
+    for (i = 0; i < qs.length; i += 1) {
+      var qk = normalizeTitleKey(qs[i]);
+      if (qk) skip[qk] = true;
+    }
+    var pool = [];
+    for (i = 0; i < list.length; i += 1) {
+      var key = normalizeTitleKey(list[i]);
+      if (key && skip[key]) continue;
+      pool.push(list[i]);
+    }
+    if (!pool.length) pool = list;
+    // MangaUpdates の Associated Names 表示順（先頭）を尊重して採用する。
+    return String(pool[0] || '').trim();
   }
 
   function uniqAniListQueries(values) {
@@ -294,6 +326,22 @@
       if (titlesHaveHan) {
         var overlap = maxHanOverlapBetweenTitlesAndQueries(titles, raw);
         if (overlap < 2) return false;
+        // 強い漢字重なりはシリーズ一致の十分条件とみなす。
+        // 繁体字クエリ（博客來原題）↔ 日本語題（字体差: 廳/庁, 對/対, 係/組 等）で
+        // 正規化キーが一致しない正解シリーズを API 検索段で採用するための救済。
+        var distinctQueryHan = {};
+        var dq;
+        for (dq = 0; dq < raw.length; dq += 1) {
+          var hs = collectHanChars(raw[dq]);
+          var hi;
+          for (hi = 0; hi < hs.length; hi += 1) distinctQueryHan[hs[hi]] = true;
+        }
+        var distinctCount = 0;
+        var dk;
+        for (dk in distinctQueryHan) {
+          if (Object.prototype.hasOwnProperty.call(distinctQueryHan, dk)) distinctCount += 1;
+        }
+        if (overlap >= 4 && overlap >= Math.ceil(distinctCount * 0.5)) return true;
       }
     }
     var i;
@@ -408,9 +456,11 @@
 
     if (!jpCandidates.length) return '';
 
-    // シリーズ一致済みなら Associated Names の先頭日本語を優先（GAS と同様）
+    // シリーズ一致済みなら Associated Names の先頭日本語を優先（GAS と同様）。
+    // ただし中文原題などクエリと一致する原語題エコーは除外してから先頭を採る
+    // （字体差のある日本語漢字題は除外しないので K-9 等は先頭の日本語題を採用）。
     if (options.seriesVerified) {
-      return String(jpCandidates[0] || '').trim();
+      return pickPreferredJapaneseCandidate(jpCandidates, options.echoQueries);
     }
 
     // クエリや英題（Saving My Sweetheart など）に最も近い日本語候補を優先する
@@ -459,7 +509,7 @@
     var detailPreferKeys = queries
       .concat(getSearchResultTitles(searchRow || {}))
       .filter(Boolean);
-    var jp = pickJapaneseFromDetail(detail, detailPreferKeys, { seriesVerified: true });
+    var jp = pickJapaneseFromDetail(detail, detailPreferKeys, { seriesVerified: true, echoQueries: queries });
     return { japaneseTitle: jp, matchedTitles: titles };
   }
 
@@ -645,7 +695,11 @@
           })
         );
         for (si = 0; si < siteDetails.length; si += 1) {
-          var siteRow = { hit_title: sq };
+          // クエリ文字列を hit_title として注入しない。注入するとそれ自体が候補タイトルに
+          // 混ざり、detailMatchesQueries がどのシリーズでも自明に一致して検証を素通りし、
+          // 無関係なシリーズ（例: 別作「Police Tribe K-9」）を採用してしまう。
+          // 検証はシリーズ自身の Associated Names に対して行う。
+          var siteRow = {};
           var siteResolved = tryResolveMatchedDetail_(
             siteDetails[si],
             siteRow,

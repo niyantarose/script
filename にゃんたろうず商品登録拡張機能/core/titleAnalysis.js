@@ -91,6 +91,18 @@
     return explicit || 'unknown';
   }
 
+  /** N+M 合本巻番号（例: 1+2, 07+08）と直後の小說/限量ノイズ */
+  function stripBundleVolumeNoise(text) {
+    let value = compactSpaces(text);
+    if (!value) return '';
+    value = value
+      .replace(/[0-9０-９]{1,3}(?:[+＋][0-9０-９]{1,3})+(?:\s*(?:小說|小説|小说|漫畫|漫画|コミック|單行本|单行本))?(?:\s*(?:限量|限定))?\s*$/iu, '')
+      .replace(/\s*(?:小說|小説|小说)(?:\s*(?:限量|限定))?\s*$/iu, '')
+      .replace(/\s*(?:限量|限定)\s*$/u, '')
+      .trim();
+    return compactSpaces(value);
+  }
+
   function stripBracketNoise(text) {
     return compactSpaces(text)
       .replace(/\[[^\]]*(?:예약|특전|초판|한정|限定|特典|首刷|初回|初版|特[裝装]|通常|贈品|赠品|予約|預購|预购)[^\]]*\]/gi, ' ')
@@ -181,6 +193,7 @@
   function stripCommonNoise(text) {
     let value = compactSpaces(text);
     value = stripBracketNoise(value);
+    value = stripBundleVolumeNoise(value);
     value = value
       .replace(/^\s*(?:小説|小說|小说|漫画|漫畫|コミック|만화|코믹|소설|라이트노벨|light\s*novel)\s+/iu, '')
       .replace(/\s*(?:首刷(?:限定)?版?|初版(?:限定)?版?|初回(?:限定)?版?|限定版|通常版|特[裝装]版|한정판|초판(?:한정)?|특장판|일반판)\s*$/iu, '')
@@ -200,6 +213,7 @@
 
   function stripWorkTitleNoise(text) {
     let value = compactSpaces(text);
+    value = stripBundleVolumeNoise(value);
     value = stripBracketNoise(value)
       .replace(/\s*(?:首刷(?:限定)?版?|初版(?:限定)?版?|初回(?:限定)?版?|限定版|通常版|特[裝装]版|한정판|초판(?:한정)?|특장판|일반판)\s*/giu, ' ')
       .replace(/\s+/g, ' ')
@@ -333,6 +347,8 @@
     /[\s　]*[-_][\d０-９]{1,3}\s*$/u,
     // グッズ種別（中・台・韓・日）
     /[\s　]*(?:壓克力(?:立牌|色紙|筋牌|便利夾|キーホルダー)?|压克力(?:立牌|色纸|筋牌|便利夹)?|多功能手機包|多功能手机包|手機包|手机包|透明立方|立牌|色紙|色纸|貼紙|贴纸|明信片|鑰匙圈|钥匙圈|徽章|胸章|海報|海报|掛軸|挂轴|門簾|门帘|卡片|杯墊|杯垫|資料夾|资料夹|文件夾|文件夹|吊飾|吊饰|抱枕|托特袋|帆布袋|手提袋|周邊|周边|アクリル(?:スタンド|キーホルダー|ボード|ブロック)?|アクスタ|キーホルダー|缶バッジ|ポストカード|ステッカー|クリアファイル|ブロマイド|タペストリー|아크릴(?:스탠드|키링|카드|블럭|보드)?|포토카드|엽서|포스터|스티커|틴케이스|인형|키링|클리어\s*파일|뱃지|배지|캔뱃지|마우스패드|담요|쿠션)\s*$/iu,
+    // N+M 合本巻番号（例: 1+2小說限量）
+    /[0-9０-９]{1,3}(?:[+＋][0-9０-９]{1,3})+(?:小說|小説|小说|漫畫|漫画|コミック)?(?:限量|限定)?\s*$/iu,
     // 版種
     /[\s　]*(?:首刷(?:限定)?版?|初版(?:限定)?版?|初回(?:限定)?版?|限定版|通常版|特[裝装]版|한정판|초판(?:한정)?|특장판|일반판|限定|通常|首刷|初版|初回|초판|한정)\s*$/iu,
     // 特典・予約
@@ -590,6 +606,7 @@
     發: '发', 发: '發',
     網: '网', 网: '網',
     龍: '龙', 龙: '龍',
+    蔭: '陰', 陰: '蔭',
     馬: '马', 马: '馬',
     車: '车', 车: '車',
     門: '门', 门: '門',
@@ -1074,7 +1091,7 @@
 
   /** シート「原題タイトル」向け: 巻・コミック語尾など（GAS stripLookupVolumeNoise_ 相当） */
   function stripVolumeNoiseForSheetOriginal(value) {
-    let s = compactSpaces(value);
+    let s = stripBundleVolumeNoise(compactSpaces(value));
     if (!s) return '';
     const rules = [
       /[\s　]*(?:vol\.?|v\.?|第)\s*[0-9０-９]{1,4}\s*(?:巻|卷|集|冊|話|回|期|号|號)?\s*$/iu,
@@ -1180,6 +1197,7 @@
     extractEdition,
     extractMagazineInfo,
     stripCommonNoise,
+    stripBundleVolumeNoise,
     stripTwGoodsNoise,
     stripKrGoodsNoise,
     stripSearchNoise,

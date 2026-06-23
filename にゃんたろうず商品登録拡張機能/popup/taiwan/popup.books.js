@@ -85,6 +85,22 @@ function buildBookSheetDescription(product) {
  * 「第02巻」「第04巻」のような日本語構成タイトルから巻数を取りこぼすため、ここで専用実装する。
  * 優先順位: 第N巻/集等のマーカー > vol./括弧囲み > 版種・末尾の数字。
  */
+function normalizeTaiwanAsciiDigits_(value) {
+  return String(value || '').replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+}
+
+/** N+M 合本（例: 1+2小說限量）→ { start, end } または null */
+function extractTaiwanBundleVolumeRange_(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  const m = s.match(/([0-9０-９]{1,3})\s*[+＋]\s*([0-9０-９]{1,3})/u);
+  if (!m) return null;
+  const start = parseInt(normalizeTaiwanAsciiDigits_(m[1]), 10);
+  const end = parseInt(normalizeTaiwanAsciiDigits_(m[2]), 10);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= start) return null;
+  return { start: String(start), end: String(end) };
+}
+
 function extractTaiwanVolumeNumber_(text) {
   const s = String(text || '').replace(/\s+/g, ' ').trim();
   if (!s) return '';
@@ -115,8 +131,9 @@ function extractTaiwanVolumeNumber_(text) {
  * タイトル文字列から巻数列（単巻数 / セット巻数開始番号 / セット巻数終了番号）を導出する。
  * ルール:
  *   1) 上下巻（「上+下」「上下巻」等）→ セット扱い：開始=1 / 終了=2
- *   2) 巻数の数字が取れる（第N巻 / N巻 / N集 / 末尾N 等）→ 単巻数=N
- *   3) どちらも無い → 単巻数=1（デフォルト）
+ *   2) N+M 合本（「1+2小說限量」等）→ セット扱い：開始=N / 終了=M
+ *   3) 巻数の数字が取れる（第N巻 / N巻 / N集 / 末尾N 等）→ 単巻数=N
+ *   4) どちらも無い → 単巻数=1（デフォルト）
  * すでに明示値が入っている場合はそれを尊重する（手動指定・既存値を壊さない）。
  */
 function deriveTaiwanVolumeColumns_(product) {
@@ -149,7 +166,19 @@ function deriveTaiwanVolumeColumns_(product) {
     return { 単巻数: '', セット巻数開始番号: '1', セット巻数終了番号: '2' };
   }
 
-  // 2) 巻数番号を本文から抽出 → 単巻数（マーカー優先で全テキストを走査）
+  // 2) N+M 合本（例: 綠蔭之冠1+2小說限量特裝版）→ セット巻数開始/終了
+  for (const t of texts) {
+    const bundle = extractTaiwanBundleVolumeRange_(t);
+    if (bundle) {
+      return {
+        単巻数: '',
+        セット巻数開始番号: bundle.start,
+        セット巻数終了番号: bundle.end,
+      };
+    }
+  }
+
+  // 3) 巻数番号を本文から抽出 → 単巻数（マーカー優先で全テキストを走査）
   let vol = '';
   for (const t of texts) {
     vol = extractTaiwanVolumeNumber_(t);
@@ -159,7 +188,7 @@ function deriveTaiwanVolumeColumns_(product) {
     return { 単巻数: vol, セット巻数開始番号: '', セット巻数終了番号: '' };
   }
 
-  // 3) 何も取れなければデフォルト1巻
+  // 4) 何も取れなければデフォルト1巻
   return { 単巻数: '1', セット巻数開始番号: '', セット巻数終了番号: '' };
 }
 

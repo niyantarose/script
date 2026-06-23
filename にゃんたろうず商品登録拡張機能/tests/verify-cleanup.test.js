@@ -79,7 +79,8 @@ function testPopupSharedJs() {
     { input: '全球高考 3 (完)', expected: '全球高考' },
     { input: '全球高考 (博客來獨家)', expected: '全球高考' },
     { input: '全球高考3(完)', expected: '全球高考' },
-    { input: '全球高考(博客來獨家)', expected: '全球高考' }
+    { input: '全球高考(博客來獨家)', expected: '全球高考' },
+    { input: '綠蔭之冠1+2小說限量特裝版', expected: '綠蔭之冠' },
   ];
 
   for (const tc of testCases) {

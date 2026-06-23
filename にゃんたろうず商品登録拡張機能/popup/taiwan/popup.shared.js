@@ -800,6 +800,9 @@ function cleanupOriginalTitleTextOnce(value) {
     .replace(/\s*[-/／]\s*(?:首刷|初回|初版|限定|特裝|特装|特別|特别|通常|普通|獨家|独家)[^ ]*\s*/gu, ' ')
     .replace(/\s*(?:首刷(?:限定)?|初回(?:限定)?|初版(?:限定)?|限定|特裝|特装|特別|特别|通常|普通|獨家|独家)(?:版)?\s*$/u, '')
     .replace(/\s*第?\s*\d+\s*(?:巻|卷|冊|册|集|話|话|部)\s*$/u, '')
+    .replace(/[0-9０-９]{1,3}(?:[+＋][0-9０-９]{1,3})+(?:小說|小説|小说|漫畫|漫画|コミック)?(?:限量|限定)?\s*$/iu, '')
+    .replace(/\s*(?:小說|小説|小说)(?:\s*(?:限量|限定))?\s*$/iu, '')
+    .replace(/\s*(?:限量|限定)\s*$/u, '')
     .replace(/\s*\d+\s*$/u, '')
     .replace(/^《\s*([^》]+?)\s*》$/u, '$1')
     .replace(/^「\s*([^」]+?)\s*」$/u, '$1')
@@ -837,6 +840,7 @@ if (typeof globalThis.stripVolumeNoiseForSheetOriginal !== 'function') {
     let text = trimValue(value);
     if (!text) return '';
     text = text
+      .replace(/[0-9０-９]{1,3}(?:[+＋][0-9０-９]{1,3})+(?:\s*(?:小說|小説|小说|漫畫|漫画|コミック|單行本|单行本))?(?:\s*(?:限量|限定))?\s*$/iu, '')
       .replace(/\s*(?:vol\.?|v\.?|第)\s*[0-9０-９]{1,4}\s*(?:巻|卷|集|冊|話|回|期|号|號)?\s*$/iu, '')
       .replace(/\s*[#＃]?\s*[0-9０-９]{1,4}\s*$/u, '')
       .replace(/\s*(?:第)?\s*[0-9０-９]{1,4}\s*(?:漫畫|漫画|コミック|單行本|单行本)\s*$/iu, '')
@@ -871,7 +875,15 @@ if (typeof globalThis.normalizeSheetJapaneseWorkTitleForRow !== 'function') {
 }
 
 function detectEditionType(product) {
-  const text = [product?.商品名 || '', product?.特典情報 || '', product?.商品説明 || ''].join('\n');
+  const text = [
+    product?.商品名,
+    product?.タイトル,
+    product?.原題商品タイトル,
+    product?.原題タイトル,
+    product?.ページタイトル,
+    product?.特典情報,
+    product?.商品説明,
+  ].filter(Boolean).join('\n');
   if (/特裝|特装/.test(text)) return '特装版';
   if (/初回限定|首刷限定|首刷贈品|首刷赠品|買就送|买就送/.test(text)) return '初版限定版';
   if (/限定版/.test(text)) return '限定版';
@@ -999,7 +1011,11 @@ function getMangaUpdatesLookupFallbackStatus(queries, hasGasUrl, isLookupTarget)
 }
 
 function hasJapaneseTitleSignal(value) {
-  return /[ぁ-ゖァ-ヺ々〆ヵヶ]/.test(String(value || ''));
+  const s = String(value || '');
+  if (/[ぁ-ゖァ-ヺ々〆ヵヶ]/.test(s)) return true;
+  // カナ無しの日本語漢字題（例: K-9 警視庁公安部公安第9課異能対策係）
+  if (/[\u3400-\u4DBF\u4E00-\u9FFF]/.test(s)) return true;
+  return false;
 }
 
 function normalizeMangaUpdatesTitleKey(value) {

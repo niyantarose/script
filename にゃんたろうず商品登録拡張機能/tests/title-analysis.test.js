@@ -58,6 +58,20 @@ const tests = [
     },
   },
   {
+    name: 'books tw novel bundle 1+2 limited',
+    item: {
+      source: 'books_tw',
+      title: '綠蔭之冠1+2小說限量特裝版',
+      categoryName: '輕小說',
+    },
+    expected: {
+      itemType: 'light_novel',
+      extractedWorkTitle: '綠蔭之冠',
+      edition: '特裝版',
+      normalizedSearchTitle: '綠蔭之冠',
+    },
+  },
+  {
     name: 'books tw goods folder 2-pack without space',
     item: {
       source: 'books_tw',
