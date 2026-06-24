@@ -832,7 +832,7 @@ function 台湾書籍系_重複作品_計画を作成_() {
         const newCode = p.商品コード ? 台湾書籍系_コードの作品IDを差し替え_(p.商品コード, keepId) : '';
         const newSku = p.sku ? 台湾書籍系_コードの作品IDを差し替え_(p.sku, keepId) : '';
         if (newCode && newCode.toUpperCase() !== p.商品コード.toUpperCase() && usedCodes[newCode.toUpperCase()]) {
-          collisions.push({ sheetName: p.sheetName, sheetRow: p.sheetRow, from: p.商品コード, to: newCode });
+          collisions.push({ sh: p.sh, sheetName: p.sheetName, sheetRow: p.sheetRow, from: p.商品コード, to: newCode });
           return;
         }
         productEdits.push({
@@ -866,21 +866,61 @@ function 台湾書籍系_重複作品_計画をログ出力_(plan, ラベル) {
   Logger.log('重複作品[' + ラベル + '] 媒体不明スキップ=' + JSON.stringify(plan.媒体不明スキップ));
 }
 
+/** ドライラン結果を行の背景色で可視化（クリア=true で色を消す） */
+function 台湾書籍系_重複作品_色付け_(plan, クリア) {
+  const 黄 = クリア ? null : '#fff2cc'; // 振り直す商品
+  const 赤 = クリア ? null : '#f4cccc'; // 削除予定の孤立Works行
+  const 橙 = クリア ? null : '#fce5cd'; // 衝突でスキップした商品
+  plan.productEdits.forEach(e => {
+    if (e.sh) e.sh.getRange(e.sheetRow, 1, 1, e.sh.getLastColumn()).setBackground(黄);
+  });
+  plan.collisions.forEach(c => {
+    if (c.sh) c.sh.getRange(c.sheetRow, 1, 1, c.sh.getLastColumn()).setBackground(橙);
+  });
+  plan.orphanWorks.forEach(o => {
+    plan.worksSh.getRange(o.sheetRow, 1, 1, plan.worksSh.getLastColumn()).setBackground(赤);
+  });
+}
+
 function 台湾書籍系_重複作品_検出ドライラン() {
   const ui = SpreadsheetApp.getUi();
   const plan = 台湾書籍系_重複作品_計画を作成_();
   台湾書籍系_重複作品_計画をログ出力_(plan, 'ドライラン');
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    台湾書籍系_重複作品_色付け_(plan, false);
+  } finally {
+    lock.releaseLock();
+  }
   ui.alert(
-    '重複作品の検出（書き換えなし）',
+    '重複作品の検出（データは書き換えません／着色のみ）',
     `重複グループ: ${plan.dupGroups.length}件\n` +
-    `振り直す商品: ${plan.productEdits.length}件\n` +
-    `削除予定の孤立Works行: ${plan.orphanWorks.length}件\n` +
-    `コード衝突でスキップ: ${plan.collisions.length}件\n` +
+    `振り直す商品〔黄〕: ${plan.productEdits.length}件\n` +
+    `削除予定の孤立Works行〔赤〕: ${plan.orphanWorks.length}件\n` +
+    `コード衝突でスキップ〔橙〕: ${plan.collisions.length}件\n` +
     `媒体不明でスキップ: ${plan.媒体不明スキップ.length}件\n\n` +
-    '詳細はApps Scriptの実行ログに出しています。\n' +
-    '統合するには「重複作品を統合（実行）」を実行してください。',
+    '対象行に色を付けました：\n' +
+    '・黄 = 振り直す商品（台湾まんが/台湾書籍その他）\n' +
+    '・赤 = 削除予定の孤立Works行（Works書籍専用）\n' +
+    '・橙 = 衝突でスキップした商品\n\n' +
+    '色を消すには「🎨 重複検出の色をクリア」。\n' +
+    '統合するには「🔗 重複作品を統合（実行）」。',
     ui.ButtonSet.OK
   );
+}
+
+function 台湾書籍系_重複作品_色をクリア() {
+  const ui = SpreadsheetApp.getUi();
+  const plan = 台湾書籍系_重複作品_計画を作成_();
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    台湾書籍系_重複作品_色付け_(plan, true);
+  } finally {
+    lock.releaseLock();
+  }
+  ui.alert('重複検出の色をクリア', '重複検出で付けた色を消しました。', ui.ButtonSet.OK);
 }
 
 function 台湾書籍系_重複作品_統合実行() {
@@ -910,6 +950,7 @@ function 台湾書籍系_重複作品_統合実行() {
   const lock = LockService.getDocumentLock();
   lock.waitLock(30000);
   try {
+    台湾書籍系_重複作品_色付け_(plan, true); // ドライランの着色を消してから適用
     plan.productEdits.forEach(e => {
       if (e.col作品ID) e.sh.getRange(e.sheetRow, e.col作品ID).setValue(e.keepId);
       if (e.col商品コード && e.newCode) e.sh.getRange(e.sheetRow, e.col商品コード).setValue(e.newCode);
