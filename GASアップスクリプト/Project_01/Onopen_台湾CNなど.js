@@ -70,11 +70,8 @@ function onOpen() {
         .addItem('④ 選択行を再生成', '台湾まんが_現在行を再計算')
         .addItem('⑥ プルダウン更新', '台湾まんが_プルダウン更新')
         .addSeparator()
-        .addItem('🔍 Works重複チェック・統合', '台湾まんが_重複統合')
-        .addItem('🔄 WorksKey再正規化', '台湾まんが_WorksKey再正規化')
-        .addItem('🔢 Works ID振り直し', '台湾まんが_ID振り直し')
-        .addItem('🧹 Works孤立エントリー削除', '台湾まんが_孤立削除')
-        .addItem('⚙️ Works初期化', '台湾まんが_Works初期化')
+        .addItem('🛠 WorksKeyにCM/NV付与（削除なし）', '台湾書籍系_WorksKey媒体付与_削除なし')
+        .addItem('🔒 Works危険操作は停止中', '台湾書籍系_Works危険操作メニュー説明')
         
     )
 
@@ -86,11 +83,8 @@ function onOpen() {
         .addItem('④ 選択行を再生成', '台湾書籍その他_現在行を再計算')
         .addItem('⑥ プルダウン更新', '台湾書籍その他_プルダウン更新')
         .addSeparator()
-        .addItem('🔍 Works重複チェック・統合', '台湾書籍その他_重複統合')
-        .addItem('🔄 WorksKey再正規化', '台湾書籍その他_WorksKey再正規化')
-        .addItem('🔢 Works ID振り直し', '台湾書籍その他_ID振り直し')
-        .addItem('🧹 Works孤立エントリー削除', '台湾書籍その他_孤立削除')
-        .addItem('⚙️ Works初期化', '台湾書籍その他_Works初期化')
+        .addItem('🛠 WorksKeyにCM/NV付与（削除なし）', '台湾書籍系_WorksKey媒体付与_削除なし')
+        .addItem('🔒 Works危険操作は停止中', '台湾書籍系_Works危険操作メニュー説明')
         
     )
 
@@ -243,11 +237,11 @@ function 台湾まんが_一括更新() {
 }
 
 function 台湾まんが_プルダウン更新() { _kyoutuu.プルダウン更新を実行(設定_台湾まんが); }
-function 台湾まんが_Works初期化() { _kyoutuu書籍Works初期化_(設定_台湾まんが); }
-function 台湾まんが_WorksKey再正規化() { _kyoutuu書籍WorksKey再正規化_(設定_台湾まんが); }
-function 台湾まんが_重複統合() { _kyoutuu書籍重複統合_(設定_台湾まんが); }
-function 台湾まんが_ID振り直し() { _kyoutuu書籍ID振り直し_(設定_台湾まんが); }
-function 台湾まんが_孤立削除() { _kyoutuu書籍孤立削除_(設定_台湾まんが); }
+function 台湾まんが_Works初期化() { 台湾書籍系_Works危険操作を停止_('Works初期化'); }
+function 台湾まんが_WorksKey再正規化() { 台湾書籍系_Works危険操作を停止_('WorksKey再正規化'); }
+function 台湾まんが_重複統合() { 台湾書籍系_Works危険操作を停止_('Works重複チェック・統合'); }
+function 台湾まんが_ID振り直し() { 台湾書籍系_Works危険操作を停止_('Works ID振り直し'); }
+function 台湾まんが_孤立削除() { 台湾書籍系_Works危険操作を停止_('Works孤立エントリー削除'); }
 
 /* ============================================================
  * 台湾書籍その他 メニューラッパー
@@ -264,11 +258,25 @@ function 台湾書籍その他_一括更新() {
 }
 
 function 台湾書籍その他_プルダウン更新() { _kyoutuu.プルダウン更新を実行(設定_台湾書籍その他); }
-function 台湾書籍その他_Works初期化() { _kyoutuu書籍Works初期化_(設定_台湾書籍その他); }
-function 台湾書籍その他_WorksKey再正規化() { _kyoutuu書籍WorksKey再正規化_(設定_台湾書籍その他); }
-function 台湾書籍その他_重複統合() { _kyoutuu書籍重複統合_(設定_台湾書籍その他); }
-function 台湾書籍その他_ID振り直し() { _kyoutuu書籍ID振り直し_(設定_台湾書籍その他); }
-function 台湾書籍その他_孤立削除() { _kyoutuu書籍孤立削除_(設定_台湾書籍その他); }
+function 台湾書籍その他_Works初期化() { 台湾書籍系_Works危険操作を停止_('Works初期化'); }
+function 台湾書籍その他_WorksKey再正規化() { 台湾書籍系_Works危険操作を停止_('WorksKey再正規化'); }
+function 台湾書籍その他_重複統合() { 台湾書籍系_Works危険操作を停止_('Works重複チェック・統合'); }
+function 台湾書籍その他_ID振り直し() { 台湾書籍系_Works危険操作を停止_('Works ID振り直し'); }
+function 台湾書籍その他_孤立削除() { 台湾書籍系_Works危険操作を停止_('Works孤立エントリー削除'); }
+
+function 台湾書籍系_Works危険操作メニュー説明() {
+  台湾書籍系_Works危険操作を停止_('Works危険操作');
+}
+
+function 台湾書籍系_Works危険操作を停止_(操作名) {
+  SpreadsheetApp.getUi().alert(
+    '停止中',
+    `${操作名} は現在停止しています。\n\n` +
+    'この操作はWorks行の統合・削除・ID変更を行う可能性があり、CM/NVを別作品として扱う現在の運用では危険です。\n\n' +
+    '必要な場合は、削除なしの専用修復メニューを作ってから実行してください。',
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
 
 /* ============================================================
  * 書籍 Works 補助
