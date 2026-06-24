@@ -730,6 +730,209 @@ function 台湾書籍系_媒体コードを生成_(値, シート名) {
   return 台湾書籍系_カテゴリコードを生成_(カテゴリ, シート名);
 }
 
+/** SKU/商品コードの作品IDセグメント（言語＋F/S の直後の4桁）を keepId に差し替える。失敗時は '' */
+function 台湾書籍系_コードの作品IDを差し替え_(コード, keepId) {
+  const s = 台湾書籍系_正規化文字列_(コード).toUpperCase();
+  const id = 台湾書籍系_作品ID4桁を取得_(keepId);
+  if (!s || !id) return '';
+  const m = s.match(/^([A-Z]{2}[A-Z]*?)(\d{4})(-.*)$/);
+  if (!m) return '';
+  return m[1] + id + m[3];
+}
+
+/** 重複検出用グループキー（媒体コード + 原題の作品比較キー）。原題が無ければ空 */
+function 台湾書籍系_重複グループキー_(worksKey, 原題タイトル) {
+  const okey = 台湾書籍系_作品比較キー_(原題タイトル);
+  if (!okey) return '';
+  const media = 台湾書籍系_WorksKey媒体コード_(worksKey) || '?';
+  return media + '|' + okey;
+}
+
+/**
+ * 重複作品（同一媒体＋作品比較キーなのに別作品ID）を検出し、統合計画を作る。
+ * 書き換えは一切しない（ドライラン・実行の双方から呼ぶ）。
+ * 媒体不明（媒体なし旧キー＝CM/NV判別不能）のグループは安全のため統合対象外。
+ */
+function 台湾書籍系_重複作品_計画を作成_() {
+  const ss = SpreadsheetApp.getActive();
+  const 作品シート名 =
+    (typeof 設定_台湾まんが !== 'undefined' && 設定_台湾まんが && 設定_台湾まんが.作品シート名) ||
+    (typeof 設定_台湾書籍その他 !== 'undefined' && 設定_台湾書籍その他 && 設定_台湾書籍その他.作品シート名) ||
+    'Works（書籍専用）';
+  const worksSh = ss.getSheetByName(作品シート名);
+  if (!worksSh || worksSh.getLastRow() < 2) throw new Error(`${作品シート名} にデータがありません`);
+
+  const wCols = 台湾書籍系_列マップを取得_(worksSh);
+  const cWK = wCols['WorksKey'], cID = wCols['作品ID'], cOrig = wCols['原題タイトル'];
+  if (!cWK || !cID) throw new Error('Worksに WorksKey / 作品ID 列が見つかりません');
+  const wVals = worksSh.getRange(2, 1, worksSh.getLastRow() - 1, worksSh.getLastColumn()).getValues();
+
+  // 1) Works行を「媒体＋作品比較キー」でグループ化
+  const groups = {};
+  wVals.forEach((r, i) => {
+    const id = 台湾書籍系_作品ID4桁を取得_(r[cID - 1]);
+    if (!id) return;
+    const wk = 台湾書籍系_正規化文字列_(r[cWK - 1]);
+    const orig = cOrig ? 台湾書籍系_正規化文字列_(r[cOrig - 1]) : '';
+    const gk = 台湾書籍系_重複グループキー_(wk, orig);
+    if (!gk) return;
+    (groups[gk] = groups[gk] || []).push({ sheetRow: i + 2, id, orig });
+  });
+
+  // 2) 商品シート（台湾まんが・台湾書籍その他）を読み、ID→商品行 と 既存コード集合
+  const products = {};
+  const usedCodes = {};
+  [
+    typeof 設定_台湾まんが !== 'undefined' ? 設定_台湾まんが : null,
+    typeof 設定_台湾書籍その他 !== 'undefined' ? 設定_台湾書籍その他 : null,
+  ].forEach(設定 => {
+    if (!設定) return;
+    const sh = ss.getSheetByName(設定.マスターシート名);
+    if (!sh || sh.getLastRow() < 2) return;
+    const 列 = 台湾書籍系_列マップを取得_(sh);
+    const cn = 設定.列名 || {};
+    const col作品ID = 列[台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）'])];
+    const col商品コード = 列[台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）'])];
+    const colSKU = 列[台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）', '商品コード(SKU)', '商品コード（SKU）'])];
+    const vals = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+    vals.forEach((r, i) => {
+      const 商品コード = col商品コード ? 台湾書籍系_正規化文字列_(r[col商品コード - 1]) : '';
+      const sku = colSKU ? 台湾書籍系_正規化文字列_(r[colSKU - 1]) : '';
+      if (商品コード) usedCodes[商品コード.toUpperCase()] = true;
+      const pid = 台湾書籍系_行から既存作品IDを取得_({
+        作品ID: col作品ID ? r[col作品ID - 1] : '',
+        商品コード, SKU自動: sku,
+      });
+      if (!pid) return;
+      (products[pid] = products[pid] || []).push({
+        sh, sheetName: 設定.マスターシート名, sheetRow: i + 2,
+        col作品ID, col商品コード, colSKU, 商品コード, sku,
+      });
+    });
+  });
+
+  // 3) 統合計画
+  const dupGroups = [];
+  const productEdits = [];
+  const collisions = [];
+  const orphanWorks = [];
+  const 媒体不明スキップ = [];
+  Object.keys(groups).forEach(gk => {
+    const ids = Array.from(new Set(groups[gk].map(r => r.id))).sort();
+    if (ids.length < 2) return;
+    if (gk.indexOf('?|') === 0) { 媒体不明スキップ.push({ gk, ids }); return; }
+    const keepId = ids[0];
+    const mergeIds = ids.slice(1);
+    dupGroups.push({ gk, keepId, mergeIds });
+    const fullyMerged = {};
+    mergeIds.forEach(mid => {
+      const prods = products[mid] || [];
+      let edited = 0;
+      prods.forEach(p => {
+        const newCode = p.商品コード ? 台湾書籍系_コードの作品IDを差し替え_(p.商品コード, keepId) : '';
+        const newSku = p.sku ? 台湾書籍系_コードの作品IDを差し替え_(p.sku, keepId) : '';
+        if (newCode && newCode.toUpperCase() !== p.商品コード.toUpperCase() && usedCodes[newCode.toUpperCase()]) {
+          collisions.push({ sheetName: p.sheetName, sheetRow: p.sheetRow, from: p.商品コード, to: newCode });
+          return;
+        }
+        productEdits.push({
+          sh: p.sh, sheetName: p.sheetName, sheetRow: p.sheetRow,
+          col作品ID: p.col作品ID, col商品コード: p.col商品コード, colSKU: p.colSKU,
+          keepId, fromCode: p.商品コード, newCode, fromSku: p.sku, newSku,
+        });
+        if (newCode) usedCodes[newCode.toUpperCase()] = true;
+        edited += 1;
+      });
+      // 全商品を振り直せた mergeID のみ Works 行を孤立扱いにできる。
+      fullyMerged[mid] = (edited === prods.length);
+    });
+    // 孤立Works行は「全商品を keepId へ振り直せた」mergeID のみ削除対象（衝突残りは残置）
+    groups[gk].forEach(r => {
+      if (mergeIds.indexOf(r.id) >= 0 && fullyMerged[r.id]) orphanWorks.push({ sheetRow: r.sheetRow, id: r.id });
+    });
+  });
+
+  return { 作品シート名, worksSh, dupGroups, productEdits, collisions, orphanWorks, 媒体不明スキップ };
+}
+
+function 台湾書籍系_重複作品_計画をログ出力_(plan, ラベル) {
+  Logger.log('重複作品[' + ラベル + '] dupGroups=' + JSON.stringify(plan.dupGroups));
+  Logger.log('重複作品[' + ラベル + '] productEdits=' + JSON.stringify(plan.productEdits.map(e => ({
+    sheet: e.sheetName, row: e.sheetRow, keep: e.keepId,
+    code: e.fromCode + '→' + e.newCode, sku: e.fromSku + '→' + e.newSku,
+  }))));
+  Logger.log('重複作品[' + ラベル + '] collisions=' + JSON.stringify(plan.collisions));
+  Logger.log('重複作品[' + ラベル + '] orphanWorks=' + JSON.stringify(plan.orphanWorks));
+  Logger.log('重複作品[' + ラベル + '] 媒体不明スキップ=' + JSON.stringify(plan.媒体不明スキップ));
+}
+
+function 台湾書籍系_重複作品_検出ドライラン() {
+  const ui = SpreadsheetApp.getUi();
+  const plan = 台湾書籍系_重複作品_計画を作成_();
+  台湾書籍系_重複作品_計画をログ出力_(plan, 'ドライラン');
+  ui.alert(
+    '重複作品の検出（書き換えなし）',
+    `重複グループ: ${plan.dupGroups.length}件\n` +
+    `振り直す商品: ${plan.productEdits.length}件\n` +
+    `削除予定の孤立Works行: ${plan.orphanWorks.length}件\n` +
+    `コード衝突でスキップ: ${plan.collisions.length}件\n` +
+    `媒体不明でスキップ: ${plan.媒体不明スキップ.length}件\n\n` +
+    '詳細はApps Scriptの実行ログに出しています。\n' +
+    '統合するには「重複作品を統合（実行）」を実行してください。',
+    ui.ButtonSet.OK
+  );
+}
+
+function 台湾書籍系_重複作品_統合実行() {
+  const ui = SpreadsheetApp.getUi();
+  const plan = 台湾書籍系_重複作品_計画を作成_();
+  台湾書籍系_重複作品_計画をログ出力_(plan, '実行プレビュー');
+  if (!plan.dupGroups.length) {
+    ui.alert('重複作品の統合', '統合対象の重複は見つかりませんでした。', ui.ButtonSet.OK);
+    return;
+  }
+  if (
+    ui.alert(
+      '重複作品を統合（実行）',
+      `${plan.dupGroups.length}グループを統合します。\n\n` +
+      `・下位IDの商品を先頭IDへ振り直し: ${plan.productEdits.length}件（作品ID＋SKUを書換）\n` +
+      `・孤立Works行の削除: ${plan.orphanWorks.length}件\n` +
+      `・コード衝突でスキップ: ${plan.collisions.length}件\n` +
+      `・媒体不明でスキップ: ${plan.媒体不明スキップ.length}件\n\n` +
+      '⚠️ SKU(商品コード)が変わります。先に「重複作品を検出（ドライラン）」で\n' +
+      '   実行ログを確認することを強く推奨します。\n\n続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    ) !== ui.Button.OK
+  ) {
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    plan.productEdits.forEach(e => {
+      if (e.col作品ID) e.sh.getRange(e.sheetRow, e.col作品ID).setValue(e.keepId);
+      if (e.col商品コード && e.newCode) e.sh.getRange(e.sheetRow, e.col商品コード).setValue(e.newCode);
+      if (e.colSKU && e.newSku) e.sh.getRange(e.sheetRow, e.colSKU).setValue(e.newSku);
+    });
+    // 孤立Works行は下から削除（行番号ずれ防止）
+    plan.orphanWorks.map(o => o.sheetRow).sort((a, b) => b - a).forEach(r => plan.worksSh.deleteRow(r));
+  } finally {
+    lock.releaseLock();
+  }
+
+  ui.alert(
+    '重複作品の統合 完了',
+    `統合グループ: ${plan.dupGroups.length}件\n` +
+    `振り直した商品: ${plan.productEdits.length}件\n` +
+    `削除した孤立Works行: ${plan.orphanWorks.length}件\n` +
+    `衝突でスキップ: ${plan.collisions.length}件\n` +
+    `媒体不明でスキップ: ${plan.媒体不明スキップ.length}件\n\n` +
+    '詳細は実行ログを確認してください。',
+    ui.ButtonSet.OK
+  );
+}
+
 function 台湾書籍系_作品ID4桁を取得_(作品ID) {
   const s = 台湾書籍系_正規化文字列_(作品ID);
   if (!s) return '';

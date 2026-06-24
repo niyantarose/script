@@ -71,6 +71,8 @@ function onOpen() {
         .addItem('⑥ プルダウン更新', '台湾まんが_プルダウン更新')
         .addSeparator()
         .addItem('🛠 WorksKeyに媒体コード付与（削除なし）', '台湾書籍系_WorksKey媒体付与_削除なし')
+        .addItem('🔎 重複作品を検出（ドライラン）', '台湾書籍系_重複作品_検出ドライラン')
+        .addItem('🔗 重複作品を統合（実行）', '台湾書籍系_重複作品_統合実行')
         .addItem('🔒 Works危険操作は停止中', '台湾書籍系_Works危険操作メニュー説明')
         
     )
@@ -84,6 +86,8 @@ function onOpen() {
         .addItem('⑥ プルダウン更新', '台湾書籍その他_プルダウン更新')
         .addSeparator()
         .addItem('🛠 WorksKeyに媒体コード付与（削除なし）', '台湾書籍系_WorksKey媒体付与_削除なし')
+        .addItem('🔎 重複作品を検出（ドライラン）', '台湾書籍系_重複作品_検出ドライラン')
+        .addItem('🔗 重複作品を統合（実行）', '台湾書籍系_重複作品_統合実行')
         .addItem('🔒 Works危険操作は停止中', '台湾書籍系_Works危険操作メニュー説明')
         
     )
