@@ -748,6 +748,73 @@ function 台湾書籍系_重複グループキー_(worksKey, 原題タイトル)
   return media + '|' + okey;
 }
 
+/** SKU/商品コード末尾の巻セグメントから最新巻番号を取り出す（2桁=単巻 / 4桁=セット終端） */
+function 台湾書籍系_商品コードから最新巻_(コード) {
+  const s = 台湾書籍系_正規化文字列_(コード).toUpperCase();
+  const m = s.match(/-([0-9]{1,4})$/);
+  if (!m) return 0;
+  const seg = m[1];
+  if (seg.length >= 3) return parseInt(seg.slice(-2), 10) || 0; // 0304 → 04
+  return parseInt(seg, 10) || 0;
+}
+
+/**
+ * 商品シート（台湾まんが・台湾書籍その他）の全商品から作品IDごとの最新巻を集計し、
+ * Worksの「最新巻(予約込み)」を更新（既存より大きい時のみ）。
+ * 併せて flush で数式列（登録済み巻 / 最新巻）の再計算を促す。冪等。
+ * @return 更新を試みた作品ID数
+ */
+function 台湾書籍系_Works最新巻を再計算_() {
+  const ss = SpreadsheetApp.getActive();
+  const idToMax = {};
+  [
+    typeof 設定_台湾まんが !== 'undefined' ? 設定_台湾まんが : null,
+    typeof 設定_台湾書籍その他 !== 'undefined' ? 設定_台湾書籍その他 : null,
+  ].forEach(設定 => {
+    if (!設定) return;
+    const sh = ss.getSheetByName(設定.マスターシート名);
+    if (!sh || sh.getLastRow() < 2) return;
+    const 列 = 台湾書籍系_列マップを取得_(sh);
+    const cn = 設定.列名 || {};
+    const colID = 列[台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）'])];
+    const colCode = 列[台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）'])];
+    const colSKU = 列[台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）', '商品コード(SKU)', '商品コード（SKU）'])];
+    const vals = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+    vals.forEach(r => {
+      const code = colCode ? 台湾書籍系_正規化文字列_(r[colCode - 1]) : '';
+      const sku = colSKU ? 台湾書籍系_正規化文字列_(r[colSKU - 1]) : '';
+      const pid = 台湾書籍系_行から既存作品IDを取得_({ 作品ID: colID ? r[colID - 1] : '', 商品コード: code, SKU自動: sku });
+      if (!pid) return;
+      const v = Math.max(台湾書籍系_商品コードから最新巻_(code), 台湾書籍系_商品コードから最新巻_(sku));
+      if (v > (idToMax[pid] || 0)) idToMax[pid] = v;
+    });
+  });
+  const ids = Object.keys(idToMax);
+  const 設定 = (typeof 設定_台湾まんが !== 'undefined' && 設定_台湾まんが)
+    || (typeof 設定_台湾書籍その他 !== 'undefined' && 設定_台湾書籍その他) || null;
+  if (設定) {
+    ids.forEach(id => { if (idToMax[id] > 0) 台湾書籍系_Worksまとめて更新_(設定, id, { 最新巻: idToMax[id] }); });
+  }
+  SpreadsheetApp.flush(); // 数式列（登録済み巻/最新巻）の再計算を促す
+  return ids.length;
+}
+
+function 台湾書籍系_Works最新巻を再計算メニュー_() {
+  const ui = SpreadsheetApp.getUi();
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  let n = 0;
+  try {
+    n = 台湾書籍系_Works最新巻を再計算_();
+  } finally {
+    lock.releaseLock();
+  }
+  ui.alert('Works最新巻の再計算',
+    `商品から最新巻を集計し、Worksの「最新巻(予約込み)」を更新しました（対象 ${n} 作品）。\n` +
+    '数式列（登録済み巻 / 最新巻）も再計算されます。',
+    ui.ButtonSet.OK);
+}
+
 /**
  * 重複作品（同一媒体＋作品比較キーなのに別作品ID）を検出し、統合計画を作る。
  * 書き換えは一切しない（ドライラン・実行の双方から呼ぶ）。
@@ -958,6 +1025,8 @@ function 台湾書籍系_重複作品_統合実行() {
     });
     // 孤立Works行は下から削除（行番号ずれ防止）
     plan.orphanWorks.map(o => o.sheetRow).sort((a, b) => b - a).forEach(r => plan.worksSh.deleteRow(r));
+    // 統合先の巻数を商品から再集計（最新巻(予約込み)更新＋数式列 登録済み巻/最新巻 の再計算）
+    台湾書籍系_Works最新巻を再計算_();
   } finally {
     lock.releaseLock();
   }
