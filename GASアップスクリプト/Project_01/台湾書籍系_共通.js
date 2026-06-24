@@ -118,30 +118,43 @@ function 台湾書籍系_作品比較キー_(v) {
     .trim();
 }
 
-var _台湾書籍系_媒体コード集合キャッシュ = null;
+var _台湾書籍系_カテゴリ名前マップキャッシュ = null;
 
 /**
- * WorksKey の媒体セグメント判定に使う「正規な媒体コード集合」。
- * ハードコードの正規表現ではなくカテゴリマスター（カテゴリ→コード）から取得し、
- * カテゴリ追加時も許可リストが自動で広がるようにする。実行内キャッシュ。
+ * カテゴリマスター（カテゴリ名→コード）。媒体コード生成・許可リストの単一の出所。
+ * 外部マスターSSを読むため実行内キャッシュ（onEdit のホットパスで多重読込しない）。
  */
-function 台湾書籍系_媒体コード集合_() {
-  if (_台湾書籍系_媒体コード集合キャッシュ) return _台湾書籍系_媒体コード集合キャッシュ;
-  const set = {};
+function 台湾書籍系_カテゴリ名前マップ_() {
+  if (_台湾書籍系_カテゴリ名前マップキャッシュ) return _台湾書籍系_カテゴリ名前マップキャッシュ;
+  let map = {};
   const 設定 =
     (typeof 設定_台湾まんが !== 'undefined' && 設定_台湾まんが) ||
     (typeof 設定_台湾書籍その他 !== 'undefined' && 設定_台湾書籍その他) ||
     null;
   try {
     const master = 台湾書籍系_カテゴリマスターを取得_(設定);
-    const codeMap = (master && master.codeToName) || {};
-    Object.keys(codeMap).forEach(code => {
-      const c = 台湾書籍系_正規化文字列_(code).toUpperCase();
-      if (c) set[c] = true;
-    });
+    map = (master && master.nameToCode) || {};
   } catch (err) {
-    console.log('台湾書籍系_媒体コード集合_ error: ' + err);
+    console.log('台湾書籍系_カテゴリ名前マップ_ error: ' + err);
   }
+  _台湾書籍系_カテゴリ名前マップキャッシュ = map;
+  return map;
+}
+
+var _台湾書籍系_媒体コード集合キャッシュ = null;
+
+/**
+ * WorksKey の媒体セグメント判定に使う「正規な媒体コード集合」。
+ * カテゴリマスターの全コード＋保険コード。カテゴリ追加時も自動で広がる。実行内キャッシュ。
+ */
+function 台湾書籍系_媒体コード集合_() {
+  if (_台湾書籍系_媒体コード集合キャッシュ) return _台湾書籍系_媒体コード集合キャッシュ;
+  const set = {};
+  const map = 台湾書籍系_カテゴリ名前マップ_();
+  Object.keys(map).forEach(name => {
+    const c = 台湾書籍系_正規化文字列_(map[name]).toUpperCase();
+    if (c) set[c] = true;
+  });
   // マスター未読込・読込失敗時の保険。最低限の媒体コードは常に有効にする。
   ['CM', 'NV', 'ART', 'MZ', 'GD', 'ES'].forEach(c => { set[c] = true; });
   _台湾書籍系_媒体コード集合キャッシュ = set;
@@ -686,6 +699,17 @@ function 台湾書籍系_言語コードを生成_(言語) {
 function 台湾書籍系_カテゴリコードを生成_(カテゴリ, シート名) {
   const v = 台湾書籍系_正規化文字列_(カテゴリ);
 
+  // 1) カテゴリマスター（カテゴリ→コード）の完全一致を最優先（エッセイ→ES / OST→OST 等）。
+  //    カテゴリを増やすときはマスターに足すだけでコード生成も追従する。
+  if (v) {
+    const fromMaster = 台湾書籍系_カテゴリ名前マップ_()[v];
+    if (fromMaster) {
+      const c = 台湾書籍系_正規化文字列_(fromMaster).toUpperCase();
+      if (c) return c;
+    }
+  }
+
+  // 2) キーワード判定（マスター未登録カテゴリの保険・部分一致）
   if (/まんが|漫画|コミック/i.test(v)) return 'CM';
   if (/小説|ノベル/i.test(v)) return 'NV';
   if (/アート|画集|設定集|資料集/i.test(v)) return 'ART';
