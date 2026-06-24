@@ -758,6 +758,30 @@ function 台湾書籍系_商品コードから最新巻_(コード) {
   return parseInt(seg, 10) || 0;
 }
 
+/** SKU/商品コード末尾の巻セグメントから巻番号の配列（セットは展開）。例: -0304 → [3,4] / -17 → [17] */
+function 台湾書籍系_商品コードから巻一覧_(コード) {
+  const s = 台湾書籍系_正規化文字列_(コード).toUpperCase();
+  const m = s.match(/-([0-9]{1,4})$/);
+  if (!m) return [];
+  const seg = m[1];
+  if (seg.length >= 3) {
+    const a = parseInt(seg.slice(0, seg.length - 2), 10);
+    const b = parseInt(seg.slice(-2), 10);
+    if (a > 0 && b >= a && b - a <= 50) { const out = []; for (let v = a; v <= b; v++) out.push(v); return out; }
+    return b > 0 ? [b] : [];
+  }
+  const v = parseInt(seg, 10);
+  return v > 0 ? [v] : [];
+}
+
+/** "1,2,15,16" のような巻リスト文字列を数値配列に解析 */
+function 台湾書籍系_巻リストを解析_(s) {
+  return 台湾書籍系_正規化文字列_(s)
+    .split(/[,，、\/\s]+/)
+    .map(x => parseInt(x, 10))
+    .filter(n => n > 0);
+}
+
 /**
  * 商品シート（台湾まんが・台湾書籍その他）の全商品から作品IDごとの最新巻を集計し、
  * Worksの「最新巻(予約込み)」を更新（既存より大きい時のみ）。
@@ -766,7 +790,7 @@ function 台湾書籍系_商品コードから最新巻_(コード) {
  */
 function 台湾書籍系_Works最新巻を再計算_() {
   const ss = SpreadsheetApp.getActive();
-  const idToMax = {};
+  const idToVols = {};
   const diag = [];
   [
     typeof 設定_台湾まんが !== 'undefined' ? 設定_台湾まんが : null,
@@ -789,14 +813,17 @@ function 台湾書籍系_Works最新巻を再計算_() {
       const pid = 台湾書籍系_行から既存作品IDを取得_({ 作品ID: colID ? r[colID - 1] : '', 商品コード: code, SKU自動: sku });
       if (!pid) return;
       pidN += 1;
-      const v = Math.max(台湾書籍系_商品コードから最新巻_(code), 台湾書籍系_商品コードから最新巻_(sku));
-      if (v > 0) volN += 1;
-      if (v > (idToMax[pid] || 0)) idToMax[pid] = v;
+      let vols = 台湾書籍系_商品コードから巻一覧_(code);
+      if (!vols.length) vols = 台湾書籍系_商品コードから巻一覧_(sku);
+      if (vols.length) volN += 1;
+      if (!idToVols[pid]) idToVols[pid] = {};
+      vols.forEach(v => { idToVols[pid][v] = true; });
     });
     diag.push(`${設定.マスターシート名}: ID列=${nID}(${colID || '-'}) コード列=${nCode}(${colCode || '-'}) SKU列=${nSKU}(${colSKU || '-'}) 行=${vals.length} pid付=${pidN} 巻取得=${volN}`);
   });
 
-  // Works を1回読み、最新巻(予約込み) を一括更新（max > 既存 の時のみ）
+  // Works を1回読み、登録済み巻(F)/最新巻(G)/最新巻(予約込み)(I) を更新。
+  // F/G は静的値（数式でない時のみ）＋巻は追加方向のみで安全に。
   const 設定 = (typeof 設定_台湾まんが !== 'undefined' && 設定_台湾まんが)
     || (typeof 設定_台湾書籍その他 !== 'undefined' && 設定_台湾書籍その他) || null;
   let 更新数 = 0; const 更新明細 = [];
@@ -804,31 +831,61 @@ function 台湾書籍系_Works最新巻を再計算_() {
     const wsh = ss.getSheetByName(設定.作品シート名);
     if (wsh && wsh.getLastRow() >= 2) {
       const wcol = 台湾書籍系_列マップを取得_(wsh);
-      const cID = wcol['作品ID'], cYoyaku = wcol['最新巻(予約込み)'], cYDate = wcol['予約更新日時'];
-      if (cID && cYoyaku) {
+      const cID = wcol['作品ID'], cF = wcol['登録済み巻'], cG = wcol['最新巻'],
+        cH = wcol['更新日時'], cI = wcol['最新巻(予約込み)'], cIDate = wcol['予約更新日時'];
+      if (cID) {
         const wvals = wsh.getRange(2, 1, wsh.getLastRow() - 1, wsh.getLastColumn()).getValues();
         for (let i = 0; i < wvals.length; i++) {
           const id = 台湾書籍系_作品ID4桁を取得_(wvals[i][cID - 1]);
-          if (!id) continue;
-          const want = idToMax[id] || 0;
-          const cur = parseInt(String(wvals[i][cYoyaku - 1] || '0'), 10) || 0;
-          if (want > cur) {
-            wsh.getRange(i + 2, cYoyaku).setValue(want);
-            if (cYDate) wsh.getRange(i + 2, cYDate).setValue(new Date());
+          if (!id || !idToVols[id]) continue;
+          const vols = Object.keys(idToVols[id]).map(Number).filter(n => n > 0).sort((a, b) => a - b);
+          if (!vols.length) continue;
+          const maxVol = vols[vols.length - 1];
+          const row = i + 2;
+          let changed = false;
+          // 最新巻(G): 静的値なら既存より大きい時のみ書込
+          if (cG) {
+            const cur = parseInt(String(wvals[i][cG - 1] || '0'), 10) || 0;
+            if (maxVol > cur && wsh.getRange(row, cG).getFormula() === '') {
+              wsh.getRange(row, cG).setValue(maxVol); changed = true;
+            }
+          }
+          // 登録済み巻(F): 静的値なら既存リストに無い巻があれば和集合で書込
+          if (cF) {
+            const curSet = {};
+            台湾書籍系_巻リストを解析_(wvals[i][cF - 1]).forEach(v => { curSet[v] = true; });
+            if (vols.some(v => !curSet[v]) && wsh.getRange(row, cF).getFormula() === '') {
+              vols.forEach(v => { curSet[v] = true; });
+              const merged = Object.keys(curSet).map(Number).filter(n => n > 0).sort((a, b) => a - b).join(',');
+              wsh.getRange(row, cF).setValue(merged); changed = true;
+            }
+          }
+          // 最新巻(予約込み)(I): 既存より大きい時のみ
+          if (cI) {
+            const cur = parseInt(String(wvals[i][cI - 1] || '0'), 10) || 0;
+            if (maxVol > cur) {
+              wsh.getRange(row, cI).setValue(maxVol);
+              if (cIDate) wsh.getRange(row, cIDate).setValue(new Date());
+              changed = true;
+            }
+          }
+          if (changed) {
+            if (cH && wsh.getRange(row, cH).getFormula() === '') wsh.getRange(row, cH).setValue(new Date());
             更新数 += 1;
-            if (更新明細.length < 40) 更新明細.push(`${id}:${cur}→${want}`);
+            if (更新明細.length < 40) 更新明細.push(`${id}:max${maxVol}`);
           }
         }
       } else {
-        diag.push(`Works: 作品ID列=${cID || '-'} 最新巻(予約込み)列=${cYoyaku || '-'} が見つからない`);
+        diag.push('Works: 作品ID列が見つからない');
       }
     }
   }
-  SpreadsheetApp.flush(); // 数式列（登録済み巻/最新巻）の再計算を促す
+  SpreadsheetApp.flush();
 
   Logger.log('Works最新巻再計算 診断: ' + JSON.stringify(diag));
-  Logger.log('Works最新巻再計算 idToMax[0006/0014/0129/0115]: '
-    + JSON.stringify({ '0006': idToMax['0006'], '0014': idToMax['0014'], '0129': idToMax['0129'], '0115': idToMax['0115'] }));
+  const dump = id => idToVols[id] ? Object.keys(idToVols[id]).map(Number).sort((a, b) => a - b) : null;
+  Logger.log('Works最新巻再計算 巻[0006/0014/0129/0115]: '
+    + JSON.stringify({ '0006': dump('0006'), '0014': dump('0014'), '0129': dump('0129'), '0115': dump('0115') }));
   Logger.log('Works最新巻再計算 更新数=' + 更新数 + ' 明細=' + JSON.stringify(更新明細));
   return 更新数;
 }
