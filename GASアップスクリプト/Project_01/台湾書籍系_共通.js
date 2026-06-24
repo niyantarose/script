@@ -767,36 +767,70 @@ function 台湾書籍系_商品コードから最新巻_(コード) {
 function 台湾書籍系_Works最新巻を再計算_() {
   const ss = SpreadsheetApp.getActive();
   const idToMax = {};
+  const diag = [];
   [
     typeof 設定_台湾まんが !== 'undefined' ? 設定_台湾まんが : null,
     typeof 設定_台湾書籍その他 !== 'undefined' ? 設定_台湾書籍その他 : null,
   ].forEach(設定 => {
     if (!設定) return;
     const sh = ss.getSheetByName(設定.マスターシート名);
-    if (!sh || sh.getLastRow() < 2) return;
+    if (!sh || sh.getLastRow() < 2) { diag.push(`${設定.マスターシート名}: データなし`); return; }
     const 列 = 台湾書籍系_列マップを取得_(sh);
     const cn = 設定.列名 || {};
-    const colID = 列[台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）'])];
-    const colCode = 列[台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）'])];
-    const colSKU = 列[台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）', '商品コード(SKU)', '商品コード（SKU）'])];
+    const nID = 台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）']);
+    const nCode = 台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）']);
+    const nSKU = 台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）', '商品コード(SKU)', '商品コード（SKU）']);
+    const colID = 列[nID], colCode = 列[nCode], colSKU = 列[nSKU];
     const vals = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+    let pidN = 0, volN = 0;
     vals.forEach(r => {
       const code = colCode ? 台湾書籍系_正規化文字列_(r[colCode - 1]) : '';
       const sku = colSKU ? 台湾書籍系_正規化文字列_(r[colSKU - 1]) : '';
       const pid = 台湾書籍系_行から既存作品IDを取得_({ 作品ID: colID ? r[colID - 1] : '', 商品コード: code, SKU自動: sku });
       if (!pid) return;
+      pidN += 1;
       const v = Math.max(台湾書籍系_商品コードから最新巻_(code), 台湾書籍系_商品コードから最新巻_(sku));
+      if (v > 0) volN += 1;
       if (v > (idToMax[pid] || 0)) idToMax[pid] = v;
     });
+    diag.push(`${設定.マスターシート名}: ID列=${nID}(${colID || '-'}) コード列=${nCode}(${colCode || '-'}) SKU列=${nSKU}(${colSKU || '-'}) 行=${vals.length} pid付=${pidN} 巻取得=${volN}`);
   });
-  const ids = Object.keys(idToMax);
+
+  // Works を1回読み、最新巻(予約込み) を一括更新（max > 既存 の時のみ）
   const 設定 = (typeof 設定_台湾まんが !== 'undefined' && 設定_台湾まんが)
     || (typeof 設定_台湾書籍その他 !== 'undefined' && 設定_台湾書籍その他) || null;
+  let 更新数 = 0; const 更新明細 = [];
   if (設定) {
-    ids.forEach(id => { if (idToMax[id] > 0) 台湾書籍系_Worksまとめて更新_(設定, id, { 最新巻: idToMax[id] }); });
+    const wsh = ss.getSheetByName(設定.作品シート名);
+    if (wsh && wsh.getLastRow() >= 2) {
+      const wcol = 台湾書籍系_列マップを取得_(wsh);
+      const cID = wcol['作品ID'], cYoyaku = wcol['最新巻(予約込み)'], cYDate = wcol['予約更新日時'];
+      if (cID && cYoyaku) {
+        const wvals = wsh.getRange(2, 1, wsh.getLastRow() - 1, wsh.getLastColumn()).getValues();
+        for (let i = 0; i < wvals.length; i++) {
+          const id = 台湾書籍系_作品ID4桁を取得_(wvals[i][cID - 1]);
+          if (!id) continue;
+          const want = idToMax[id] || 0;
+          const cur = parseInt(String(wvals[i][cYoyaku - 1] || '0'), 10) || 0;
+          if (want > cur) {
+            wsh.getRange(i + 2, cYoyaku).setValue(want);
+            if (cYDate) wsh.getRange(i + 2, cYDate).setValue(new Date());
+            更新数 += 1;
+            if (更新明細.length < 40) 更新明細.push(`${id}:${cur}→${want}`);
+          }
+        }
+      } else {
+        diag.push(`Works: 作品ID列=${cID || '-'} 最新巻(予約込み)列=${cYoyaku || '-'} が見つからない`);
+      }
+    }
   }
   SpreadsheetApp.flush(); // 数式列（登録済み巻/最新巻）の再計算を促す
-  return ids.length;
+
+  Logger.log('Works最新巻再計算 診断: ' + JSON.stringify(diag));
+  Logger.log('Works最新巻再計算 idToMax[0006/0014/0129/0115]: '
+    + JSON.stringify({ '0006': idToMax['0006'], '0014': idToMax['0014'], '0129': idToMax['0129'], '0115': idToMax['0115'] }));
+  Logger.log('Works最新巻再計算 更新数=' + 更新数 + ' 明細=' + JSON.stringify(更新明細));
+  return 更新数;
 }
 
 function 台湾書籍系_Works最新巻を再計算メニュー_() {
@@ -810,8 +844,10 @@ function 台湾書籍系_Works最新巻を再計算メニュー_() {
     lock.releaseLock();
   }
   ui.alert('Works最新巻の再計算',
-    `商品から最新巻を集計し、Worksの「最新巻(予約込み)」を更新しました（対象 ${n} 作品）。\n` +
-    '数式列（登録済み巻 / 最新巻）も再計算されます。',
+    `商品から最新巻を集計し、「最新巻(予約込み)」を更新した作品: ${n} 件。\n` +
+    '（0件＝既に最新でした）\n' +
+    '数式列（登録済み巻 / 最新巻）は flush で再計算されます。\n\n' +
+    '詳細は Apps Script の実行ログ（診断 / idToMax / 更新明細）を確認してください。',
     ui.ButtonSet.OK);
 }
 
