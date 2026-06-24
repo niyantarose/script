@@ -409,33 +409,79 @@ function 大邱発注_WX数値_(value) {
 }
 
 function _autoFillArrivalDateFromQty_(sh, range, qtyCol, dateCol, startRow, checkboxCol, requiredValueCol) {
-  if (!_rangeHitsCol_(range.getColumn(), range.getLastColumn(), qtyCol)) return;
+  const hitsQty = _rangeHitsCol_(range.getColumn(), range.getLastColumn(), qtyCol);
+  const hitsDate = _rangeHitsCol_(range.getColumn(), range.getLastColumn(), dateCol);
+  if (!hitsQty && !hitsDate) return;
 
-  const firstRow = startRow;
-  const lastRow = Math.max(range.getLastRow(), sh.getLastRow());
-  if (lastRow < firstRow) return;
-
-  const numRows = lastRow - firstRow + 1;
-  const qtyVals = sh.getRange(firstRow, qtyCol, numRows, 1).getDisplayValues();
-  const dateRange = sh.getRange(firstRow, dateCol, numRows, 1);
-  const dateVals = dateRange.getValues();
-  const dateDisplayVals = dateRange.getDisplayValues();
-  const today = _todayOnly_();
-  let changed = false;
-
-  for (let i = 0; i < numRows; i++) {
-    const qty = String(qtyVals[i][0] || '').replace(/,/g, '').trim();
-    const hasDate = String(dateDisplayVals[i][0] || '').trim() !== '';
-    if (qty && qty !== '0' && !hasDate) {
-      dateVals[i][0] = today;
-      changed = true;
+  // 入荷数あり & 入荷日なし → 入荷日を今日で補完（入荷数列を編集したときだけ・シート全体をバックフィル）
+  if (hitsQty) {
+    const firstRow = startRow;
+    const lastRow = Math.max(range.getLastRow(), sh.getLastRow());
+    if (lastRow >= firstRow) {
+      const numRows = lastRow - firstRow + 1;
+      const qtyVals = sh.getRange(firstRow, qtyCol, numRows, 1).getDisplayValues();
+      const dateRange = sh.getRange(firstRow, dateCol, numRows, 1);
+      const dateVals = dateRange.getValues();
+      const dateDisplayVals = dateRange.getDisplayValues();
+      const today = _todayOnly_();
+      let changed = false;
+      for (let i = 0; i < numRows; i++) {
+        const qty = String(qtyVals[i][0] || '').replace(/,/g, '').trim();
+        const hasDate = String(dateDisplayVals[i][0] || '').trim() !== '';
+        if (qty && qty !== '0' && !hasDate) {
+          dateVals[i][0] = today;
+          changed = true;
+        }
+      }
+      if (changed) dateRange.setValues(dateVals);
     }
   }
 
-  if (changed) dateRange.setValues(dateVals);
-  if (checkboxCol) {
+  // 入荷日と入荷数の連動クリア（編集した行だけ）：片方を消したらもう片方も消す
+  _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hitsQty, hitsDate);
+
+  // 入荷数が入った行はチェックを付ける（入荷数列を編集したときだけ・従来動作）
+  if (checkboxCol && hitsQty) {
     _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol);
   }
+}
+
+// 入荷日(dateCol)と入荷数(qtyCol)を連動クリアする。編集された行だけを対象にする。
+//   ・入荷数を消した → 入荷日も消す
+//   ・入荷日を消した → 入荷数も消す
+// ※片方に値が残る編集（数量変更・日付変更）では何も消さない。
+// ※スクリプトによるsetValuesはonEditを再発火しないので無限ループしない。
+function _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hitsQty, hitsDate) {
+  if (!hitsQty && !hitsDate) return;
+  const firstRow = Math.max(startRow, range.getRow());
+  const lastRow = Math.min(range.getLastRow(), sh.getLastRow());
+  if (lastRow < firstRow) return;
+
+  const numRows = lastRow - firstRow + 1;
+  const qtyRange = sh.getRange(firstRow, qtyCol, numRows, 1);
+  const dateRange = sh.getRange(firstRow, dateCol, numRows, 1);
+  const qtyVals = qtyRange.getValues();
+  const qtyDisp = qtyRange.getDisplayValues();
+  const dateVals = dateRange.getValues();
+  const dateDisp = dateRange.getDisplayValues();
+
+  let qtyChanged = false, dateChanged = false;
+  for (let i = 0; i < numRows; i++) {
+    const qtyStr = String(qtyDisp[i][0] || '').replace(/,/g, '').trim();
+    const hasQty = qtyStr !== '' && qtyStr !== '0';
+    const hasDate = String(dateDisp[i][0] || '').trim() !== '';
+
+    if (hitsQty && !hasQty && hasDate) {   // 入荷数を消した → 入荷日も消す
+      dateVals[i][0] = '';
+      dateChanged = true;
+    }
+    if (hitsDate && !hasDate && hasQty) {   // 入荷日を消した → 入荷数も消す
+      qtyVals[i][0] = '';
+      qtyChanged = true;
+    }
+  }
+  if (dateChanged) dateRange.setValues(dateVals);
+  if (qtyChanged) qtyRange.setValues(qtyVals);
 }
 
 function _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol) {
