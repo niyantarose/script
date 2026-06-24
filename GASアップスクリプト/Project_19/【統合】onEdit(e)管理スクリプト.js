@@ -437,8 +437,8 @@ function _autoFillArrivalDateFromQty_(sh, range, qtyCol, dateCol, startRow, chec
     }
   }
 
-  // 入荷日と入荷数の連動クリア（編集した行だけ）：片方を消したらもう片方も消す
-  _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hitsQty, hitsDate);
+  // 入荷日と入荷数の連動クリア（編集した行だけ）：片方を消したらもう片方も消す＋チェックも外す
+  _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hitsQty, hitsDate, checkboxCol);
 
   // 入荷数が入った行はチェックを付ける（入荷数列を編集したときだけ・従来動作）
   if (checkboxCol && hitsQty) {
@@ -447,11 +447,11 @@ function _autoFillArrivalDateFromQty_(sh, range, qtyCol, dateCol, startRow, chec
 }
 
 // 入荷日(dateCol)と入荷数(qtyCol)を連動クリアする。編集された行だけを対象にする。
-//   ・入荷数を消した → 入荷日も消す
-//   ・入荷日を消した → 入荷数も消す
+//   ・入荷数を消した → 入荷日も消す（＋チェックも外す）
+//   ・入荷日を消した → 入荷数も消す（＋チェックも外す）
 // ※片方に値が残る編集（数量変更・日付変更）では何も消さない。
 // ※スクリプトによるsetValuesはonEditを再発火しないので無限ループしない。
-function _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hitsQty, hitsDate) {
+function _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hitsQty, hitsDate, checkboxCol) {
   if (!hitsQty && !hitsDate) return;
   const firstRow = Math.max(startRow, range.getRow());
   const lastRow = Math.min(range.getLastRow(), sh.getLastRow());
@@ -464,13 +464,16 @@ function _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hits
   const qtyDisp = qtyRange.getDisplayValues();
   const dateVals = dateRange.getValues();
   const dateDisp = dateRange.getDisplayValues();
+  const checkRange = checkboxCol ? sh.getRange(firstRow, checkboxCol, numRows, 1) : null;
+  const checkVals = checkRange ? checkRange.getValues() : null;
 
-  let qtyChanged = false, dateChanged = false;
+  let qtyChanged = false, dateChanged = false, checkChanged = false;
   for (let i = 0; i < numRows; i++) {
     const qtyStr = String(qtyDisp[i][0] || '').replace(/,/g, '').trim();
     const hasQty = qtyStr !== '' && qtyStr !== '0';
     const hasDate = String(dateDisp[i][0] || '').trim() !== '';
 
+    let qtyClearedHere = false;
     if (hitsQty && !hasQty && hasDate) {   // 入荷数を消した → 入荷日も消す
       dateVals[i][0] = '';
       dateChanged = true;
@@ -478,10 +481,19 @@ function _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hits
     if (hitsDate && !hasDate && hasQty) {   // 入荷日を消した → 入荷数も消す
       qtyVals[i][0] = '';
       qtyChanged = true;
+      qtyClearedHere = true;
+    }
+
+    // 入荷数が空になった行はA列チェックも外す（チェック済みのときだけ）
+    const qtyNowEmpty = (hitsQty && !hasQty) || qtyClearedHere;
+    if (qtyNowEmpty && checkVals && checkVals[i][0] === true) {
+      checkVals[i][0] = false;
+      checkChanged = true;
     }
   }
   if (dateChanged) dateRange.setValues(dateVals);
   if (qtyChanged) qtyRange.setValues(qtyVals);
+  if (checkChanged) checkRange.setValues(checkVals);
 }
 
 function _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol) {
