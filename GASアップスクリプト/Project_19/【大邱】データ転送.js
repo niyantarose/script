@@ -1879,7 +1879,7 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
 
     // 件数チェック: 送った件数(n) と 送られた件数(received) を照合し、最後に表示
     const allOK = (received === n && ngCount === 0);
-    const mark = allOK ? '✅ 件数・内容ともに一致しました。' : '⚠️ 不一致あり！実行ログを確認してください。';
+    const mark = allOK ? '✅ 件数一致しました。' : '⚠️ 件数不一致あり！実行ログを確認してください。';
     L('完了: 送った ' + n + '件 / 送られた ' + received + '件 / 内容一致 ' + okCount + ' / 不一致 ' + ngCount +
       ' / 未チェック除外 ' + uncheckedData.length + '件・スキップ ' + skipped.length + '件 / 所要 ' + (new Date() - t0) + 'ms');
     L('件数チェック: ' + mark);
@@ -1887,7 +1887,7 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
     ui.alert('EMS大邱へ送信 完了',
       '送った件数　: ' + n + '件\n' +
       '送られた件数: ' + received + '件\n' +
-      '内容照合　　: 一致 ' + okCount + ' / 不一致 ' + ngCount + '\n\n' +
+      '照合　　　　: 件数一致 ' + okCount + ' / 件数不一致 ' + ngCount + '\n\n' +
       mark,
       ui.ButtonSet.OK);
   } catch (err) {
