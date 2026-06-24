@@ -70,7 +70,7 @@ function onOpen() {
         .addItem('④ 選択行を再生成', '台湾まんが_現在行を再計算')
         .addItem('⑥ プルダウン更新', '台湾まんが_プルダウン更新')
         .addSeparator()
-        .addItem('🛠 WorksKeyにCM/NV付与（削除なし）', '台湾書籍系_WorksKey媒体付与_削除なし')
+        .addItem('🛠 WorksKeyに媒体コード付与（削除なし）', '台湾書籍系_WorksKey媒体付与_削除なし')
         .addItem('🔒 Works危険操作は停止中', '台湾書籍系_Works危険操作メニュー説明')
         
     )
@@ -83,7 +83,7 @@ function onOpen() {
         .addItem('④ 選択行を再生成', '台湾書籍その他_現在行を再計算')
         .addItem('⑥ プルダウン更新', '台湾書籍その他_プルダウン更新')
         .addSeparator()
-        .addItem('🛠 WorksKeyにCM/NV付与（削除なし）', '台湾書籍系_WorksKey媒体付与_削除なし')
+        .addItem('🛠 WorksKeyに媒体コード付与（削除なし）', '台湾書籍系_WorksKey媒体付与_削除なし')
         .addItem('🔒 Works危険操作は停止中', '台湾書籍系_Works危険操作メニュー説明')
         
     )

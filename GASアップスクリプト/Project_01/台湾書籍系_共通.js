@@ -2331,11 +2331,12 @@ function 台湾書籍系_WorksKey媒体付与_削除なし() {
   if (
     ui.alert(
       '確認',
-      'WorksKeyにCM/NVを付与します。\n\n' +
+      'WorksKeyに媒体コード（CM/NV/ART…）を付与します。\n\n' +
       '・台湾まんがで使われている作品IDは CM\n' +
-      '・台湾書籍その他でカテゴリが小説/ノベルの作品IDは NV\n' +
+      '・台湾書籍その他はカテゴリに応じたコード（小説=NV / 画集・設定集=ART など）\n' +
+      '・コードはカテゴリマスターに準拠（マスターに無いコードはスキップ）\n' +
       '・Works行の削除、統合、作品ID変更は一切しません\n' +
-      '・判定できない行はスキップします\n\n' +
+      '・判定できない行・媒体混在の行はスキップします\n\n' +
       '続行しますか？',
       ui.ButtonSet.OK_CANCEL
     ) !== ui.Button.OK
@@ -2350,11 +2351,11 @@ function 台湾書籍系_WorksKey媒体付与_削除なし() {
     const result = 台湾書籍系_WorksKey媒体付与_削除なし_実行_();
     ui.alert(
       '完了',
-      'WorksKeyにCM/NVを付与しました（削除なし）。\n\n' +
+      'WorksKeyに媒体コードを付与しました（削除なし）。\n\n' +
       `更新: ${result.更新数}件\n` +
       `既に媒体付き: ${result.既存媒体付き数}件\n` +
       `使用媒体が不明でスキップ: ${result.媒体不明数}件\n` +
-      `CM/NV以外でスキップ: ${result.CMNV以外数}件\n` +
+      `対象外コードでスキップ: ${result.コード対象外数}件\n` +
       `同一IDでCM/NV混在のためスキップ: ${result.媒体混在数}件\n` +
       `既存媒体と使用媒体が不一致でスキップ: ${result.媒体不一致数}件\n\n` +
       '詳細はApps Scriptの実行ログに出しています。',
@@ -2443,14 +2444,15 @@ function 台湾書籍系_WorksKey媒体付与_削除なし_実行_() {
   const skipped = {
     既存媒体付き数: 0,
     媒体不明数: 0,
-    CMNV以外数: 0,
+    コード対象外数: 0,
     媒体混在数: 0,
     媒体不一致数: 0
   };
   const detail = {
     媒体混在ID: [],
     媒体不一致行: [],
-    媒体不明ID: []
+    媒体不明ID: [],
+    コード対象外: []
   };
 
   rows.forEach((row, i) => {
@@ -2479,8 +2481,11 @@ function 台湾書籍系_WorksKey媒体付与_削除なし_実行_() {
     }
 
     const media = medias[0];
-    if (media !== 'CM' && media !== 'NV') {
-      skipped.CMNV以外数++;
+    if (!台湾書籍系_媒体コード集合_()[media]) {
+      // カテゴリマスターに無いコード（判定不能・想定外）だけスキップ。
+      // CM/NV に限らず ART/MZ/GD/ES など正規コードはすべて付与する。
+      skipped.コード対象外数++;
+      if (detail.コード対象外.length < 20) detail.コード対象外.push(`${id}: ${media}`);
       return;
     }
 
@@ -2521,7 +2526,7 @@ function 台湾書籍系_WorksKey媒体付与_削除なし_実行_() {
     更新数: updates.length,
     既存媒体付き数: skipped.既存媒体付き数,
     媒体不明数: skipped.媒体不明数,
-    CMNV以外数: skipped.CMNV以外数,
+    コード対象外数: skipped.コード対象外数,
     媒体混在数: skipped.媒体混在数,
     媒体不一致数: skipped.媒体不一致数
   };
