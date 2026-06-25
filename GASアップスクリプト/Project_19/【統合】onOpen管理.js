@@ -28,4 +28,8 @@ function onOpen() {
   if (typeof 最終データ行へ移動_自動 === 'function') {
     最終データ行へ移動_自動();
   }
+
+  if (typeof refreshEmsCalendarTodayHighlight_ === 'function') {
+    refreshEmsCalendarTodayHighlight_();
+  }
 }

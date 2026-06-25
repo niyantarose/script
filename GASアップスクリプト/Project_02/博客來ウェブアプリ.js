@@ -95,7 +95,13 @@ const BUILTIN_TITLE_ALIAS_DICTIONARY = {
   '台湾|グッズ|与黑道系男子的初恋': 'アングラ系男子と初恋',
   '台湾|まんが|理想的戀愛條件': '理想的恋愛の条件',
   '台湾|書籍|理想的戀愛條件': '理想的恋愛の条件',
-  '台湾|グッズ|理想的戀愛條件': '理想的恋愛の条件'
+  '台湾|グッズ|理想的戀愛條件': '理想的恋愛の条件',
+  /** 綠蔭之冠（韓国BGファンタジー小説） */
+  '台湾|書籍|綠蔭之冠': '緑陰の冠',
+  '台湾|まんが|綠蔭之冠': '緑陰の冠',
+  '台湾|グッズ|綠蔭之冠': '緑陰の冠',
+  '台湾|書籍|绿荫之冠': '緑陰の冠',
+  '台湾|まんが|绿荫之冠': '緑陰の冠'
 };
 const TITLE_LOOKUP_PROVIDERS = {
   workTitleMaster: {
@@ -874,7 +880,8 @@ function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, au
   }
 
   result.candidates = uniqNonEmptyTitles_(result.candidates);
-  const bestCandidate = pickBestCandidate_(result.candidates) || '';
+  const validationQueries = buildLookupValidationQueriesFromContext_(context);
+  const bestCandidate = pickBestCandidate_(result.candidates, validationQueries) || '';
   if (bestCandidate) {
     result.japaneseTitle = bestCandidate;
     result.source = '候補';
@@ -1699,15 +1706,46 @@ function searchBLSites_(originalTitle, existingCandidates, author) {
 // 候補選択ユーティリティ
 // ==========================================
 
-function pickBestCandidate_(candidates) {
+function pickBestCandidate_(candidates, validationQueries) {
   if (!candidates || !candidates.length) return '';
-  // 日本語シグナルがある候補を優先
+  const queries = uniqNonEmptyTitles_(Array.isArray(validationQueries) ? validationQueries : []);
+  // 日本語シグナルがあり、かつ原題クエリと整合する候補を優先
   for (let i = 0; i < candidates.length; i += 1) {
-    if (hasJapaneseTitleSignal_(candidates[i])) {
-      return String(candidates[i]).trim();
-    }
+    const title = String(candidates[i]).trim();
+    if (!title || !hasJapaneseTitleSignal_(title)) continue;
+    if (queries.length && !validateLookupCandidateAgainstQueries_(title, queries)) continue;
+    return title;
   }
   return '';
+}
+
+function buildLookupValidationQueriesFromContext_(context) {
+  const ctx = context || {};
+  return uniqNonEmptyTitles_([
+    normalizeLookupWorkTitle_(ctx.originalTitle),
+    normalizeLookupWorkTitle_(ctx.originalProductTitle),
+    ctx.originalTitle,
+    ctx.originalProductTitle,
+  ]);
+}
+
+function validateLookupCandidateAgainstQueries_(candidate, queries) {
+  const title = String(candidate || '').trim();
+  if (!title) return false;
+  const list = uniqNonEmptyTitles_(Array.isArray(queries) ? queries : []);
+  if (!list.length) return true;
+  var queryHan = '';
+  list.forEach(function(q) {
+    queryHan += String(q || '').replace(/[^\u3000-\u9fff\uf900-\ufaff]/g, '');
+  });
+  if (!queryHan) return true;
+  var maxOverlap = 0;
+  list.forEach(function(q) {
+    maxOverlap = Math.max(maxOverlap, cjkCharOverlap_(q, title));
+  });
+  if (maxOverlap >= 0.35) return true;
+  if (!/[\u3000-\u9fff\uf900-\ufaff]/.test(title) && /[\u3041-\u3096\u30a1-\u30fa]/.test(title)) return false;
+  return maxOverlap >= 0.2;
 }
 function testFindTitleFromDictionary_() {
   const result = findTitleFromDictionary_('台湾', 'まんが', '我內心的糟糕念頭', '');
@@ -2150,6 +2188,11 @@ function stripLookupWorkTitleDecoration_(value) {
 function stripLookupVolumeNoise_(value) {
   var text = normalizeTitleSearchCandidateSpacing_(String(value || ''));
   if (!text) return '';
+  text = text
+    .replace(/[0-9０-９]{1,3}(?:[+＋][0-9０-９]{1,3})+(?:\s*(?:小說|小説|小说|漫畫|漫画|コミック|單行本|单行本))?(?:\s*(?:限量|限定))?\s*$/iu, '')
+    .replace(/\s*(?:小說|小説|小说)(?:\s*(?:限量|限定))?\s*$/iu, '')
+    .replace(/\s*(?:限量|限定)\s*$/u, '')
+    .trim();
   var rules = [
     /\s*(?:vol\.?|v\.?|第)\s*[0-9０-９]{1,4}\s*(?:巻|卷|集|冊|話|回|期|号|號)?\s*$/iu,
     /\s*[#＃]?\s*[0-9０-９]{1,4}\s*$/u,
@@ -2290,25 +2333,40 @@ function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, categ
 
 function pickJapaneseMangaUpdatesTitle_(searchResult, detail) {
   const associated = Array.isArray(detail && detail.associated) ? detail.associated : [];
-  const candidates = uniqNonEmptyTitles_([
+  const jpCandidates = [];
+
+  // Associated Names の先頭日本語を優先（MU サイト表示順）
+  for (let i = 0; i < associated.length; i += 1) {
+    const title = associated[i] && associated[i].title ? String(associated[i].title).trim() : '';
+    if (title && hasJapaneseTitleSignal_(title)) jpCandidates.push(title);
+  }
+
+  const extras = uniqNonEmptyTitles_([
     searchResult && searchResult.hit_title,
     detail && detail.title,
     searchResult && searchResult.record ? searchResult.record.title : '',
-  ].concat(associated.map(function(item) {
-    return item && item.title ? item.title : '';
-  })));
-
-  for (let i = 0; i < candidates.length; i += 1) {
-    const candidate = candidates[i];
-    if (!hasJapaneseTitleSignal_(candidate)) continue;
-    return String(candidate || '').trim();
+  ]);
+  for (let j = 0; j < extras.length; j += 1) {
+    const title = extras[j];
+    if (title && hasJapaneseTitleSignal_(title)) jpCandidates.push(title);
   }
 
-  return '';
+  for (let k = 0; k < jpCandidates.length; k += 1) {
+    if (hasKanaJapaneseSignal_(jpCandidates[k])) return jpCandidates[k];
+  }
+  return jpCandidates.length ? jpCandidates[0] : '';
+}
+
+function hasKanaJapaneseSignal_(value) {
+  return /[ぁ-ゖァ-ヺ々〆ヵヶ]/.test(String(value || ''));
 }
 
 function hasJapaneseTitleSignal_(value) {
-  return /[ぁ-ゖァ-ヺ々〆ヵヶ]/.test(String(value || ''));
+  const s = String(value || '');
+  if (/[ぁ-ゖァ-ヺ々〆ヵヶ]/.test(s)) return true;
+  // カナ無しの日本語漢字題（例: K-9 警視庁公安部公安第9課異能対策係）
+  if (/[\u3400-\u4DBF\u4E00-\u9FFF]/.test(s)) return true;
+  return false;
 }
 
 function normalizeMangaUpdatesTitleKey_(value) {
@@ -2338,6 +2396,7 @@ function normalizeMangaUpdatesComparableText_(value) {
     '惡': '悪', '悪': '悪',
     '劍': '剑',
     '龍': '龙',
+    '蔭': '陰', '陰': '蔭',
     '貓': '猫',
     '獸': '兽',
     '姬': '姫', '姫': '姫',
@@ -3361,6 +3420,45 @@ function bookCodeBuildFinalCode_(sheetName, rowData, workId) {
   return volumeCode ? baseCode + '-' + volumeCode : baseCode;
 }
 
+function detectEditionShapeFromRowData_(rowData) {
+  const existing = bookCodeFirstNonEmpty_(
+    rowData['形態(通常/初回限定/特装)'],
+    rowData['形態（通常/初回限定/特装）'],
+    rowData['形態']
+  );
+  if (existing) return existing;
+
+  const text = [
+    rowData['原題商品タイトル'],
+    rowData['原題タイトル'],
+    rowData['タイトル'],
+    rowData['商品名'],
+    rowData['特典メモ'],
+    rowData['商品説明'],
+  ].map(bookCodeNormalize_).filter(Boolean).join('\n');
+  if (!text) return '';
+
+  if (/特裝|特装/.test(text)) return '特装版';
+  if (/初回限定|首刷限定|首刷贈品|首刷赠品|予約限定/.test(text)) return '初版限定版';
+  if (/限定版/.test(text)) return '限定版';
+  return '通常版';
+}
+
+function enrichEditionShapeForRowData_(rowData) {
+  if (!rowData || typeof rowData !== 'object') return false;
+  const shape = detectEditionShapeFromRowData_(rowData);
+  if (!shape) return false;
+  const had = bookCodeFirstNonEmpty_(
+    rowData['形態(通常/初回限定/特装)'],
+    rowData['形態（通常/初回限定/特装）'],
+    rowData['形態']
+  );
+  if (had) return false;
+  rowData['形態(通常/初回限定/特装)'] = shape;
+  rowData['形態（通常/初回限定/特装）'] = shape;
+  return true;
+}
+
 function prepareBookCodeFieldsForItem_(ss, item, runtime) {
   if (!item) return item;
   const sheetName = resolveSheetName_(item);
@@ -3368,6 +3466,8 @@ function prepareBookCodeFieldsForItem_(ss, item, runtime) {
 
   const rowData = extractRowData_(item);
   if (!rowData || typeof rowData !== 'object') return item;
+
+  enrichEditionShapeForRowData_(rowData);
 
   const work = bookCodeLookupOrCreateWork_(ss, rowData, runtime || createBookCodeRuntime_(ss));
   const workId = bookCodeWorkId4_(work && work.id);
@@ -4394,7 +4494,12 @@ function writeRows_(sheet, lastColumn, targetRows, rows, textColumnIndexes, urlL
 }
 
 function normalizeHeader_(value) {
-  return String(value || '').trim();
+  return String(value || '')
+    .trim()
+    .replace(/[（]/g, '(')
+    .replace(/[）]/g, ')')
+    .replace(/[［【]/g, '[')
+    .replace(/[］】]/g, ']');
 }
 
 function toCellValue_(value) {

@@ -1782,24 +1782,53 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
   const dst = ss.getSheetByName(DAEGU_CFG.EMS_SRC);   // EMS大邱作業データ
   if (!src || !dst) { ui.alert('シートが見つかりません。'); return; }
 
+  const t0 = new Date();
+  const L = msg => Logger.log('[EMS大邱へ送る] ' + msg);
+  L('開始 ' + Utilities.formatDate(t0, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss'));
+
   const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(2000)) { ss.toast('他の処理が実行中です。'); return; }
+  if (!lock.tryLock(2000)) { L('中断: 他の処理が実行中（ロック取得失敗）'); ss.toast('他の処理が実行中です。'); return; }
   try {
     const sVals = src.getDataRange().getValues();
-    const picked = [];
+    const picked = [];          // 送信対象（チェック済み＆購入No/コードあり）
+    const checkedRows = [];     // A列がチェック(TRUE)の行番号（全部）
+    const skipped = [];         // チェックされたが購入No/商品コードが空で送らない行
+    const uncheckedData = [];   // 未チェックだが購入No/コードあり＝送ってはいけない行
     for (let i = 0; i < sVals.length; i++) {
       const r = sVals[i];
-      if (r[0] !== true) continue;                 // A列チェック
+      const isChecked = (r[0] === true);            // A列チェック
       const no = EMS_転送購入Noキー_(r[5]);         // F 購入No
       const code = 大邱_表示コード_(r[10]);          // K 商品コード
       const qty = EMS_表示数量_(r[11]);              // L 数量
-      if (!no || !code) continue;
+
+      if (!isChecked) {
+        if (no || code) uncheckedData.push(i + 1);   // 未チェック＝送信対象外
+        continue;
+      }
+      checkedRows.push(i + 1);
+      if (!no || !code) {
+        skipped.push({ row: i + 1, reason: !no ? '購入No空' : '商品コード空' });
+        continue;
+      }
       picked.push({
         row: i + 1, no: no, code: code,
         qty: qty, date: r[2], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15]
       });
     }
-    if (picked.length === 0) { ss.toast('チェックされた行がありません。'); return; }
+
+    // スキャン結果をログに残す（チェック/送信対象/未チェックの内訳）
+    L('スキャン結果: 全' + sVals.length + '行 / チェック' + checkedRows.length + '件 / 送信対象' + picked.length +
+      '件 / チェック済みスキップ' + skipped.length + '件 / 未チェックで除外' + uncheckedData.length + '件');
+    picked.forEach(p => L('  送信予定 行' + p.row + ': ' + p.no + ' / ' + p.code + ' / ' + (p.qty || 0) + '個'));
+    skipped.forEach(s => L('  ⚠ チェック済みだが送らない 行' + s.row + ': ' + s.reason));
+
+    // 確認: 送信対象がすべてチェック行か（未チェック行の混入がないか）を検証してログ
+    const checkedSet = new Set(checkedRows);
+    const intruder = picked.map(p => p.row).filter(rn => !checkedSet.has(rn));
+    if (intruder.length) L('🛑 異常: 未チェック行が送信対象に混入: 行' + intruder.join(','));
+    else L('✔ 確認OK: 送信対象はすべてチェック行（未チェック行は1件も含まれていない）');
+
+    if (picked.length === 0) { L('終了: 送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
 
     const preview = picked.slice(0, 12).map(p => `${p.no} / ${p.code} / ${p.qty || 0}個`).join('\n');
     const res = ui.alert('EMS大邱へ送る',
@@ -1807,10 +1836,11 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
       (picked.length > 12 ? '\n…ほか' : '') +
       '\n\n（EMS番号・発送日はEMS担当が記入）\n実行する？',
       ui.ButtonSet.YES_NO);
-    if (res !== ui.Button.YES) { ui.alert('やめました。'); return; }
+    if (res !== ui.Button.YES) { L('終了: ユーザーがキャンセル'); ui.alert('やめました。'); return; }
 
     const startRow = 大邱EMS_次の追記行_(dst);
     const n = picked.length;
+    L('書き込み開始: EMS大邱 ' + startRow + '行目から ' + n + '件');
     dst.getRange(startRow, 1, n, 1).setValues(picked.map(p => [p.date]));    // A 入荷日
     dst.getRange(startRow, 5, n, 1).setValues(picked.map(p => [p.vendor]));  // E 業者
     dst.getRange(startRow, 6, n, 1).setValues(picked.map(p => [p.name]));    // F 商品名
@@ -1825,8 +1855,44 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
       EMS大邱_QRS行範囲を再計算_(dst, startRow, n);
     }
 
+    // 書き込み後の検証: 追記ブロックを読み戻し「送られた件数」と内容を照合
+    SpreadsheetApp.flush();
+    const wroteNo = dst.getRange(startRow, 20, n, 1).getValues();   // T 購入No
+    const wroteCode = dst.getRange(startRow, 8, n, 1).getValues();  // H 商品コード
+    let received = 0, okCount = 0, ngCount = 0;
+    for (let i = 0; i < n; i++) {
+      const gotNo = EMS_転送購入Noキー_(wroteNo[i][0]);
+      const gotCode = 大邱_表示コード_(wroteCode[i][0]);
+      if (gotNo || gotCode) received++;                 // 実際にEMS大邱へ入った行
+      if (gotNo === picked[i].no && gotCode === picked[i].code) {
+        okCount++;
+      } else {
+        ngCount++;
+        L('  ✗ 不一致 EMS大邱' + (startRow + i) + '行: 期待 ' + picked[i].no + '/' + picked[i].code +
+          ' → 実際 ' + gotNo + '/' + gotCode);
+      }
+    }
+    L('書き込み検証: 送られた ' + received + '件 / 内容一致 ' + okCount + '件 / 不一致 ' + ngCount + '件');
+
     picked.forEach(p => src.getRange(p.row, 1).setValue(false));           // チェックを外す
+    L('チェック解除: 送信した' + n + '行のA列をFALSEに戻した');
+
+    // 件数チェック: 送った件数(n) と 送られた件数(received) を照合し、最後に表示
+    const allOK = (received === n && ngCount === 0);
+    const mark = allOK ? '✅ 件数一致しました。' : '⚠️ 件数不一致あり！実行ログを確認してください。';
+    L('完了: 送った ' + n + '件 / 送られた ' + received + '件 / 内容一致 ' + okCount + ' / 不一致 ' + ngCount +
+      ' / 未チェック除外 ' + uncheckedData.length + '件・スキップ ' + skipped.length + '件 / 所要 ' + (new Date() - t0) + 'ms');
+    L('件数チェック: ' + mark);
     ss.toast(`EMS大邱へ送信: ${n}件`);
+    ui.alert('EMS大邱へ送信 完了',
+      '送った件数　: ' + n + '件\n' +
+      '送られた件数: ' + received + '件\n' +
+      '照合　　　　: 件数一致 ' + okCount + ' / 件数不一致 ' + ngCount + '\n\n' +
+      mark,
+      ui.ButtonSet.OK);
+  } catch (err) {
+    L('🛑 例外: ' + (err && err.stack ? err.stack : err));
+    throw err;
   } finally {
     lock.releaseLock();
   }
