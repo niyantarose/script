@@ -16,7 +16,12 @@ function 計算機サイドバーを開く() {
   SpreadsheetApp.getUi().showSidebar(html);
 }
 
-/** サイドバーから呼ぶ: 為替レートを自動取得（X→円） */
+/** サイドバーから google.script.run で呼ぶ ASCII ラッパー */
+function getKeisanRates() {
+  return 計算機_レート取得();
+}
+
+/** 為替レートを自動取得（X→円） */
 function 計算機_レート取得() {
   const fb = { ok: false, tw: 5.09, kr: 0.105, cn: 23.82, date: '' };
   try {
