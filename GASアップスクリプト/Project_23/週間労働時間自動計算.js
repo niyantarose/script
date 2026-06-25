@@ -2,7 +2,8 @@
  * 労務管理_2026 - 週間労働時間（雇用保険チェック）
  *
  * 各月シート（1月〜12月）の一番右に「週間労働時間」列を追加し、
- * その行が属する週（月曜〜日曜）の実働時間合計を「時間（小数1桁）」で表示する。
+ * 週末（日曜）の行だけに、その週（月曜〜日曜）の実働時間合計を「時間（小数1桁）」で表示する。
+ * 月〜土の行は空欄。
  *   ・週20時間以上 … 赤（雇用保険の加入ライン）
  *   ・週18時間以上 … 黄（要注意）
  *
@@ -60,14 +61,15 @@ function setupWeeklyWorkHours() {
     }
     headerCell.setValue(HEADER_TEXT).setFontWeight('bold').setHorizontalAlignment('center');
 
-    // 数式: その行の週（月〜日）の実働合計を時間(小数)で。空欄・非日付行は空欄。
+    // 数式: 日曜(WEEKDAY=6)の行だけに、その週(月〜日)の実働合計を時間(小数)で表示。
+    //       月〜土・空欄・非日付行は空欄。
     const rng = '$' + dL + '$' + FIRST_DATA_ROW + ':$' + dL + '$' + lastDataRow;
     const wrng = '$' + wL + '$' + FIRST_DATA_ROW + ':$' + wL + '$' + lastDataRow;
     const formulas = [];
     for (let r = FIRST_DATA_ROW; r <= lastDataRow; r++) {
       const mon = '($' + dL + r + '-WEEKDAY($' + dL + r + ',3))'; // その週の月曜
       formulas.push([
-        '=IF(ISNUMBER($' + dL + r + '),' +
+        '=IF(AND(ISNUMBER($' + dL + r + '),WEEKDAY($' + dL + r + ',3)=6),' +
           'ROUND(SUMIFS(' + wrng + ',' +
           rng + ',">="&' + mon + ',' +
           rng + ',"<="&' + mon + '+6)*24,1),"")',
@@ -101,10 +103,10 @@ function setupWeeklyWorkHours() {
 
   SpreadsheetApp.getUi().alert(
     '週間労働時間の列を更新しました（' + done.length + 'シート）。\n\n' +
-      '・各行 = その週(月〜日)の実働合計（時間）\n' +
+      '・日曜の行 = その週(月〜日)の実働合計（時間）。月〜土は空欄\n' +
       '・' + WEEK_LIMIT + 'h以上 … 赤（雇用保険ライン）\n' +
       '・' + WARN_LIMIT + 'h以上 … 黄（要注意）\n\n' +
-      '※月をまたぐ週は各月シートに分かれて集計されます。'
+      '※その月に日曜が無い末尾の週（月またぎ）は表示されません。'
   );
 }
 
