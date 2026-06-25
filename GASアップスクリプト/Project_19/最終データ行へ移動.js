@@ -25,13 +25,10 @@ function 最終データ行へ移動_(silent) {
   const sh = ss.getActiveSheet();
   if (!sh) return 0;
 
-  SpreadsheetApp.flush();
-
   const row = 最終データ行を取得_(sh);
   const col = 最終データ行_移動先列_(sh);
 
-  ss.setActiveSheet(sh);
-  sh.getRange(row, col).activate();
+  sh.getRange(row, col).activate(); // sh は既にアクティブなので setActiveSheet 不要
 
   if (!silent) {
     ss.toast(`${sh.getName()} の ${row} 行目へ移動しました`, '最終データ行へ移動', 4);
@@ -50,20 +47,25 @@ function 最終データ行を取得_(sh) {
     ? cfg.keyCols
     : 最終データ行_スキャン列_(sh);
 
-  const numRows = lastRow - startRow + 1;
+  const maxCol = sh.getMaxColumns();
   const columns = keyCols
     .map(Number)
-    .filter(col => col >= 1 && col <= sh.getMaxColumns());
+    .filter(col => col >= 1 && col <= maxCol);
 
   if (columns.length === 0) return lastRow;
 
-  const colValues = columns.map(col => {
-    return sh.getRange(startRow, col, numRows, 1).getDisplayValues();
-  });
+  const numRows = lastRow - startRow + 1;
+  const minCol = Math.min.apply(null, columns);
+  const maxColUsed = Math.max.apply(null, columns);
+  // キー列をまたぐ範囲を1回だけ読む（列ごとに getRange するより往復が減って速い）。
+  // getValues は空判定に十分で getDisplayValues より軽い（0/false も String 化で非空と判定）。
+  const block = sh.getRange(startRow, minCol, numRows, maxColUsed - minCol + 1).getValues();
+  const colIndexes = columns.map(col => col - minCol); // block 内の列位置
 
   for (let i = numRows - 1; i >= 0; i--) {
-    for (let c = 0; c < colValues.length; c++) {
-      if (String(colValues[c][i][0] || '').trim() !== '') {
+    const rowArr = block[i];
+    for (let c = 0; c < colIndexes.length; c++) {
+      if (String(rowArr[colIndexes[c]]).trim() !== '') {
         return startRow + i;
       }
     }
