@@ -28,6 +28,7 @@ function Excel同期メニューを追加_() {
     .addItem('発送数：自動再計算トリガーを設置', '発送数自動再計算トリガーを設置')
     .addSeparator()
     .addItem('EMSカレンダーシートを更新', 'buildEmsCalendarSheet')
+    .addItem('EMSカレンダー：当日ハイライトを更新', 'refreshEmsCalendarTodayHighlight_')
     .addItem('GoogleカレンダーへEMSを反映', 'syncEmsCalendar')
     .addItem('EMSリスト：重複行を確認して削除', 'EMSリスト_重複行を確認して削除')
     .addItem('EMSリスト：下に混ざった古い行を確認して削除', 'EMSリスト_下に混ざった古い行を確認して削除')
@@ -153,7 +154,7 @@ function syncEmsCalendar() {
   // 箱ごとに「発送日〜到着日」の帯イベントを作成
   // 箱ごとに「発送日〜到着日」の帯イベントを作成
   let count = 0;
-  const today = new Date(); today.setHours(0, 0, 0, 0);   // ★追加
+  const today = _emsTodayTokyo_();   // ★追加
   Object.keys(groups).forEach(key => {
     const g = groups[key];
     const start = g.ship;
@@ -237,6 +238,12 @@ function getEmsBoxGroups_(ss) {
 
 // 表示する期間（今日を基準に前後何ヶ月か）
 const EMS_CAL_VIEW = { MONTHS_BACK: 1, MONTHS_FWD: 1 };
+const EMS_CAL_TODAY = {
+  BG: '#fde293',
+  FONT: '#3c4043',
+  BORDER: '#f9ab00',
+  MARKS_KEY: 'EMS_CAL_TODAY_MARKS'
+};
 
 function buildEmsCalendarSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -254,7 +261,7 @@ function buildEmsCalendarSheet() {
   };
   const PAST_STYLE = { bg: '#e8eaed', font: '#9aa0a6' };
 
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const today = _emsTodayTokyo_();
 
   // 表示ウィンドウ（先月初〜2ヶ月先の月末）
   const winStart = new Date(today.getFullYear(), today.getMonth() - EMS_CAL_VIEW.MONTHS_BACK, 1);
@@ -310,6 +317,7 @@ function buildEmsCalendarSheet() {
   const youbi = ['日', '月', '火', '水', '木', '金', '土'];
   let row = 1;
   let cur = new Date(winStart);
+  const allTodayMarks = [];
 
   while (cur <= winEnd) {
     const y = cur.getFullYear(), mo = cur.getMonth();
@@ -357,12 +365,6 @@ function buildEmsCalendarSheet() {
         .setNumberFormat('0')
         .setFontSize(14)
         .setHorizontalAlignment('right').setFontColor('#70757a');
-      if (todayCol) {
-        sh.getRange(numRow, todayCol)
-          .setBackground('#fde293')
-          .setFontWeight('bold')
-          .setFontColor('#3c4043');
-      }
       sh.setRowHeight(numRow, 26);
       row++;
 
@@ -412,14 +414,8 @@ function buildEmsCalendarSheet() {
 
     sh.getRange(blockStart, 1, row - blockStart, 7)
       .setBorder(true, true, true, true, true, null, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
-    todayHighlights.forEach(h => {
-      sh.getRange(h.row, h.col)
-        .setBackground('#fde293')
-        .setFontWeight('bold')
-        .setFontColor('#3c4043');
-      sh.getRange(h.row, h.col, h.rows, 1)
-        .setBorder(true, true, true, true, null, null, '#f9ab00', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
-    });
+    todayHighlights.forEach(h => _emsApplyTodayMark_(sh, h));
+    allTodayMarks.push.apply(allTodayMarks, todayHighlights);
 
     row++;
     cur = new Date(y, mo + 1, 1);
@@ -427,7 +423,51 @@ function buildEmsCalendarSheet() {
 
   for (let c = 1; c <= 7; c++) sh.setColumnWidth(c, 200);
   sh.setHiddenGridlines(true);
+  _emsSaveTodayMarks_(allTodayMarks);
   ss.toast('EMSカレンダーを更新したで');
+}
+
+/** EMSカレンダーの「当日」ハイライトだけを更新（シート再構築なし） */
+function refreshEmsCalendarTodayHighlight_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('EMSカレンダー');
+  if (!sh || sh.getLastRow() < 3) return;
+
+  _emsLoadTodayMarks_().forEach(m => _emsClearTodayMark_(sh, m));
+  _emsClearStaleTodayHighlights_(sh);
+
+  const today = _emsTodayTokyo_();
+  const newMarks = [];
+  const lastRow = sh.getLastRow();
+  let row = 1;
+
+  while (row <= lastRow) {
+    const header = _emsParseCalendarMonthHeader_(sh.getRange(row, 1).getDisplayValue());
+    if (!header) { row++; continue; }
+
+    row += 2; // 曜日行をスキップ
+    while (row <= lastRow) {
+      const nextHeader = _emsParseCalendarMonthHeader_(sh.getRange(row, 1).getDisplayValue());
+      if (nextHeader) break;
+      if (!_emsIsCalendarDayRow_(sh, row)) { row++; continue; }
+
+      const numRow = row;
+      for (let c = 1; c <= 7; c++) {
+        const v = sh.getRange(numRow, c).getValue();
+        if (typeof v !== 'number' || v < 1 || v > 31) continue;
+        const d = new Date(header.year, header.monthIndex, v);
+        if (d.getMonth() !== header.monthIndex) continue;
+        if (!_emsSameDate_(d, today)) continue;
+        const rows = _emsFindWeekBlockHeight_(sh, numRow);
+        newMarks.push({ row: numRow, col: c, rows: rows });
+      }
+
+      row += _emsFindWeekBlockHeight_(sh, numRow);
+    }
+  }
+
+  newMarks.forEach(m => _emsApplyTodayMark_(sh, m));
+  _emsSaveTodayMarks_(newMarks);
 }
 
 function Googleカレンダーをシートに同期() {
@@ -550,11 +590,78 @@ function _emsDateOnly_(value) {
   return null;
 }
 
+function _emsTodayTokyo_() {
+  const parts = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd').split('-').map(Number);
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
 function _emsSameDate_(a, b) {
-  return a instanceof Date && b instanceof Date &&
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
+  if (!(a instanceof Date) || !(b instanceof Date)) return false;
+  const fmt = d => Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM-dd');
+  return fmt(a) === fmt(b);
+}
+
+function _emsApplyTodayMark_(sh, mark) {
+  sh.getRange(mark.row, mark.col)
+    .setBackground(EMS_CAL_TODAY.BG)
+    .setFontWeight('bold')
+    .setFontColor(EMS_CAL_TODAY.FONT);
+  sh.getRange(mark.row, mark.col, mark.rows, 1)
+    .setBorder(true, true, true, true, null, null, EMS_CAL_TODAY.BORDER, SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+}
+
+function _emsClearTodayMark_(sh, mark) {
+  sh.getRange(mark.row, mark.col)
+    .setBackground(null)
+    .setFontWeight('normal')
+    .setFontColor('#70757a');
+  sh.getRange(mark.row, mark.col, mark.rows, 1)
+    .setBorder(true, true, true, true, null, null, '#d0d7de', SpreadsheetApp.BorderStyle.SOLID);
+}
+
+function _emsSaveTodayMarks_(marks) {
+  PropertiesService.getDocumentProperties()
+    .setProperty(EMS_CAL_TODAY.MARKS_KEY, JSON.stringify(marks || []));
+}
+
+function _emsLoadTodayMarks_() {
+  const raw = PropertiesService.getDocumentProperties().getProperty(EMS_CAL_TODAY.MARKS_KEY);
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch (e) { return []; }
+}
+
+function _emsParseCalendarMonthHeader_(text) {
+  const m = String(text || '').match(/(\d{4})年(\d{1,2})月/);
+  if (!m) return null;
+  return { year: Number(m[1]), monthIndex: Number(m[2]) - 1 };
+}
+
+function _emsIsCalendarDayRow_(sh, row) {
+  const vals = sh.getRange(row, 1, 1, 7).getValues()[0];
+  return vals.some(v => typeof v === 'number' && v >= 1 && v <= 31);
+}
+
+function _emsFindWeekBlockHeight_(sh, numRow) {
+  const maxScan = 30;
+  for (let r = numRow + 1; r <= numRow + maxScan; r++) {
+    if (sh.getRowHeight(r) === 8) return r - numRow + 1;
+  }
+  return 3;
+}
+
+function _emsClearStaleTodayHighlights_(sh) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 1) return;
+  const bgs = sh.getRange(1, 1, lastRow, 7).getBackgrounds();
+  const target = EMS_CAL_TODAY.BG.toLowerCase();
+  for (let r = 0; r < bgs.length; r++) {
+    for (let c = 0; c < 7; c++) {
+      if (String(bgs[r][c] || '').toLowerCase() !== target) continue;
+      const numRow = r + 1;
+      const col = c + 1;
+      _emsClearTodayMark_(sh, { row: numRow, col: col, rows: _emsFindWeekBlockHeight_(sh, numRow) });
+    }
+  }
 }
 
 function _emsCalendarHasUsefulBg_(color) {
