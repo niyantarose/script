@@ -35,6 +35,7 @@ function Excel同期メニューを追加_() {
     .addItem('商品マスタ：重複/商品コードなしを整理', '商品マスタ_商品コードを一意化')
     .addSeparator()
     .addItem('商品マスタ：発注大邱データから更新', '商品マスタ_発注大邱から更新')
+    .addItem('商品マスタ：新リスト(取込タブ)をマージ', '商品マスタ_新リストをマージ')
     .addSeparator()
     .addItem('旧Excel同期トリガーを削除', '旧Excel同期トリガーを削除')
     .addToUi();
