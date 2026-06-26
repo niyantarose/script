@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    body { font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; font-size: 13px; color: #222; margin: 0; padding: 10px; }
+    h1 { font-size: 15px; margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
+    .tabs { display: flex; border: 1px solid #ccc; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+    .tabs button { flex: 1; border: none; background: #fff; padding: 6px 0; font-size: 13px; cursor: pointer; color: #555; }
+    .tabs button.on { background: #1a73e8; color: #fff; }
+    .rate { font-size: 11px; color: #777; margin-bottom: 8px; }
+    .box { border: 1px solid #eee; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+    .box .h { font-size: 11px; font-weight: bold; margin-bottom: 6px; }
+    .in .h { color: #b8860b; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 5px 0; }
+    .row label { color: #555; }
+    .row input { width: 96px; height: 28px; text-align: right; border: 1px solid #ccc; border-radius: 4px; padding: 0 6px; font-size: 13px; background: #FFF9E6; }
+    .unit { width: 40px; font-size: 11px; color: #999; }
+    .big { background: #E6F4EA; border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+    .big .l { font-size: 11px; color: #137333; }
+    .big .v { font-size: 22px; font-weight: bold; color: #137333; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .card { background: #f5f5f5; border-radius: 6px; padding: 6px 8px; }
+    .card .l { font-size: 11px; color: #777; }
+    .card .v { font-size: 15px; font-weight: bold; }
+    .sig { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-radius: 6px; margin-top: 6px; font-weight: bold; }
+    .sig.ok { background: #E6F4EA; color: #137333; }
+    .sig.ng { background: #FCE8E6; color: #C5221F; }
+    .refetch { width: 100%; margin-top: 8px; height: 30px; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; font-size: 12px; }
+    .note { font-size: 11px; color: #999; margin-top: 8px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>💴 仕入れ計算機</h1>
+  <div class="tabs">
+    <button id="t_tw" onclick="setC('tw')">台湾</button>
+    <button id="t_kr" onclick="setC('kr')">韓国</button>
+    <button id="t_cn" onclick="setC('cn')">中国</button>
+  </div>
+  <div class="rate" id="rate">レート取得中...</div>
+  <div class="box in"><div class="h">✎ 入力（黄色だけ埋める）</div><div id="inputs"></div></div>
+  <div id="results"></div>
+  <button class="refetch" onclick="loadRates()">↻ レートを再取得</button>
+  <div class="note">レートは自動取得（市場値）。今までの“盛り”を残したい時は、レート欄を手入力で上書きしてください。実質粗利率は手数料9%(中国は12%)＋消費税10%を引いた実利率です。</div>
+
+  <script>
+    var rates = { tw: 5.09, kr: 0.105, cn: 23.82, date: '', ok: false };
+    var cur = 'tw';
+    var cfg = {
+      tw: { fee: 0.09, ship: 0.35, weight: false, unit: '円/元',
+            fields: [['price','本の価格','元',820],['rate','レート','円/元',null],['goal','目標粗利率','%',25]],
+            cost: function(v){ var s=v.price*cfg.tw.ship; return Math.round((v.price+s)*v.rate); } },
+      cn: { fee: 0.12, ship: 0.30, weight: false, unit: '円/元',
+            fields: [['price','商品価格','元',37.4],['rate','レート','円/元',null],['goal','目標粗利率','%',30]],
+            cost: function(v){ var s=v.price*cfg.cn.ship; return Math.round((v.price+s)*v.rate); } },
+      kr: { fee: 0.09, ship: 0, weight: true, unit: '円/W',
+            fields: [['price','本の価格','W',180900],['weight','重さ','g',300],['rate','レート','円/W',null],['goal','目標粗利率','%',25]],
+            cost: function(v){ return Math.round(v.price*v.rate + v.weight*0.6); } }
+    };
+    var TAX = 0.1;
+    function yen(v){ return '¥'+Math.round(v).toLocaleString('ja-JP'); }
+
+    function setC(c){ cur=c;
+      ['tw','kr','cn'].forEach(function(k){ document.getElementById('t_'+k).className = (k===c?'on':''); });
+      render();
+    }
+    function render(){
+      var f = cfg[cur].fields;
+      document.getElementById('inputs').innerHTML = f.map(function(x){
+        var def = x[0]==='rate' ? rates[cur] : x[3];
+        return '<div class="row"><label>'+x[1]+'</label><span style="display:flex;align-items:center;gap:6px;">'+
+          '<input id="f_'+x[0]+'" type="number" step="any" value="'+def+'" oninput="compute()"/>'+
+          '<span class="unit">'+x[2]+'</span></span></div>';
+      }).join('');
+      compute();
+    }
+    function compute(){
+      var v = {};
+      cfg[cur].fields.forEach(function(x){ v[x[0]] = parseFloat((document.getElementById('f_'+x[0])||{}).value)||0; });
+      var fee = cfg[cur].fee;
+      var cost = cfg[cur].cost(v);
+      var sell = cost/(1 - v.goal/100 - fee - TAX);
+      var sellR = Math.round(sell/100)*100;
+      var uwa = sellR - cost;
+      var rate = sellR>0 ? (sellR - sellR*(fee+TAX) - cost)/sellR*100 : 0;
+      var ok = rate >= 20;
+      document.getElementById('results').innerHTML =
+        '<div class="big"><div class="l">おすすめ売値（100円単位）</div><div class="v">'+yen(sellR)+'</div></div>'+
+        '<div class="grid"><div class="card"><div class="l">うわのせ額</div><div class="v">'+yen(uwa)+'</div></div>'+
+        '<div class="card"><div class="l">原価</div><div class="v">'+yen(cost)+'</div></div></div>'+
+        '<div class="sig '+(ok?'ok':'ng')+'"><span>'+(ok?'✓':'⚠')+' 実質粗利率</span><span>'+rate.toFixed(0)+'%</span></div>';
+    }
+
+    function loadRates(){
+      document.getElementById('rate').textContent = 'レート取得中...';
+      google.script.run.withSuccessHandler(function(r){
+        rates.tw=r.tw; rates.kr=r.kr; rates.cn=r.cn; rates.date=r.date||''; rates.ok=r.ok;
+        document.getElementById('rate').textContent = r.ok
+          ? 'レート自動取得 ' + (r.date? r.date.replace(/ \d\d:.*$/,'') : '') + '（台'+r.tw+' / 韓'+r.kr+' / 中'+r.cn+'）'
+          : 'レート取得失敗 → 手入力してください（従来値を表示中）';
+        render();
+      }).withFailureHandler(function(){
+        document.getElementById('rate').textContent = 'レート取得失敗 → 手入力してください';
+        render();
+      }).getKeisanRates();
+    }
+
+    setC('tw');
+    loadRates();
+  </script>
+</body>
+</html>
