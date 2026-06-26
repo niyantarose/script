@@ -1,0 +1,96 @@
+const PTUCH_OUTPUT_FOLDER_ID = '1RpfZYLGs6SMz9Bfd9rnCJW4OIEQ3K2HN';
+
+function Pタッチ印刷用Excelを保存() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('EMS大邱作業データ');
+  if (!sheet) throw new Error('シート「EMS大邱作業データ」がありません。');
+
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 3) { SpreadsheetApp.getUi().alert('データがありません。'); return; }
+
+  const header = values[1].map(v => String(v).trim());
+  const dateCol = findHeaderColumn_(header, ['入荷日']);
+  const codeCol = findHeaderColumn_(header, ['ItemCode', 'Code', '商品コード']);
+  const nameCol = findHeaderColumn_(header, ['Description / Title', 'Product Name', '商品名']);
+  const qtyCol  = findHeaderColumn_(header, ['Qty', 'Units']);
+
+  if (dateCol === -1) throw new Error('「入荷日」列がありません。');
+  if (codeCol === -1) throw new Error('「ItemCode」列がありません。');
+  if (nameCol === -1) throw new Error('「Description / Title」列がありません。');
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // ステップ1: 今日の分を抽出しつつ重複をまとめる
+  const merged = {}; // key: ItemCode, value: {name, qty}
+  for (let i = 2; i < values.length; i++) {
+    const dateVal = values[i][dateCol];
+    if (!dateVal) continue;
+    const d = new Date(dateVal);
+    d.setHours(0, 0, 0, 0);
+    if (d.getTime() !== today.getTime()) continue;
+
+    const code = String(values[i][codeCol] || '').trim();
+    if (!code) continue;
+    const name = String(values[i][nameCol] || '').trim();
+    const qty  = parseInt(values[i][qtyCol], 10) || 1;
+
+    if (merged[code]) {
+      merged[code].qty += qty;
+    } else {
+      merged[code] = { name: name, qty: qty };
+    }
+  }
+
+  if (Object.keys(merged).length === 0) {
+    SpreadsheetApp.getUi().alert('本日入荷分のデータがありません。');
+    return;
+  }
+
+  // ステップ2: 数量分だけ行を展開
+  const rows = [['商品コード', '商品名']];
+  for (const code in merged) {
+    const { name, qty } = merged[code];
+    for (let i = 0; i < qty; i++) {
+      rows.push([code, name]);
+    }
+  }
+
+  // xlsxに変換して保存
+  const FIXED_NAME = 'P-touch_today';
+  const tempSs = SpreadsheetApp.create(FIXED_NAME);
+  const tempSheet = tempSs.getSheets()[0];
+  tempSheet.setName('印刷用');
+  tempSheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+  SpreadsheetApp.flush();
+
+  const blob = UrlFetchApp.fetch(
+    'https://docs.google.com/spreadsheets/d/' + tempSs.getId() + '/export?format=xlsx',
+    { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() } }
+  ).getBlob().setName(FIXED_NAME + '.xlsx');
+
+  const folder = getOutputFolder_();
+  const existing = folder.getFilesByName(FIXED_NAME + '.xlsx');
+  while (existing.hasNext()) existing.next().setTrashed(true);
+  folder.createFile(blob);
+
+  DriveApp.getFileById(tempSs.getId()).setTrashed(true);
+
+  SpreadsheetApp.getUi().alert(
+    'P-touch用Excelを更新しました！\n\n' +
+    'ファイル名：' + FIXED_NAME + '.xlsx\n' +
+    'ラベル枚数：' + (rows.length - 1) + '枚\n\n' +
+    'P-touch Editorで「更新」を押してください。'
+  );
+}
+
+function findHeaderColumn_(header, candidates) {
+  for (let i = 0; i < header.length; i++) {
+    if (candidates.includes(header[i])) return i;
+  }
+  return -1;
+}
+
+function getOutputFolder_() {
+  return DriveApp.getFolderById(PTUCH_OUTPUT_FOLDER_ID);
+}
