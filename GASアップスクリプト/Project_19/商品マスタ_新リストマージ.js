@@ -13,6 +13,7 @@ const MASTER_MERGE_CFG = {
   MASTER_SHEET: '商品マスタ',
   MASTER_HEADER_ROW: 6,   // データは7行目から。B:Gの6列が1レコード(コード/業者/商品名/品目/価格/重さ)
   M_CODE: 2,              // B列（1-based）。ここから6列を読み書き
+  M_ITEM: 5,              // E列 品目（1-based）
   IMPORT_SHEET: '新マスタ取込',
   MAP_SHEET: '品目マッピング'
 };
@@ -30,6 +31,17 @@ function _品目キー_(v) {
 function _品目は英語か_(v) {
   const s = String(v || '').trim();
   return s !== '' && /^[\x00-\x7F]+$/.test(s);
+}
+
+// 品目を英語化する。マッピング優先 → ASCIIはそのまま → それ以外は元のまま残し unmapped に記録。
+function _品目を英語化_(value, itemMap, unmapped) {
+  const cur = String(value || '').trim();
+  if (!cur) return '';
+  const mapped = itemMap[_品目キー_(cur)];
+  if (mapped) return mapped;          // マッピングがあれば英語へ（ASCIIでも上書き可）
+  if (_品目は英語か_(cur)) return cur; // 既に英語ならそのまま
+  if (unmapped) unmapped[cur] = (unmapped[cur] || 0) + 1; // 未マッピングは元のまま＋記録
+  return cur;
 }
 
 function 商品マスタ_新リストをマージ() {
@@ -68,7 +80,8 @@ function 商品マスタ_新リストをマージ() {
     // 3) 品目マッピング
     const itemMap = 商品マスタ_品目マッピング読み込み_(ss);
 
-    // 4) 取込を適用算出（被り=上書き / 新規=追加）
+    // 4) 取込を適用算出（被り=上書き / 新規=追加）。品目はマッピング経由で英語化。
+    const unmapped = {};
     const importKeys = {};
     let updated = 0, added = 0, unchanged = 0;
     const newRows = [];
@@ -78,28 +91,27 @@ function 商品マスタ_新リストをマージ() {
       if (k in masterIndex) {
         const row = block[masterIndex[k]];
         const before = [row[2], row[3], row[4]].join('│');
-        if (String(r.name).trim() !== '') row[2] = r.name;                 // D 商品名
-        if (String(r.item).trim() !== '') row[3] = r.item;                 // E 品目（英語）
-        if (r.price !== '' && r.price !== null) row[4] = r.price;          // F 価格
+        if (String(r.name).trim() !== '') row[2] = r.name;                              // D 商品名
+        if (String(r.item).trim() !== '') row[3] = _品目を英語化_(r.item, itemMap, unmapped); // E 品目（英語化）
+        if (r.price !== '' && r.price !== null) row[4] = r.price;                       // F 価格
         if ([row[2], row[3], row[4]].join('│') !== before) updated++; else unchanged++;
       } else {
-        newRows.push([r.code, '', r.name, r.item, r.price, '']);           // B/D/E/F、業者C・重量Gは空
+        const newItem = _品目を英語化_(r.item, itemMap, unmapped);
+        newRows.push([r.code, '', r.name, newItem, r.price, '']);          // B/D/E/F、業者C・重量Gは空
         masterIndex[k] = block.length + newRows.length - 1;                // 同一実行内の二重追加防止
         added++;
       }
     });
 
     // 5) 旧マスタだけの行の品目を英語化
-    const unmapped = {};
     let itemConverted = 0;
     for (let i = 0; i < block.length; i++) {
       const k = _masterMergeKey_(block[i][0]);
       if (importKeys[k]) continue;                 // 取込にある行は上で処理済み
       const cur = String(block[i][3] || '').trim();
-      if (!cur || _品目は英語か_(cur)) continue;   // 空 or 既に英語
-      const mapped = itemMap[_品目キー_(cur)];
-      if (mapped) { block[i][3] = mapped; itemConverted++; }
-      else { unmapped[cur] = (unmapped[cur] || 0) + 1; }
+      if (!cur) continue;
+      const to = _品目を英語化_(cur, itemMap, unmapped);
+      if (to !== cur) { block[i][3] = to; itemConverted++; }
     }
     const unmappedList = Object.keys(unmapped);
     if (unmappedList.length) 商品マスタ_未マッピングを品目マッピングへ追記_(ss, unmappedList);
@@ -220,4 +232,86 @@ function 商品マスタ_未マッピングを品目マッピングへ追記_(ss
   }
   const toAdd = list.filter(v => !existing[_品目キー_(v)]).map(v => [v, '']);
   if (toAdd.length) sh.getRange(sh.getLastRow() + 1, 1, toAdd.length, 2).setValues(toAdd);
+}
+
+// ============================================================
+// 商品マスタ：品目(E列)を「品目マッピング」で英語に統一する（マージとは独立して実行可）
+//   ・マッピングに有る→英語へ ／ 既に英語(ASCII)→そのまま ／ それ以外→元のまま残し未マッピング報告(A列へ追記)
+//   ・ドライラン確認＋自動バックアップ＋ログ
+// ============================================================
+function 商品マスタ_品目を英語に統一() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const t0 = new Date();
+  const L = m => Logger.log('[品目英語統一] ' + m);
+  L('開始 ' + Utilities.formatDate(t0, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss'));
+
+  const master = ss.getSheetByName(MASTER_MERGE_CFG.MASTER_SHEET);
+  if (!master) { ui.alert('「' + MASTER_MERGE_CFG.MASTER_SHEET + '」が見つかりません。'); return; }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(3000)) { ss.toast('他の処理が実行中です。'); return; }
+  try {
+    const itemMap = 商品マスタ_品目マッピング読み込み_(ss);
+    const mStart = MASTER_MERGE_CFG.MASTER_HEADER_ROW + 1;
+    const n = Math.max(0, master.getLastRow() - MASTER_MERGE_CFG.MASTER_HEADER_ROW);
+    if (n <= 0) { ui.alert('商品マスタにデータがありません。'); return; }
+
+    const range = master.getRange(mStart, MASTER_MERGE_CFG.M_ITEM, n, 1); // E列 品目
+    const vals = range.getValues();
+    const unmapped = {};
+    let converted = 0, alreadyEn = 0, empty = 0;
+    for (let i = 0; i < n; i++) {
+      const cur = String(vals[i][0] || '').trim();
+      if (!cur) { empty++; continue; }
+      const to = _品目を英語化_(cur, itemMap, unmapped);
+      if (to !== cur) { vals[i][0] = to; converted++; }
+      else if (_品目は英語か_(cur) || itemMap[_品目キー_(cur)]) alreadyEn++;
+    }
+    const unmappedList = Object.keys(unmapped);
+    if (unmappedList.length) 商品マスタ_未マッピングを品目マッピングへ追記_(ss, unmappedList);
+
+    L('算出: 英語へ変換' + converted + ' / 既に英語' + alreadyEn + ' / 空' + empty + ' / 未マッピング' + unmappedList.length);
+
+    const unmapNote = unmappedList.length
+      ? '\n\n⚠ 未マッピング品目 ' + unmappedList.length + '件 →「品目マッピング」A列に追記しました。\n  B列に英語を入れて再実行で変換されます。\n  ' +
+        unmappedList.slice(0, 20).join(', ') + (unmappedList.length > 20 ? ' …ほか' : '')
+      : '';
+    const res = ui.alert('商品マスタ：品目を英語に統一（確認）',
+      '商品マスタの品目(E列)を英語に統一します。\n\n' +
+      '■英語へ変換: ' + converted + '件\n' +
+      '■既に英語: ' + alreadyEn + '件\n' +
+      '■空欄: ' + empty + '件' + unmapNote +
+      '\n\n実行前に商品マスタを自動バックアップします。実行しますか？',
+      ui.ButtonSet.YES_NO);
+    if (res !== ui.Button.YES) {
+      L('中止: ユーザーキャンセル（品目マッピングへの追記のみ反映）');
+      ui.alert('やめました。' + (unmappedList.length ? '\n「品目マッピング」のB列を埋めてから再実行してください。' : ''));
+      return;
+    }
+
+    if (converted > 0) {
+      const bkName = '商品マスタ_backup_' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMdd_HHmm');
+      master.copyTo(ss).setName(bkName);
+      L('バックアップ作成: ' + bkName);
+      range.setValues(vals);
+      SpreadsheetApp.flush();
+      L('適用完了: ' + converted + '件変換 / 所要' + (new Date() - t0) + 'ms');
+      ss.toast('品目を英語化: ' + converted + '件（未マッピング' + unmappedList.length + '件）');
+    } else {
+      L('変換対象なし');
+      ss.toast('変換対象なし（未マッピング' + unmappedList.length + '件）');
+    }
+    ui.alert('完了',
+      '英語へ変換: ' + converted + '件\n既に英語: ' + alreadyEn + '件' +
+      (unmappedList.length
+        ? '\n\n⚠ 未マッピング品目が' + unmappedList.length + '件残っています。\n「品目マッピング」のB列を埋めて再実行してください。'
+        : '\n\nすべて英語に統一されました。'),
+      ui.ButtonSet.OK);
+  } catch (err) {
+    L('🛑 例外: ' + (err && err.stack ? err.stack : err));
+    throw err;
+  } finally {
+    lock.releaseLock();
+  }
 }
