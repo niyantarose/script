@@ -426,7 +426,17 @@ function buildEmsCalendarSheet() {
   for (let c = 1; c <= 7; c++) sh.setColumnWidth(c, 200);
   sh.setHiddenGridlines(true);
   _emsSaveTodayMarks_(allTodayMarks);
-  ss.toast('EMSカレンダーを更新したで');
+
+  // シート構築のあと、Googleカレンダー「EMS追跡」へも同期する（失敗してもシート更新は完了させる）
+  let calMsg = '';
+  try {
+    syncEmsCalendar();
+    calMsg = ' ＋ Googleカレンダー同期OK';
+  } catch (err) {
+    calMsg = ' （Googleカレンダー同期は失敗: ' + (err && err.message ? err.message : err) + '）';
+    Logger.log('[EMSカレンダー] Google同期失敗: ' + (err && err.stack ? err.stack : err));
+  }
+  ss.toast('EMSカレンダーを更新したで' + calMsg);
 }
 
 /** EMSカレンダーの「当日」ハイライトだけを更新（シート再構築なし） */
