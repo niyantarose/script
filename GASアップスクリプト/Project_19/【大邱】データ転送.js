@@ -130,6 +130,7 @@ function 大邱_発注へ転送() {
     const existing = 発注_既存キーセット_();
 
     const appendRows = [];
+    const appendSrcRows = []; // 背景色コピー用に元の行番号(1始まり)も保持
     for (let i = 0; i < sVals.length; i++) {
       const r = sVals[i];
       const orderNo = EMS_転送購入Noキー_(r[5]);    // F 発注NO
@@ -140,6 +141,7 @@ function 大邱_発注へ転送() {
       if (existing.has(key)) continue;
       existing.add(key);
       appendRows.push(r);
+      appendSrcRows.push(i + 1);
     }
 
     if (appendRows.length === 0) { ss.toast('追記対象なし（すべて既存）。'); return; }
@@ -182,10 +184,34 @@ function 大邱_発注へ転送() {
     // Y列(EMS発送数)は発注Y7の1本のMAP式が自動展開するので、ここでは書かない。
     // （万一Y7にMAP式が無い場合は「発注：EMS発送数の式を一括修正」を一度実行）
 
+    // 手動でつけた背景色（行ハイライト）を発注側にもコピー（消込色=条件付き書式は対象外）
+    大邱_発注へ背景色コピー_(src, dst, appendSrcRows, startRow, n);
+
     ss.toast(`発注へ追記 ${n}件`);
   } finally {
     lock.releaseLock();
   }
+}
+
+// 手動でつけた背景色（行ハイライト）を src の対象行から dst の追記行へコピーする。
+// getBackgrounds は手動の背景色のみ返す（条件付き書式の消込色は含まれない）。
+function 大邱_発注へ背景色コピー_(src, dst, srcRows, startRow, n) {
+  if (!n) return;
+  const scanCols = Math.min(Math.max(1, src.getLastColumn()), 21); // A..U あたりから行のハイライト色を拾う
+  const srcBg = src.getRange(1, 1, src.getLastRow(), scanCols).getBackgrounds();
+  const DST_START = 4, DST_WIDTH = 19;                              // 発注 D..V を塗る
+  const destBg = dst.getRange(startRow, DST_START, n, DST_WIDTH).getBackgrounds();
+  let changed = false;
+  for (let r = 0; r < n; r++) {
+    const row = srcBg[srcRows[r] - 1] || [];
+    let color = '';
+    for (let c = 0; c < row.length; c++) {
+      const bg = String(row[c] || '').toLowerCase();
+      if (bg && bg !== '#ffffff' && bg !== 'white') { color = row[c]; break; } // 行で最初の非白＝ハイライト色
+    }
+    if (color) { for (let c = 0; c < DST_WIDTH; c++) destBg[r][c] = color; changed = true; }
+  }
+  if (changed) dst.getRange(startRow, DST_START, n, DST_WIDTH).setBackgrounds(destBg);
 }
 
 // ============================================================
