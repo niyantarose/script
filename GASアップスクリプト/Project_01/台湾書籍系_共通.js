@@ -927,16 +927,17 @@ function 台湾書籍系_重複作品_計画を作成_() {
   if (!cWK || !cID) throw new Error('Worksに WorksKey / 作品ID 列が見つかりません');
   const wVals = worksSh.getRange(2, 1, worksSh.getLastRow() - 1, worksSh.getLastColumn()).getValues();
 
-  // 1) Works行を「媒体＋作品比較キー」でグループ化
-  const groups = {};
+  // 1) Works行を 作品比較キー(okey) でグループ化（媒体は行ごとに保持）
+  const byOkey = {};
   wVals.forEach((r, i) => {
     const id = 台湾書籍系_作品ID4桁を取得_(r[cID - 1]);
     if (!id) return;
     const wk = 台湾書籍系_正規化文字列_(r[cWK - 1]);
     const orig = cOrig ? 台湾書籍系_正規化文字列_(r[cOrig - 1]) : '';
-    const gk = 台湾書籍系_重複グループキー_(wk, orig);
-    if (!gk) return;
-    (groups[gk] = groups[gk] || []).push({ sheetRow: i + 2, id, orig });
+    const okey = 台湾書籍系_作品比較キー_(orig);
+    if (!okey) return;
+    const media = 台湾書籍系_WorksKey媒体コード_(wk) || '?';
+    (byOkey[okey] = byOkey[okey] || []).push({ sheetRow: i + 2, id, media });
   });
 
   // 2) 商品シート（台湾まんが・台湾書籍その他）を読み、ID→商品行 と 既存コード集合
@@ -977,38 +978,58 @@ function 台湾書籍系_重複作品_計画を作成_() {
   const collisions = [];
   const orphanWorks = [];
   const 媒体不明スキップ = [];
-  Object.keys(groups).forEach(gk => {
-    const ids = Array.from(new Set(groups[gk].map(r => r.id))).sort();
-    if (ids.length < 2) return;
-    if (gk.indexOf('?|') === 0) { 媒体不明スキップ.push({ gk, ids }); return; }
-    const keepId = ids[0];
-    const mergeIds = ids.slice(1);
-    dupGroups.push({ gk, keepId, mergeIds });
-    const fullyMerged = {};
-    mergeIds.forEach(mid => {
-      const prods = products[mid] || [];
-      let edited = 0;
-      prods.forEach(p => {
-        const newCode = p.商品コード ? 台湾書籍系_コードの作品IDを差し替え_(p.商品コード, keepId) : '';
-        const newSku = p.sku ? 台湾書籍系_コードの作品IDを差し替え_(p.sku, keepId) : '';
-        if (newCode && newCode.toUpperCase() !== p.商品コード.toUpperCase() && usedCodes[newCode.toUpperCase()]) {
-          collisions.push({ sh: p.sh, sheetName: p.sheetName, sheetRow: p.sheetRow, from: p.商品コード, to: newCode });
-          return;
-        }
-        productEdits.push({
-          sh: p.sh, sheetName: p.sheetName, sheetRow: p.sheetRow,
-          col作品ID: p.col作品ID, col商品コード: p.col商品コード, colSKU: p.colSKU,
-          keepId, fromCode: p.商品コード, newCode, fromSku: p.sku, newSku,
+  const 商品数 = id => (products[id] || []).length;
+
+  Object.keys(byOkey).forEach(okey => {
+    const rows = byOkey[okey];
+    // 媒体ごとにバケツ分け。媒体なし('?')は相方の媒体が1つだけならそれに合流（抜け殻の救済）。
+    const stamped = Array.from(new Set(rows.filter(r => r.media !== '?').map(r => r.media)));
+    const buckets = {};
+    rows.forEach(r => { if (r.media !== '?') (buckets[r.media] = buckets[r.media] || []).push(r); });
+    const wild = rows.filter(r => r.media === '?');
+    if (wild.length) {
+      if (stamped.length === 1) wild.forEach(r => buckets[stamped[0]].push(r));
+      else buckets['?'] = wild; // 相方が0個 or 複数媒体 → 曖昧なので媒体なしのまま
+    }
+
+    Object.keys(buckets).forEach(media => {
+      const brows = buckets[media];
+      const ids = Array.from(new Set(brows.map(r => r.id)));
+      if (ids.length < 2) return;
+      if (media === '?') { 媒体不明スキップ.push({ gk: '?|' + okey, ids: ids.slice().sort() }); return; }
+      // keep = 商品が最も多いID（同数なら最小ID）。抜け殻＝商品0を残さないため。
+      const keepId = ids.slice().sort((a, b) => {
+        const d = 商品数(b) - 商品数(a);
+        return d !== 0 ? d : (a < b ? -1 : a > b ? 1 : 0);
+      })[0];
+      const mergeIds = ids.filter(id => id !== keepId);
+      dupGroups.push({ gk: media + '|' + okey, keepId, mergeIds });
+      const fullyMerged = {};
+      mergeIds.forEach(mid => {
+        const prods = products[mid] || [];
+        let edited = 0;
+        prods.forEach(p => {
+          const newCode = p.商品コード ? 台湾書籍系_コードの作品IDを差し替え_(p.商品コード, keepId) : '';
+          const newSku = p.sku ? 台湾書籍系_コードの作品IDを差し替え_(p.sku, keepId) : '';
+          if (newCode && newCode.toUpperCase() !== p.商品コード.toUpperCase() && usedCodes[newCode.toUpperCase()]) {
+            collisions.push({ sh: p.sh, sheetName: p.sheetName, sheetRow: p.sheetRow, from: p.商品コード, to: newCode });
+            return;
+          }
+          productEdits.push({
+            sh: p.sh, sheetName: p.sheetName, sheetRow: p.sheetRow,
+            col作品ID: p.col作品ID, col商品コード: p.col商品コード, colSKU: p.colSKU,
+            keepId, fromCode: p.商品コード, newCode, fromSku: p.sku, newSku,
+          });
+          if (newCode) usedCodes[newCode.toUpperCase()] = true;
+          edited += 1;
         });
-        if (newCode) usedCodes[newCode.toUpperCase()] = true;
-        edited += 1;
+        fullyMerged[mid] = (edited === prods.length);
       });
-      // 全商品を振り直せた mergeID のみ Works 行を孤立扱いにできる。
-      fullyMerged[mid] = (edited === prods.length);
-    });
-    // 孤立Works行は「全商品を keepId へ振り直せた」mergeID のみ削除対象（衝突残りは残置）
-    groups[gk].forEach(r => {
-      if (mergeIds.indexOf(r.id) >= 0 && fullyMerged[r.id]) orphanWorks.push({ sheetRow: r.sheetRow, id: r.id });
+      // 孤立Works行は「全商品を keepId へ振り直せた」mergeID のみ削除対象（衝突残りは残置）。
+      // 商品0の抜け殻は edited===0===prods.length で fullyMerged=true → 行削除のみ。
+      brows.forEach(r => {
+        if (mergeIds.indexOf(r.id) >= 0 && fullyMerged[r.id]) orphanWorks.push({ sheetRow: r.sheetRow, id: r.id });
+      });
     });
   });
 
