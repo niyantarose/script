@@ -214,6 +214,75 @@ function 大邱_発注へ背景色コピー_(src, dst, srcRows, startRow, n) {
   if (changed) dst.getRange(startRow, DST_START, n, DST_WIDTH).setBackgrounds(destBg);
 }
 
+// 行の背景色配列から「ハイライト色」（最初の非白）を返す。無ければ ''。
+function _大邱_行ハイライト色_(bgRow) {
+  const row = bgRow || [];
+  for (let c = 0; c < row.length; c++) {
+    const bg = String(row[c] || '').toLowerCase();
+    if (bg && bg !== '#ffffff' && bg !== 'white') return row[c];
+  }
+  return '';
+}
+
+// ============================================================
+// 発注の手動背景色（行ハイライト）を、発注リスト大邱データに「常に合わせ直す」
+//   照合キー: 大邱 F列(発注NO) ⇔ 発注 G列(購入No)（EMS_転送購入Noキーで正規化）
+//   ・大邱側に色あり → 発注の対応行(D:V)を同色に
+//   ・大邱側が無色  → 発注側に色が付いていれば無色(白)に戻す
+//   ・大邱に無い購入Noの発注行は触らない
+//   ※getBackgroundsは手動背景色のみ（消込色=条件付き書式は対象外）
+// ============================================================
+function 大邱_発注の背景色を大邱に合わせる() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const src = ss.getSheetByName(DAEGU_CFG.HACHU_SRC); // 発注リスト大邱データ
+  const dst = ss.getSheetByName(DAEGU_CFG.HACHU_DST); // 発注
+  if (!src || !dst) { ui.alert('シートが見つかりません。'); return; }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(3000)) { ss.toast('他の処理が実行中です。'); return; }
+  try {
+    // 大邱: 購入Noキー → ハイライト色
+    const sLast = src.getLastRow();
+    const scanCols = Math.min(Math.max(1, src.getLastColumn()), 21);
+    const sVals = src.getRange(1, 6, sLast, 1).getValues();            // F列 発注NO
+    const srcBg = src.getRange(1, 1, sLast, scanCols).getBackgrounds();
+    const colorByKey = {};
+    for (let i = 0; i < sLast; i++) {
+      const key = EMS_転送購入Noキー_(sVals[i][0]);
+      if (!key || /発注NO|OrderNo/i.test(key)) continue;
+      if (!(key in colorByKey)) colorByKey[key] = _大邱_行ハイライト色_(srcBg[i]);
+    }
+
+    // 発注: G列(購入No)で照合し D:V を塗り直す
+    const startRow = DAEGU_CFG.HACHU_START_ROW; // 7
+    const lastRow = dst.getLastRow();
+    if (lastRow < startRow) { ss.toast('発注にデータがありません。'); return; }
+    const n = lastRow - startRow + 1;
+    const gVals = dst.getRange(startRow, 7, n, 1).getValues(); // G 購入No
+    const DST_START = 4, DST_WIDTH = 19;                       // D..V
+    const destBg = dst.getRange(startRow, DST_START, n, DST_WIDTH).getBackgrounds();
+
+    let painted = 0, cleared = 0;
+    for (let r = 0; r < n; r++) {
+      const key = EMS_転送購入Noキー_(gVals[r][0]);
+      if (!key || !(key in colorByKey)) continue;             // 大邱に無いキーは触らない
+      const color = colorByKey[key];
+      if (color) {
+        for (let c = 0; c < DST_WIDTH; c++) destBg[r][c] = color;
+        painted++;
+      } else if (_大邱_行ハイライト色_(destBg[r])) {           // 大邱が無色＆発注に色あり → 白に戻す
+        for (let c = 0; c < DST_WIDTH; c++) destBg[r][c] = '#ffffff';
+        cleared++;
+      }
+    }
+    dst.getRange(startRow, DST_START, n, DST_WIDTH).setBackgrounds(destBg);
+    ss.toast(`発注の背景色を大邱に同期: 着色 ${painted}行 / 無色化 ${cleared}行`);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // ============================================================
 // 機能2: EMS大邱作業データ ➡ EMSリスト（追記後に購入No補完を自動実行！）
 // ============================================================

@@ -17,6 +17,7 @@ function Excel同期メニューを追加_() {
     .addItem('EMS大邱：N/Q/R/Sを再計算', 'EMS大邱_QRSを全体再計算')
     .addItem('EMS大邱：EMS番号ごとの罫線を更新', 'EMS大邱_EMS番号ごとに罫線を更新')
     .addItem('発注リスト大邱データ → 発注', '大邱_発注へ転送')
+    .addItem('発注：背景色(行ハイライト)を大邱に合わせる', '大邱_発注の背景色を大邱に合わせる')
     .addItem('EMS大邱作業データ → EMSリスト', '大邱_EMSリストへ転送')
     .addItem('EMS番号：大邱/EMSリストを正規化', 'EMS番号_大邱とEMSリストを正規化')
     .addItem('EMSリスト：大邱と箱数を照合', 'EMSリスト_大邱と箱数を照合')
