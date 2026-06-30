@@ -436,12 +436,7 @@ function 大邱_EMSリストへ転送() {
     }
 
     SpreadsheetApp.flush();
-    if (typeof EMSリスト_発送日基準に並べ替え === 'function') {
-      const active = ss.getActiveSheet();
-      ss.setActiveSheet(dst);
-      EMSリスト_発送日基準に並べ替え();
-      ss.setActiveSheet(active);
-    }
+    // 発送日では並べ替えない（EMS大邱作業データと同じ追記順を保つ）
     let filled = 0;
     if (typeof EMSリスト_購入No自動補完 === 'function') {
       filled = EMSリスト_購入No自動補完(true) || 0; // silent
@@ -726,12 +721,7 @@ function EMSリスト_大邱から不足行を確認して復元() {
     }
 
     SpreadsheetApp.flush();
-    if (typeof EMSリスト_発送日基準に並べ替え === 'function') {
-      const active = ss.getActiveSheet();
-      ss.setActiveSheet(dst);
-      EMSリスト_発送日基準に並べ替え();
-      ss.setActiveSheet(active);
-    }
+    // 発送日では並べ替えない（EMS大邱作業データと同じ追記順を保つ）
     if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
       発注_EMS発送数数式を一括修正();
     }
