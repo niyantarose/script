@@ -89,8 +89,29 @@
     for (vci = 0; vci < valQueries.length; vci += 1) {
       if (collectHanChars(valQueries[vci]).length) { requireHan = true; break; }
     }
-    function nativeIsValid(nat) {
+    // 検証クエリ（中華題など）の正規化キー集合。
+    var valKeySet = {};
+    for (vci = 0; vci < valQueries.length; vci += 1) {
+      var vk = normalizeTitleKey(valQueries[vci]);
+      if (vk) valKeySet[vk] = true;
+    }
+    // AniList が返す作品のタイトル/別名(synonyms)にクエリが含まれる＝作品一致が確定している。
+    // 例: 青春之箱 は AniList の「アオのハコ」の synonyms に入っている。
+    function seriesMatchesQuery(m) {
+      if (!m) return false;
+      var titles = [];
+      if (m.title) titles.push(m.title.native, m.title.romaji, m.title.english);
+      if (Array.isArray(m.synonyms)) titles = titles.concat(m.synonyms);
+      for (var i = 0; i < titles.length; i += 1) {
+        var k = normalizeTitleKey(titles[i]);
+        if (k && valKeySet[k]) return true;
+      }
+      return false;
+    }
+    function nativeIsValid(nat, m) {
       if (!requireHan) return true; // 検証クエリに漢字が無ければ検証不能 → 許容
+      // クエリが作品のタイトル/別名に一致＝作品確定なら、意訳・カナ題(漢字重なり0)でも採用。
+      if (seriesMatchesQuery(m)) return true;
       var best = 0;
       var k;
       for (k = 0; k < valQueries.length; k += 1) {
@@ -109,7 +130,7 @@
         },
         body: JSON.stringify({
           query:
-            'query ($q: String) { Page(page: 1, perPage: 6) { media(search: $q) { title { native romaji english } } } }',
+            'query ($q: String) { Page(page: 1, perPage: 6) { media(search: $q) { title { native romaji english } synonyms } } }',
           variables: { q: q },
         }),
       });
@@ -125,7 +146,7 @@
       for (mi = 0; mi < media.length; mi += 1) {
         var m = media[mi];
         var nat = m && m.title ? String(m.title.native || '').trim() : '';
-        if (nat && hasJapaneseTitleSignal(nat) && nativeIsValid(nat)) return nat;
+        if (nat && hasJapaneseTitleSignal(nat) && nativeIsValid(nat, m)) return nat;
       }
     }
     return '';
