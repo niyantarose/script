@@ -952,15 +952,24 @@ function 台湾書籍系_Works健全性を集計_() {
   const ss = SpreadsheetApp.getActive();
 
   // (a) 重複（同キー別ID）＋媒体不明
-  let 重複グループ = 0, 媒体不明 = 0;
+  let 重複グループ = 0, 媒体不明 = 0, worksSh = null;
+  const 重複詳細 = [];
   try {
     const plan = 台湾書籍系_重複作品_計画を作成_();
     重複グループ = plan.dupGroups.length;
     媒体不明 = plan.媒体不明スキップ.length;
+    worksSh = plan.worksSh;
+    plan.dupGroups.forEach(g => 重複詳細.push({
+      label: g.gk.split('|').slice(1).join('|'),
+      keepId: g.keepId,
+      ids: [g.keepId].concat(g.mergeIds),
+      rows: (g.memberRows || []).map(m => m.sheetRow),
+    }));
   } catch (e) { /* Works読めない等は0のまま */ }
 
   // (b) 行内ID不整合（商品シート） / (c) 商品が使う作品ID集合
   const 不整合行 = [];
+  const 不整合詳細 = [];
   const usedIds = {};
   [
     typeof 設定_台湾まんが !== 'undefined' ? 設定_台湾まんが : null,
@@ -980,8 +989,10 @@ function 台湾書籍系_Works健全性を集計_() {
       const idSku = colSKU ? 台湾書籍系_コードから作品ID4桁を取得_(r[colSKU - 1]) : '';
       const idCol = colID ? 台湾書籍系_作品ID4桁を取得_(r[colID - 1]) : '';
       const uniq = Array.from(new Set([idCode, idSku, idCol].filter(Boolean)));
-      if (uniq.length > 1 && 不整合行.length < 50) {
-        不整合行.push(`${設定.マスターシート名}#${i + 2} 親:${idCode || '-'}/自動:${idCol || '-'}/SKU:${idSku || '-'}`);
+      if (uniq.length > 1) {
+        const label = `${設定.マスターシート名}#${i + 2} 親:${idCode || '-'}/自動:${idCol || '-'}/SKU:${idSku || '-'}`;
+        if (不整合行.length < 50) 不整合行.push(label);
+        if (不整合詳細.length < 200) 不整合詳細.push({ sh, row: i + 2, label });
       }
       const pid = 台湾書籍系_行から既存作品IDを取得_({
         作品ID: colID ? r[colID - 1] : '', 商品コード: colCode ? r[colCode - 1] : '', SKU自動: colSKU ? r[colSKU - 1] : '',
@@ -1011,23 +1022,52 @@ function 台湾書籍系_Works健全性を集計_() {
     }
   }
 
-  return { 重複グループ, 媒体不明, 不整合行, 媒体なしWorks };
+  return { 重複グループ, 媒体不明, 不整合行, 不整合詳細, 媒体なしWorks, 重複詳細, worksSh };
 }
 
 function 台湾書籍系_Works健全性チェック_() {
   const ui = SpreadsheetApp.getUi();
-  const c = 台湾書籍系_Works健全性を集計_();
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  let c;
+  try {
+    c = 台湾書籍系_Works健全性を集計_();
+    // 前回の色を消してから、該当行に色を付ける（あなたが目で見て判断できるように）
+    台湾書籍系_重複作品_着色を全消し_();
+    const rec = [];
+    const 紫 = '#d9d2e9', 水色 = '#cfe2f3';
+    if (c.worksSh) {
+      const wLast = c.worksSh.getLastColumn();
+      c.重複詳細.forEach(g => g.rows.forEach(row => {
+        c.worksSh.getRange(row, 1, 1, wLast).setBackground(紫);
+        rec.push({ sheet: c.worksSh.getName(), row });
+      }));
+    }
+    c.不整合詳細.forEach(x => {
+      if (!x.sh) return;
+      x.sh.getRange(x.row, 1, 1, x.sh.getLastColumn()).setBackground(水色);
+      rec.push({ sheet: x.sh.getName(), row: x.row });
+    });
+    台湾書籍系_重複作品_着色を記録_(rec);
+  } finally {
+    lock.releaseLock();
+  }
+  Logger.log('Works健全性 重複詳細: ' + JSON.stringify(c.重複詳細));
   Logger.log('Works健全性 行内ID不整合: ' + JSON.stringify(c.不整合行));
   Logger.log('Works健全性 媒体なしWorks(商品あり): ' + JSON.stringify(c.媒体なしWorks));
-  ui.alert('🩺 Works健全性チェック',
-    `重複（同キー別ID）: ${c.重複グループ} 組\n` +
-    `媒体不明でスキップ: ${c.媒体不明} 組\n` +
-    `行内ID不整合の商品行: ${c.不整合行.length} 件\n` +
-    `媒体なしWorks（商品あり）: ${c.媒体なしWorks.length} 件\n\n` +
-    (c.重複グループ ? '→ 重複は「🔎 重複作品を検出（ドライラン）」で確認・統合\n' : '') +
-    (c.媒体なしWorks.length ? '→ 媒体なしは「🛠 WorksKeyに媒体コード付与」で付与\n' : '') +
-    (c.不整合行.length ? '→ 行内不整合は該当行の作品ID/SKUを揃える\n' : '') +
-    '\n詳細（該当ID/行）は Apps Script の実行ログに出しています。',
+
+  const dupLines = c.重複詳細.slice(0, 8)
+    .map(g => `・${g.label}: [${g.ids.join('/')}]（推奨keep ${g.keepId}）`).join('\n');
+  const incLines = c.不整合詳細.slice(0, 8).map(x => '・' + x.label).join('\n');
+  ui.alert('🩺 Works健全性チェック（該当行に色付け）',
+    `■ 重複グループ〔紫〕: ${c.重複グループ} 組\n` +
+    (dupLines ? dupLines + (c.重複詳細.length > 8 ? `\n…他${c.重複詳細.length - 8}組` : '') + '\n' : '') +
+    `\n■ 行内ID不整合〔水色〕: ${c.不整合詳細.length} 件\n` +
+    (incLines ? incLines + (c.不整合詳細.length > 8 ? `\n…他${c.不整合詳細.length - 8}件` : '') + '\n' : '') +
+    `\n媒体不明: ${c.媒体不明} 組 ／ 媒体なしWorks: ${c.媒体なしWorks.length} 件\n\n` +
+    '紫 = 同じ作品の別ID（どれを残すか、あなたが判断）\n' +
+    '水色 = 1行の中でID食い違い（作品ID/SKUを揃える）\n' +
+    '色を消す→「🎨 検出の色をクリア」／ 統合→「🔗 重複の統合」',
     ui.ButtonSet.OK);
 }
 
@@ -1192,7 +1232,9 @@ function 台湾書籍系_重複作品_計画を作成_() {
         return d !== 0 ? d : (a < b ? -1 : a > b ? 1 : 0);
       })[0];
       const mergeIds = ids.filter(id => id !== keepId);
-      dupGroups.push({ gk: media + '|' + okey, keepId, mergeIds });
+      // メンバー全行（keep含む）を保持。健全性チェックが全員を色付け＋一覧表示できるように。
+      const memberRows = brows.map(r => ({ id: r.id, sheetRow: r.sheetRow }));
+      dupGroups.push({ gk: media + '|' + okey, keepId, mergeIds, memberRows });
       const fullyMerged = {};
       mergeIds.forEach(mid => {
         const prods = products[mid] || [];
@@ -1238,7 +1280,7 @@ function 台湾書籍系_重複作品_計画をログ出力_(plan, ラベル) {
 
 /** ドライラン結果を行の背景色で可視化（クリア=true で色を消す） */
 var 台湾書籍系_重複着色記録キー_ = '台湾書籍系_重複着色行v1';
-var 台湾書籍系_重複着色ツール色_ = { '#fff2cc': 1, '#f4cccc': 1, '#fce5cd': 1 };
+var 台湾書籍系_重複着色ツール色_ = { '#fff2cc': 1, '#f4cccc': 1, '#fce5cd': 1, '#d9d2e9': 1, '#cfe2f3': 1 };
 
 function 台湾書籍系_重複作品_着色を記録_(rows) {
   try { PropertiesService.getDocumentProperties().setProperty(台湾書籍系_重複着色記録キー_, JSON.stringify(rows || [])); } catch (e) {}
