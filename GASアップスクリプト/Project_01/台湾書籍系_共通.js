@@ -947,8 +947,8 @@ function 台湾書籍系_媒体不明を診断メニュー_() {
 }
 
 /** ④ Works健全性チェック: 重複 / 行内ID不整合 / 媒体なし(商品あり) の件数を集計して通知 */
-function 台湾書籍系_Works健全性チェック_() {
-  const ui = SpreadsheetApp.getUi();
+/** Works健全性を集計して返す（UIなし）。トリガー・メニュー双方から使う。 */
+function 台湾書籍系_Works健全性を集計_() {
   const ss = SpreadsheetApp.getActive();
 
   // (a) 重複（同キー別ID）＋媒体不明
@@ -1011,18 +1011,90 @@ function 台湾書籍系_Works健全性チェック_() {
     }
   }
 
-  Logger.log('Works健全性 行内ID不整合: ' + JSON.stringify(不整合行));
-  Logger.log('Works健全性 媒体なしWorks(商品あり): ' + JSON.stringify(媒体なしWorks));
+  return { 重複グループ, 媒体不明, 不整合行, 媒体なしWorks };
+}
+
+function 台湾書籍系_Works健全性チェック_() {
+  const ui = SpreadsheetApp.getUi();
+  const c = 台湾書籍系_Works健全性を集計_();
+  Logger.log('Works健全性 行内ID不整合: ' + JSON.stringify(c.不整合行));
+  Logger.log('Works健全性 媒体なしWorks(商品あり): ' + JSON.stringify(c.媒体なしWorks));
   ui.alert('🩺 Works健全性チェック',
-    `重複（同キー別ID）: ${重複グループ} 組\n` +
-    `媒体不明でスキップ: ${媒体不明} 組\n` +
-    `行内ID不整合の商品行: ${不整合行.length} 件\n` +
-    `媒体なしWorks（商品あり）: ${媒体なしWorks.length} 件\n\n` +
-    (重複グループ ? '→ 重複は「🔎 重複作品を検出（ドライラン）」で確認・統合\n' : '') +
-    (媒体なしWorks.length ? '→ 媒体なしは「🛠 WorksKeyに媒体コード付与」で付与\n' : '') +
-    (不整合行.length ? '→ 行内不整合は該当行の作品ID/SKUを揃える\n' : '') +
+    `重複（同キー別ID）: ${c.重複グループ} 組\n` +
+    `媒体不明でスキップ: ${c.媒体不明} 組\n` +
+    `行内ID不整合の商品行: ${c.不整合行.length} 件\n` +
+    `媒体なしWorks（商品あり）: ${c.媒体なしWorks.length} 件\n\n` +
+    (c.重複グループ ? '→ 重複は「🔎 重複作品を検出（ドライラン）」で確認・統合\n' : '') +
+    (c.媒体なしWorks.length ? '→ 媒体なしは「🛠 WorksKeyに媒体コード付与」で付与\n' : '') +
+    (c.不整合行.length ? '→ 行内不整合は該当行の作品ID/SKUを揃える\n' : '') +
     '\n詳細（該当ID/行）は Apps Script の実行ログに出しています。',
     ui.ButtonSet.OK);
+}
+
+/**
+ * 夜間トリガー用の定期メンテ（UIなし）。
+ * 安全な自動修復（媒体コード付与・最新巻再計算）を実行し、健全性を集計して
+ * 「メンテログ」シートに1行追記。破壊操作（重複統合）は行わない。
+ */
+function 台湾書籍系_定期メンテ_() {
+  const lock = LockService.getDocumentLock();
+  try { lock.waitLock(30000); } catch (e) { return; }
+  const 結果 = { 媒体付与: 0, 最新巻更新: 0 };
+  try {
+    // 安全な自動修復
+    try { const r = 台湾書籍系_WorksKey媒体付与_削除なし_実行_(); 結果.媒体付与 = (r && r.更新数) || 0; }
+    catch (e) { Logger.log('定期メンテ 媒体付与 失敗: ' + e); }
+    try { 結果.最新巻更新 = 台湾書籍系_Works最新巻を再計算_() || 0; }
+    catch (e) { Logger.log('定期メンテ 最新巻 失敗: ' + e); }
+    // 健全性集計（手動が必要な項目の検出）
+    const c = 台湾書籍系_Works健全性を集計_();
+    台湾書籍系_定期メンテログに追記_(結果, c);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function 台湾書籍系_定期メンテログに追記_(結果, c) {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('メンテログ');
+  if (!sh) {
+    sh = ss.insertSheet('メンテログ');
+    sh.appendRow(['実行日時', '媒体付与', '最新巻更新', '重複(要手動)', '媒体不明', '行内不整合(要手動)', '媒体なしWorks', '要対応', '明細']);
+  }
+  const 要対応 = (c.重複グループ > 0 || c.不整合行.length > 0) ? '⚠️要対応' : 'OK';
+  const 明細 = [
+    c.不整合行.length ? '不整合:' + c.不整合行.slice(0, 10).join(' , ') : '',
+    c.媒体なしWorks.length ? '媒体なし:' + c.媒体なしWorks.slice(0, 10).join('/') : '',
+  ].filter(Boolean).join(' || ');
+  sh.appendRow([
+    new Date(), 結果.媒体付与, 結果.最新巻更新,
+    c.重複グループ, c.媒体不明, c.不整合行.length, c.媒体なしWorks.length,
+    要対応, 明細,
+  ]);
+}
+
+function 台湾書籍系_定期メンテを設定_() {
+  const ui = SpreadsheetApp.getUi();
+  // 既存の同名トリガーを消してから作り直す（重複作成防止）
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === '台湾書籍系_定期メンテ_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('台湾書籍系_定期メンテ_').timeBased().everyDays(1).atHour(3).create();
+  ui.alert('定期メンテを設定',
+    '毎日 3時台に自動メンテを実行するようにしました。\n\n' +
+    '・媒体コード付与 / 最新巻再計算（安全）を自動実行\n' +
+    '・重複 / 行内ID不整合 が見つかったら「メンテログ」シートに ⚠️要対応 で記録\n' +
+    '・統合（破壊操作）は自動では行いません（要対応が出たら手動で）',
+    ui.ButtonSet.OK);
+}
+
+function 台湾書籍系_定期メンテを解除_() {
+  const ui = SpreadsheetApp.getUi();
+  let n = 0;
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === '台湾書籍系_定期メンテ_') { ScriptApp.deleteTrigger(t); n += 1; }
+  });
+  ui.alert('定期メンテを解除', `自動メンテのトリガーを ${n} 個解除しました。`, ui.ButtonSet.OK);
 }
 
 /**
