@@ -1165,19 +1165,59 @@ function 台湾書籍系_重複作品_計画をログ出力_(plan, ラベル) {
 }
 
 /** ドライラン結果を行の背景色で可視化（クリア=true で色を消す） */
-function 台湾書籍系_重複作品_色付け_(plan, クリア) {
-  const 黄 = クリア ? null : '#fff2cc'; // 振り直す商品
-  const 赤 = クリア ? null : '#f4cccc'; // 削除予定の孤立Works行
-  const 橙 = クリア ? null : '#fce5cd'; // 衝突でスキップした商品
-  plan.productEdits.forEach(e => {
-    if (e.sh) e.sh.getRange(e.sheetRow, 1, 1, e.sh.getLastColumn()).setBackground(黄);
+var 台湾書籍系_重複着色記録キー_ = '台湾書籍系_重複着色行v1';
+var 台湾書籍系_重複着色ツール色_ = { '#fff2cc': 1, '#f4cccc': 1, '#fce5cd': 1 };
+
+function 台湾書籍系_重複作品_着色を記録_(rows) {
+  try { PropertiesService.getDocumentProperties().setProperty(台湾書籍系_重複着色記録キー_, JSON.stringify(rows || [])); } catch (e) {}
+}
+function 台湾書籍系_重複作品_着色記録を読む_() {
+  try { const s = PropertiesService.getDocumentProperties().getProperty(台湾書籍系_重複着色記録キー_); return s ? JSON.parse(s) : []; } catch (e) { return []; }
+}
+
+/** planに沿って対象行を着色し、着色した行を記録する（後で確実に消せるように） */
+function 台湾書籍系_重複作品_着色する_(plan) {
+  const rec = [];
+  const paint = (sh, row, color) => {
+    if (!sh) return;
+    sh.getRange(row, 1, 1, sh.getLastColumn()).setBackground(color);
+    rec.push({ sheet: sh.getName(), row });
+  };
+  plan.productEdits.forEach(e => paint(e.sh, e.sheetRow, '#fff2cc')); // 黄=振り直す商品
+  plan.collisions.forEach(c => paint(c.sh, c.sheetRow, '#fce5cd'));   // 橙=衝突スキップ
+  plan.orphanWorks.forEach(o => paint(plan.worksSh, o.sheetRow, '#f4cccc')); // 赤=削除予定Works
+  台湾書籍系_重複作品_着色を記録_(rec);
+}
+
+/** 着色を全消し: (1)記録された行 (2)Worksシート上に残るツール3色 を両方クリア。planに依存しない。 */
+function 台湾書籍系_重複作品_着色を全消し_() {
+  const ss = SpreadsheetApp.getActive();
+  let n = 0;
+  台湾書籍系_重複作品_着色記録を読む_().forEach(item => {
+    const sh = item && item.sheet ? ss.getSheetByName(item.sheet) : null;
+    if (sh && item.row >= 2 && item.row <= sh.getLastRow()) {
+      sh.getRange(item.row, 1, 1, sh.getLastColumn()).setBackground(null);
+      n += 1;
+    }
   });
-  plan.collisions.forEach(c => {
-    if (c.sh) c.sh.getRange(c.sheetRow, 1, 1, c.sh.getLastColumn()).setBackground(橙);
-  });
-  plan.orphanWorks.forEach(o => {
-    plan.worksSh.getRange(o.sheetRow, 1, 1, plan.worksSh.getLastColumn()).setBackground(赤);
-  });
+  台湾書籍系_重複作品_着色を記録_([]);
+  // Worksシート（小さい）を走査して、記録漏れ・古いツール色を保険でクリア
+  const 作品シート名 =
+    (typeof 設定_台湾まんが !== 'undefined' && 設定_台湾まんが && 設定_台湾まんが.作品シート名) ||
+    (typeof 設定_台湾書籍その他 !== 'undefined' && 設定_台湾書籍その他 && 設定_台湾書籍その他.作品シート名) ||
+    'Works（書籍専用）';
+  const wsh = ss.getSheetByName(作品シート名);
+  if (wsh && wsh.getLastRow() >= 2) {
+    const lastCol = wsh.getLastColumn();
+    const bg = wsh.getRange(2, 1, wsh.getLastRow() - 1, lastCol).getBackgrounds();
+    for (let i = 0; i < bg.length; i++) {
+      if (bg[i].some(c => 台湾書籍系_重複着色ツール色_[String(c).toLowerCase()])) {
+        wsh.getRange(i + 2, 1, 1, lastCol).setBackground(null);
+        n += 1;
+      }
+    }
+  }
+  return n;
 }
 
 function 台湾書籍系_重複作品_検出ドライラン() {
@@ -1187,7 +1227,8 @@ function 台湾書籍系_重複作品_検出ドライラン() {
   const lock = LockService.getDocumentLock();
   lock.waitLock(30000);
   try {
-    台湾書籍系_重複作品_色付け_(plan, false);
+    台湾書籍系_重複作品_着色を全消し_(); // 前回のドライラン色を消してから塗り直す
+    台湾書籍系_重複作品_着色する_(plan);
   } finally {
     lock.releaseLock();
   }
@@ -1210,15 +1251,15 @@ function 台湾書籍系_重複作品_検出ドライラン() {
 
 function 台湾書籍系_重複作品_色をクリア() {
   const ui = SpreadsheetApp.getUi();
-  const plan = 台湾書籍系_重複作品_計画を作成_();
   const lock = LockService.getDocumentLock();
   lock.waitLock(30000);
+  let n = 0;
   try {
-    台湾書籍系_重複作品_色付け_(plan, true);
+    n = 台湾書籍系_重複作品_着色を全消し_();
   } finally {
     lock.releaseLock();
   }
-  ui.alert('重複検出の色をクリア', '重複検出で付けた色を消しました。', ui.ButtonSet.OK);
+  ui.alert('重複検出の色をクリア', `重複検出で付けた色を消しました（${n} 行）。`, ui.ButtonSet.OK);
 }
 
 function 台湾書籍系_重複作品_統合実行() {
@@ -1248,7 +1289,7 @@ function 台湾書籍系_重複作品_統合実行() {
   const lock = LockService.getDocumentLock();
   lock.waitLock(30000);
   try {
-    台湾書籍系_重複作品_色付け_(plan, true); // ドライランの着色を消してから適用
+    台湾書籍系_重複作品_着色を全消し_(); // ドライランの着色を消してから適用
     plan.productEdits.forEach(e => {
       if (e.col作品ID) e.sh.getRange(e.sheetRow, e.col作品ID).setValue(e.keepId);
       if (e.col商品コード && e.newCode) e.sh.getRange(e.sheetRow, e.col商品コード).setValue(e.newCode);
