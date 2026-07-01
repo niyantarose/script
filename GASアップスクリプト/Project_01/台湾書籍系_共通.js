@@ -3531,18 +3531,34 @@ function 台湾書籍系_次の未使用作品ID_() {
   // 実行内キャッシュを使用（全シート走査を実行ごとに1回へ削減）
   const used = 台湾書籍系_使用済みIDキャッシュ取得_();
 
-  // 0001から順に、本当に空いている最小IDを使う
-  for (let n = 1; n < 10000; n++) {
-    const id = String(n).padStart(4, '0');
+  // 【安全採番】欠番(空き番)は再利用しない。既存の最大番号と、永続ハイウォーターマークの
+  // 大きい方 +1 を割り当てる。→「使用中IDの上書き」も「削除済みIDの再利用」も根絶する。
+  // （従来は最小の空き番号を使っており、使用済みIDセットに漏れがあると使用中IDを上書きしていた）
+  let 最大 = 0;
+  used.forEach(function (id) {
+    const n = parseInt(String(id).replace(/\D/g, ''), 10);
+    if (Number.isFinite(n) && n > 最大) 最大 = n;
+  });
 
-    if (!used.has(id)) {
-      // 同一実行内で次の採番に同じIDを返さないよう、即座に予約（衝突防止）
-      used.add(id);
-      return id;
-    }
+  let 保存最大 = 0;
+  let props = null;
+  try {
+    props = PropertiesService.getDocumentProperties();
+    保存最大 = parseInt(props.getProperty('台湾書籍系_作品ID_ハイウォーター') || '0', 10) || 0;
+  } catch (e) {
+    props = null;
   }
 
-  throw new Error('使用可能な作品IDがありません');
+  const 次 = Math.max(最大, 保存最大) + 1;
+  if (次 >= 10000) throw new Error('使用可能な作品IDがありません');
+
+  if (props) {
+    try { props.setProperty('台湾書籍系_作品ID_ハイウォーター', String(次)); } catch (e) {}
+  }
+
+  const id = String(次).padStart(4, '0');
+  used.add(id); // 同一実行内で次の採番に同じIDを返さないよう予約（衝突防止）
+  return id;
 }
 
 function 台湾書籍系_作品ID衝突チェック_() {
