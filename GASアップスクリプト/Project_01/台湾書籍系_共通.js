@@ -908,6 +908,44 @@ function 台湾書籍系_Works最新巻を再計算メニュー_() {
     ui.ButtonSet.OK);
 }
 
+/** 媒体不明の原因診断: 特定キーワードを含む商品行の実値と解決ID(pid)をログ出力 */
+function 台湾書籍系_媒体不明を診断メニュー_() {
+  const ui = SpreadsheetApp.getUi();
+  const targets = ['0009', '0154', '0156', '長浜', '長濱', 'K-9', 'K-', 'to be'];
+  const ss = SpreadsheetApp.getActive();
+  const out = [];
+  [
+    typeof 設定_台湾まんが !== 'undefined' ? 設定_台湾まんが : null,
+    typeof 設定_台湾書籍その他 !== 'undefined' ? 設定_台湾書籍その他 : null,
+  ].forEach(設定 => {
+    if (!設定) return;
+    const sh = ss.getSheetByName(設定.マスターシート名);
+    if (!sh || sh.getLastRow() < 2) return;
+    const 列 = 台湾書籍系_列マップを取得_(sh);
+    const cn = 設定.列名 || {};
+    const nID = 台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）']);
+    const nCode = 台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）']);
+    const nSKU = 台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）', '商品コード(SKU)', '商品コード（SKU）']);
+    const colID = 列[nID], colCode = 列[nCode], colSKU = 列[nSKU];
+    const vals = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+    vals.forEach((r, i) => {
+      const idCell = colID ? String(r[colID - 1] || '') : '';
+      const code = colCode ? String(r[colCode - 1] || '') : '';
+      const sku = colSKU ? String(r[colSKU - 1] || '') : '';
+      const hay = idCell + '|' + code + '|' + sku;
+      if (!targets.some(t => hay.indexOf(t) >= 0)) return;
+      const pid = 台湾書籍系_行から既存作品IDを取得_({ 作品ID: idCell, 商品コード: code, SKU自動: sku });
+      out.push(`${設定.マスターシート名}#${i + 2} 作品ID列[${nID || '-'}]='${idCell}' 親コード[${nCode || '-'}]='${code}' SKU[${nSKU || '-'}]='${sku}' → pid='${pid}'`);
+    });
+  });
+  Logger.log('媒体不明診断（0009/0154/0156/長浜/K-9 を含む商品行）:\n' + (out.join('\n') || '該当なし'));
+  ui.alert('媒体不明の診断',
+    `0009 / 0154 / 0156 / 長浜 / K-9 を含む商品行を実行ログに出しました（${out.length}件）。\n` +
+    '各行の「作品ID列 / 親コード / SKU」の実値と、システムが解決したID(pid)が見えます。\n' +
+    'そのログを共有してください。原因を特定します。',
+    ui.ButtonSet.OK);
+}
+
 /**
  * 重複作品（同一媒体＋作品比較キーなのに別作品ID）を検出し、統合計画を作る。
  * 書き換えは一切しない（ドライラン・実行の双方から呼ぶ）。
