@@ -1023,3 +1023,75 @@ function テスト_台湾雑誌_粗利益率() {
   const rate = 台湾雑誌_粗利益率を計算_(2580, 188);
   SpreadsheetApp.getUi().alert('rate=[' + rate + ']');
 }
+
+/* ============================================================
+ * 雑誌マスター候補（共通）関連
+ * 候補シート・マスターはマスター共通ファイル（台湾雑誌GS_共通SS_）側にある。
+ * ============================================================ */
+
+/** 候補シートのステータス別件数を表示（読み取りのみ。台湾系言語＝TW/CN/HK/TH と未記入を対象） */
+function 台湾雑誌_候補件数を確認() {
+  const ui = SpreadsheetApp.getUi();
+  const cfg = 台湾雑誌_設定を取得_();
+  const sh = 台湾雑誌GS_共通SS_().getSheetByName(cfg.候補シート名);
+  if (!sh || sh.getLastRow() < 2) {
+    ui.alert('📋 雑誌マスター候補', '候補シートにデータがありません', ui.ButtonSet.OK);
+    return;
+  }
+
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0]
+    .map(v => String(v || '').trim());
+  const colステータス = headers.indexOf('ステータス') + 1;
+  const col英字名 = headers.indexOf('雑誌名（英字）') + 1;
+  const col言語 = headers.indexOf('対応言語') + 1;
+
+  const vals = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getDisplayValues();
+  const counts = {};
+  let total = 0;
+  vals.forEach(r => {
+    const name = col英字名 ? String(r[col英字名 - 1] || '').trim() : '';
+    if (!name) return; // 空行はスキップ
+    const lang = col言語 ? String(r[col言語 - 1] || '').trim().toUpperCase() : '';
+    if (lang && !/TW|CN|HK|TH/.test(lang)) return; // 台湾系言語と未記入のみ
+    const s = colステータス ? (String(r[colステータス - 1] || '').trim() || '（空欄）') : '（空欄）';
+    counts[s] = (counts[s] || 0) + 1;
+    total++;
+  });
+
+  const 表示順 = ['未対応', '確認中', '登録待ち', 'マスター登録済み', '無視'];
+  const lines = [];
+  表示順.forEach(s => { if (counts[s]) { lines.push(`${s}: ${counts[s]}件`); delete counts[s]; } });
+  Object.keys(counts).forEach(s => lines.push(`${s}: ${counts[s]}件`));
+
+  ui.alert(
+    '📋 雑誌マスター候補（台湾系言語＋未記入）',
+    (lines.length ? lines.join('\n') : '対象の候補はありません') + `\n\n合計: ${total}件`,
+    ui.ButtonSet.OK
+  );
+}
+
+/** 候補シートで「反映」にチェックした行を、マスター共通ファイルの雑誌マスター（共通）へ反映 */
+function 台湾雑誌_候補を正式マスターへ反映() {
+  const ui = SpreadsheetApp.getUi();
+  if (
+    ui.alert(
+      '確認',
+      '雑誌マスター候補（共通）で「反映」にチェックした行を、雑誌マスター（共通）へ反映します。\n' +
+      '（マスター共通ファイル側を更新します。この商品ファイルは変更しません）\n\n続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    ) !== ui.Button.OK
+  ) {
+    return;
+  }
+
+  // 反映本体はライブラリ（Project_08 ★雑誌共通マスター）。getActive固定だったため
+  // マスター共通SSを引数で渡せるようにした版を呼ぶ（無引数の既存動作は不変）。
+  const r = _kyoutuu.共通雑誌候補をマスターへ反映(台湾雑誌GS_共通SS_());
+  ui.alert(
+    '完了',
+    r
+      ? `新規追加: ${r.追加}件\n別名として追加: ${r.別名追加}件\n既存一致: ${r.一致}件`
+      : '候補データがありませんでした（または反映チェックなし）',
+    ui.ButtonSet.OK
+  );
+}

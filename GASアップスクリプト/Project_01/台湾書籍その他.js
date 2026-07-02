@@ -364,73 +364,28 @@ function 台湾書籍_現在行をWorks登録して再計算() {
     return;
   }
 
-  let worksSh = ss.getSheetByName(cfg.作品シート名);
-  if (!worksSh) {
-    worksSh = ss.insertSheet(cfg.作品シート名);
-    worksSh.getRange(1, 1, 1, cfg.作品列数).setValues([cfg.作品ヘッダー]);
+  /*
+   * 旧実装はここで媒体なしWorksKey（原題||…、CM/NVなし）＋独自採番（Works内のmax+1のみ。
+   * 商品コード側の使用済みIDやハイウォーターを見ない）のWorks行を直接appendし、
+   * 仕上げに旧ライブラリ（_kyoutuu.onEdit処理＝媒体無視）を呼んでいた。
+   * ＝媒体なしWorks行・採番ズレの発生源だったため、onEdit / 一括更新 / 確定発行と同じ
+   * 媒体対応エンジン（台湾書籍系_1行補完_共通_）に一本化する。
+   * Works照合（媒体一致・後方互換）→無ければ 原題||CM||… で作成、採番はmax+1＋ハイウォーター。
+   */
+  台湾書籍系_使用済みIDキャッシュ無効化_();
+
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    台湾書籍系_1行補完_共通_(sh, row, cfg, { Works新規作成: true });
+  } finally {
+    lock.releaseLock();
   }
 
-  const worksLastRow = worksSh.getLastRow();
-  const worksData = worksLastRow >= 2
-    ? worksSh.getRange(2, 1, worksLastRow - 1, Math.max(worksSh.getLastColumn(), cfg.作品列数)).getValues()
-    : [];
-
-  let foundId = '';
-  for (const r of worksData) {
-    const wId = String(r[1] || '').trim();
-    const wJp = String(r[2] || '').trim();
-    const wAuthor = String(r[3] || '').trim();
-    const wOriginal = String(r[4] || '').trim();
-
-    if (original && wOriginal && original === wOriginal) {
-      foundId = wId;
-      break;
-    }
-    if (jpTitle === wJp && author === wAuthor) {
-      foundId = wId;
-      break;
-    }
-  }
-
-  if (!foundId) {
-    let maxId = 0;
-    worksData.forEach(r => {
-      const n = parseInt(String(r[1] || '0'), 10);
-      if (!isNaN(n) && n > maxId) maxId = n;
-    });
-    foundId = String(maxId + 1).padStart(4, '0');
-
-    const worksKey = original
-      ? `原題||${original}`
-      : `${jpTitle}||${author}`;
-
-    worksSh.appendRow([
-      worksKey,
-      foundId,
-      jpTitle,
-      author,
-      original,
-      '',
-      '',
-      '',
-      '',
-      ''
-    ]);
-  }
-
-  sh.getRange(row, workIdCol).setValue(foundId).setNumberFormat('0000');
-
-  // 再計算
-  if (typeof _kyoutuu !== 'undefined' && typeof _kyoutuu.onEdit処理を実行 === 'function') {
-    const dummyE = {
-      range: sh.getRange(row, 1, 1, sh.getLastColumn()),
-      source: ss
-    };
-    const 列マップ = _kyoutuu.列番号を取得(sh);
-    _kyoutuu.onEdit処理を実行(dummyE, sh, cfg, 列マップ, row, 1);
-  } else if (typeof 台湾書籍系_1行補完_共通_ === 'function') {
-    台湾書籍系_1行補完_共通_(sh, row, cfg);
-  }
-
-  SpreadsheetApp.getActiveSpreadsheet().toast(`Works登録完了: ${foundId}`, '完了', 5);
+  const 新ID = 台湾書籍系_作品ID4桁を取得_(sh.getRange(row, workIdCol).getValue());
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    新ID ? `Works登録完了: ${新ID}` : 'Works登録できませんでした（情報不足の可能性）',
+    '完了',
+    5
+  );
 }

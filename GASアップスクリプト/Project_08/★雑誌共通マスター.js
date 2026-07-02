@@ -497,8 +497,10 @@ function 共通雑誌候補を正式反映() {
   return 共通雑誌候補をマスターへ反映();
 }
 
-function 共通雑誌候補をマスターへ反映() {
-  const ss = SpreadsheetApp.getActive();
+function 共通雑誌候補をマスターへ反映(targetSS) {
+  // targetSS 省略時は従来どおりアクティブファイル（マスター共通ファイルのメニューから実行する想定）。
+  // 台湾など商品ファイル側からライブラリ経由で呼ぶ場合は、マスター共通SSを渡す。
+  const ss = targetSS || SpreadsheetApp.getActive();
   const masterSh = 共通雑誌_マスター作成_(ss);
   const candidateSh = 共通雑誌_候補シート作成_(ss);
   if (candidateSh.getLastRow() < 2) {
@@ -573,6 +575,8 @@ function 共通雑誌候補をマスターへ反映() {
   });
 
   ss.toast(`正式反映完了 / 追加:${added}件 別名追加:${aliasAdded}件 一致:${matched}件`, '完了', 5);
+  // 外部ファイルから呼ばれた場合は toast が見えないため、結果を返して呼び出し側で表示できるようにする
+  return { 追加: added, 別名追加: aliasAdded, 一致: matched };
 }
 
 function 共通雑誌候補テスト追加() {

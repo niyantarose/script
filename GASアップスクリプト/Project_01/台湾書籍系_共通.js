@@ -1074,6 +1074,19 @@ function 台湾書籍系_Works健全性チェック_() {
     ui.ButtonSet.OK);
 }
 
+// 図形ボタン割当用エントリポイント: Works点検（健全性チェック）。
+// ※ 末尾が「_」の関数（例 台湾書籍系_Works健全性チェック_）は「プライベート」扱いで、
+//    図形ボタンに割り当てるとクリック時に「関数が見つかりません」で失敗する。
+//    ボタンにはこの「_」なしのラッパーを割り当てること。
+function 台湾_Works点検() {
+  台湾書籍系_Works健全性チェック_();
+}
+
+// 図形ボタン割当用エントリポイント: Works最新巻を再計算（商品コードから巻を集計してWorks更新）。
+function 台湾_Works最新巻を再計算() {
+  台湾書籍系_Works最新巻を再計算メニュー_();
+}
+
 /**
  * 夜間トリガー用の定期メンテ（UIなし）。
  * 安全な自動修復（媒体コード付与・最新巻再計算）を実行し、健全性を集計して
@@ -1187,6 +1200,7 @@ function 台湾書籍系_重複作品_計画を作成_() {
     const col作品ID = 列[台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）'])];
     const col商品コード = 列[台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）'])];
     const colSKU = 列[台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）', '商品コード(SKU)', '商品コード（SKU）'])];
+    const col登録状況 = 列[台湾書籍系_実列名を取得_(列, [cn.登録状況, '登録状況'])];
     const vals = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
     vals.forEach((r, i) => {
       const 商品コード = col商品コード ? 台湾書籍系_正規化文字列_(r[col商品コード - 1]) : '';
@@ -1200,6 +1214,7 @@ function 台湾書籍系_重複作品_計画を作成_() {
       (products[pid] = products[pid] || []).push({
         sh, sheetName: 設定.マスターシート名, sheetRow: i + 2,
         col作品ID, col商品コード, colSKU, 商品コード, sku,
+        登録済み: col登録状況 ? /^登録済/.test(台湾書籍系_正規化文字列_(r[col登録状況 - 1])) : false,
       });
     });
   });
@@ -1210,6 +1225,7 @@ function 台湾書籍系_重複作品_計画を作成_() {
   const collisions = [];
   const orphanWorks = [];
   const 媒体不明スキップ = [];
+  const 登録済みスキップ = []; // Yahoo登録済みコードは永久＝統合でも書き換えない
   const 商品数 = id => (products[id] || []).length;
 
   Object.keys(byOkey).forEach(okey => {
@@ -1243,6 +1259,12 @@ function 台湾書籍系_重複作品_計画を作成_() {
         const prods = products[mid] || [];
         let edited = 0;
         prods.forEach(p => {
+          // 登録済み行の商品コードはYahooに登録済みの永久コード。統合でも絶対に書き換えない。
+          // （スキップ＝fullyMerged=false となり、このIDのWorks行も削除されず安全に残る）
+          if (p.登録済み) {
+            登録済みスキップ.push({ sheetName: p.sheetName, sheetRow: p.sheetRow, id: mid, keepId, code: p.商品コード });
+            return;
+          }
           const newCode = p.商品コード ? 台湾書籍系_コードの作品IDを差し替え_(p.商品コード, keepId) : '';
           const newSku = p.sku ? 台湾書籍系_コードの作品IDを差し替え_(p.sku, keepId) : '';
           if (newCode && newCode.toUpperCase() !== p.商品コード.toUpperCase() && usedCodes[newCode.toUpperCase()]) {
@@ -1267,7 +1289,7 @@ function 台湾書籍系_重複作品_計画を作成_() {
     });
   });
 
-  return { 作品シート名, worksSh, dupGroups, productEdits, collisions, orphanWorks, 媒体不明スキップ };
+  return { 作品シート名, worksSh, dupGroups, productEdits, collisions, orphanWorks, 媒体不明スキップ, 登録済みスキップ };
 }
 
 function 台湾書籍系_重複作品_計画をログ出力_(plan, ラベル) {
@@ -1279,6 +1301,7 @@ function 台湾書籍系_重複作品_計画をログ出力_(plan, ラベル) {
   Logger.log('重複作品[' + ラベル + '] collisions=' + JSON.stringify(plan.collisions));
   Logger.log('重複作品[' + ラベル + '] orphanWorks=' + JSON.stringify(plan.orphanWorks));
   Logger.log('重複作品[' + ラベル + '] 媒体不明スキップ=' + JSON.stringify(plan.媒体不明スキップ));
+  Logger.log('重複作品[' + ラベル + '] 登録済みスキップ=' + JSON.stringify(plan.登録済みスキップ));
 }
 
 /** ドライラン結果を行の背景色で可視化（クリア=true で色を消す） */
@@ -1394,7 +1417,8 @@ function 台湾書籍系_重複作品_統合実行() {
       `・下位IDの商品を先頭IDへ振り直し: ${plan.productEdits.length}件（作品ID＋SKUを書換）\n` +
       `・孤立Works行の削除: ${plan.orphanWorks.length}件\n` +
       `・コード衝突でスキップ: ${plan.collisions.length}件\n` +
-      `・媒体不明でスキップ: ${plan.媒体不明スキップ.length}件\n\n` +
+      `・媒体不明でスキップ: ${plan.媒体不明スキップ.length}件\n` +
+      `・🔒登録済み商品のためスキップ: ${plan.登録済みスキップ.length}件（Yahoo登録済みコードは変更しません）\n\n` +
       '⚠️ SKU(商品コード)が変わります。先に「重複作品を検出（ドライラン）」で\n' +
       '   実行ログを確認することを強く推奨します。\n\n続行しますか？',
       ui.ButtonSet.OK_CANCEL
@@ -1426,7 +1450,8 @@ function 台湾書籍系_重複作品_統合実行() {
     `振り直した商品: ${plan.productEdits.length}件\n` +
     `削除した孤立Works行: ${plan.orphanWorks.length}件\n` +
     `衝突でスキップ: ${plan.collisions.length}件\n` +
-    `媒体不明でスキップ: ${plan.媒体不明スキップ.length}件\n\n` +
+    `媒体不明でスキップ: ${plan.媒体不明スキップ.length}件\n` +
+    `🔒登録済み商品のためスキップ: ${plan.登録済みスキップ.length}件\n\n` +
     '詳細は実行ログを確認してください。',
     ui.ButtonSet.OK
   );
@@ -2910,6 +2935,132 @@ function 台湾書籍系_ローカル一括更新_(シート名, 設定) {
   }
 }
 
+/*
+ * 台湾専用の「① 確定発行」（媒体対応・安全版）。
+ *
+ * 旧実装は _kyoutuu.確定発行を実行（Project_08 ライブラリ）を呼んでいたが、
+ * それは媒体コード無し（原題||<原題>）の WorksKey 方式で、
+ *   - WorksKey再正規化で全行の CM/NV を剥がす
+ *   - 媒体無視キーで作品IDを照合し、CM(まんが)とNV(小説)を同一視して作品IDを上書き
+ * という破壊を起こす。台湾は媒体付き WorksKey（原題||CM||…）で運用しているため非互換。
+ *
+ * ここでは onEdit / 一括更新と同じ媒体対応エンジン 台湾書籍系_1行補完_共通_ を使い、
+ * チェック行のコードを生成→生成できた行だけ「登録済み」＋「商品コード(発行済み確定)」に
+ * 確定する。_kyoutuu は一切呼ばず、再正規化も CM/NV 統合も起こさない。
+ */
+function 台湾書籍系_ローカル確定発行_(シート名, 設定) {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(シート名);
+
+  // バッチ先頭で使用済みIDキャッシュを無効化（実行跨ぎの陳腐化＝ID衝突を防ぐ）。
+  台湾書籍系_使用済みIDキャッシュ無効化_();
+
+  if (!sh || sh.getLastRow() < 2) {
+    ui.alert(`${シート名} にデータがありません`);
+    return;
+  }
+
+  const 列 = 台湾書籍系_列マップを取得_(sh);
+  const cn = 設定.列名 || {};
+
+  const 実列名 = {
+    発行チェック: 台湾書籍系_実列名を取得_(列, [cn.発行チェック, '発番発行']),
+    登録状況: 台湾書籍系_実列名を取得_(列, [cn.登録状況, '登録状況']),
+    コードステータス: 台湾書籍系_実列名を取得_(列, [cn.コードステータス, '商品コードステータス']),
+    商品コード: 台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）']),
+    SKU自動: 台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）', '商品コード(SKU)', '商品コード（SKU）'])
+  };
+
+  if (!実列名.発行チェック) {
+    ui.alert('発番発行（発行チェック）列が見つかりません');
+    return;
+  }
+
+  const チェック列 = 列[実列名.発行チェック];
+  const lastRow = sh.getLastRow();
+  const numRows = lastRow - 1;
+  const checks = sh.getRange(2, チェック列, numRows, 1).getValues();
+
+  const 対象行 = [];
+  checks.forEach((r, i) => {
+    if (r[0] === true) 対象行.push(i + 2);
+  });
+
+  if (対象行.length === 0) {
+    ui.alert('発番発行にチェックが入った行がありません');
+    return;
+  }
+
+  if (
+    ui.alert(
+      '確認',
+      `${シート名} のチェック ${対象行.length} 行を確定発行します。\n\n` +
+      '・作品ID / SKU / 商品コード / タイトルを媒体対応で生成\n' +
+      '・生成できた行を「登録済み」＋「商品コード(発行済み確定)」にします\n' +
+      '・情報不足で生成できない行はチェックを残し、確定しません\n\n' +
+      '続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    ) !== ui.Button.OK
+  ) {
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(60000);
+
+  let 発行数 = 0;
+  let 失敗数 = 0;
+
+  try {
+    // ① まず媒体対応エンジンでコード生成（未登録行として処理）。
+    //    1行補完は「登録済み行の鉄則」で確定済みコードは触らないので、
+    //    先に生成→後で登録済みに確定する順序が重要。
+    対象行.forEach(row => {
+      台湾書籍系_1行補完_共通_(sh, row, 設定, {
+        Works新規作成: true
+      });
+    });
+
+    SpreadsheetApp.flush();
+
+    // ② 生成結果（商品コード / SKU）を1回だけまとめて読む。
+    const col商品コード = 実列名.商品コード ? 列[実列名.商品コード] : 0;
+    const colSKU = 実列名.SKU自動 ? 列[実列名.SKU自動] : 0;
+    const col登録状況 = 実列名.登録状況 ? 列[実列名.登録状況] : 0;
+    const colステータス = 実列名.コードステータス ? 列[実列名.コードステータス] : 0;
+
+    const codeVals = col商品コード ? sh.getRange(2, col商品コード, numRows, 1).getValues() : null;
+    const skuVals = colSKU ? sh.getRange(2, colSKU, numRows, 1).getValues() : null;
+
+    // ③ コードが出た行だけ確定（登録済み＋発行済み確定）。失敗行はチェックを残す。
+    対象行.forEach(row => {
+      const i = row - 2;
+      const code = codeVals ? 台湾書籍系_正規化文字列_(codeVals[i][0]) : '';
+      const sku = skuVals ? 台湾書籍系_正規化文字列_(skuVals[i][0]) : '';
+      const 成功 = !!(code || sku);
+
+      if (成功) {
+        発行数++;
+        if (col登録状況) sh.getRange(row, col登録状況).setValue('登録済み');
+        if (colステータス) sh.getRange(row, colステータス).setValue('商品コード(発行済み確定)');
+        sh.getRange(row, チェック列).setValue(false); // 成功行のチェックだけ外す
+      } else {
+        失敗数++; // 失敗行はチェックを残し、気づけるようにする
+      }
+    });
+
+    ss.toast(
+      `✅ ${シート名}：確定 ${発行数} 件` +
+        (失敗数 ? ` ／ 情報不足で未確定 ${失敗数} 件（チェックは残しました）` : ''),
+      '確定発行 完了',
+      6
+    );
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // 1実行内で Works作品ID列の '@' 書式を二重設定しないためのガード
 var _台湾書籍系_ID列書式済み_ = (typeof _台湾書籍系_ID列書式済み_ !== 'undefined') ? _台湾書籍系_ID列書式済み_ : {};
 function 台湾書籍系_Works作品ID列を文字列固定_(sh, シート名) {
@@ -3384,6 +3535,425 @@ function 台湾書籍系_WorksKeyに媒体を補完_(設定, 作品ID, 媒体コ
     return false;
   }
   return false;
+}
+
+/** 商品コード（例 TWS0088-CM-03）から媒体コード（作品IDの直後のセグメント）を取り出す。無ければ '' */
+function 台湾書籍系_コードから媒体コード_(v) {
+  const s = 台湾書籍系_正規化文字列_(v).toUpperCase();
+  if (!s) return '';
+  // 言語+形態 + 4桁ID + '-' + 媒体コード(英字) + '-' + 巻
+  const m = s.match(/^[A-Z]{2}[A-Z]*?\d{4}-([A-Z]+)(?:-|$)/);
+  return m ? m[1] : '';
+}
+
+/*
+ * 退避→戻した登録済み商品などを、商品コードの作品IDのまま Works に反映する復元処理。
+ *
+ * 登録済み行は onEdit が Works を触らない（登録済み行の鉄則）ため、
+ * 商品シート（台湾まんが／台湾書籍その他）を基点に：
+ *   - Works にその作品IDが無ければ、商品コードの作品IDで新規作成（原題||媒体||…）
+ *   - 既存が媒体なし WorksKey なら 原題||CM||… へ昇格
+ * を行う。媒体は商品コード（…-CM-…）を最優先、無ければカテゴリから判定。
+ * 削除・統合・作品ID変更は一切なし。同一IDで CM/NV 混在の作品はスキップ。
+ */
+function 台湾書籍系_登録済み商品からWorksを復元_() {
+  台湾書籍系_登録済み商品からWorksを復元_共通_(false);
+}
+
+// チェック行（発番発行＝A列）だけを対象にする版。狙った行だけ確実に復元したいとき用。
+function 台湾書籍系_登録済み商品からWorksを復元_チェック行のみ_() {
+  台湾書籍系_登録済み商品からWorksを復元_共通_(true);
+}
+
+function 台湾書籍系_登録済み商品からWorksを復元_共通_(チェック行のみ) {
+  const ui = SpreadsheetApp.getUi();
+  const 対象説明 = チェック行のみ
+    ? '発番発行（A列）にチェックが入った行だけ'
+    : '商品シート（台湾まんが／台湾書籍その他）の全行';
+  if (
+    ui.alert(
+      '確認',
+      `${対象説明}の作品IDを基に Works を補完します。\n\n` +
+      '・Works行が無ければ、商品コードの作品IDで新規作成\n' +
+      '・媒体なしWorksKeyは 原題||CM||… に昇格\n' +
+      '・媒体は商品コード（例 …-CM-…）とカテゴリから判定\n' +
+      '・削除／統合／作品ID変更は一切しません\n' +
+      '・同一IDでCM/NV混在の作品はスキップ\n\n続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    ) !== ui.Button.OK
+  ) {
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    const r = 台湾書籍系_登録済み商品からWorksを復元_実行_(チェック行のみ);
+    if (チェック行のみ && r.対象数 === 0) {
+      ui.alert('発番発行（A列）にチェックが入った行がありません');
+      return;
+    }
+    const 不整合表示 = (r.不整合詳細 && r.不整合詳細.length)
+      ? '\n【要確認・行内ID不整合】\n' + r.不整合詳細.map(s => '・' + s).join('\n') + '\n'
+      : '';
+    ui.alert(
+      '完了',
+      (チェック行のみ ? `チェック行のみ対象（${r.対象数}行）。\n\n` : '') +
+      `新規作成: ${r.作成数}件\n` +
+      `媒体付きに昇格: ${r.昇格数}件\n` +
+      `既に媒体付き（変更なし）: ${r.既存数}件\n` +
+      `媒体不明でスキップ: ${r.媒体不明数}件\n` +
+      `CM/NV混在でスキップ: ${r.混在数}件\n` +
+      `作品名不足でスキップ: ${r.情報不足数}件\n` +
+      `⚠️ 行内ID不整合でスキップ: ${r.不整合数}件（作品IDと商品コードが食い違う行。手動で正しいIDに直してください）\n` +
+      不整合表示 +
+      '\n詳細はApps Scriptの実行ログに出しています。',
+      ui.ButtonSet.OK
+    );
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function 台湾書籍系_登録済み商品からWorksを復元_実行_(チェック行のみ) {
+  const ss = SpreadsheetApp.getActive();
+  const 作品シート名 =
+    (typeof 設定_台湾まんが !== 'undefined' && 設定_台湾まんが && 設定_台湾まんが.作品シート名) ||
+    (typeof 設定_台湾書籍その他 !== 'undefined' && 設定_台湾書籍その他 && 設定_台湾書籍その他.作品シート名) ||
+    'Works（書籍専用）';
+
+  const worksSh = ss.getSheetByName(作品シート名);
+  if (!worksSh) throw new Error(`${作品シート名} が見つかりません`);
+
+  const idToMedia = {}; // id -> { media: true }
+  const idToInfo = {};  // id -> { 原題, 日本語, 作者 }
+  const 不整合行 = [];  // 行内でIDが食い違う行（復元に使わずスキップ）
+  let 対象数 = 0;       // チェック行のみ時: 対象となった行数
+  const チェック解除 = []; // チェック行のみ時: 使用後に外す発番発行チェックの位置 {sh, col, row}
+
+  const collect = (設定, fallbackSheetName) => {
+    if (!設定) return;
+    const シート名 = 設定.マスターシート名 || fallbackSheetName;
+    const sh = ss.getSheetByName(シート名);
+    if (!sh || sh.getLastRow() < 2) return;
+
+    const 列 = 台湾書籍系_列マップを取得_(sh);
+    const cn = 設定.列名 || {};
+    const 実列名 = {
+      商品コード: 台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）']),
+      作品ID: 台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）']),
+      SKU自動: 台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）', '商品コード(SKU)', '商品コード（SKU）']),
+      カテゴリ: 台湾書籍系_実列名を取得_(列, [cn.カテゴリ, 'カテゴリ']),
+      原題: 台湾書籍系_実列名を取得_(列, [cn.原題, '原題タイトル']),
+      日本語タイトル: 台湾書籍系_実列名を取得_(列, [cn.日本語タイトル, '日本語タイトル']),
+      作者: 台湾書籍系_実列名を取得_(列, [cn.作者, '作者']),
+      発行チェック: 台湾書籍系_実列名を取得_(列, [cn.発行チェック, '発番発行'])
+    };
+
+    const values = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+    const get = (row, key) => (key && 列[key]) ? row[列[key] - 1] : '';
+    const cCheck = 実列名.発行チェック ? 列[実列名.発行チェック] : 0;
+
+    values.forEach((row, i) => {
+      // チェック行のみモード: 発番発行(A列)にチェックが無い行はスキップ
+      if (チェック行のみ && get(row, 実列名.発行チェック) !== true) return;
+      対象数++;
+      // 使用後にチェックを外すため、対象行を記録（チェック行のみモード時）
+      if (チェック行のみ && cCheck) チェック解除.push({ sh, col: cCheck, row: i + 2 });
+
+      const 値 = {
+        作品ID: get(row, 実列名.作品ID),
+        商品コード: get(row, 実列名.商品コード),
+        親コード: get(row, 実列名.商品コード),
+        SKU自動: get(row, 実列名.SKU自動),
+        カテゴリ: get(row, 実列名.カテゴリ)
+      };
+
+      // ★安全弁: 行内でIDが食い違う行（例: 商品コード=0027 なのに作品ID列=0156）は
+      // 「既存作品に別IDをあてる」危険があるため、復元に使わずスキップして報告する。
+      const idCol = 台湾書籍系_作品ID4桁を取得_(値.作品ID);
+      const idCode = 台湾書籍系_コードから作品ID4桁を取得_(値.商品コード);
+      const idSku = 台湾書籍系_コードから作品ID4桁を取得_(値.SKU自動);
+      const idCandidates = Array.from(new Set([idCol, idCode, idSku].filter(Boolean)));
+      if (idCandidates.length > 1) {
+        if (不整合行.length < 50) {
+          不整合行.push(`${シート名}#${i + 2} 作品ID列:${idCol || '-'} / コード:${idCode || '-'} / SKU:${idSku || '-'}`);
+        }
+        return;
+      }
+      const id = idCandidates[0];
+      if (!id) return;
+
+      // 媒体は商品コード（…-CM-…）を最優先、無ければカテゴリから生成
+      const media = (
+        台湾書籍系_コードから媒体コード_(値.商品コード) ||
+        台湾書籍系_コードから媒体コード_(値.SKU自動) ||
+        台湾書籍系_コードから媒体コード_(値.親コード) ||
+        台湾書籍系_媒体コードを生成_(値, シート名) ||
+        ''
+      ).toUpperCase();
+
+      if (media) {
+        if (!idToMedia[id]) idToMedia[id] = {};
+        idToMedia[id][media] = true;
+      }
+
+      if (!idToInfo[id]) idToInfo[id] = { 原題: '', 日本語: '', 作者: '' };
+      const info = idToInfo[id];
+      if (!info.原題) info.原題 = 台湾書籍系_正規化文字列_(get(row, 実列名.原題));
+      if (!info.日本語) info.日本語 = 台湾書籍系_正規化文字列_(get(row, 実列名.日本語タイトル));
+      if (!info.作者) info.作者 = 台湾書籍系_正規化文字列_(get(row, 実列名.作者));
+    });
+  };
+
+  collect(typeof 設定_台湾まんが !== 'undefined' ? 設定_台湾まんが : null, '台湾まんが');
+  collect(typeof 設定_台湾書籍その他 !== 'undefined' ? 設定_台湾書籍その他 : null, '台湾書籍その他');
+
+  const worksCols = 台湾書籍系_列マップを取得_(worksSh);
+  const cWK = worksCols['WorksKey'];
+  const cID = worksCols['作品ID'];
+  const cOrig = worksCols['原題タイトル'];
+  if (!cWK || !cID) throw new Error('Worksに WorksKey / 作品ID 列が見つかりません');
+
+  台湾書籍系_Works作品ID列を文字列固定_(worksSh, 作品シート名);
+
+  const worksLast = worksSh.getLastRow();
+  const worksData = worksLast >= 2
+    ? worksSh.getRange(2, 1, worksLast - 1, worksSh.getLastColumn()).getValues()
+    : [];
+  const idToRow = {}; // id -> { 行, wk, orig }
+  worksData.forEach((row, i) => {
+    const wid = 台湾書籍系_作品ID4桁を取得_(row[cID - 1]);
+    if (wid && !idToRow[wid]) {
+      idToRow[wid] = {
+        行: i + 2,
+        wk: 台湾書籍系_正規化文字列_(row[cWK - 1]),
+        orig: cOrig ? 台湾書籍系_正規化文字列_(row[cOrig - 1]) : ''
+      };
+    }
+  });
+
+  const 媒体集合 = 台湾書籍系_媒体コード集合_();
+  const result = { 作成数: 0, 昇格数: 0, 既存数: 0, 媒体不明数: 0, 混在数: 0, 情報不足数: 0, 不整合数: 不整合行.length, 対象数: 対象数 };
+  const 昇格更新 = []; // { 行, key }
+  const 新規行 = [];
+  const detail = { 作成: [], 昇格: [], 混在: [], 媒体不明: [] };
+
+  Object.keys(idToInfo).forEach(id => {
+    const medias = idToMedia[id] ? Object.keys(idToMedia[id]).filter(Boolean) : [];
+    if (medias.length === 0) {
+      result.媒体不明数++;
+      if (detail.媒体不明.length < 20) detail.媒体不明.push(id);
+      return;
+    }
+    if (medias.length > 1) {
+      result.混在数++;
+      if (detail.混在.length < 20) detail.混在.push(`${id}: ${medias.join('/')}`);
+      return;
+    }
+    const media = medias[0];
+    if (!媒体集合[media]) {
+      result.媒体不明数++;
+      if (detail.媒体不明.length < 20) detail.媒体不明.push(`${id}: ${media}`);
+      return;
+    }
+
+    const info = idToInfo[id];
+    const existing = idToRow[id];
+
+    if (existing) {
+      // 既存行：媒体付きなら何もしない、媒体なしなら昇格
+      if (台湾書籍系_WorksKey媒体コード_(existing.wk)) {
+        result.既存数++;
+        return;
+      }
+      const newKey = 台湾書籍系_WorksKey媒体付きへ変換_(
+        existing.wk, media, existing.orig || info.原題, info.日本語, info.作者
+      );
+      if (newKey && newKey !== existing.wk) {
+        昇格更新.push({ 行: existing.行, key: newKey });
+        result.昇格数++;
+        if (detail.昇格.length < 20) detail.昇格.push(`${id} → ${newKey}`);
+      } else {
+        result.既存数++;
+      }
+    } else {
+      // 欠落：同じ作品IDで新規作成
+      const 作品名 = info.日本語 || info.原題;
+      if (!作品名) {
+        result.情報不足数++;
+        return;
+      }
+      const worksKeyBase = info.原題
+        ? (台湾書籍系_作品比較キー_(info.原題) || info.原題)
+        : `${作品名}||${info.作者}`;
+      const worksKey = info.原題
+        ? `原題||${media}||${worksKeyBase}`
+        : `${media}||${worksKeyBase}`;
+      新規行.push([worksKey, id, 作品名, info.作者, info.原題, '', '', '', '', '']);
+      result.作成数++;
+      if (detail.作成.length < 20) detail.作成.push(`${id} ${作品名}`);
+    }
+  });
+
+  // 既存行の昇格
+  昇格更新.forEach(u => worksSh.getRange(u.行, cWK).setValue(u.key));
+
+  // 欠落分を末尾に追記（作品ID列は文字列書式）
+  if (新規行.length) {
+    const start = Math.max(worksSh.getLastRow() + 1, 2);
+    worksSh.getRange(start, 1, 新規行.length, 新規行[0].length).setValues(新規行);
+    worksSh.getRange(start, cID, 新規行.length, 1).setNumberFormat('@');
+  }
+
+  // 使用後: 対象にしたチェック行の発番発行チェックを外す（チェック行のみモード）
+  チェック解除.forEach(x => x.sh.getRange(x.row, x.col).setValue(false));
+
+  result.不整合詳細 = 不整合行.slice(0, 20);
+
+  Logger.log('登録済み商品からWorks復元 result=' + JSON.stringify(result));
+  Logger.log('登録済み商品からWorks復元 detail=' + JSON.stringify(detail));
+  Logger.log('登録済み商品からWorks復元 行内ID不整合(スキップ)=' + JSON.stringify(不整合行));
+
+  return result;
+}
+
+/*
+ * 登録済み行の「作品ID列・SKU」を、商品コード（確定コード）の作品IDに一括で揃える。
+ *
+ * 背景: 旧採番（空き番埋め）時代に、Works照合を外した登録済み作品へ空き番が振られ、
+ * 作品ID列/SKUだけが商品コードとズレるケースが多発（例: 商品コード=TWS0004-CM-07 なのに
+ * 作品ID列=0090）。商品コードはYahoo登録済みの永久コードなので常に正。
+ *
+ * 安全設計:
+ *   - 変更するのは 作品ID列 と SKU のID部分だけ。商品コード・Yahoo・Worksは一切触らない
+ *   - 登録済み行だけを対象。未登録行のズレは「要確認」として報告のみ（変更しない）
+ *   - 実行前に修正対象の一覧を表示して確認
+ *
+ * 実行後: 孤立したWorks行（例 0090/0127）は「Works点検」の紫で見えるので手で削除し、
+ * 「Works最新巻を再計算」で巻を揃える。
+ */
+function 台湾書籍系_作品IDを確定コードに揃える_() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActive();
+
+  const plans = [];
+  const 未登録要確認 = [];
+
+  [
+    typeof 設定_台湾まんが !== 'undefined' ? 設定_台湾まんが : null,
+    typeof 設定_台湾書籍その他 !== 'undefined' ? 設定_台湾書籍その他 : null,
+  ].forEach(設定 => {
+    if (!設定) return;
+    const sh = ss.getSheetByName(設定.マスターシート名);
+    if (!sh || sh.getLastRow() < 2) return;
+    const 列 = 台湾書籍系_列マップを取得_(sh);
+    const cn = 設定.列名 || {};
+    const nID = 台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)(自動)', '作品ID(W)（自動）', '作品(W)（自動）']);
+    const nCode = 台湾書籍系_実列名を取得_(列, [cn.商品コード, '親コード', '商品コード', '商品コード(SKU)', '商品コード（SKU）']);
+    const nSKU = 台湾書籍系_実列名を取得_(列, [cn.SKU自動, 'SKU(自動)', 'SKU（自動）']);
+    const n登録 = 台湾書籍系_実列名を取得_(列, [cn.登録状況, '登録状況']);
+    const colID = nID ? 列[nID] : 0;
+    const colCode = nCode ? 列[nCode] : 0;
+    const colSKU = nSKU ? 列[nSKU] : 0;
+    const col登録 = n登録 ? 列[n登録] : 0;
+    if (!colCode || !colID) return;
+
+    const vals = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+    vals.forEach((r, i) => {
+      const code = 台湾書籍系_正規化文字列_(r[colCode - 1]);
+      const 真ID = 台湾書籍系_コードから作品ID4桁を取得_(code);
+      if (!真ID) return;
+
+      const curID = 台湾書籍系_作品ID4桁を取得_(r[colID - 1]);
+      const sku = colSKU ? 台湾書籍系_正規化文字列_(r[colSKU - 1]) : '';
+      const skuID = sku ? 台湾書籍系_コードから作品ID4桁を取得_(sku) : '';
+
+      const idを直す = curID !== 真ID; // 空欄も含めて商品コードのIDに揃える
+      let 新SKU = '';
+      if (sku && skuID && skuID !== 真ID) {
+        新SKU = 台湾書籍系_コードの作品IDを差し替え_(sku, 真ID);
+      }
+      if (!idを直す && !新SKU) return;
+
+      const 登録済み = col登録 ? /^登録済/.test(台湾書籍系_正規化文字列_(r[col登録 - 1])) : false;
+      const label = `${設定.マスターシート名}#${i + 2} 作品ID:${curID || '-'}→${真ID}` + (新SKU ? ` SKU:${skuID}→${真ID}` : '');
+      if (!登録済み) {
+        if (未登録要確認.length < 30) 未登録要確認.push(label + '（未登録行）');
+        return;
+      }
+      plans.push({ sh, row: i + 2, colID, colSKU, idを直す, 真ID, 新SKU, label });
+    });
+  });
+
+  if (!plans.length && !未登録要確認.length) {
+    ui.alert('確定コードとのズレはありませんでした');
+    return;
+  }
+
+  const 未登録一覧 = 未登録要確認.slice(0, 10).map(s => '・' + s).join('\n');
+
+  if (!plans.length) {
+    ui.alert(
+      '対象なし',
+      '登録済み行のズレはありません。\n\n未登録行のズレのみ検出（変更しません）:\n' + 未登録一覧,
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  const 一覧 = plans.slice(0, 15).map(p => '・' + p.label).join('\n');
+  if (
+    ui.alert(
+      '確認',
+      `登録済み行 ${plans.length} 件を、商品コード（確定コード）の作品IDに揃えます。\n` +
+      '（商品コード・Yahoo・Works は一切変更しません）\n\n' +
+      一覧 + (plans.length > 15 ? `\n…他${plans.length - 15}件` : '') + '\n\n' +
+      (未登録要確認.length
+        ? `※未登録行のズレ ${未登録要確認.length} 件は変更しません（要確認）:\n${未登録一覧}\n\n`
+        : '') +
+      '続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    ) !== ui.Button.OK
+  ) {
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    plans.forEach(p => {
+      if (p.idを直す) {
+        const cell = p.sh.getRange(p.row, p.colID);
+        cell.setNumberFormat('@'); // 0087→87 化け防止
+        cell.setValue(p.真ID);
+      }
+      if (p.新SKU && p.colSKU) {
+        p.sh.getRange(p.row, p.colSKU).setValue(p.新SKU);
+      }
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  Logger.log('確定コードに揃える 修正=' + JSON.stringify(plans.map(p => p.label)));
+  Logger.log('確定コードに揃える 未登録要確認=' + JSON.stringify(未登録要確認));
+
+  ui.alert(
+    '完了',
+    `修正: ${plans.length} 件\n` +
+    (未登録要確認.length ? `未登録行のズレ（未変更・要確認）: ${未登録要確認.length} 件\n` : '') +
+    '\n次の仕上げ:\n' +
+    '① 「Works点検」→ 紫＝同作品の別ID（孤立した幽霊ID行）を確認し、手で削除\n' +
+    '② 「Works最新巻を再計算」→ 巻を揃える',
+    ui.ButtonSet.OK
+  );
+}
+
+// 図形ボタン割当用エントリポイント（末尾「_」付きはボタン不可のため）
+function 台湾_確定コードに揃える() {
+  台湾書籍系_作品IDを確定コードに揃える_();
 }
 
 function デバッグログ出力_(tag, obj) {
