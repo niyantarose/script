@@ -593,6 +593,7 @@ function IMGCV_runOneSlice_(sheet, シート名, ヘッダー行数, startPos, d
 
       const urls = rawText
         .split(/[\n;]+/)
+        .flatMap(x => x.split(/(?=https?:\/\/)/i))  // 区切り文字なしで連結されたURLも分離
         .map(x => IMGCV_pickHttpUrl_(x) || x.trim())
         .filter(x => /^https?:\/\//i.test(x))
         .map(x => IMGCV_normalizeDriveUrl_(x));
