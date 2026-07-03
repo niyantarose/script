@@ -424,7 +424,12 @@ function _autoFillArrivalDateFromQty_(sh, range, qtyCol, dateCol, startRow, chec
   if (!hitsQty && !hitsDate) return;
 
   // 入荷数あり & 入荷日なし → 入荷日を今日で補完（入荷数列を編集したときだけ・シート全体をバックフィル）
+  // freshRows = 今回入荷日を補完した行（=新しく入荷した行）。自動チェックはこの行だけに付ける。
+  // ※以前は「入荷数がある行全部」にチェックを付けていたため、広い範囲を編集すると
+  //   昔の入荷済み行まで全部チェックが付いてしまっていた。
+  let freshRows = null;
   if (hitsQty) {
+    freshRows = new Set();
     const firstRow = startRow;
     const lastRow = Math.max(range.getLastRow(), sh.getLastRow());
     if (lastRow >= firstRow) {
@@ -441,6 +446,7 @@ function _autoFillArrivalDateFromQty_(sh, range, qtyCol, dateCol, startRow, chec
         if (qty && qty !== '0' && !hasDate) {
           dateVals[i][0] = today;
           changed = true;
+          freshRows.add(firstRow + i); // この行は「今回入荷」= 自動チェック対象
         }
       }
       if (changed) dateRange.setValues(dateVals);
@@ -450,9 +456,9 @@ function _autoFillArrivalDateFromQty_(sh, range, qtyCol, dateCol, startRow, chec
   // 入荷日と入荷数の連動クリア（編集した行だけ）：片方を消したらもう片方も消す＋チェックも外す
   _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hitsQty, hitsDate, checkboxCol);
 
-  // 入荷数が入った行はチェックを付ける（入荷数列を編集したときだけ・従来動作）
+  // 今回新しく入荷した行（入荷日を補完した行）だけチェックを付ける
   if (checkboxCol && hitsQty) {
-    _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol);
+    _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol, freshRows);
   }
 }
 
@@ -506,7 +512,7 @@ function _linkClearArrivalDateAndQty_(sh, range, qtyCol, dateCol, startRow, hits
   if (checkChanged) checkRange.setValues(checkVals);
 }
 
-function _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol) {
+function _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requiredValueCol, freshRows) {
   const firstRow = Math.max(startRow, range.getRow());
   const lastRow = Math.min(range.getLastRow(), sh.getLastRow());
   if (lastRow < firstRow) return 0;
@@ -525,6 +531,9 @@ function _checkRowsFromEditedQty_(sh, range, qtyCol, checkboxCol, startRow, requ
   let checked = 0;
 
   for (let i = 0; i < numRows; i++) {
+    // 今回入荷（入荷日を補完した行）だけを対象にする。昔の入荷済み行にはチェックを付けない。
+    if (freshRows && !freshRows.has(firstRow + i)) continue;
+
     const qty = String(qtyVals[i][0] || '').replace(/,/g, '').trim();
     if (!qty || qty === '0') continue;
 

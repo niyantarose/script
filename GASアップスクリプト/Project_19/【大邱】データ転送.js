@@ -1876,6 +1876,29 @@ function 大邱発注_チェックと残り数量を設置() {
   ss.toast('チェックボックス＋残り数量列＋消込色を設置: ' + n + '行');
 }
 
+// 発注リスト大邱データのA列チェックを全部外す（誤って大量に付いたチェックの掃除用）
+function 大邱発注_チェックを全部外す() {
+  const ss = SpreadsheetApp.getActive(), ui = SpreadsheetApp.getUi();
+  const sh = ss.getSheetByName(DAEGU_CFG.HACHU_SRC);
+  if (!sh) { ui.alert('「' + DAEGU_CFG.HACHU_SRC + '」が見つかりません。'); return; }
+  const lastRow = sh.getLastRow();
+  if (lastRow < 6) { ss.toast('データがありません。'); return; }
+
+  const rng = sh.getRange(6, 1, lastRow - 5, 1);
+  const vals = rng.getValues();
+  let n = 0;
+  vals.forEach(v => { if (v[0] === true) { v[0] = false; n++; } });
+  if (!n) { ss.toast('チェックされている行はありません。'); return; }
+
+  const ans = ui.alert('チェックを全部外す',
+    '発注リスト大邱データでチェックされている ' + n + '行のA列チェックを全部外します。ええ？',
+    ui.ButtonSet.OK_CANCEL);
+  if (ans !== ui.Button.OK) return;
+
+  rng.setValues(vals);
+  ss.toast('A列チェックを外しました: ' + n + '行', '🧹チェック解除', 5);
+}
+
 // EMS大邱の最終データ行の次（H商品コード/T購入No/D EMS番号で判定。ヘッダーは除く）
 function 大邱EMS_次の追記行_(dst) {
   const lastRow = dst.getLastRow();
