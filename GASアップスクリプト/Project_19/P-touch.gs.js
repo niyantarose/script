@@ -5,52 +5,55 @@ function Pタッチ印刷用Excelを保存() {
   const sheet = ss.getSheetByName('EMS大邱作業データ');
   if (!sheet) throw new Error('シート「EMS大邱作業データ」がありません。');
 
+  // 選択範囲の行番号を取得
+  const selection = ss.getActiveRange();
+  const startRow = selection.getRow();
+  const endRow = selection.getLastRow();
+
   const values = sheet.getDataRange().getValues();
   if (values.length < 3) { SpreadsheetApp.getUi().alert('データがありません。'); return; }
 
   const header = values[1].map(v => String(v).trim());
-  const dateCol = findHeaderColumn_(header, ['入荷日']);
   const codeCol = findHeaderColumn_(header, ['ItemCode', 'Code', '商品コード']);
   const nameCol = findHeaderColumn_(header, ['Description / Title', 'Product Name', '商品名']);
   const qtyCol  = findHeaderColumn_(header, ['Qty', 'Units']);
 
-  if (dateCol === -1) throw new Error('「入荷日」列がありません。');
   if (codeCol === -1) throw new Error('「ItemCode」列がありません。');
   if (nameCol === -1) throw new Error('「Description / Title」列がありません。');
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // ステップ1: 選択行を抽出しつつ重複をまとめる
+  // Promotional Item は別扱いでキーをユニークにする
+  const merged = {};
+  let promoCount = 0;
 
-  // ステップ1: 今日の分を抽出しつつ重複をまとめる
-  const merged = {}; // key: ItemCode, value: {name, qty}
-  for (let i = 2; i < values.length; i++) {
-    const dateVal = values[i][dateCol];
-    if (!dateVal) continue;
-    const d = new Date(dateVal);
-    d.setHours(0, 0, 0, 0);
-    if (d.getTime() !== today.getTime()) continue;
-
+  for (let i = startRow - 1; i < endRow; i++) {
     const code = String(values[i][codeCol] || '').trim();
     if (!code) continue;
     const name = String(values[i][nameCol] || '').trim();
     const qty  = parseInt(values[i][qtyCol], 10) || 1;
 
-    if (merged[code]) {
-      merged[code].qty += qty;
+    if (code === 'Promotional Item') {
+      // Promotional Itemは商品名ごとに別キーで管理
+      const key = 'PROMO_' + promoCount++;
+      merged[key] = { code: code, name: name, qty: qty };
     } else {
-      merged[code] = { name: name, qty: qty };
+      if (merged[code]) {
+        merged[code].qty += qty;
+      } else {
+        merged[code] = { code: code, name: name, qty: qty };
+      }
     }
   }
 
   if (Object.keys(merged).length === 0) {
-    SpreadsheetApp.getUi().alert('本日入荷分のデータがありません。');
+    SpreadsheetApp.getUi().alert('対象データがありません。');
     return;
   }
 
   // ステップ2: 数量分だけ行を展開
   const rows = [['商品コード', '商品名']];
-  for (const code in merged) {
-    const { name, qty } = merged[code];
+  for (const key in merged) {
+    const { code, name, qty } = merged[key];
     for (let i = 0; i < qty; i++) {
       rows.push([code, name]);
     }

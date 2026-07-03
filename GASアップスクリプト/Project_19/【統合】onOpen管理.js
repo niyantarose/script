@@ -1,6 +1,7 @@
 function onOpen() {
   Excel同期メニューを追加_();
   インボイスメニューを追加_();
+  大邱未作業メニューを追加_();
 
   SpreadsheetApp.getUi()
     .createMenu('EMS自社用')
