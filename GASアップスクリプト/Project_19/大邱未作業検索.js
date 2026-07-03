@@ -29,7 +29,10 @@ const MISAGYO_CFG = {
   DST_FILTER_ROW: 2,   // 列別絞り込み行
   DST_HEADER_JP: 3,
   DST_HEADER_EN: 4,
-  DST_DATA_START: 5
+  DST_DATA_START: 5,
+
+  FONT_SIZE: 13,       // 文字の大きさ（発注リスト大邱データに合わせる）
+  ROW_HEIGHT: 27       // 行の高さ
 };
 
 // ---------- メニュー ----------
@@ -240,22 +243,24 @@ function 大邱未作業_再構築_(clearFilters) {
     const enHeader = src.getRange(cfg.SRC_HEADER_EN, cfg.SRC_COL_START, 1, width).getDisplayValues();
 
     dst.getRange(1, 1).setValue('🔍').setFontWeight('bold');
-    dst.getRange(cfg.DST_KEYWORD_ROW, 2).setBackground('#fff2cc'); // B1 黄色（全列検索）
+    dst.getRange(cfg.DST_KEYWORD_ROW, 2).setBackground('#fff2cc').setFontSize(cfg.FONT_SIZE); // B1 黄色（全列検索）
     dst.getRange(1, 3).setValue(
       '←B1は全列検索（スペース区切りAND・部分一致）／下の水色行は列ごとの条件。セルを編集すると自動で絞り込み。A列にチェックしてメニュー「大邱未作業」→「チェック行をEMS大邱へ送る」'
     ).setFontColor('#888888').setFontSize(9);
 
-    dst.getRange(cfg.DST_FILTER_ROW, 2, 1, width).setBackground('#e8f0fe'); // 水色 B2..S2
-    dst.getRange(cfg.DST_HEADER_JP, 1).setValue('送る').setFontWeight('bold').setBackground('#efefef');
-    dst.getRange(cfg.DST_HEADER_EN, 1).setValue('✓').setFontWeight('bold').setBackground('#efefef');
+    dst.getRange(cfg.DST_FILTER_ROW, 2, 1, width).setBackground('#e8f0fe').setFontSize(cfg.FONT_SIZE); // 水色 B2..S2
+    dst.getRange(cfg.DST_HEADER_JP, 1).setValue('送る').setFontWeight('bold').setBackground('#efefef').setFontSize(cfg.FONT_SIZE);
+    dst.getRange(cfg.DST_HEADER_EN, 1).setValue('✓').setFontWeight('bold').setBackground('#efefef').setFontSize(cfg.FONT_SIZE);
     dst.getRange(cfg.DST_HEADER_JP, 2, 1, width)
       .setValues(jpHeader)
       .setFontWeight('bold')
-      .setBackground('#efefef');
+      .setBackground('#efefef')
+      .setFontSize(cfg.FONT_SIZE);
     dst.getRange(cfg.DST_HEADER_EN, 2, 1, width)
       .setValues(enHeader)
       .setFontWeight('bold')
-      .setBackground('#efefef');
+      .setBackground('#efefef')
+      .setFontSize(cfg.FONT_SIZE);
     dst.setFrozenRows(cfg.DST_HEADER_EN);
 
     // 列幅: A=チェック用に狭く、B..Sはソースに合わせる（=同じ列アルファベット）
@@ -278,8 +283,11 @@ function 大邱未作業_再構築_(clearFilters) {
     const body = dst.getRange(cfg.DST_DATA_START, 2, shownRows.length, width);
     body.setValues(shownRows.map(r => r.values));
     body.setNumberFormats(shownRows.map(r => r.formats)); // 表示形式は元シートと同じにする
+    body.setFontSize(cfg.FONT_SIZE).setVerticalAlignment('middle')
+      .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP); // 文字13pt・縦中央・折返しなしで行高を一定に
     // A列チェックボックス（データ行だけ・毎回未チェックで開始）
     dst.getRange(cfg.DST_DATA_START, 1, shownRows.length, 1).insertCheckboxes();
+    dst.setRowHeights(cfg.DST_DATA_START, shownRows.length, cfg.ROW_HEIGHT);
   }
   // データより下に残った古いチェックボックスの検証を外す
   const below = maxRows - (cfg.DST_DATA_START + shownRows.length) + 1;
