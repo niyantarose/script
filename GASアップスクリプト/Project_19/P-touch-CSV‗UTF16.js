@@ -58,9 +58,12 @@ function Pタッチ印刷用CSV_UTF16を保存() {
   }).join(',')).join('\r\n');
 
   const FIXED_NAME = 'P-touch_today.csv';
-  const blob = Utilities.newBlob('', 'text/csv')
-    .setDataFromString(csv, 'UTF-16LE')
-    .setName(FIXED_NAME);
+  // UTF-16LE + BOM(FF FE)で保存する。
+  // BOMが無いとP-touch EditorがUTF-16と認識できずANSI扱いになり全体が文字化けする。
+  // (Shift-JISは韓国語の商品名を表現できないためUTF-16一択)
+  const body = Utilities.newBlob('').setDataFromString(csv, 'UTF-16LE').getBytes();
+  const bytes = [-1, -2].concat(body); // 先頭にBOM FF FE(GASのバイトは符号付きなので -1,-2)
+  const blob = Utilities.newBlob(bytes, 'text/csv', FIXED_NAME);
 
   const folder = getOutputFolder_();
   const existing = folder.getFilesByName(FIXED_NAME);
@@ -68,7 +71,7 @@ function Pタッチ印刷用CSV_UTF16を保存() {
   folder.createFile(blob);
 
   SpreadsheetApp.getUi().alert(
-    'P-touch用CSVを更新しました！（UTF-16版）\n\n' +
+    'P-touch用CSVを更新しました！（UTF-16 BOM付き）\n\n' +
     'ファイル名：' + FIXED_NAME + '\n' +
     'ラベル枚数：' + (rows.length - 1) + '枚\n\n' +
     'P-touch Editorで「更新」を押してください。'
