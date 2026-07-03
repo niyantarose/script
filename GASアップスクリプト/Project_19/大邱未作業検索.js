@@ -242,11 +242,11 @@ function 大邱未作業_再構築_(clearFilters) {
     const jpHeader = src.getRange(cfg.SRC_HEADER_JP, cfg.SRC_COL_START, 1, width).getDisplayValues();
     const enHeader = src.getRange(cfg.SRC_HEADER_EN, cfg.SRC_COL_START, 1, width).getDisplayValues();
 
-    dst.getRange(1, 1).setValue('🔍').setFontWeight('bold');
+    dst.getRange(1, 1).setValue('🔍').setFontWeight('bold').setFontSize(cfg.FONT_SIZE);
     dst.getRange(cfg.DST_KEYWORD_ROW, 2).setBackground('#fff2cc').setFontSize(cfg.FONT_SIZE); // B1 黄色（全列検索）
     dst.getRange(1, 3).setValue(
       '←B1は全列検索（スペース区切りAND・部分一致）／下の水色行は列ごとの条件。セルを編集すると自動で絞り込み。A列にチェックしてメニュー「大邱未作業」→「チェック行をEMS大邱へ送る」'
-    ).setFontColor('#888888').setFontSize(9);
+    ).setFontColor('#888888').setFontSize(cfg.FONT_SIZE); // 1行目も13ptにそろえる
 
     dst.getRange(cfg.DST_FILTER_ROW, 2, 1, width).setBackground('#e8f0fe').setFontSize(cfg.FONT_SIZE); // 水色 B2..S2
     dst.getRange(cfg.DST_HEADER_JP, 1).setValue('送る').setFontWeight('bold').setBackground('#efefef').setFontSize(cfg.FONT_SIZE);
@@ -300,7 +300,8 @@ function 大邱未作業_再構築_(clearFilters) {
   dst.getRange(1, width + 2)
     .setValue('該当 ' + shownRows.length + ' / 未作業 ' + unworked.length + '件')
     .setFontColor('#666666')
-    .setFontWeight('bold');
+    .setFontWeight('bold')
+    .setFontSize(cfg.FONT_SIZE);
 
   SpreadsheetApp.flush();
   大邱未作業_同期解除_(); // 最新化できたので「要同期」フラグを下ろす
