@@ -44,6 +44,7 @@ function 大邱未作業メニューを追加_() {
     .addItem('🧹 検索条件をクリア', '大邱未作業_検索条件をクリア')
     .addSeparator()
     .addItem('📦 チェック行をEMS大邱へ送る', '大邱未作業_チェック行をEMS大邱へ送る')
+    .addItem('📥 入荷(入荷日・入荷数)を発注リスト大邱へ同期', '大邱未作業_入荷を発注リスト大邱へ同期')
     .addToUi();
 }
 
@@ -122,19 +123,131 @@ function 大邱未作業_onSelectionChange_(e) {
   }
 }
 
-// ---------- onEdit から呼ばれる（検索セル編集で自動絞り込み） ----------
+// ---------- onEdit から呼ばれる ----------
+// 1〜2行目(検索セル) → 自動絞り込み
+// データ行のC入荷日/D入荷数 → 発注リスト大邱データと同じ自動動作(入荷日補完・連動クリア・Aチェック)
+//                             ＋発注NO照合で発注リスト大邱データへ即時書き戻し＋行を黄色に
 function 大邱未作業_onEdit_(e) {
   const cfg = MISAGYO_CFG;
   const range = e.range;
-  if (range.getRow() > cfg.DST_FILTER_ROW) return; // 1〜2行目だけ反応（A列チェックでは動かない）
+
+  // --- 検索セル(1〜2行目)の編集 → 自動絞り込み ---
+  if (range.getRow() <= cfg.DST_FILTER_ROW) {
+    const lock = LockService.getDocumentLock();
+    if (!lock.tryLock(1000)) return;
+    try {
+      大邱未作業_再構築_(false);
+    } finally {
+      lock.releaseLock();
+    }
+    return;
+  }
+
+  // --- データ行の C入荷日(3) / D入荷数(4) の編集だけ反応 ---
+  if (range.getLastRow() < cfg.DST_DATA_START) return;
+  const sc = range.getColumn(), ec = range.getLastColumn();
+  const hitsQty = (sc <= 4 && 4 <= ec);
+  const hitsDate = (sc <= 3 && 3 <= ec);
+  if (!hitsQty && !hitsDate) return;
+
+  const sh = range.getSheet();
+  // 発注リスト大邱データと同じ共通処理: D入荷数→C入荷日を今日で補完・連動クリア・Aチェック(F発注NO必須)
+  if (typeof _autoFillArrivalDateFromQty_ === 'function') {
+    _autoFillArrivalDateFromQty_(sh, range, 4, 3, cfg.DST_DATA_START, 1, 6);
+  }
+  // 編集した行だけ発注リスト大邱データへ書き戻し(発注NO照合)＋色を更新
+  const from = Math.max(cfg.DST_DATA_START, range.getRow());
+  const to = Math.max(from, range.getLastRow());
+  大邱未作業_入荷同期_(sh, from, to, false);
+}
+
+// ============================================================
+// 大邱未作業データの C入荷日/D入荷数 を発注リスト大邱データへ書き戻す(発注NO照合)
+//   ・fromRow〜toRow を対象。値が変わった行だけ書く
+//   ・入荷数あり→発注リスト大邱データのA列チェックON / なし→OFF(元シートのonEditと同じ意味)
+//   ・行の色: 入荷数あり=黄色(処理済みの目印)。次のリスト更新で未作業からは消える
+// ============================================================
+function 大邱未作業_入荷同期_(view, fromRow, toRow, notify) {
+  const cfg = MISAGYO_CFG;
+  const ss = SpreadsheetApp.getActive();
+  const src = ss.getSheetByName(cfg.SRC_SHEET);
+  if (!src || !view) return 0;
+  const noKey = v => (typeof EMS_転送購入Noキー_ === 'function') ? EMS_転送購入Noキー_(v) : String(v || '').trim();
+  const codeKey = v => (typeof 大邱_表示コード_ === 'function') ? 大邱_表示コード_(v) : String(v || '').trim();
+  const qtyNum = v => { const n = Number(String(v == null ? '' : v).replace(/,/g, '').trim()); return isFinite(n) ? n : 0; };
+
+  const last = Math.min(toRow, view.getLastRow());
+  if (last < fromRow) return 0;
+  const n = last - fromRow + 1;
+  const vVals = view.getRange(fromRow, 1, n, 19).getValues(); // A..S
+
+  // 行の色(処理の目印): 入荷数あり=黄 / なし=色なし
+  const width = cfg.SRC_COL_END - cfg.SRC_COL_START + 1;
+  const rowBg = vVals.map(r => new Array(width).fill(qtyNum(r[3]) > 0 ? '#ffff00' : null));
+  view.getRange(fromRow, 2, n, width).setBackgrounds(rowBg);
+
+  const targets = [];
+  for (let i = 0; i < n; i++) {
+    const no = noKey(vVals[i][5]); // F 発注NO
+    if (!no) continue;
+    targets.push({ no: no, code: codeKey(vVals[i][10]), date: vVals[i][2], qty: vVals[i][3] });
+  }
+  if (!targets.length) { if (notify) ss.toast('同期対象(発注NOあり)の行がありません。'); return 0; }
 
   const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(1000)) return;
+  if (!lock.tryLock(10000)) { ss.toast('他の処理が実行中です。もう一度お試しください。'); return 0; }
+  let updated = 0, missing = 0;
   try {
-    大邱未作業_再構築_(false);
+    const sVals = src.getDataRange().getValues();
+    const byNo = {};
+    for (let i = 0; i < sVals.length; i++) { const no = noKey(sVals[i][5]); if (no) (byNo[no] = byNo[no] || []).push(i); }
+
+    const eq = (a, b) => {
+      const ea = (a === '' || a == null), eb = (b === '' || b == null);
+      if (ea || eb) return ea && eb;
+      if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+      return String(a).trim() === String(b).trim();
+    };
+
+    // C:D はデータ行(6行目〜)だけ読み書きする(ヘッダーや数式のあるかもしれない上部は触らない)
+    const dataStart = 6, lastSrc = src.getLastRow();
+    if (lastSrc >= dataStart) {
+      const cd = src.getRange(dataStart, 3, lastSrc - dataStart + 1, 2).getValues();
+      const checkOn = [], checkOff = [];
+      let cdChanged = false;
+      targets.forEach(t => {
+        const rows = (byNo[t.no] || []).filter(ri => ri + 1 >= dataStart);
+        if (!rows.length) { missing++; return; }
+        let hit = rows[0];
+        if (rows.length > 1) { const m = rows.filter(ri => codeKey(sVals[ri][10]) === t.code); if (m.length) hit = m[0]; }
+        const ci = hit + 1 - dataStart;
+        if (!eq(cd[ci][0], t.date) || !eq(cd[ci][1], t.qty)) {
+          cd[ci][0] = t.date; cd[ci][1] = t.qty; cdChanged = true; updated++;
+          (qtyNum(t.qty) > 0 ? checkOn : checkOff).push('A' + (hit + 1));
+        }
+      });
+      if (cdChanged) {
+        src.getRange(dataStart, 3, cd.length, 2).setValues(cd);
+        if (checkOn.length) src.getRangeList(checkOn).setValue(true);
+        if (checkOff.length) src.getRangeList(checkOff).setValue(false);
+      }
+    }
   } finally {
     lock.releaseLock();
   }
+  if (notify || updated || missing) {
+    ss.toast('発注リスト大邱データへ同期: ' + updated + '件' + (missing ? ' / 発注NO不一致 ' + missing + '件' : ''), '📥 入荷同期', 4);
+  }
+  return updated;
+}
+
+// ボタン/メニュー用: 大邱未作業データの全行の入荷日・入荷数を発注リスト大邱データへ同期
+function 大邱未作業_入荷を発注リスト大邱へ同期() {
+  const cfg = MISAGYO_CFG;
+  const ss = SpreadsheetApp.getActive();
+  const view = ss.getSheetByName(cfg.DST_SHEET);
+  if (!view) { SpreadsheetApp.getUi().alert('「' + cfg.DST_SHEET + '」がありません。'); return; }
+  大邱未作業_入荷同期_(view, cfg.DST_DATA_START, view.getLastRow(), true);
 }
 
 // ---------- 数値パース（カンマ・空白対応） ----------
