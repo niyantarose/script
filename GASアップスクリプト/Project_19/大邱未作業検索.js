@@ -76,6 +76,49 @@ function 大邱未作業_検索条件をクリア() {
   大邱未作業_更新();
 }
 
+// ---------- 自動同期（発注リスト大邱データ → 大邱未作業データ） ----------
+// 発注リスト大邱データの編集・色塗り・行追加のたびに再構築すると編集が重くなるので、
+// そのときは「要同期」フラグを立てるだけ（瞬時）。
+// 大邱未作業データのシートを開いた瞬間（onSelectionChange）に、
+// フラグが立っていれば自動で再構築する＝見るときは常に最新。
+function 大邱未作業_同期予約_() {
+  try {
+    CacheService.getDocumentCache().put('MISAGYO_DIRTY', '1', 21600); // 6時間有効
+  } catch (e) {}
+}
+
+function 大邱未作業_同期解除_() {
+  try {
+    CacheService.getDocumentCache().remove('MISAGYO_DIRTY');
+  } catch (e) {}
+}
+
+function 大邱未作業_同期が必要_() {
+  try {
+    return CacheService.getDocumentCache().get('MISAGYO_DIRTY') === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+// 統合onSelectionChangeから呼ばれる: 大邱未作業データを開いたら必要なときだけ最新化
+function 大邱未作業_onSelectionChange_(e) {
+  if (!大邱未作業_同期が必要_()) return;
+
+  const cache = CacheService.getDocumentCache();
+  if (cache.get('MISAGYO_SYNCING') === '1') return; // 二重起動防止
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(500)) return; // 混んでいたら次の選択変更でまた試す
+  try {
+    cache.put('MISAGYO_SYNCING', '1', 60);
+    SpreadsheetApp.getActive().toast('発注リスト大邱データの変更を反映しています…', '大邱未作業データ 自動同期', 3);
+    大邱未作業_再構築_(false);
+  } finally {
+    cache.remove('MISAGYO_SYNCING');
+    lock.releaseLock();
+  }
+}
+
 // ---------- onEdit から呼ばれる（検索セル編集で自動絞り込み） ----------
 function 大邱未作業_onEdit_(e) {
   const cfg = MISAGYO_CFG;
@@ -186,33 +229,39 @@ function 大邱未作業_再構築_(clearFilters) {
     return true;
   });
 
-  // --- ヘッダー・検索エリアを整備（毎回上書きで壊れない） ---
-  const jpHeader = src.getRange(cfg.SRC_HEADER_JP, cfg.SRC_COL_START, 1, width).getDisplayValues();
-  const enHeader = src.getRange(cfg.SRC_HEADER_EN, cfg.SRC_COL_START, 1, width).getDisplayValues();
+  // --- ヘッダー・検索エリアを整備 ---
+  // 高速化: レイアウトが既にできていれば飛ばす（メニューの「更新」時は毎回整え直す）
+  const needsLayout = clearFilters ||
+    String(dst.getRange(1, 1).getDisplayValue()) !== '🔍' ||
+    String(dst.getRange(cfg.DST_HEADER_JP, 2).getDisplayValue()).trim() === '';
+  if (needsLayout) {
+    const jpHeader = src.getRange(cfg.SRC_HEADER_JP, cfg.SRC_COL_START, 1, width).getDisplayValues();
+    const enHeader = src.getRange(cfg.SRC_HEADER_EN, cfg.SRC_COL_START, 1, width).getDisplayValues();
 
-  dst.getRange(1, 1).setValue('🔍').setFontWeight('bold');
-  dst.getRange(cfg.DST_KEYWORD_ROW, 2).setBackground('#fff2cc'); // B1 黄色（全列検索）
-  dst.getRange(1, 3).setValue(
-    '←B1は全列検索（スペース区切りAND・部分一致）／下の水色行は列ごとの条件。セルを編集すると自動で絞り込み。A列にチェックしてメニュー「大邱未作業」→「チェック行をEMS大邱へ送る」'
-  ).setFontColor('#888888').setFontSize(9);
+    dst.getRange(1, 1).setValue('🔍').setFontWeight('bold');
+    dst.getRange(cfg.DST_KEYWORD_ROW, 2).setBackground('#fff2cc'); // B1 黄色（全列検索）
+    dst.getRange(1, 3).setValue(
+      '←B1は全列検索（スペース区切りAND・部分一致）／下の水色行は列ごとの条件。セルを編集すると自動で絞り込み。A列にチェックしてメニュー「大邱未作業」→「チェック行をEMS大邱へ送る」'
+    ).setFontColor('#888888').setFontSize(9);
 
-  dst.getRange(cfg.DST_FILTER_ROW, 2, 1, width).setBackground('#e8f0fe'); // 水色 B2..S2
-  dst.getRange(cfg.DST_HEADER_JP, 1).setValue('送る').setFontWeight('bold').setBackground('#efefef');
-  dst.getRange(cfg.DST_HEADER_EN, 1).setValue('✓').setFontWeight('bold').setBackground('#efefef');
-  dst.getRange(cfg.DST_HEADER_JP, 2, 1, width)
-    .setValues(jpHeader)
-    .setFontWeight('bold')
-    .setBackground('#efefef');
-  dst.getRange(cfg.DST_HEADER_EN, 2, 1, width)
-    .setValues(enHeader)
-    .setFontWeight('bold')
-    .setBackground('#efefef');
-  dst.setFrozenRows(cfg.DST_HEADER_EN);
+    dst.getRange(cfg.DST_FILTER_ROW, 2, 1, width).setBackground('#e8f0fe'); // 水色 B2..S2
+    dst.getRange(cfg.DST_HEADER_JP, 1).setValue('送る').setFontWeight('bold').setBackground('#efefef');
+    dst.getRange(cfg.DST_HEADER_EN, 1).setValue('✓').setFontWeight('bold').setBackground('#efefef');
+    dst.getRange(cfg.DST_HEADER_JP, 2, 1, width)
+      .setValues(jpHeader)
+      .setFontWeight('bold')
+      .setBackground('#efefef');
+    dst.getRange(cfg.DST_HEADER_EN, 2, 1, width)
+      .setValues(enHeader)
+      .setFontWeight('bold')
+      .setBackground('#efefef');
+    dst.setFrozenRows(cfg.DST_HEADER_EN);
 
-  // 列幅: A=チェック用に狭く、B..Sはソースに合わせる（=同じ列アルファベット）
-  dst.setColumnWidth(1, 40);
-  for (let c = 0; c < width; c++) {
-    dst.setColumnWidth(c + 2, src.getColumnWidth(cfg.SRC_COL_START + c));
+    // 列幅: A=チェック用に狭く、B..Sはソースに合わせる（=同じ列アルファベット）
+    dst.setColumnWidth(1, 40);
+    for (let c = 0; c < width; c++) {
+      dst.setColumnWidth(c + 2, src.getColumnWidth(cfg.SRC_COL_START + c));
+    }
   }
 
   // --- データ書き込み（値のみ＝色なし） ---
@@ -234,12 +283,14 @@ function 大邱未作業_再構築_(clearFilters) {
   }
 
   // --- 件数表示 ---
+  dst.getRange(1, width + 1).clearContent(); // 旧バージョンが書いた件数表示が残っていたら消す
   dst.getRange(1, width + 2)
     .setValue('該当 ' + shownRows.length + ' / 未作業 ' + unworked.length + '件')
     .setFontColor('#666666')
     .setFontWeight('bold');
 
   SpreadsheetApp.flush();
+  大邱未作業_同期解除_(); // 最新化できたので「要同期」フラグを下ろす
   return { total: unworked.length, shown: shownRows.length };
 }
 

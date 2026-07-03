@@ -22,6 +22,7 @@ function onEdit(e) {
       autofillHachuByCfg_(e, DAEGU_HACHU_MASTER_CFG);
       大邱発注_onEdit採番_(e);
       大邱発注_WX自動計算_(sh, range);
+      if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 未作業リストの自動同期を予約
       return;
     }
 
@@ -37,6 +38,7 @@ function onEdit(e) {
       if (_rangeHitsAnyCol_(editStartCol, editEndCol, [4, 8, 9, 20])) {
         大邱発注_チェックと残り数量を設置();
       }
+      if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 残り数量の変化は未作業判定に影響
       return;
     }
 
@@ -690,6 +692,7 @@ function チェック行_入荷数を発注数量にする() {
 
     if (sheetName === DAEGU_CFG.HACHU_SRC && typeof 大邱発注_チェックと残り数量を設置 === 'function') {
       大邱発注_チェックと残り数量を設置();
+      if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 未作業リストへ反映予約
     } else if (sheetName === CFG.HACHU_SHEET && typeof colorKeshikomiAllRows_ === 'function') {
       colorKeshikomiAllRows_(sh);
     }
@@ -700,9 +703,34 @@ function チェック行_入荷数を発注数量にする() {
   }
 }
 
+// 選択変更（シート切り替え含む）: 大邱未作業データを開いたら必要なときだけ自動同期
+function onSelectionChange(e) {
+  try {
+    if (!e || !e.range) return;
+    const sheetName = e.range.getSheet().getName();
+    if (typeof MISAGYO_CFG !== 'undefined' &&
+        sheetName === MISAGYO_CFG.DST_SHEET &&
+        typeof 大邱未作業_onSelectionChange_ === 'function') {
+      大邱未作業_onSelectionChange_(e);
+    }
+  } catch (err) {
+    // onSelectionChangeは頻繁に発火するためエラーはログのみ（UIは出さない）
+    console.error('onSelectionChange: ' + err);
+  }
+}
+
 function autoRefreshShippingCountsOnChange(e) {
   const changeType = String((e && e.changeType) || '');
-  if (changeType === 'EDIT' || changeType === 'FORMAT') return;
+  if (changeType === 'FORMAT') {
+    // 色塗り（背景色の変更）は未作業リストの判定に影響するので同期だけ予約して終了
+    // ※ 大邱未作業データ自身の書式変更（＝リスト再構築の書き込み）では予約しない（自己ループ防止）
+    const fmtSheet = SpreadsheetApp.getActive().getActiveSheet();
+    const fmtName = fmtSheet ? fmtSheet.getName() : '';
+    if (typeof MISAGYO_CFG !== 'undefined' && fmtName === MISAGYO_CFG.DST_SHEET) return;
+    if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_();
+    return;
+  }
+  if (changeType === 'EDIT') return;
 
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getActiveSheet();
@@ -719,6 +747,7 @@ function autoRefreshShippingCountsOnChange(e) {
     // 変更があった側だけ再計算する（従来は毎回両方やって10秒超かかっていた）
     if ((isDaegu || !sheetName) && typeof 大邱発注_チェックと残り数量を設置 === 'function') {
       大邱発注_チェックと残り数量を設置();
+      if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 行追加・転送後も未作業リストへ反映
     }
     if ((isHatchu || !sheetName) && typeof 発注_EMS発送数数式を一括修正 === 'function') {
       発注_EMS発送数数式を一括修正();

@@ -2040,6 +2040,8 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
     src.getRangeList(picked.map(p => 'A' + p.row)).setValue(false);
     L('チェック解除: 送信した' + n + '行のA列をFALSEに戻した');
 
+    if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 未作業リストへ反映予約
+
     // 件数チェック: 送った件数(n) と 送られた件数(received) を照合し、最後に表示
     const allOK = (result.received === n && result.ngCount === 0);
     const mark = allOK ? '✅ 件数一致しました。' : '⚠️ 件数不一致あり！実行ログを確認してください。';
