@@ -1,26 +1,32 @@
 // ============================================================
-//  発注リスト大邱データ → 大邱未作業データ（色なし行の抽出＋多角度検索）
+//  発注リスト大邱データ → 大邱未作業データ（色なし行の抽出＋多角度検索＋EMS大邱へ送る）
 //
 //  ・発注リスト大邱データで行に背景色（オレンジ/黄色=EMS積載済み）が
 //    付いていない行だけを「大邱未作業データ」シートに色なしで書き出す
+//    （手塗りの背景色に加えて、消込の条件付き書式と同じ条件
+//      「入荷数あり×数量あり×残り列に値」も積載済みとして除外）
+//  ・A列: チェックボックス。チェックしてメニューからEMS大邱へ送れる
 //  ・B1: 全列キーワード検索（スペース区切りAND・部分一致）
 //  ・2行目（水色）: 列ごとの絞り込み（スペース区切りAND・部分一致）
 //  ・検索セルを編集すると onEdit 経由で自動絞り込み
+//  ・列の並びは発注リスト大邱データと同じ（B=発注日 … S=支払金額）
 // ============================================================
 
 const MISAGYO_CFG = {
   SRC_SHEET: '発注リスト大邱データ',
   DST_SHEET: '大邱未作業データ',
 
-  SRC_HEADER_JP: 4,   // 日本語ヘッダー行
-  SRC_HEADER_EN: 5,   // 英語ヘッダー行
-  SRC_DATA_START: 6,  // データ開始行
-  SRC_COL_START: 2,   // B列から
-  SRC_COL_END: 19,    // S列（支払金額）まで
-  COLOR_CHECK_COL: 2, // 色判定はB列（発注日）の背景色
+  SRC_HEADER_JP: 4,    // 日本語ヘッダー行
+  SRC_HEADER_EN: 5,    // 英語ヘッダー行
+  SRC_DATA_START: 6,   // データ開始行
+  SRC_COL_START: 2,    // B列から
+  SRC_COL_END: 19,     // S列（支払金額）まで
+  COLOR_CHECK_COL: 2,  // 色判定はB列（発注日）の背景色
+  SRC_COL_ZANRI: 26,   // Z列 残り（消込の条件付き書式が使う列）
 
-  DST_KEYWORD_ROW: 1, // B1 = 全列キーワード
-  DST_FILTER_ROW: 2,  // 列別絞り込み行
+  DST_CHECK_COL: 1,    // A列 チェックボックス
+  DST_KEYWORD_ROW: 1,  // B1 = 全列キーワード
+  DST_FILTER_ROW: 2,   // 列別絞り込み行
   DST_HEADER_JP: 3,
   DST_HEADER_EN: 4,
   DST_DATA_START: 5
@@ -33,6 +39,8 @@ function 大邱未作業メニューを追加_() {
     .addItem('🔄 未作業データを更新', '大邱未作業_更新')
     .addItem('🔍 絞り込みを実行', '大邱未作業_絞り込み')
     .addItem('🧹 検索条件をクリア', '大邱未作業_検索条件をクリア')
+    .addSeparator()
+    .addItem('📦 チェック行をEMS大邱へ送る', '大邱未作業_チェック行をEMS大邱へ送る')
     .addToUi();
 }
 
@@ -63,7 +71,7 @@ function 大邱未作業_検索条件をクリア() {
   if (sh) {
     const width = cfg.SRC_COL_END - cfg.SRC_COL_START + 1;
     sh.getRange(cfg.DST_KEYWORD_ROW, 2).clearContent();          // B1
-    sh.getRange(cfg.DST_FILTER_ROW, 1, 1, width).clearContent(); // 2行目
+    sh.getRange(cfg.DST_FILTER_ROW, 2, 1, width).clearContent(); // 2行目 B..S
   }
   大邱未作業_更新();
 }
@@ -72,7 +80,7 @@ function 大邱未作業_検索条件をクリア() {
 function 大邱未作業_onEdit_(e) {
   const cfg = MISAGYO_CFG;
   const range = e.range;
-  if (range.getRow() > cfg.DST_FILTER_ROW) return; // 1〜2行目だけ反応
+  if (range.getRow() > cfg.DST_FILTER_ROW) return; // 1〜2行目だけ反応（A列チェックでは動かない）
 
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(1000)) return;
@@ -81,6 +89,14 @@ function 大邱未作業_onEdit_(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------- 数値パース（カンマ・空白対応） ----------
+function 大邱未作業_数値_(v) {
+  const s = String(v == null ? '' : v).replace(/,/g, '').trim();
+  if (!s) return 0;
+  const n = Number(s);
+  return isFinite(n) ? n : 0;
 }
 
 // ---------- 本体 ----------
@@ -95,11 +111,11 @@ function 大邱未作業_再構築_(clearFilters) {
     return null;
   }
 
-  const width = cfg.SRC_COL_END - cfg.SRC_COL_START + 1;
+  const width = cfg.SRC_COL_END - cfg.SRC_COL_START + 1; // 18列 (B..S)
 
   // --- ソース読み込み ---
   const lastRow = src.getLastRow();
-  let values = [], display = [], backgrounds = [];
+  let values = [], display = [], backgrounds = [], zanri = [];
   if (lastRow >= cfg.SRC_DATA_START) {
     const numRows = lastRow - cfg.SRC_DATA_START + 1;
     const dataRange = src.getRange(cfg.SRC_DATA_START, cfg.SRC_COL_START, numRows, width);
@@ -108,15 +124,25 @@ function 大邱未作業_再構築_(clearFilters) {
     backgrounds = src
       .getRange(cfg.SRC_DATA_START, cfg.COLOR_CHECK_COL, numRows, 1)
       .getBackgrounds();
+    zanri = src
+      .getRange(cfg.SRC_DATA_START, cfg.SRC_COL_ZANRI, numRows, 1)
+      .getDisplayValues();
   }
 
-  // --- 色なし行（未作業）だけ抽出 ---
-  // F発注NO / I商品名 / K商品コード（幅内index: F=4, I=7, K=9）のどれかに値がある行だけ
+  // --- 未作業（EMS未積載）だけ抽出 ---
+  // 幅18(B..S)内のindex: D入荷数=2, F発注NO=4, I商品名=7, K商品コード=9, L数量=10
   const requiredIdx = [4, 7, 9];
   const unworked = [];
   for (let i = 0; i < values.length; i++) {
+    // ① 手塗りの背景色（オレンジ/黄色など）が付いた行は積載済み
     const bg = String(backgrounds[i][0] || '#ffffff').toLowerCase();
-    if (bg !== '#ffffff' && bg !== 'white' && bg !== '') continue; // 色付き=EMS積載済み
+    if (bg !== '#ffffff' && bg !== 'white' && bg !== '') continue;
+    // ② 消込の条件付き書式と同条件（D入荷数>0 × L数量>0 × Z残りに値）も積載済み
+    const numD = 大邱未作業_数値_(display[i][2]);
+    const numL = 大邱未作業_数値_(display[i][10]);
+    const hasZ = String(zanri[i] ? zanri[i][0] : '').trim() !== '';
+    if (numD > 0 && numL > 0 && hasZ) continue;
+    // ③ 発注NO/商品名/商品コードが全部空の行は対象外
     if (!requiredIdx.some(idx => String(display[i][idx] || '').trim() !== '')) continue;
     unworked.push({ values: values[i], display: display[i] });
   }
@@ -133,7 +159,7 @@ function 大邱未作業_再構築_(clearFilters) {
   if (!clearFilters) {
     keyword = String(dst.getRange(cfg.DST_KEYWORD_ROW, 2).getDisplayValue() || '').trim();
     colFilters = dst
-      .getRange(cfg.DST_FILTER_ROW, 1, 1, width)
+      .getRange(cfg.DST_FILTER_ROW, 2, 1, width)
       .getDisplayValues()[0]
       .map(v => String(v || '').trim());
   }
@@ -164,28 +190,29 @@ function 大邱未作業_再構築_(clearFilters) {
   const jpHeader = src.getRange(cfg.SRC_HEADER_JP, cfg.SRC_COL_START, 1, width).getDisplayValues();
   const enHeader = src.getRange(cfg.SRC_HEADER_EN, cfg.SRC_COL_START, 1, width).getDisplayValues();
 
-  dst.getRange(1, 1)
-    .setValue('🔍 全列検索 →')
-    .setFontWeight('bold');
-  dst.getRange(cfg.DST_KEYWORD_ROW, 2).setBackground('#fff2cc'); // B1 黄色
+  dst.getRange(1, 1).setValue('🔍').setFontWeight('bold');
+  dst.getRange(cfg.DST_KEYWORD_ROW, 2).setBackground('#fff2cc'); // B1 黄色（全列検索）
   dst.getRange(1, 3).setValue(
-    '←スペース区切りAND・部分一致／下の水色行は列ごとの条件。セルを編集すると自動で絞り込み。'
+    '←B1は全列検索（スペース区切りAND・部分一致）／下の水色行は列ごとの条件。セルを編集すると自動で絞り込み。A列にチェックしてメニュー「大邱未作業」→「チェック行をEMS大邱へ送る」'
   ).setFontColor('#888888').setFontSize(9);
 
-  dst.getRange(cfg.DST_FILTER_ROW, 1, 1, width).setBackground('#e8f0fe'); // 水色
-  dst.getRange(cfg.DST_HEADER_JP, 1, 1, width)
+  dst.getRange(cfg.DST_FILTER_ROW, 2, 1, width).setBackground('#e8f0fe'); // 水色 B2..S2
+  dst.getRange(cfg.DST_HEADER_JP, 1).setValue('送る').setFontWeight('bold').setBackground('#efefef');
+  dst.getRange(cfg.DST_HEADER_EN, 1).setValue('✓').setFontWeight('bold').setBackground('#efefef');
+  dst.getRange(cfg.DST_HEADER_JP, 2, 1, width)
     .setValues(jpHeader)
     .setFontWeight('bold')
     .setBackground('#efefef');
-  dst.getRange(cfg.DST_HEADER_EN, 1, 1, width)
+  dst.getRange(cfg.DST_HEADER_EN, 2, 1, width)
     .setValues(enHeader)
     .setFontWeight('bold')
     .setBackground('#efefef');
   dst.setFrozenRows(cfg.DST_HEADER_EN);
 
-  // 列幅をソースに合わせる
+  // 列幅: A=チェック用に狭く、B..Sはソースに合わせる（=同じ列アルファベット）
+  dst.setColumnWidth(1, 40);
   for (let c = 0; c < width; c++) {
-    dst.setColumnWidth(c + 1, src.getColumnWidth(cfg.SRC_COL_START + c));
+    dst.setColumnWidth(c + 2, src.getColumnWidth(cfg.SRC_COL_START + c));
   }
 
   // --- データ書き込み（値のみ＝色なし） ---
@@ -195,16 +222,157 @@ function 大邱未作業_再構築_(clearFilters) {
       .clearContent();
   }
   if (shownRows.length) {
-    dst.getRange(cfg.DST_DATA_START, 1, shownRows.length, width)
+    dst.getRange(cfg.DST_DATA_START, 2, shownRows.length, width)
       .setValues(shownRows.map(r => r.values));
+    // A列チェックボックス（データ行だけ・毎回未チェックで開始）
+    dst.getRange(cfg.DST_DATA_START, 1, shownRows.length, 1).insertCheckboxes();
+  }
+  // データより下に残った古いチェックボックスの検証を外す
+  const below = maxRows - (cfg.DST_DATA_START + shownRows.length) + 1;
+  if (below > 0) {
+    dst.getRange(cfg.DST_DATA_START + shownRows.length, 1, below, 1).clearDataValidations();
   }
 
   // --- 件数表示 ---
-  dst.getRange(1, width + 1)
+  dst.getRange(1, width + 2)
     .setValue('該当 ' + shownRows.length + ' / 未作業 ' + unworked.length + '件')
     .setFontColor('#666666')
     .setFontWeight('bold');
 
   SpreadsheetApp.flush();
   return { total: unworked.length, shown: shownRows.length };
+}
+
+// ============================================================
+// 大邱未作業データのチェック行を EMS大邱作業データへ送る
+//   ・行の特定は発注NO（F列・一意採番済み）で発注リスト大邱データと照合
+//   ・送信処理・検証は 大邱発注_チェック行をEMS大邱へ送る と同じ共通処理
+//     （大邱_EMS大邱へ追記_）を使う
+//   ・送信後は残り数量を再計算してリストを更新（積載済みになった行は消える）
+// ============================================================
+function 大邱未作業_チェック行をEMS大邱へ送る() {
+  const cfg = MISAGYO_CFG;
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const view = ss.getSheetByName(cfg.DST_SHEET);
+  const src = ss.getSheetByName(cfg.SRC_SHEET);
+  const ems = ss.getSheetByName(
+    (typeof DAEGU_CFG !== 'undefined' && DAEGU_CFG.EMS_SRC) ? DAEGU_CFG.EMS_SRC : 'EMS大邱作業データ'
+  );
+  if (!view) { ui.alert('「' + cfg.DST_SHEET + '」がありません。先に「未作業データを更新」を実行してください。'); return; }
+  if (!src || !ems) { ui.alert('シートが見つかりません。'); return; }
+  if (typeof 大邱_EMS大邱へ追記_ !== 'function' || typeof EMS_転送購入Noキー_ !== 'function') {
+    ui.alert('送信用の共通処理が見つかりません（【大邱】データ転送.gs を確認してください）。');
+    return;
+  }
+
+  const t0 = new Date();
+  const L = msg => Logger.log('[未作業→EMS大邱] ' + msg);
+  L('開始 ' + Utilities.formatDate(t0, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss'));
+
+  // --- ① 未作業シートのチェック行を収集（ロック不要の読み取り） ---
+  const lastRow = view.getLastRow();
+  if (lastRow < cfg.DST_DATA_START) { ss.toast('送る行がありません。'); return; }
+  const vVals = view.getRange(cfg.DST_DATA_START, 1, lastRow - cfg.DST_DATA_START + 1, 19).getValues(); // A..S
+  const checked = [];
+  for (let i = 0; i < vVals.length; i++) {
+    if (vVals[i][0] !== true) continue; // A列チェック
+    const no = EMS_転送購入Noキー_(vVals[i][5]);                 // F 発注NO
+    const code = (typeof 大邱_表示コード_ === 'function') ? 大邱_表示コード_(vVals[i][10]) : String(vVals[i][10] || '').trim(); // K
+    checked.push({ viewRow: cfg.DST_DATA_START + i, no: no, code: code });
+  }
+  if (checked.length === 0) { ss.toast('チェックされた行がありません。'); return; }
+  L('チェック行: ' + checked.length + '件');
+
+  // --- ② 発注リスト大邱データを発注NOで照合して送信対象を作る（元データの最新値を使う） ---
+  const sVals = src.getDataRange().getValues();
+  const byNo = {};
+  for (let i = 0; i < sVals.length; i++) {
+    const no = EMS_転送購入Noキー_(sVals[i][5]); // F
+    if (!no) continue;
+    (byNo[no] = byNo[no] || []).push(i);
+  }
+
+  const picked = [];
+  const missing = [];
+  for (const c of checked) {
+    if (!c.no) { missing.push('行' + c.viewRow + ': 発注NOが空'); continue; }
+    const rows = byNo[c.no] || [];
+    let hit = -1;
+    if (rows.length === 1) {
+      hit = rows[0];
+    } else if (rows.length > 1) {
+      // 同じ発注NOが複数ある場合は商品コードでも照合
+      const byCode = rows.filter(ri => {
+        const sc = (typeof 大邱_表示コード_ === 'function') ? 大邱_表示コード_(sVals[ri][10]) : String(sVals[ri][10] || '').trim();
+        return sc === c.code;
+      });
+      hit = byCode.length ? byCode[0] : rows[0];
+      L('⚠ 発注NO重複 ' + c.no + ' → 行' + (hit + 1) + 'を採用');
+    }
+    if (hit < 0) { missing.push(c.no + '（発注リスト大邱データに見つからない）'); continue; }
+
+    const r = sVals[hit];
+    const no = EMS_転送購入Noキー_(r[5]);
+    const code = (typeof 大邱_表示コード_ === 'function') ? 大邱_表示コード_(r[10]) : String(r[10] || '').trim();
+    if (!no || !code) { missing.push(c.no + '（購入No/商品コード空）'); continue; }
+    picked.push({
+      row: hit + 1, no: no, code: code,
+      qty: (typeof EMS_表示数量_ === 'function') ? EMS_表示数量_(r[11]) : r[11],
+      date: r[2], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15],
+      viewRow: c.viewRow
+    });
+  }
+  L('送信対象: ' + picked.length + '件 / 照合不可: ' + missing.length + '件');
+  missing.forEach(m => L('  ✗ ' + m));
+
+  if (picked.length === 0) {
+    ui.alert('送信できる行がありません。\n\n' + missing.slice(0, 10).join('\n'));
+    return;
+  }
+
+  // --- ③ 確認ダイアログ（ロック無し） ---
+  const preview = picked.slice(0, 12).map(p => `${p.no} / ${p.code} / ${p.qty || 0}個`).join('\n');
+  const res = ui.alert('未作業リストからEMS大邱へ送る',
+    `${picked.length}件をEMS大邱作業データの最終行の下へ送ります。\n\n${preview}` +
+    (picked.length > 12 ? '\n…ほか' : '') +
+    (missing.length ? '\n\n⚠ 照合できず送らない行: ' + missing.length + '件' : '') +
+    '\n\n（EMS番号・発送日はEMS担当が記入）\n実行する？',
+    ui.ButtonSet.YES_NO);
+  if (res !== ui.Button.YES) { L('終了: ユーザーがキャンセル'); ui.alert('やめました。'); return; }
+
+  // --- ④ ロック取得（最大30秒待つ）→ 書き込み ---
+  const lock = (typeof 大邱_ロック取得_ === 'function')
+    ? 大邱_ロック取得_(30000, '未作業→EMS大邱')
+    : LockService.getDocumentLock();
+  if (!lock) { L('中断: ロック取得タイムアウト'); return; }
+  try {
+    const result = 大邱_EMS大邱へ追記_(ems, picked, L);
+    const n = result.n;
+
+    // 未作業シートのチェックを外す（1回のAPI呼び出し）
+    view.getRangeList(picked.map(p => 'A' + p.viewRow)).setValue(false);
+
+    // 残り数量を再計算してから未作業リストを最新化（積載済みになった行は自動で消える）
+    if (typeof 大邱発注_チェックと残り数量を設置 === 'function') {
+      大邱発注_チェックと残り数量を設置();
+    }
+    大邱未作業_再構築_(false);
+
+    const allOK = (result.received === n && result.ngCount === 0);
+    const mark = allOK ? '✅ 件数一致しました。' : '⚠️ 件数不一致あり！実行ログを確認してください。';
+    L('完了: 送った ' + n + '件 / 送られた ' + result.received + '件 / 所要 ' + (new Date() - t0) + 'ms');
+    ui.alert('EMS大邱へ送信 完了',
+      '送った件数　: ' + n + '件\n' +
+      '送られた件数: ' + result.received + '件\n' +
+      '照合　　　　: 件数一致 ' + result.okCount + ' / 件数不一致 ' + result.ngCount +
+      (missing.length ? '\n照合不可で未送信: ' + missing.length + '件' : '') +
+      '\n\n' + mark,
+      ui.ButtonSet.OK);
+  } catch (err) {
+    L('🛑 例外: ' + (err && err.stack ? err.stack : err));
+    throw err;
+  } finally {
+    lock.releaseLock();
+  }
 }

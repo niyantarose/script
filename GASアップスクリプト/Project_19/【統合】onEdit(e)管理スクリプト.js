@@ -636,11 +636,12 @@ function チェック行_入荷数を発注数量にする() {
     return;
   }
 
-  const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(2000)) {
-    ss.toast('他の処理が実行中です。少し待ってもう一回実行してください。');
-    return;
-  }
+  // 自動再計算(onChange)が動いていても最大30秒待って順番を取る
+  //（従来は2秒で諦めて「他の処理が実行中です」で失敗することがあった）
+  const lock = (typeof 大邱_ロック取得_ === 'function')
+    ? 大邱_ロック取得_(30000, cfg.label)
+    : LockService.getDocumentLock();
+  if (!lock) return;
 
   try {
     const n = lastRow - cfg.startRow + 1;
@@ -706,21 +707,20 @@ function autoRefreshShippingCountsOnChange(e) {
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getActiveSheet();
   const sheetName = sh ? sh.getName() : '';
-  const targetSheets = [
-    DAEGU_CFG.HACHU_SRC,
-    DAEGU_CFG.EMS_SRC,
-    DAEGU_CFG.HACHU_DST,
-    DAEGU_CFG.EMS_DST
-  ];
-  if (sheetName && targetSheets.indexOf(sheetName) < 0) return;
+  const daeguSheets = [DAEGU_CFG.HACHU_SRC, DAEGU_CFG.EMS_SRC];   // 大邱側
+  const hatchuSheets = [DAEGU_CFG.HACHU_DST, DAEGU_CFG.EMS_DST];  // 発注/EMSリスト側
+  const isDaegu = daeguSheets.indexOf(sheetName) >= 0;
+  const isHatchu = hatchuSheets.indexOf(sheetName) >= 0;
+  if (sheetName && !isDaegu && !isHatchu) return;
 
   const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(1000)) return;
+  if (!lock.tryLock(1000)) return; // 自動再計算は混んでいたらスキップ（次の変更でまた走る）
   try {
-    if (typeof 大邱発注_チェックと残り数量を設置 === 'function') {
+    // 変更があった側だけ再計算する（従来は毎回両方やって10秒超かかっていた）
+    if ((isDaegu || !sheetName) && typeof 大邱発注_チェックと残り数量を設置 === 'function') {
       大邱発注_チェックと残り数量を設置();
     }
-    if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
+    if ((isHatchu || !sheetName) && typeof 発注_EMS発送数数式を一括修正 === 'function') {
       発注_EMS発送数数式を一括修正();
     }
   } finally {

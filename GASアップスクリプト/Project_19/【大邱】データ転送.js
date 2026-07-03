@@ -1775,9 +1775,25 @@ function 大邱発注_チェックと残り数量を設置() {
   if (firstData < 0) { ui.alert('データ行が見つかりません。'); return; }
   const n = lastData - firstData + 1;
 
-  sh.getRange(firstData, 1, n, 1).insertCheckboxes();          // A列 チェックボックス
-  sh.getRange(firstData - 1, 25).setValue('EMS送信済');         // Y見出し
-  sh.getRange(firstData - 1, 26).setValue('残り');              // Z見出し
+  // A列チェックボックス: 未設置の行があるときだけ入れ直す（毎回の全行再設置をやめて高速化）
+  const chkRange = sh.getRange(firstData, 1, n, 1);
+  const chkRules = chkRange.getDataValidations();
+  let needCheckbox = false;
+  for (let i = 0; i < n; i++) {
+    const rule = chkRules[i][0];
+    if (!rule || rule.getCriteriaType() !== SpreadsheetApp.DataValidationCriteria.CHECKBOX) {
+      needCheckbox = true;
+      break;
+    }
+  }
+  if (needCheckbox) chkRange.insertCheckboxes();
+
+  // Y/Z見出し: 変わっているときだけ書く
+  const headYZ = sh.getRange(firstData - 1, 25, 1, 2);
+  const headVals = headYZ.getDisplayValues()[0];
+  if (headVals[0] !== 'EMS送信済' || headVals[1] !== '残り') {
+    headYZ.setValues([['EMS送信済', '残り']]);
+  }
 
   const sentRows = {};
   const eVals = ems.getDataRange().getValues();
@@ -1812,8 +1828,20 @@ function 大邱発注_チェックと残り数量を設置() {
     yVals.push([sent || '']);
     zVals.push([ordered ? ordered - sent : '']);
   }
-  sh.getRange(firstData, 25, n, 1).setValues(yVals);           // Y EMS送信済
-  sh.getRange(firstData, 26, n, 1).setValues(zVals);           // Z 残り
+  // Y/Z値: 変化があるときだけまとめて書く（無変化なら書き込みゼロ）
+  const yzRange = sh.getRange(firstData, 25, n, 2);
+  const curYZ = yzRange.getValues();
+  const newYZ = [];
+  let yzChanged = false;
+  for (let i = 0; i < n; i++) {
+    newYZ.push([yVals[i][0], zVals[i][0]]);
+    if (!yzChanged &&
+        (String(curYZ[i][0]) !== String(yVals[i][0]) ||
+         String(curYZ[i][1]) !== String(zVals[i][0]))) {
+      yzChanged = true;
+    }
+  }
+  if (yzChanged) yzRange.setValues(newYZ);
 
   // 消込色（条件付き書式）: 入荷数(D)あり & 韓国側の残り(Z)>0 → 黄、Z=0 → オレンジ
   // ※ 残り(Z)が空欄の行は色を付けない。
@@ -1822,18 +1850,28 @@ function 大邱発注_チェックと残り数量を設置() {
   const hasRemaining = 'LEN(TRIM(TO_TEXT(' + Z + ')))>0';
   const FY = '=AND(N(' + D + ')>0,N(' + L + ')>0,' + hasRemaining + ',N(' + Z + ')>0)';
   const FO = '=AND(N(' + D + ')>0,N(' + L + ')>0,' + hasRemaining + ',N(' + Z + ')=0)';
-  const yellow = SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(FY).setBackground('#ffff00').setRanges([cfRange]).build();
-  const orange = SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(FO).setBackground('#f4b183').setRanges([cfRange]).build();
-  // 既存の消込色ルール（$D/$L/$Y/$Zを使うAND式）を除去して入れ直す（旧式も含めて）
-  const rules = sh.getConditionalFormatRules().filter(rule => {
+  // 既に同じ式のルールが入っていれば再構築しない（毎回の入れ直しをやめて高速化）
+  const existingRules = sh.getConditionalFormatRules();
+  const ruleFormula = rule => {
     try {
-      const c = rule.getBooleanCondition(); if (!c) return true;
-      const s = String((c.getCriteriaValues() || [])[0] || '');
+      const c = rule.getBooleanCondition();
+      return c ? String((c.getCriteriaValues() || [])[0] || '') : '';
+    } catch (e) { return ''; }
+  };
+  const hasFY = existingRules.some(r => ruleFormula(r) === FY);
+  const hasFO = existingRules.some(r => ruleFormula(r) === FO);
+  if (!hasFY || !hasFO) {
+    const yellow = SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(FY).setBackground('#ffff00').setRanges([cfRange]).build();
+    const orange = SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(FO).setBackground('#f4b183').setRanges([cfRange]).build();
+    // 既存の消込色ルール（$D/$L/$Y/$Zを使うAND式）を除去して入れ直す（旧式も含めて）
+    const rules = existingRules.filter(rule => {
+      const s = ruleFormula(rule);
+      if (!s) return true;
       return !(/^=AND\(/.test(s) && (s.indexOf('$Y') >= 0 || s.indexOf('$Z') >= 0) && (s.indexOf('$D') >= 0 || s.indexOf('$L') >= 0));
-    } catch (e) { return true; }
-  });
-  rules.push(orange, yellow);
-  sh.setConditionalFormatRules(rules);
+    });
+    rules.push(orange, yellow);
+    sh.setConditionalFormatRules(rules);
+  }
 
   ss.toast('チェックボックス＋残り数量列＋消込色を設置: ' + n + '行');
 }
@@ -1860,6 +1898,108 @@ function 大邱EMS_次の追記行_(dst) {
 //   EMS番号・発送日 はEMS担当が記入。送ったらチェックを外す。
 //   重複判定はしない（分割発送＝同じ行を複数回送れる）。
 // ============================================================
+// ドキュメントロックを最大 waitMs ミリ秒待って取得する（ユーザー操作用）。
+// 従来の tryLock(2000) は onChange の自動再計算（10秒超）とぶつかると
+// すぐ諦めて「他の処理が実行中です」で失敗していた。待てば必ず順番が来る。
+function 大邱_ロック取得_(waitMs, label) {
+  const lock = LockService.getDocumentLock();
+  try {
+    lock.waitLock(waitMs || 30000);
+    return lock;
+  } catch (e) {
+    SpreadsheetApp.getActive().toast(
+      '他の処理が長く実行中でロックを取得できませんでした。数秒待ってもう一度実行してください。',
+      label || 'ロック待ちタイムアウト', 8
+    );
+    return null;
+  }
+}
+
+// 発注リスト大邱データのA列チェック行をスキャンして送信対象を集める（ロック不要の読み取りのみ）
+function 大邱発注_送信対象スキャン_(src, L) {
+  const sVals = src.getDataRange().getValues();
+  const picked = [];          // 送信対象（チェック済み＆購入No/コードあり）
+  const checkedRows = [];     // A列がチェック(TRUE)の行番号（全部）
+  const skipped = [];         // チェックされたが購入No/商品コードが空で送らない行
+  const uncheckedData = [];   // 未チェックだが購入No/コードあり＝送ってはいけない行
+  for (let i = 0; i < sVals.length; i++) {
+    const r = sVals[i];
+    const isChecked = (r[0] === true);            // A列チェック
+    const no = EMS_転送購入Noキー_(r[5]);         // F 購入No
+    const code = 大邱_表示コード_(r[10]);          // K 商品コード
+    const qty = EMS_表示数量_(r[11]);              // L 数量
+
+    if (!isChecked) {
+      if (no || code) uncheckedData.push(i + 1);   // 未チェック＝送信対象外
+      continue;
+    }
+    checkedRows.push(i + 1);
+    if (!no || !code) {
+      skipped.push({ row: i + 1, reason: !no ? '購入No空' : '商品コード空' });
+      continue;
+    }
+    picked.push({
+      row: i + 1, no: no, code: code,
+      qty: qty, date: r[2], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15]
+    });
+  }
+
+  // スキャン結果をログに残す（チェック/送信対象/未チェックの内訳）
+  L('スキャン結果: 全' + sVals.length + '行 / チェック' + checkedRows.length + '件 / 送信対象' + picked.length +
+    '件 / チェック済みスキップ' + skipped.length + '件 / 未チェックで除外' + uncheckedData.length + '件');
+  picked.forEach(p => L('  送信予定 行' + p.row + ': ' + p.no + ' / ' + p.code + ' / ' + (p.qty || 0) + '個'));
+  skipped.forEach(s => L('  ⚠ チェック済みだが送らない 行' + s.row + ': ' + s.reason));
+
+  // 確認: 送信対象がすべてチェック行か（未チェック行の混入がないか）を検証してログ
+  const checkedSet = new Set(checkedRows);
+  const intruder = picked.map(p => p.row).filter(rn => !checkedSet.has(rn));
+  if (intruder.length) L('🛑 異常: 未チェック行が送信対象に混入: 行' + intruder.join(','));
+  else L('✔ 確認OK: 送信対象はすべてチェック行（未チェック行は1件も含まれていない）');
+
+  return { picked: picked, checkedRows: checkedRows, skipped: skipped, uncheckedData: uncheckedData };
+}
+
+// picked の行を EMS大邱作業データの最終行の下へ書き込み、読み戻して検証する共通処理
+//（大邱発注_チェック行をEMS大邱へ送る／大邱未作業_チェック行をEMS大邱へ送る の両方から使う）
+function 大邱_EMS大邱へ追記_(dst, picked, L) {
+  const startRow = 大邱EMS_次の追記行_(dst);
+  const n = picked.length;
+  L('書き込み開始: EMS大邱 ' + startRow + '行目から ' + n + '件');
+  dst.getRange(startRow, 1, n, 1).setValues(picked.map(p => [p.date]));    // A 入荷日
+  dst.getRange(startRow, 5, n, 1).setValues(picked.map(p => [p.vendor]));  // E 業者
+  dst.getRange(startRow, 6, n, 1).setValues(picked.map(p => [p.name]));    // F 商品名
+  dst.getRange(startRow, 8, n, 1).setValues(picked.map(p => [p.code]));    // H 商品コード
+  dst.getRange(startRow, 9, n, 1).setValues(picked.map(p => [p.qty]));     // I 数量
+  dst.getRange(startRow, 11, n, 1).setValues(picked.map(p => [p.item]));   // K 品目
+  dst.getRange(startRow, 12, n, 1).setValues(picked.map(p => [p.weight])); // L 重量
+  dst.getRange(startRow, 13, n, 1).setValues(picked.map(p => [p.price]));  // M 価格
+  dst.getRange(startRow, 20, n, 1).setValues(picked.map(p => [p.no]));     // T 購入No
+
+  if (typeof EMS大邱_QRS行範囲を再計算_ === 'function') {
+    EMS大邱_QRS行範囲を再計算_(dst, startRow, n);
+  }
+
+  // 書き込み後の検証: 追記ブロックを読み戻し「送られた件数」と内容を照合
+  SpreadsheetApp.flush();
+  const wroteNo = dst.getRange(startRow, 20, n, 1).getValues();   // T 購入No
+  const wroteCode = dst.getRange(startRow, 8, n, 1).getValues();  // H 商品コード
+  let received = 0, okCount = 0, ngCount = 0;
+  for (let i = 0; i < n; i++) {
+    const gotNo = EMS_転送購入Noキー_(wroteNo[i][0]);
+    const gotCode = 大邱_表示コード_(wroteCode[i][0]);
+    if (gotNo || gotCode) received++;                 // 実際にEMS大邱へ入った行
+    if (gotNo === picked[i].no && gotCode === picked[i].code) {
+      okCount++;
+    } else {
+      ngCount++;
+      L('  ✗ 不一致 EMS大邱' + (startRow + i) + '行: 期待 ' + picked[i].no + '/' + picked[i].code +
+        ' → 実際 ' + gotNo + '/' + gotCode);
+    }
+  }
+  L('書き込み検証: 送られた ' + received + '件 / 内容一致 ' + okCount + '件 / 不一致 ' + ngCount + '件');
+  return { startRow: startRow, n: n, received: received, okCount: okCount, ngCount: ngCount };
+}
+
 function 大邱発注_チェック行をEMS大邱へ送る() {
   const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
@@ -1871,108 +2011,46 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
   const L = msg => Logger.log('[EMS大邱へ送る] ' + msg);
   L('開始 ' + Utilities.formatDate(t0, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss'));
 
-  const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(2000)) { L('中断: 他の処理が実行中（ロック取得失敗）'); ss.toast('他の処理が実行中です。'); return; }
+  // ① ロックを取らずにスキャンして確認ダイアログを出す
+  //（ダイアログ表示中にロックを握って他の処理を止めない）
+  const preScan = 大邱発注_送信対象スキャン_(src, L);
+  if (preScan.picked.length === 0) { L('終了: 送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
+
+  const preview = preScan.picked.slice(0, 12).map(p => `${p.no} / ${p.code} / ${p.qty || 0}個`).join('\n');
+  const res = ui.alert('EMS大邱へ送る',
+    `${preScan.picked.length}件をEMS大邱作業データの最終行の下へ送ります。\n\n${preview}` +
+    (preScan.picked.length > 12 ? '\n…ほか' : '') +
+    '\n\n（EMS番号・発送日はEMS担当が記入）\n実行する？',
+    ui.ButtonSet.YES_NO);
+  if (res !== ui.Button.YES) { L('終了: ユーザーがキャンセル'); ui.alert('やめました。'); return; }
+
+  // ② ロック取得（自動再計算などが動いていても最大30秒待って順番を取る）
+  const lock = 大邱_ロック取得_(30000, 'EMS大邱へ送る');
+  if (!lock) { L('中断: ロック取得タイムアウト'); return; }
   try {
-    const sVals = src.getDataRange().getValues();
-    const picked = [];          // 送信対象（チェック済み＆購入No/コードあり）
-    const checkedRows = [];     // A列がチェック(TRUE)の行番号（全部）
-    const skipped = [];         // チェックされたが購入No/商品コードが空で送らない行
-    const uncheckedData = [];   // 未チェックだが購入No/コードあり＝送ってはいけない行
-    for (let i = 0; i < sVals.length; i++) {
-      const r = sVals[i];
-      const isChecked = (r[0] === true);            // A列チェック
-      const no = EMS_転送購入Noキー_(r[5]);         // F 購入No
-      const code = 大邱_表示コード_(r[10]);          // K 商品コード
-      const qty = EMS_表示数量_(r[11]);              // L 数量
+    // ③ ダイアログ中の変更に備えてロック下で再スキャンしてから書き込む
+    const scan = 大邱発注_送信対象スキャン_(src, L);
+    const picked = scan.picked;
+    if (picked.length === 0) { L('終了: 再スキャンで送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
 
-      if (!isChecked) {
-        if (no || code) uncheckedData.push(i + 1);   // 未チェック＝送信対象外
-        continue;
-      }
-      checkedRows.push(i + 1);
-      if (!no || !code) {
-        skipped.push({ row: i + 1, reason: !no ? '購入No空' : '商品コード空' });
-        continue;
-      }
-      picked.push({
-        row: i + 1, no: no, code: code,
-        qty: qty, date: r[2], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15]
-      });
-    }
+    const result = 大邱_EMS大邱へ追記_(dst, picked, L);
+    const n = result.n;
 
-    // スキャン結果をログに残す（チェック/送信対象/未チェックの内訳）
-    L('スキャン結果: 全' + sVals.length + '行 / チェック' + checkedRows.length + '件 / 送信対象' + picked.length +
-      '件 / チェック済みスキップ' + skipped.length + '件 / 未チェックで除外' + uncheckedData.length + '件');
-    picked.forEach(p => L('  送信予定 行' + p.row + ': ' + p.no + ' / ' + p.code + ' / ' + (p.qty || 0) + '個'));
-    skipped.forEach(s => L('  ⚠ チェック済みだが送らない 行' + s.row + ': ' + s.reason));
-
-    // 確認: 送信対象がすべてチェック行か（未チェック行の混入がないか）を検証してログ
-    const checkedSet = new Set(checkedRows);
-    const intruder = picked.map(p => p.row).filter(rn => !checkedSet.has(rn));
-    if (intruder.length) L('🛑 異常: 未チェック行が送信対象に混入: 行' + intruder.join(','));
-    else L('✔ 確認OK: 送信対象はすべてチェック行（未チェック行は1件も含まれていない）');
-
-    if (picked.length === 0) { L('終了: 送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
-
-    const preview = picked.slice(0, 12).map(p => `${p.no} / ${p.code} / ${p.qty || 0}個`).join('\n');
-    const res = ui.alert('EMS大邱へ送る',
-      `${picked.length}件をEMS大邱作業データの最終行の下へ送ります。\n\n${preview}` +
-      (picked.length > 12 ? '\n…ほか' : '') +
-      '\n\n（EMS番号・発送日はEMS担当が記入）\n実行する？',
-      ui.ButtonSet.YES_NO);
-    if (res !== ui.Button.YES) { L('終了: ユーザーがキャンセル'); ui.alert('やめました。'); return; }
-
-    const startRow = 大邱EMS_次の追記行_(dst);
-    const n = picked.length;
-    L('書き込み開始: EMS大邱 ' + startRow + '行目から ' + n + '件');
-    dst.getRange(startRow, 1, n, 1).setValues(picked.map(p => [p.date]));    // A 入荷日
-    dst.getRange(startRow, 5, n, 1).setValues(picked.map(p => [p.vendor]));  // E 業者
-    dst.getRange(startRow, 6, n, 1).setValues(picked.map(p => [p.name]));    // F 商品名
-    dst.getRange(startRow, 8, n, 1).setValues(picked.map(p => [p.code]));    // H 商品コード
-    dst.getRange(startRow, 9, n, 1).setValues(picked.map(p => [p.qty]));     // I 数量
-    dst.getRange(startRow, 11, n, 1).setValues(picked.map(p => [p.item]));   // K 品目
-    dst.getRange(startRow, 12, n, 1).setValues(picked.map(p => [p.weight])); // L 重量
-    dst.getRange(startRow, 13, n, 1).setValues(picked.map(p => [p.price]));  // M 価格
-    dst.getRange(startRow, 20, n, 1).setValues(picked.map(p => [p.no]));     // T 購入No
-
-    if (typeof EMS大邱_QRS行範囲を再計算_ === 'function') {
-      EMS大邱_QRS行範囲を再計算_(dst, startRow, n);
-    }
-
-    // 書き込み後の検証: 追記ブロックを読み戻し「送られた件数」と内容を照合
-    SpreadsheetApp.flush();
-    const wroteNo = dst.getRange(startRow, 20, n, 1).getValues();   // T 購入No
-    const wroteCode = dst.getRange(startRow, 8, n, 1).getValues();  // H 商品コード
-    let received = 0, okCount = 0, ngCount = 0;
-    for (let i = 0; i < n; i++) {
-      const gotNo = EMS_転送購入Noキー_(wroteNo[i][0]);
-      const gotCode = 大邱_表示コード_(wroteCode[i][0]);
-      if (gotNo || gotCode) received++;                 // 実際にEMS大邱へ入った行
-      if (gotNo === picked[i].no && gotCode === picked[i].code) {
-        okCount++;
-      } else {
-        ngCount++;
-        L('  ✗ 不一致 EMS大邱' + (startRow + i) + '行: 期待 ' + picked[i].no + '/' + picked[i].code +
-          ' → 実際 ' + gotNo + '/' + gotCode);
-      }
-    }
-    L('書き込み検証: 送られた ' + received + '件 / 内容一致 ' + okCount + '件 / 不一致 ' + ngCount + '件');
-
-    picked.forEach(p => src.getRange(p.row, 1).setValue(false));           // チェックを外す
+    // チェックを外す（1回のAPI呼び出しでまとめて）
+    src.getRangeList(picked.map(p => 'A' + p.row)).setValue(false);
     L('チェック解除: 送信した' + n + '行のA列をFALSEに戻した');
 
     // 件数チェック: 送った件数(n) と 送られた件数(received) を照合し、最後に表示
-    const allOK = (received === n && ngCount === 0);
+    const allOK = (result.received === n && result.ngCount === 0);
     const mark = allOK ? '✅ 件数一致しました。' : '⚠️ 件数不一致あり！実行ログを確認してください。';
-    L('完了: 送った ' + n + '件 / 送られた ' + received + '件 / 内容一致 ' + okCount + ' / 不一致 ' + ngCount +
-      ' / 未チェック除外 ' + uncheckedData.length + '件・スキップ ' + skipped.length + '件 / 所要 ' + (new Date() - t0) + 'ms');
+    L('完了: 送った ' + n + '件 / 送られた ' + result.received + '件 / 内容一致 ' + result.okCount + ' / 不一致 ' + result.ngCount +
+      ' / 未チェック除外 ' + scan.uncheckedData.length + '件・スキップ ' + scan.skipped.length + '件 / 所要 ' + (new Date() - t0) + 'ms');
     L('件数チェック: ' + mark);
     ss.toast(`EMS大邱へ送信: ${n}件`);
     ui.alert('EMS大邱へ送信 完了',
       '送った件数　: ' + n + '件\n' +
-      '送られた件数: ' + received + '件\n' +
-      '照合　　　　: 件数一致 ' + okCount + ' / 件数不一致 ' + ngCount + '\n\n' +
+      '送られた件数: ' + result.received + '件\n' +
+      '照合　　　　: 件数一致 ' + result.okCount + ' / 件数不一致 ' + result.ngCount + '\n\n' +
       mark,
       ui.ButtonSet.OK);
   } catch (err) {
