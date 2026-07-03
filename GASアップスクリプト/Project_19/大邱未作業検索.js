@@ -158,12 +158,13 @@ function 大邱未作業_再構築_(clearFilters) {
 
   // --- ソース読み込み ---
   const lastRow = src.getLastRow();
-  let values = [], display = [], backgrounds = [], zanri = [];
+  let values = [], display = [], formats = [], backgrounds = [], zanri = [];
   if (lastRow >= cfg.SRC_DATA_START) {
     const numRows = lastRow - cfg.SRC_DATA_START + 1;
     const dataRange = src.getRange(cfg.SRC_DATA_START, cfg.SRC_COL_START, numRows, width);
     values = dataRange.getValues();
     display = dataRange.getDisplayValues();
+    formats = dataRange.getNumberFormats(); // 表示形式（日付・カンマ等）も元シートからそのまま持ってくる
     backgrounds = src
       .getRange(cfg.SRC_DATA_START, cfg.COLOR_CHECK_COL, numRows, 1)
       .getBackgrounds();
@@ -187,7 +188,7 @@ function 大邱未作業_再構築_(clearFilters) {
     if (numD > 0 && numL > 0 && hasZ) continue;
     // ③ 発注NO/商品名/商品コードが全部空の行は対象外
     if (!requiredIdx.some(idx => String(display[i][idx] || '').trim() !== '')) continue;
-    unworked.push({ values: values[i], display: display[i] });
+    unworked.push({ values: values[i], display: display[i], formats: formats[i] });
   }
 
   // --- 出力先シート準備 ---
@@ -267,12 +268,16 @@ function 大邱未作業_再構築_(clearFilters) {
   // --- データ書き込み（値のみ＝色なし） ---
   const maxRows = dst.getMaxRows();
   if (maxRows >= cfg.DST_DATA_START) {
-    dst.getRange(cfg.DST_DATA_START, 1, maxRows - cfg.DST_DATA_START + 1, dst.getMaxColumns())
-      .clearContent();
+    const dataArea = dst.getRange(cfg.DST_DATA_START, 1, maxRows - cfg.DST_DATA_START + 1, dst.getMaxColumns());
+    dataArea.clearContent();
+    // 書式もクリアする。旧レイアウトの日付書式が残っていると、
+    // 数値の発注日(20260605)が「57371/08/25」のような異常な日付表示になる。
+    dataArea.clearFormat();
   }
   if (shownRows.length) {
-    dst.getRange(cfg.DST_DATA_START, 2, shownRows.length, width)
-      .setValues(shownRows.map(r => r.values));
+    const body = dst.getRange(cfg.DST_DATA_START, 2, shownRows.length, width);
+    body.setValues(shownRows.map(r => r.values));
+    body.setNumberFormats(shownRows.map(r => r.formats)); // 表示形式は元シートと同じにする
     // A列チェックボックス（データ行だけ・毎回未チェックで開始）
     dst.getRange(cfg.DST_DATA_START, 1, shownRows.length, 1).insertCheckboxes();
   }
