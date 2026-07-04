@@ -77,8 +77,24 @@ function 大邱未作業_検索条件をクリア() {
     const width = cfg.SRC_COL_END - cfg.SRC_COL_START + 1;
     sh.getRange(cfg.DST_KEYWORD_ROW, 2).clearContent();          // B1
     sh.getRange(cfg.DST_FILTER_ROW, 2, 1, width).clearContent(); // 2行目 B..S
+    const old = sh.getFilter();
+    if (old) old.remove(); // ヘッダー(4行目)の列フィルタも条件・非表示行ごと解除
   }
   大邱未作業_更新();
+  if (sh) 大邱未作業_フィルタを再作成_(sh); // ▼は最新のデータ範囲で付け直す（全行表示）
+}
+
+// ヘッダー行(4行目)〜最終データ行にフィルタ(▼)を作り直す。条件なし=全行表示の状態になる。
+function 大邱未作業_フィルタを再作成_(sh) {
+  try {
+    const cfg = MISAGYO_CFG;
+    const width = cfg.SRC_COL_END - cfg.SRC_COL_START + 1;
+    if (sh.getFilter()) return; // クリア以外の経路で既にあれば触らない
+    const lastRow = Math.max(sh.getLastRow(), cfg.DST_HEADER_EN + 1);
+    sh.getRange(cfg.DST_HEADER_EN, 1, lastRow - cfg.DST_HEADER_EN + 1, width + 1).createFilter();
+  } catch (e) {
+    // フィルタが作れなくてもクリア処理は成功扱いにする
+  }
 }
 
 // ---------- 自動同期（発注リスト大邱データ → 大邱未作業データ） ----------
