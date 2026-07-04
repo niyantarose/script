@@ -684,7 +684,9 @@ function チェック行_入荷数を発注数量にする() {
       if (dates[i][0] === '' || dates[i][0] === null) {
         dates[i][0] = today;
       }
-      checks[i][0] = false;
+      // 発注リスト大邱データではチェックを残す(そのまま「チェック行をEMS大邱へ送る」で送れるように)。
+      // 発注シートは従来どおり外す。
+      if (sheetName !== DAEGU_CFG.HACHU_SRC) checks[i][0] = false;
       updated++;
     }
 
@@ -706,7 +708,8 @@ function チェック行_入荷数を発注数量にする() {
       colorKeshikomiAllRows_(sh);
     }
 
-    ss.toast(cfg.label + ': 入荷数を発注数量にしました ' + updated + '行 / 入荷日補完 ' + filledDates + '行 / 数量なしスキップ ' + skippedNoQty + '行');
+    const checkNote = (sheetName === DAEGU_CFG.HACHU_SRC) ? '（チェックは残っています。続けて送信できます）' : '';
+    ss.toast(cfg.label + ': 入荷数を発注数量にしました ' + updated + '行 / 入荷日補完 ' + filledDates + '行 / 数量なしスキップ ' + skippedNoQty + '行' + checkNote);
   } finally {
     lock.releaseLock();
   }
