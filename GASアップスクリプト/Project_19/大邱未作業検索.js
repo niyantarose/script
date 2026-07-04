@@ -620,10 +620,17 @@ function 大邱未作業_チェック行をEMS大邱へ送る() {
     if (vVals[i][0] !== true) continue; // A列チェック
     const no = EMS_転送購入Noキー_(vVals[i][5]);                 // F 発注NO
     const code = (typeof 大邱_表示コード_ === 'function') ? 大邱_表示コード_(vVals[i][10]) : String(vVals[i][10] || '').trim(); // K
-    checked.push({ viewRow: cfg.DST_DATA_START + i, no: no, code: code });
+    checked.push({
+      viewRow: cfg.DST_DATA_START + i, no: no, code: code,
+      viewDate: vVals[i][2], viewQty: vVals[i][3] // C/D: 書き戻しが遅れているときの予備
+    });
   }
   if (checked.length === 0) { ss.toast('チェックされた行がありません。'); return; }
   L('チェック行: ' + checked.length + '件');
+
+  // --- ①' 入力したばかりの入荷日/入荷数の書き戻しが遅れている場合に備え、先に同期する ---
+  //（入荷数入力→即チェック→即送信のレースで、EMS大邱の入荷日が空になるのを防ぐ）
+  大邱未作業_入荷同期_(view, cfg.DST_DATA_START, lastRow, { notify: false, fields: { cd: true }, pushEmpty: false, check: false });
 
   // --- ② 発注リスト大邱データを発注NOで照合して送信対象を作る（元データの最新値を使う） ---
   const sVals = src.getDataRange().getValues();
@@ -657,10 +664,13 @@ function 大邱未作業_チェック行をEMS大邱へ送る() {
     const no = EMS_転送購入Noキー_(r[5]);
     const code = (typeof 大邱_表示コード_ === 'function') ? 大邱_表示コード_(r[10]) : String(r[10] || '').trim();
     if (!no || !code) { missing.push(c.no + '（購入No/商品コード空）'); continue; }
+    // 同期が失敗していても送れるように、元データが空なら未作業ビューに入力された値を使う
+    const dateVal = EMS_値あり_(r[2]) ? r[2] : c.viewDate;
+    const arrQty = EMS_値あり_(r[3]) ? r[3] : c.viewQty;
     picked.push({
       row: hit + 1, no: no, code: code,
       qty: (typeof EMS_表示数量_ === 'function') ? EMS_表示数量_(r[11]) : r[11],
-      date: r[2], arrivalQty: r[3], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15],
+      date: dateVal, arrivalQty: arrQty, vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15],
       viewRow: c.viewRow
     });
   }
