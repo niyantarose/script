@@ -22,7 +22,7 @@ const MISAGYO_CFG = {
   SRC_COL_START: 2,    // B列から
   SRC_COL_END: 19,     // S列（支払金額）まで
   COLOR_CHECK_COL: 2,  // 色判定はB列（発注日）の背景色
-  SRC_COL_ZANRI: 26,   // Z列 残り（消込の条件付き書式が使う列）
+  SRC_COL_SOSHIN: 25,  // Y列 EMS送信済（EMS大邱作業データへ送った数量。自動再計算が記入）
 
   DST_CHECK_COL: 1,    // A列 チェックボックス
   DST_KEYWORD_ROW: 1,  // B1 = 全列キーワード
@@ -32,12 +32,7 @@ const MISAGYO_CFG = {
   DST_DATA_START: 5,
 
   FONT_SIZE: 13,       // 文字の大きさ（発注リスト大邱データに合わせる）
-  ROW_HEIGHT: 27,      // 行の高さ
-
-  // 入荷済み・未送信(黄色)の行をリストに残す日数。
-  // 入荷日がこの日数以内なら「作業中」としてリストに表示し、それより古い黄色は除外する
-  //（発注リスト大邱データには古い黄色行が大量にあるため、全部は出さない）
-  黄色を残す日数: 3
+  ROW_HEIGHT: 27       // 行の高さ
 };
 
 // ---------- メニュー ----------
@@ -364,25 +359,6 @@ function 大邱未作業_入荷を発注リスト大邱へ同期() {
   大邱未作業_入荷同期_(view, cfg.DST_DATA_START, view.getLastRow(), { notify: true, pushEmpty: false });
 }
 
-// 入荷日が「黄色を残す日数」以内なら true（＝作業中の入荷としてリストに残す）
-function 大邱未作業_作業中入荷_(v) {
-  let d = null;
-  if (v instanceof Date) {
-    d = new Date(v.getTime());
-  } else {
-    const s = String(v == null ? '' : v).trim();
-    if (!s) return false;
-    d = new Date(s);
-  }
-  if (!d || isNaN(d.getTime())) return false;
-  d.setHours(0, 0, 0, 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diffDays = (today.getTime() - d.getTime()) / 86400000;
-  if (diffDays < 0) return true; // 未来日付は入力ミスの可能性があるので見える方に倒す
-  return diffDays <= (MISAGYO_CFG.黄色を残す日数 || 3);
-}
-
 // ---------- 数値パース（カンマ・空白対応） ----------
 function 大邱未作業_数値_(v) {
   const s = String(v == null ? '' : v).replace(/,/g, '').trim();
@@ -407,7 +383,7 @@ function 大邱未作業_再構築_(clearFilters) {
 
   // --- ソース読み込み ---
   const lastRow = src.getLastRow();
-  let values = [], display = [], formats = [], backgrounds = [], zanri = [];
+  let values = [], display = [], formats = [], backgrounds = [], soshin = [];
   if (lastRow >= cfg.SRC_DATA_START) {
     const numRows = lastRow - cfg.SRC_DATA_START + 1;
     const dataRange = src.getRange(cfg.SRC_DATA_START, cfg.SRC_COL_START, numRows, width);
@@ -417,8 +393,8 @@ function 大邱未作業_再構築_(clearFilters) {
     backgrounds = src
       .getRange(cfg.SRC_DATA_START, cfg.COLOR_CHECK_COL, numRows, 1)
       .getBackgrounds();
-    zanri = src
-      .getRange(cfg.SRC_DATA_START, cfg.SRC_COL_ZANRI, numRows, 1)
+    soshin = src
+      .getRange(cfg.SRC_DATA_START, cfg.SRC_COL_SOSHIN, numRows, 1)
       .getDisplayValues();
   }
 
@@ -430,17 +406,15 @@ function 大邱未作業_再構築_(clearFilters) {
     // ① 手塗りの背景色（オレンジ/黄色など）が付いた行は積載済み
     const bg = String(backgrounds[i][0] || '#ffffff').toLowerCase();
     if (bg !== '#ffffff' && bg !== 'white' && bg !== '') continue;
-    // ② 入荷済み行の扱い:
-    //    ・全量送付済み（オレンジの消込条件: D>0 × L>0 × Z残り=0）→ 除外
-    //    ・入荷済み・未送信（黄色・残りあり）→ 入荷日が「黄色を残す日数」以内なら作業中として残す
-    //      （入荷数入力→重量入力→チェック→送信 が終わるまで消えない）。
-    //      それより古い黄色は除外（発注リスト大邱データには古い黄色が大量にあるため）
+    // ② 入荷済み(D入荷数>0 × L数量>0)の行の扱い:
+    //    ・EMS大邱作業データへ送信済み（Y列 EMS送信済 > 0）→ リストから外す
+    //    ・まだ送っていない（Yが空/0）→ 黄色のままリストに残す
+    //      ＝「入荷数入力→重量入力→チェック→送信」が終わるまで消えない
     const numD = 大邱未作業_数値_(display[i][2]);
     const numL = 大邱未作業_数値_(display[i][10]);
-    const zStr = String(zanri[i] ? zanri[i][0] : '').trim();
-    if (numD > 0 && numL > 0 && zStr !== '') {
-      if (大邱未作業_数値_(zStr) === 0) continue;              // オレンジ: 全量送付済み
-      if (!大邱未作業_作業中入荷_(values[i][1])) continue;      // 古い黄色: 入荷日がしきい値より前
+    if (numD > 0 && numL > 0) {
+      const ySent = 大邱未作業_数値_(soshin[i] ? soshin[i][0] : '');
+      if (ySent > 0) continue; // EMS大邱へ送った行（全量・一部問わず）は未作業から外す
     }
     // ③ 発注NO/商品名/商品コードが全部空の行は対象外
     if (!requiredIdx.some(idx => String(display[i][idx] || '').trim() !== '')) continue;
