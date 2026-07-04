@@ -1933,23 +1933,37 @@ function 大邱発注_同一コードの重量を補完() {
     codeKeys_(code).forEach(k => { map[k] = weights[i][0]; });
   }
 
-  // 重量が空の行へ、同じ商品コードの重量をコピー
-  let filled = 0;
+  // 商品マスタの重量も補完元にする（シート内に同一コードの重量が無い場合の第2候補）
+  let masterW = null;
+  try {
+    if (typeof _masterMap === 'function') masterW = _masterMap().byKeyW; // コード→重さ(別名キー込み)
+  } catch (e) { masterW = null; }
+
+  // 重量が空の行へ補完: ①シート内の同一コードの重量 → ②商品マスタの重量
+  let filledSheet = 0, filledMaster = 0;
   for (let i = 0; i < n; i++) {
     const code = normCode_(codes[i][0]);
     if (!code || hasVal(weights[i][0])) continue;
-    for (const k of codeKeys_(code)) {
-      if (k in map) { weights[i][0] = map[k]; filled++; break; }
+    const keys = codeKeys_(code);
+    let done = false;
+    for (const k of keys) {
+      if (k in map && hasVal(map[k])) { weights[i][0] = map[k]; filledSheet++; done = true; break; }
+    }
+    if (!done && masterW) {
+      for (const k of keys) {
+        if (k in masterW && hasVal(masterW[k])) { weights[i][0] = masterW[k]; filledMaster++; break; }
+      }
     }
   }
 
+  const filled = filledSheet + filledMaster;
   if (!filled) {
-    ss.toast('補完できる行はありませんでした（同じ商品コードで重量入りの行がない）。', '⚖ 重量補完', 5);
+    ss.toast('補完できる行はありませんでした（同一コードの重量入り行も商品マスタの重量も無し）。', '⚖ 重量補完', 5);
     return;
   }
   wRange.setValues(weights);
   if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 未作業リストにも反映予約
-  ss.toast('同一コードから重量を補完しました: ' + filled + '行', '⚖ 重量補完', 5);
+  ss.toast('重量を補完しました: ' + filled + '行（シート内同一コード ' + filledSheet + ' / 商品マスタ ' + filledMaster + '）', '⚖ 重量補完', 6);
 }
 
 // 発注リスト大邱データのA列チェックを全部外す（誤って大量に付いたチェックの掃除用）
