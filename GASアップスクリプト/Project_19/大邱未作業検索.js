@@ -43,6 +43,7 @@ function 大邱未作業メニューを追加_() {
     .addItem('🔍 絞り込みを実行', '大邱未作業_絞り込み')
     .addItem('🧹 検索条件をクリア', '大邱未作業_検索条件をクリア')
     .addSeparator()
+    .addItem('📦 チェック行：入荷数を発注数量にする', '大邱未作業_チェック行の入荷数を発注数量にする')
     .addItem('📦 チェック行をEMS大邱へ送る', '大邱未作業_チェック行をEMS大邱へ送る')
     .addItem('📥 入荷・オプション・weightを発注リスト大邱へ同期', '大邱未作業_入荷を発注リスト大邱へ同期')
     .addToUi();
@@ -203,6 +204,7 @@ function 大邱未作業_入荷同期_(view, fromRow, toRow, opts) {
   const notify = !!o.notify;
   const fields = o.fields || { cd: true, opt: true, wgt: true };
   const pushEmpty = o.pushEmpty !== false;
+  const toggleCheck = o.check !== false; // false: 発注リスト大邱データのA列チェックを操作しない
   const ss = SpreadsheetApp.getActive();
   const src = ss.getSheetByName(cfg.SRC_SHEET);
   if (!src || !view) return 0;
@@ -271,7 +273,7 @@ function 大邱未作業_入荷同期_(view, fromRow, toRow, opts) {
           if (!eq(cd[ci][0], t.date) || !eq(cd[ci][1], t.qty)) {
             const qtyChanged = !eq(cd[ci][1], t.qty);
             cd[ci][0] = t.date; cd[ci][1] = t.qty; cdChanged = true; rowChanged = true;
-            if (qtyChanged) (qtyNum(t.qty) > 0 ? checkOn : checkOff).push('A' + (hit + 1));
+            if (qtyChanged && toggleCheck) (qtyNum(t.qty) > 0 ? checkOn : checkOff).push('A' + (hit + 1));
           }
         }
         if (opt && (pushEmpty || !isEmpty(t.opt)) && !eq(opt[ci][0], t.opt)) {
@@ -296,6 +298,54 @@ function 大邱未作業_入荷同期_(view, fromRow, toRow, opts) {
     ss.toast('発注リスト大邱データへ同期: ' + updated + '件' + (missing ? ' / 発注NO不一致 ' + missing + '件' : ''), '📥 入荷同期', 4);
   }
   return updated;
+}
+
+// ============================================================
+// ボタン用: チェック行の入荷数(D)を数量(L)にして入荷日(C)を今日で補完
+//（発注リスト大邱データの「チェック行:入荷数を発注数量にする」と同じ機能の未作業データ版。
+//   処理後はチェックを外し、発注リスト大邱データへも自動で書き戻す）
+// ============================================================
+function 大邱未作業_チェック行の入荷数を発注数量にする() {
+  const cfg = MISAGYO_CFG;
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const view = ss.getSheetByName(cfg.DST_SHEET);
+  if (!view) { ui.alert('「' + cfg.DST_SHEET + '」がありません。先に「未作業データを更新」を実行してください。'); return; }
+
+  const start = cfg.DST_DATA_START, lastRow = view.getLastRow();
+  if (lastRow < start) { ss.toast('データがありません。'); return; }
+  const n = lastRow - start + 1;
+
+  const checkR = view.getRange(start, 1, n, 1), checks = checkR.getValues();  // A チェック
+  const dateR = view.getRange(start, 3, n, 1), dates = dateR.getValues();     // C 入荷日
+  const qtyR = view.getRange(start, 4, n, 1), qtys = qtyR.getValues();        // D 入荷数
+  const orders = view.getRange(start, 12, n, 1).getValues();                  // L 数量
+  const today = (typeof _todayOnly_ === 'function')
+    ? _todayOnly_()
+    : (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
+
+  let checked = 0, updated = 0, skippedNoQty = 0;
+  for (let i = 0; i < n; i++) {
+    if (checks[i][0] !== true) continue;
+    checked++;
+    const oq = orders[i][0];
+    if (oq === '' || oq == null) { skippedNoQty++; continue; }
+    qtys[i][0] = oq;                                        // 入荷数 = 数量
+    if (dates[i][0] === '' || dates[i][0] == null) dates[i][0] = today; // 入荷日が空なら今日
+    checks[i][0] = false;                                   // 処理済みはチェックを外す(元と同じ)
+    updated++;
+  }
+  if (!checked) { ss.toast('チェックされた行がありません。'); return; }
+
+  qtyR.setValues(qtys);
+  dateR.setValues(dates);
+  checkR.setValues(checks);
+
+  // 発注リスト大邱データへ書き戻し(入荷日・入荷数のみ・空欄は書かない・チェックは触らない=元の機能と同じ挙動)
+  大邱未作業_入荷同期_(view, start, lastRow, { notify: false, fields: { cd: true }, pushEmpty: false, check: false });
+
+  ss.toast('入荷数を数量にしました ' + updated + '行 / 数量なしスキップ ' + skippedNoQty + '行（発注リスト大邱へ書き戻し済み）',
+    '📦 入荷数=数量', 6);
 }
 
 // ボタン/メニュー用: 大邱未作業データ全行の 入荷日・入荷数・オプション・weight を発注リスト大邱データへ同期
