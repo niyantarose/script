@@ -462,6 +462,31 @@ function 大邱未作業_再構築_(clearFilters) {
     // A列チェックボックス（データ行だけ・毎回未チェックで開始）
     dst.getRange(cfg.DST_DATA_START, 1, shownRows.length, 1).insertCheckboxes();
     dst.setRowHeights(cfg.DST_DATA_START, shownRows.length, cfg.ROW_HEIGHT);
+
+    // カート(発注NOの枝番を除いた単位 例: 20260622_13_1→20260622_13)ごとに太い下線で区切る
+    const lastColLetter = String.fromCharCode(65 + width); // A + 18列 = S
+    dst.getRange(cfg.DST_DATA_START, 1, shownRows.length, width + 1)
+      .setBorder(true, true, true, true, true, true, '#cccccc', SpreadsheetApp.BorderStyle.SOLID); // 全体に薄い格子
+    const cartOf = v => {
+      if (typeof 大邱発注_カートグループキー_ === 'function') {
+        const k = 大邱発注_カートグループキー_(v);
+        if (k) return k;
+      }
+      const s = String(v == null ? '' : v).trim();
+      const m = s.match(/^(.+)_\d+$/);
+      return m ? m[1] : s;
+    };
+    const carts = shownRows.map(r => cartOf(r.values[4])); // F列(発注NO) = B..S内のindex4
+    const cartEnds = [];
+    for (let i = 0; i < carts.length; i++) {
+      if (i === carts.length - 1 || carts[i + 1] !== carts[i]) {
+        const rowNo = cfg.DST_DATA_START + i;
+        cartEnds.push('A' + rowNo + ':' + lastColLetter + rowNo);
+      }
+    }
+    if (cartEnds.length) {
+      dst.getRangeList(cartEnds).setBorder(null, null, true, null, null, null, '#000000', SpreadsheetApp.BorderStyle.SOLID_THICK);
+    }
   }
   // データより下に残った古いチェックボックスの検証を外す
   const below = maxRows - (cfg.DST_DATA_START + shownRows.length) + 1;
