@@ -519,7 +519,9 @@ function 大邱未作業_再構築_(clearFilters) {
     body.setBackgrounds(shownRows.map(r =>
       new Array(width).fill(大邱未作業_数値_(r.display[2]) > 0 ? '#ffff00' : null)));
     // A列チェックボックス（データ行だけ・毎回未チェックで開始）
-    dst.getRange(cfg.DST_DATA_START, 1, shownRows.length, 1).insertCheckboxes();
+    // フォントもB..Sと同じ13ptにする（clearFormat後の10pt戻りを防ぐ。セル選択時の表示も揃う）
+    dst.getRange(cfg.DST_DATA_START, 1, shownRows.length, 1).insertCheckboxes()
+      .setFontSize(cfg.FONT_SIZE).setVerticalAlignment('middle');
     dst.setRowHeights(cfg.DST_DATA_START, shownRows.length, cfg.ROW_HEIGHT);
 
     // カート(発注NOの枝番を除いた単位 例: 20260622_13_1→20260622_13)ごとに太い下線で区切る
