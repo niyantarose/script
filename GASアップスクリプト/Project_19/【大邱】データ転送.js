@@ -1910,6 +1910,48 @@ function 大邱発注_フィルタを最新化_自動() {
   }
 }
 
+// 発注リスト大邱データ: 同じ商品コードで重量(O列)が入っている行から、重量が空の行へ補完する
+// （ボタン割り当て用。onEditの商品マスタ自動補完に載っていない「シート内にだけ重量がある」商品向け）
+function 大邱発注_同一コードの重量を補完() {
+  const ss = SpreadsheetApp.getActive(), ui = SpreadsheetApp.getUi();
+  const sh = ss.getSheetByName(DAEGU_CFG.HACHU_SRC);
+  if (!sh) { ui.alert('「' + DAEGU_CFG.HACHU_SRC + '」が見つかりません。'); return; }
+
+  const start = 6, lastRow = sh.getLastRow();
+  if (lastRow < start) { ss.toast('データがありません。'); return; }
+  const n = lastRow - start + 1;
+  const codes = sh.getRange(start, 11, n, 1).getValues(); // K 商品コード
+  const wRange = sh.getRange(start, 15, n, 1);            // O weight(g)
+  const weights = wRange.getValues();
+  const hasVal = v => v !== '' && v != null;
+
+  // 重量が入っている行から コード→重量 の対応表を作る（同じコードが複数なら下＝新しい行を優先）
+  const map = {};
+  for (let i = 0; i < n; i++) {
+    const code = normCode_(codes[i][0]);
+    if (!code || !hasVal(weights[i][0])) continue;
+    codeKeys_(code).forEach(k => { map[k] = weights[i][0]; });
+  }
+
+  // 重量が空の行へ、同じ商品コードの重量をコピー
+  let filled = 0;
+  for (let i = 0; i < n; i++) {
+    const code = normCode_(codes[i][0]);
+    if (!code || hasVal(weights[i][0])) continue;
+    for (const k of codeKeys_(code)) {
+      if (k in map) { weights[i][0] = map[k]; filled++; break; }
+    }
+  }
+
+  if (!filled) {
+    ss.toast('補完できる行はありませんでした（同じ商品コードで重量入りの行がない）。', '⚖ 重量補完', 5);
+    return;
+  }
+  wRange.setValues(weights);
+  if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 未作業リストにも反映予約
+  ss.toast('同一コードから重量を補完しました: ' + filled + '行', '⚖ 重量補完', 5);
+}
+
 // 発注リスト大邱データのA列チェックを全部外す（誤って大量に付いたチェックの掃除用）
 function 大邱発注_チェックを全部外す() {
   const ss = SpreadsheetApp.getActive(), ui = SpreadsheetApp.getUi();
