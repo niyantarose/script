@@ -290,6 +290,8 @@ function 大邱未作業_入荷同期_(view, fromRow, toRow, opts) {
       if (wgtChanged) src.getRange(dataStart, 15, nSrc, 1).setValues(wgt);
       if (checkOn.length) src.getRangeList(checkOn).setValue(true);
       if (checkOff.length) src.getRangeList(checkOff).setValue(false);
+      // 入荷日/入荷数を書き戻した → 送信済みのEMS大邱行(A列空欄)へも入荷日を反映
+      if (cdChanged && typeof EMS大邱_入荷日補完_ === 'function') EMS大邱_入荷日補完_();
     }
   } finally {
     lock.releaseLock();

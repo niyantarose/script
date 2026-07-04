@@ -22,6 +22,11 @@ function onEdit(e) {
       autofillHachuByCfg_(e, DAEGU_HACHU_MASTER_CFG);
       大邱発注_onEdit採番_(e);
       大邱発注_WX自動計算_(sh, range);
+      // C入荷日/D入荷数の編集 → 送信済みのEMS大邱行(A列空欄)へ入荷日を自動反映
+      if (_rangeHitsAnyCol_(range.getColumn(), range.getLastColumn(), [3, 4]) &&
+          typeof EMS大邱_入荷日補完_ === 'function') {
+        EMS大邱_入荷日補完_();
+      }
       if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 未作業リストの自動同期を予約
       return;
     }

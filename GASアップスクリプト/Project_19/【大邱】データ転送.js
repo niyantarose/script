@@ -426,6 +426,7 @@ function 大邱_EMSリストへ転送() {
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(2000)) { ss.toast('他の処理が実行中です。'); return; }
   try {
+    EMS大邱_入荷日補完_(); // A列空欄を発注リストの入荷日で埋めてから転送する
     const sVals = src.getDataRange().getValues();
     const candidates = [];
     const sourceExactKeys = new Set();
@@ -2176,6 +2177,57 @@ function 大邱_EMS大邱へ追記_(dst, picked, L) {
   return { startRow: startRow, n: n, received: received, okCount: okCount, ngCount: ngCount };
 }
 
+// ============================================================
+// EMS大邱作業データ：入荷日(A列)の空欄を発注リスト大邱データから補完
+//   照合: EMS大邱 T列(購入No) ⇔ 発注リスト大邱データ F列(発注NO)
+//   入荷前にEMS大邱へ送った行はA列が空のまま残るため、
+//   後から発注リスト側に入った入荷日(C列)をここで反映する。
+//   （呼び出し元: メニュー / 発注リストC・D列のonEdit / 未作業データの入荷同期 / EMSリスト転送）
+// ============================================================
+function EMS大邱_入荷日補完_() {
+  const ss = SpreadsheetApp.getActive();
+  const src = ss.getSheetByName(DAEGU_CFG.HACHU_SRC); // 発注リスト大邱データ
+  const dst = ss.getSheetByName(DAEGU_CFG.EMS_SRC);   // EMS大邱作業データ
+  if (!src || !dst) return 0;
+
+  // 発注リスト: 発注NO -> 入荷日(C列)。入荷日が入っている行だけ登録する
+  const sLast = src.getLastRow();
+  if (sLast < 1) return 0;
+  const sVals = src.getRange(1, 3, sLast, 4).getValues(); // C..F（C=入荷日, F=発注NO）
+  const dateByNo = {};
+  for (let i = 0; i < sLast; i++) {
+    const no = EMS_転送購入Noキー_(sVals[i][3]);
+    if (!no || /発注NO|OrderNo/i.test(no)) continue;
+    if (EMS_値あり_(sVals[i][0]) && !(no in dateByNo)) dateByNo[no] = sVals[i][0];
+  }
+
+  // EMS大邱: A列(入荷日)が空でT列購入Noが照合できる行へ入れる
+  const dStart = 3, dLast = dst.getLastRow();
+  if (dLast < dStart) return 0;
+  const n = dLast - dStart + 1;
+  const aRange = dst.getRange(dStart, 1, n, 1);
+  const aVals = aRange.getValues();                        // A 入荷日
+  const tVals = dst.getRange(dStart, 20, n, 1).getValues(); // T 購入No
+  let filled = 0;
+  for (let i = 0; i < n; i++) {
+    if (EMS_値あり_(aVals[i][0])) continue;
+    const no = EMS_転送購入Noキー_(tVals[i][0]);
+    if (!no || !(no in dateByNo)) continue;
+    aVals[i][0] = dateByNo[no];
+    filled++;
+  }
+  if (filled) aRange.setValues(aVals);
+  return filled;
+}
+
+// メニュー用: 補完して件数をトースト表示
+function EMS大邱_入荷日を発注リストから補完() {
+  const filled = EMS大邱_入荷日補完_();
+  SpreadsheetApp.getActive().toast(
+    filled ? '入荷日を補完しました: ' + filled + '件' : '補完対象なし（A列空欄で発注リスト側に入荷日がある行なし）',
+    '📅 EMS大邱 入荷日補完', 5);
+}
+
 function 大邱発注_チェック行をEMS大邱へ送る() {
   const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
@@ -2193,9 +2245,11 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
   if (preScan.picked.length === 0) { L('終了: 送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
 
   const preview = preScan.picked.slice(0, 12).map(p => `${p.no} / ${p.code} / ${p.qty || 0}個`).join('\n');
+  const noDate = preScan.picked.filter(p => !EMS_値あり_(p.date)).length;
   const res = ui.alert('EMS大邱へ送る',
     `${preScan.picked.length}件をEMS大邱作業データの最終行の下へ送ります。\n\n${preview}` +
     (preScan.picked.length > 12 ? '\n…ほか' : '') +
+    (noDate ? `\n\n⚠ 入荷日(C列)未入力の行が ${noDate}件あります。\n（EMS大邱の入荷日は空欄で送られ、後からC列に入れると自動反映されます）` : '') +
     '\n\n（EMS番号・発送日はEMS担当が記入）\n実行する？',
     ui.ButtonSet.YES_NO);
   if (res !== ui.Button.YES) { L('終了: ユーザーがキャンセル'); ui.alert('やめました。'); return; }
