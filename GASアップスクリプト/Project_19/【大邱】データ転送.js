@@ -910,7 +910,7 @@ function EMS大邱_EMS番号ごとに罫線を更新_(sh) {
   const startRow = 3;
   const emsNoCol = 4; // D列 EMS番号
   const startCol = 1;
-  const colCount = Math.min(20, sh.getMaxColumns()); // A:T
+  const colCount = Math.min(21, sh.getMaxColumns()); // A:U（U=シール発行まで）
   const lastRow = EMS大邱_罫線最終データ行_(sh);
   if (lastRow < startRow) return 0;
 
@@ -2010,6 +2010,44 @@ function 大邱発注_チェックを全部外す() {
   ss.toast('A列チェックを外しました: ' + n + '行', '🧹チェック解除', 5);
 }
 
+// ============================================================
+// EMS大邱作業データ U列=シール発行 管理
+//   未発行(U列が空) = 薄い色(#fff2cc) / 発行済み(U列に日付・済) = 色なし
+// ============================================================
+// Pタッチ印刷した行をシール発行済みにする(U列に発行日を記入し、薄い色を解除)
+function EMS大邱_シール発行済みにする_(sheet, rowList) {
+  if (!sheet || !rowList || !rowList.length) return;
+  const uList = sheet.getRangeList(rowList.map(r => 'U' + r));
+  uList.setValue(new Date());
+  uList.setNumberFormat('yyyy-mm-dd');
+  sheet.getRangeList(rowList.map(r => 'A' + r + ':U' + r)).setBackground(null); // 未発行の薄い色を解除
+}
+
+// 既存行を一括でシール発行済みにする(U列が空でデータのある行に「済」を記入。色は触らない)
+function EMS大邱_シール発行済みに一括初期化() {
+  const ss = SpreadsheetApp.getActive(), ui = SpreadsheetApp.getUi();
+  const sh = ss.getSheetByName(DAEGU_CFG.EMS_SRC);
+  if (!sh) { ui.alert('「' + DAEGU_CFG.EMS_SRC + '」が見つかりません。'); return; }
+  const lastRow = sh.getLastRow();
+  if (lastRow < 3) { ss.toast('データがありません。'); return; }
+  const n = lastRow - 2;
+  const codes = sh.getRange(3, 8, n, 1).getDisplayValues(); // H 商品コード
+  const uR = sh.getRange(3, 21, n, 1);                       // U シール発行
+  const u = uR.getValues();
+  let marked = 0;
+  for (let i = 0; i < n; i++) {
+    if (String(codes[i][0] || '').trim() === '') continue;
+    if (u[i][0] === '' || u[i][0] == null) { u[i][0] = '済'; marked++; }
+  }
+  if (!marked) { ss.toast('未記入の行はありません(全行シール発行済み)。', '🏷 シール発行', 5); return; }
+  const ans = ui.alert('シール発行済みに一括初期化',
+    'U列(シール発行)が空でデータのある ' + marked + '行に「済」を記入します。ええ？',
+    ui.ButtonSet.OK_CANCEL);
+  if (ans !== ui.Button.OK) return;
+  uR.setValues(u);
+  ss.toast('シール発行済みにしました: ' + marked + '行', '🏷 シール発行', 5);
+}
+
 // EMS大邱の最終データ行の次（H商品コード/T購入No/D EMS番号で判定。ヘッダーは除く）
 function 大邱EMS_次の追記行_(dst) {
   const lastRow = dst.getLastRow();
@@ -2108,6 +2146,10 @@ function 大邱_EMS大邱へ追記_(dst, picked, L) {
   dst.getRange(startRow, 12, n, 1).setValues(picked.map(p => [p.weight])); // L 重量
   dst.getRange(startRow, 13, n, 1).setValues(picked.map(p => [p.price]));  // M 価格
   dst.getRange(startRow, 20, n, 1).setValues(picked.map(p => [p.no]));     // T 購入No
+
+  // シール発行(U列): 新しく送った行は未発行 → 薄い色を付ける
+  //（Pタッチ印刷スクリプトを実行すると発行済みになり色が消える）
+  dst.getRange(startRow, 1, n, 21).setBackground('#fff2cc');
 
   if (typeof EMS大邱_QRS行範囲を再計算_ === 'function') {
     EMS大邱_QRS行範囲を再計算_(dst, startRow, n);

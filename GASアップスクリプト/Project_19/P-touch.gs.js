@@ -25,10 +25,12 @@ function Pタッチ印刷用Excelを保存() {
   // Promotional Item は別扱いでキーをユニークにする
   const merged = {};
   let promoCount = 0;
+  const printedRows = []; // シール発行済みにする行番号(U列)
 
   for (let i = startRow - 1; i < endRow; i++) {
     const code = String(values[i][codeCol] || '').trim();
     if (!code) continue;
+    printedRows.push(i + 1);
     const name = String(values[i][nameCol] || '').trim();
     const qty  = parseInt(values[i][qtyCol], 10) || 1;
 
@@ -79,10 +81,16 @@ function Pタッチ印刷用Excelを保存() {
 
   DriveApp.getFileById(tempSs.getId()).setTrashed(true);
 
+  // 印刷した行をシール発行済みに(U列に発行日・未発行の薄い色を解除)
+  if (typeof EMS大邱_シール発行済みにする_ === 'function') {
+    EMS大邱_シール発行済みにする_(sheet, printedRows);
+  }
+
   SpreadsheetApp.getUi().alert(
     'P-touch用Excelを更新しました！\n\n' +
     'ファイル名：' + FIXED_NAME + '.xlsx\n' +
-    'ラベル枚数：' + (rows.length - 1) + '枚\n\n' +
+    'ラベル枚数：' + (rows.length - 1) + '枚\n' +
+    'シール発行済み：' + printedRows.length + '行(U列に記入)\n\n' +
     'P-touch Editorで「更新」を押してください。'
   );
 }
