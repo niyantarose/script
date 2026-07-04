@@ -6,7 +6,7 @@
 //    （手塗りの背景色に加えて、消込の条件付き書式と同じ条件
 //      「入荷数あり×数量あり×残り列に値」も積載済みとして除外）
 //  ・A列: チェックボックス。チェックしてメニューからEMS大邱へ送れる
-//  ・B1: 全列キーワード検索（スペース区切りAND・部分一致）
+//  ・B1: 全列キーワード検索（空白・改行を除去して部分一致）
 //  ・2行目（水色）: 列ごとの絞り込み（スペース区切りAND・部分一致）
 //  ・検索セルを編集すると onEdit 経由で自動絞り込み
 //  ・列の並びは発注リスト大邱データと同じ（B=発注日 … S=支払金額）
@@ -133,6 +133,21 @@ function 大邱未作業_onEdit_(e) {
 
   // --- 検索セル(1〜2行目)の編集 → 自動絞り込み ---
   if (range.getRow() <= cfg.DST_FILTER_ROW) {
+    const keywordCol = 2;
+    const touchesKeyword =
+      range.getRow() <= cfg.DST_KEYWORD_ROW &&
+      range.getLastRow() >= cfg.DST_KEYWORD_ROW &&
+      range.getColumn() <= keywordCol &&
+      range.getLastColumn() >= keywordCol;
+
+    // B1へ貼り付けた検索語から半角・全角スペース、タブ、改行を除去する。
+    if (touchesKeyword) {
+      const keywordCell = range.getSheet().getRange(cfg.DST_KEYWORD_ROW, keywordCol);
+      const rawKeyword = keywordCell.getDisplayValue();
+      const normalizedKeyword = 大邱未作業_検索語を正規化_(rawKeyword);
+      if (rawKeyword !== normalizedKeyword) keywordCell.setValue(normalizedKeyword);
+    }
+
     const lock = LockService.getDocumentLock();
     if (!lock.tryLock(1000)) return;
     try {
@@ -166,6 +181,10 @@ function 大邱未作業_onEdit_(e) {
     fields: { cd: (hitsQty || hitsDate), opt: hitsOpt, wgt: hitsWgt },
     pushEmpty: true // セルを消したときは元データも消す(連動クリア)
   });
+}
+
+function 大邱未作業_検索語を正規化_(value) {
+  return String(value == null ? '' : value).replace(/[\s\u3000]+/g, '');
 }
 
 // ============================================================
@@ -357,7 +376,9 @@ function 大邱未作業_再構築_(clearFilters) {
   let keyword = '';
   let colFilters = new Array(width).fill('');
   if (!clearFilters) {
-    keyword = String(dst.getRange(cfg.DST_KEYWORD_ROW, 2).getDisplayValue() || '').trim();
+    keyword = 大邱未作業_検索語を正規化_(
+      dst.getRange(cfg.DST_KEYWORD_ROW, 2).getDisplayValue()
+    );
     colFilters = dst
       .getRange(cfg.DST_FILTER_ROW, 2, 1, width)
       .getDisplayValues()[0]
@@ -398,7 +419,7 @@ function 大邱未作業_再構築_(clearFilters) {
     dst.getRange(1, 1).setValue('🔍').setFontWeight('bold').setFontSize(cfg.FONT_SIZE);
     dst.getRange(cfg.DST_KEYWORD_ROW, 2).setBackground('#fff2cc').setFontSize(cfg.FONT_SIZE); // B1 黄色（全列検索）
     dst.getRange(1, 3).setValue(
-      '←B1は全列検索（スペース区切りAND・部分一致）／下の水色行は列ごとの条件。セルを編集すると自動で絞り込み。A列にチェックしてメニュー「大邱未作業」→「チェック行をEMS大邱へ送る」'
+      '←B1は全列検索（空白・改行を除去して部分一致）／下の水色行は列ごとの条件。セルを編集すると自動で絞り込み。A列にチェックしてメニュー「大邱未作業」→「チェック行をEMS大邱へ送る」'
     ).setFontColor('#888888').setFontSize(cfg.FONT_SIZE); // 1行目も13ptにそろえる
 
     dst.getRange(cfg.DST_FILTER_ROW, 2, 1, width).setBackground('#e8f0fe').setFontSize(cfg.FONT_SIZE); // 水色 B2..S2
