@@ -30,11 +30,9 @@ function onOpen() {
     最終データ行へ移動_自動();
   }
 
-  // 発注リスト大邱データのフィルタを開くたびに最新範囲・全行表示へ作り直す
-  // （値チェック式フィルタが新しい行を勝手に隠し、Ctrl+F検索や抽出が効かなくなるのを防ぐ）
-  if (typeof 大邱発注_フィルタを最新化_自動 === 'function') {
-    大邱発注_フィルタを最新化_自動();
-  }
+  // ※フィルタの自動最新化はonOpenでは行わない。
+  //   開くたびに条件が消えると「絞り込んだのにすぐ解除される」ことになるため、
+  //   検索が効かないときだけ手動（ボタン/メニューの「フィルタを最新化」）で実行する。
 
   if (typeof refreshEmsCalendarTodayHighlight_ === 'function') {
     refreshEmsCalendarTodayHighlight_();
