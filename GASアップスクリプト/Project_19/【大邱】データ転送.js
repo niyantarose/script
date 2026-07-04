@@ -1876,6 +1876,40 @@ function 大邱発注_チェックと残り数量を設置() {
   ss.toast('チェックボックス＋残り数量列＋消込色を設置: ' + n + '行');
 }
 
+// 発注リスト大邱データのフィルタを最新範囲で作り直す（全行表示に戻す）
+// 値チェック式フィルタは「設定後に追加された行」を自動で非表示にしてしまい、
+// Ctrl+F検索(表示行のみ対象)やフィルタ抽出が効かなくなるため、これで一発リセットする。
+function 大邱発注_フィルタを最新化() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(DAEGU_CFG.HACHU_SRC);
+  if (!sh) { SpreadsheetApp.getUi().alert('「' + DAEGU_CFG.HACHU_SRC + '」が見つかりません。'); return; }
+
+  const headerRow = 5; // 英語ヘッダー行(DorderDate...)にフィルタを付ける
+  const old = sh.getFilter();
+  if (old) old.remove(); // 古いフィルタ(条件・範囲ごと)を削除=非表示行も全部戻る
+
+  const lastRow = Math.max(sh.getLastRow(), headerRow + 1);
+  const lastCol = sh.getLastColumn();
+  sh.getRange(headerRow, 1, lastRow - headerRow + 1, lastCol).createFilter();
+  ss.toast('フィルタを最新の全データ範囲で作り直しました（全行表示）', '🔄 フィルタ最新化', 4);
+}
+
+// onOpen用: 開いたときに自動でフィルタを最新化する（トーストなし・エラーは握りつぶす）
+function 大邱発注_フィルタを最新化_自動() {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const sh = ss.getSheetByName(DAEGU_CFG.HACHU_SRC);
+    if (!sh) return;
+    const headerRow = 5;
+    const old = sh.getFilter();
+    if (old) old.remove();
+    const lastRow = Math.max(sh.getLastRow(), headerRow + 1);
+    sh.getRange(headerRow, 1, lastRow - headerRow + 1, sh.getLastColumn()).createFilter();
+  } catch (e) {
+    // onOpenを止めない
+  }
+}
+
 // 発注リスト大邱データのA列チェックを全部外す（誤って大量に付いたチェックの掃除用）
 function 大邱発注_チェックを全部外す() {
   const ss = SpreadsheetApp.getActive(), ui = SpreadsheetApp.getUi();
