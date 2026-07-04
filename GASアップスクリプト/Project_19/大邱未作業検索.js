@@ -332,20 +332,19 @@ function 大邱未作業_チェック行の入荷数を発注数量にする() {
     if (oq === '' || oq == null) { skippedNoQty++; continue; }
     qtys[i][0] = oq;                                        // 入荷数 = 数量
     if (dates[i][0] === '' || dates[i][0] == null) dates[i][0] = today; // 入荷日が空なら今日
-    checks[i][0] = false;                                   // 処理済みはチェックを外す(元と同じ)
     updated++;
+    // ※チェックは外さない: そのまま「チェックしたデータをEMS大邱作業に送信」を押して送れるように
   }
   if (!checked) { ss.toast('チェックされた行がありません。'); return; }
 
   qtyR.setValues(qtys);
   dateR.setValues(dates);
-  checkR.setValues(checks);
 
-  // 発注リスト大邱データへ書き戻し(入荷日・入荷数のみ・空欄は書かない・チェックは触らない=元の機能と同じ挙動)
+  // 発注リスト大邱データへ書き戻し(入荷日・入荷数のみ・空欄は書かない・チェックは触らない)
   大邱未作業_入荷同期_(view, start, lastRow, { notify: false, fields: { cd: true }, pushEmpty: false, check: false });
 
-  ss.toast('入荷数を数量にしました ' + updated + '行 / 数量なしスキップ ' + skippedNoQty + '行（発注リスト大邱へ書き戻し済み）',
-    '📦 入荷数=数量', 6);
+  ss.toast('入荷数を数量にしました ' + updated + '行 / 数量なしスキップ ' + skippedNoQty +
+    '行（チェックは残っています。続けて送信ボタンで送れます）', '📦 入荷数=数量', 6);
 }
 
 // ボタン/メニュー用: 大邱未作業データ全行の 入荷日・入荷数・オプション・weight を発注リスト大邱データへ同期
