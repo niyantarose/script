@@ -2113,7 +2113,7 @@ function 大邱発注_送信対象スキャン_(src, L) {
     }
     picked.push({
       row: i + 1, no: no, code: code,
-      qty: qty, date: r[2], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15]
+      qty: qty, date: r[2], arrivalQty: r[3], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15]
     });
   }
 
@@ -2130,6 +2130,35 @@ function 大邱発注_送信対象スキャン_(src, L) {
   else L('✔ 確認OK: 送信対象はすべてチェック行（未チェック行は1件も含まれていない）');
 
   return { picked: picked, checkedRows: checkedRows, skipped: skipped, uncheckedData: uncheckedData };
+}
+
+// ============================================================
+// 送信直前の入荷日補完：入荷数(D列)が入っているのに入荷日(C列)が空の行は今日を入れる
+//   入荷数を入力した直後（onEditの自動補完が終わる前）に送信ボタンを押しても
+//   EMS大邱の入荷日が空にならないようにするレース対策。
+//   入荷数も無い行（予約など未入荷）は入荷日空欄のまま送る。
+// ============================================================
+function 大邱_入荷数値_(v) {
+  const n = Number(String(v == null ? '' : v).replace(/,/g, '').trim());
+  return isFinite(n) ? n : 0;
+}
+
+function 大邱_送信前入荷日補完_(src, picked, L) {
+  const today = (typeof _todayOnly_ === 'function')
+    ? _todayOnly_()
+    : (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
+  const cells = [];
+  picked.forEach(p => {
+    if (EMS_値あり_(p.date)) return;
+    if (大邱_入荷数値_(p.arrivalQty) <= 0) return;
+    p.date = today;                 // EMS大邱のA列にはこの値が入る
+    cells.push('C' + p.row);        // 発注リスト大邱データのC列にも書いて両シートを揃える
+  });
+  if (cells.length) {
+    src.getRangeList(cells).setValue(today);
+    if (L) L('入荷日を送信時に補完: ' + cells.length + '件（入荷数あり・入荷日空 → 今日）');
+  }
+  return cells.length;
 }
 
 // picked の行を EMS大邱作業データの最終行の下へ書き込み、読み戻して検証する共通処理
@@ -2245,11 +2274,14 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
   if (preScan.picked.length === 0) { L('終了: 送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
 
   const preview = preScan.picked.slice(0, 12).map(p => `${p.no} / ${p.code} / ${p.qty || 0}個`).join('\n');
-  const noDate = preScan.picked.filter(p => !EMS_値あり_(p.date)).length;
+  const noDatePicked = preScan.picked.filter(p => !EMS_値あり_(p.date));
+  const autoFill = noDatePicked.filter(p => 大邱_入荷数値_(p.arrivalQty) > 0).length;
+  const stayEmpty = noDatePicked.length - autoFill;
   const res = ui.alert('EMS大邱へ送る',
     `${preScan.picked.length}件をEMS大邱作業データの最終行の下へ送ります。\n\n${preview}` +
     (preScan.picked.length > 12 ? '\n…ほか' : '') +
-    (noDate ? `\n\n⚠ 入荷日(C列)未入力の行が ${noDate}件あります。\n（EMS大邱の入荷日は空欄で送られ、後からC列に入れると自動反映されます）` : '') +
+    (autoFill ? `\n\n📅 入荷日(C列)空欄・入荷数あり ${autoFill}件は、送信時に今日の日付を自動で入れます。` : '') +
+    (stayEmpty ? `\n\n⚠ 入荷日・入荷数とも未入力の行が ${stayEmpty}件あります。\n（入荷日は空欄で送られ、後からC列に入れると自動反映されます）` : '') +
     '\n\n（EMS番号・発送日はEMS担当が記入）\n実行する？',
     ui.ButtonSet.YES_NO);
   if (res !== ui.Button.YES) { L('終了: ユーザーがキャンセル'); ui.alert('やめました。'); return; }
@@ -2263,6 +2295,7 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
     const picked = scan.picked;
     if (picked.length === 0) { L('終了: 再スキャンで送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
 
+    大邱_送信前入荷日補完_(src, picked, L); // 入荷数あり・入荷日空の行は今日を入れてから送る
     const result = 大邱_EMS大邱へ追記_(dst, picked, L);
     const n = result.n;
 

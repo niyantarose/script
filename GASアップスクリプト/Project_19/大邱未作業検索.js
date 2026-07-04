@@ -660,7 +660,7 @@ function 大邱未作業_チェック行をEMS大邱へ送る() {
     picked.push({
       row: hit + 1, no: no, code: code,
       qty: (typeof EMS_表示数量_ === 'function') ? EMS_表示数量_(r[11]) : r[11],
-      date: r[2], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15],
+      date: r[2], arrivalQty: r[3], vendor: r[7], name: r[8], item: r[13], weight: r[14], price: r[15],
       viewRow: c.viewRow
     });
   }
@@ -688,6 +688,9 @@ function 大邱未作業_チェック行をEMS大邱へ送る() {
     : LockService.getDocumentLock();
   if (!lock) { L('中断: ロック取得タイムアウト'); return; }
   try {
+    if (typeof 大邱_送信前入荷日補完_ === 'function') {
+      大邱_送信前入荷日補完_(src, picked, L); // 入荷数あり・入荷日空の行は今日を入れてから送る
+    }
     const result = 大邱_EMS大邱へ追記_(ems, picked, L);
     const n = result.n;
 
