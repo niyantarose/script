@@ -1939,8 +1939,24 @@ function 大邱発注_同一コードの重量を補完() {
     if (typeof _masterMap === 'function') masterW = _masterMap().byKeyW; // コード→重さ(別名キー込み)
   } catch (e) { masterW = null; }
 
-  // 重量が空の行へ補完: ①シート内の同一コードの重量 → ②商品マスタの重量
-  let filledSheet = 0, filledMaster = 0;
+  // EMS大邱作業データの過去の発送実績(重量L列)も補完元にする（第3候補・下=新しい行を優先）
+  const emsW = {};
+  try {
+    const ems = ss.getSheetByName(DAEGU_CFG.EMS_SRC);
+    if (ems && ems.getLastRow() >= 3) {
+      const en = ems.getLastRow() - 2;
+      const evals = ems.getRange(3, 8, en, 5).getValues(); // H=商品コード .. L=weight(g)
+      for (let i = 0; i < en; i++) {
+        const c = normCode_(evals[i][0]);
+        const w = evals[i][4]; // L列
+        if (!c || !hasVal(w)) continue;
+        codeKeys_(c).forEach(k => { emsW[k] = w; });
+      }
+    }
+  } catch (e) {}
+
+  // 重量が空の行へ補完: ①シート内の同一コード → ②商品マスタ → ③EMS大邱の発送実績
+  let filledSheet = 0, filledMaster = 0, filledEms = 0;
   for (let i = 0; i < n; i++) {
     const code = normCode_(codes[i][0]);
     if (!code || hasVal(weights[i][0])) continue;
@@ -1951,19 +1967,24 @@ function 大邱発注_同一コードの重量を補完() {
     }
     if (!done && masterW) {
       for (const k of keys) {
-        if (k in masterW && hasVal(masterW[k])) { weights[i][0] = masterW[k]; filledMaster++; break; }
+        if (k in masterW && hasVal(masterW[k])) { weights[i][0] = masterW[k]; filledMaster++; done = true; break; }
+      }
+    }
+    if (!done) {
+      for (const k of keys) {
+        if (k in emsW) { weights[i][0] = emsW[k]; filledEms++; break; }
       }
     }
   }
 
-  const filled = filledSheet + filledMaster;
+  const filled = filledSheet + filledMaster + filledEms;
   if (!filled) {
-    ss.toast('補完できる行はありませんでした（同一コードの重量入り行も商品マスタの重量も無し）。', '⚖ 重量補完', 5);
+    ss.toast('補完できる行はありませんでした（シート内・商品マスタ・EMS大邱の発送実績のどこにも同一コードの重量が無い）。', '⚖ 重量補完', 6);
     return;
   }
   wRange.setValues(weights);
   if (typeof 大邱未作業_同期予約_ === 'function') 大邱未作業_同期予約_(); // 未作業リストにも反映予約
-  ss.toast('重量を補完しました: ' + filled + '行（シート内同一コード ' + filledSheet + ' / 商品マスタ ' + filledMaster + '）', '⚖ 重量補完', 6);
+  ss.toast('重量を補完しました: ' + filled + '行（シート内 ' + filledSheet + ' / 商品マスタ ' + filledMaster + ' / EMS大邱実績 ' + filledEms + '）', '⚖ 重量補完', 6);
 }
 
 // 発注リスト大邱データのA列チェックを全部外す（誤って大量に付いたチェックの掃除用）
