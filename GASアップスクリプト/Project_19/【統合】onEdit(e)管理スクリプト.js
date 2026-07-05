@@ -1553,6 +1553,13 @@ function 商品マスタ_発注ソースから更新_(sourceCfg, sourceLabel, si
         const nextText = String(nextValue ?? '').trim();
         if (currentText === nextText) return;
 
+        // 重さだけは発注リスト側が正（常に上書き）。
+        // それ以外(コード表記/業者/商品名/品目/価格)は商品マスタで管理するため、
+        // マスタに値が入っている項目は上書きしない（空欄だけ補完する）。
+        // ※Promotional Item のような共通コードが、発注リストの別業者の行で
+        //   マスタを毎回戻してしまう問題への対策。
+        if (field.name !== 'weight' && currentText !== '') return;
+
         row[field.index] = nextValue;
         updatedCells++;
         rowChanged = true;
@@ -1585,7 +1592,7 @@ function 商品マスタ_発注ソースから更新_(sourceCfg, sourceLabel, si
       `更新セル：${updatedCells}件\n` +
       `商品コード統合：${uniqueResult.groups}件\n` +
       `重複削除：${uniqueResult.deleted}行\n\n` +
-      '空欄の項目は商品マスタ側の値を残しています。'
+      '重さは発注リストを正として上書き。\nほかの項目はマスタに値があれば残し、空欄だけ補完しています。'
     );
 
     return {
@@ -1817,6 +1824,9 @@ function 商品マスタ_候補行を商品コードで反映_(master, candidate
       const currentText = String(row[field.index] ?? '').trim();
       const nextText = String(nextValue ?? '').trim();
       if (currentText === nextText) return;
+
+      // 重さ以外はマスタが正: 値が入っている項目は上書きしない（空欄だけ補完）
+      if (field.name !== 'weight' && currentText !== '') return;
 
       row[field.index] = nextValue;
       updatedCells++;
