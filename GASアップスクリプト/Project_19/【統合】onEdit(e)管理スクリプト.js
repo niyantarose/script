@@ -20,6 +20,10 @@ function onEdit(e) {
     if (sheetName === DAEGU_CFG.HACHU_SRC) {
       _autoFillArrivalDateFromQty_(sh, range, 4, 3, 6, 1, 6); // D入荷数 -> C入荷日 + Aチェック
       autofillHachuByCfg_(e, DAEGU_HACHU_MASTER_CFG);
+      // H業者/I商品名/K商品コード/N品目/O重さ/P価格の編集 → 編集行の最新値で商品マスタを即更新
+      if (_rangeHitsAnyCol_(range.getColumn(), range.getLastColumn(), [8, 9, 11, 14, 15, 16])) {
+        大邱_マスタ自動更新_(sh, range);
+      }
       大邱発注_onEdit採番_(e);
       大邱発注_WX自動計算_(sh, range);
       // C入荷日/D入荷数の編集 → 送信済みのEMS大邱行(A列空欄)へ入荷日を自動反映
@@ -1680,6 +1684,50 @@ function 商品マスタ_発注ソースから更新_(sourceCfg, sourceLabel, si
 
 function autofillHachu(e){
   autofillHachuByCfg_(e, CFG);
+}
+
+// ============================================================
+// 発注リスト大邱データのonEdit用: 編集された行の最新値で商品マスタを即更新する
+//   「発注リストの最新情報でどんどんマスタを新しくする」運用の自動化。
+//   反映は 商品マスタ_候補行を商品コードで反映_（除外コード対応・最新値で上書き）。
+//   混雑時はスキップ（次の編集かメニューの一括更新で追いつく）。
+// ============================================================
+function 大邱_マスタ自動更新_(sh, range) {
+  const cfg = DAEGU_HACHU_MASTER_CFG;
+  if (!sh || !range || sh.getName() !== cfg.HACHU_SHEET) return 0;
+  const master = SpreadsheetApp.getActive().getSheetByName(CFG.MASTER_SHEET);
+  if (!master) return 0;
+
+  const firstRow = Math.max(cfg.HACHU_HEADER_ROW + 1, range.getRow());
+  const lastRow = Math.min(sh.getLastRow(), range.getLastRow());
+  if (lastRow < firstRow) return 0;
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(1000)) return 0;
+  try {
+    const width = Math.max(cfg.HACHU_CODE, cfg.HACHU_VENDOR, cfg.HACHU_NAME,
+      cfg.HACHU_ITEM, cfg.HACHU_PRICE, cfg.HACHU_WEIGHT || 0);
+    const rows = sh.getRange(firstRow, 1, lastRow - firstRow + 1, width).getValues();
+    const candidates = [];
+    for (const r of rows) {
+      const code = String(r[cfg.HACHU_CODE - 1] || '').trim();
+      const name = String(r[cfg.HACHU_NAME - 1] || '').trim();
+      if (!code || !name) continue; // コードと商品名が入ってから登録（価格は必須にしない=定期購読も対象）
+      candidates.push([
+        code,
+        r[cfg.HACHU_VENDOR - 1],
+        r[cfg.HACHU_NAME - 1],
+        r[cfg.HACHU_ITEM - 1],
+        r[cfg.HACHU_PRICE - 1],
+        cfg.HACHU_WEIGHT ? r[cfg.HACHU_WEIGHT - 1] : ''
+      ]);
+    }
+    if (!candidates.length) return 0;
+    const result = 商品マスタ_候補行を商品コードで反映_(master, candidates);
+    return result.added + result.updatedRows;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function autofillHachuByCfg_(e, sheetCfg){
