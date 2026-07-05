@@ -1046,6 +1046,21 @@ const MASTER_SYNC_FIELD_RULES = [
   // }
 ];
 
+/************************************************************
+ * 商品マスタで管理しない共通コード
+ * ふろく等、1つのコードを複数の別商品で使い回すもの。
+ * ・マスタ更新（一括／自動登録）の対象外＝マスタに行を作らない・更新しない
+ * ・コード入力時の自動補完もしない＝業者/商品名/品目/価格/重さは行ごとに手入力
+ * 追加したいコードはこの配列に足すだけ（表記ゆれは正規化で吸収）。
+ ************************************************************/
+const MASTER_EXCLUDE_CODES = ['Promotional Item'];
+
+function _masterIsExcludedCode_(code) {
+  const key = _masterPrimaryCodeKey_(code);
+  if (!key) return false;
+  return MASTER_EXCLUDE_CODES.some(c => _masterPrimaryCodeKey_(c) === key);
+}
+
 
 /**
  * 発注シートの既存データから商品マスタを一括補完・更新する
@@ -1465,6 +1480,7 @@ function 商品マスタ_発注ソースから更新_(sourceCfg, sourceLabel, si
       const r = sourceValues[i];
       const code = String(r[sourceCfg.HACHU_CODE - 1] || '').trim();
       if (!code || /^(商品コード|code)$/i.test(code)) continue;
+      if (_masterIsExcludedCode_(code)) continue; // 共通コード(Promotional Item等)はマスタで管理しない
 
       const rec = {
         code,
@@ -1624,6 +1640,7 @@ function autofillHachuByCfg_(e, sheetCfg){
   const master=_masterMap();
   for(let row=firstRow;row<=lastRow;row++){
     const code=String(sh.getRange(row,sheetCfg.HACHU_CODE).getValue()).trim(); if(!code) continue;
+    if(_masterIsExcludedCode_(code)) continue; // 共通コードは自動補完しない(業者/商品名/品目は行ごとに手入力)
     let vendor=String(sh.getRange(row,sheetCfg.HACHU_VENDOR).getValue()).trim();
     const rec=_masterGetByCode_(master.bestByCode, code);
     if(!rec) continue;
@@ -1742,6 +1759,7 @@ function 商品マスタ_候補行を商品コードで反映_(master, candidate
     const code = String(row[0] || '').trim();
     const key = _masterPrimaryCodeKey_(code);
     if (!key) return;
+    if (_masterIsExcludedCode_(code)) return; // 共通コード(Promotional Item等)はマスタで管理しない
 
     const rec = {
       code,
