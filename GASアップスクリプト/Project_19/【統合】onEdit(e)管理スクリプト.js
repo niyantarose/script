@@ -1051,14 +1051,69 @@ const MASTER_SYNC_FIELD_RULES = [
  * ふろく等、1つのコードを複数の別商品で使い回すもの。
  * ・マスタ更新（一括／自動登録）の対象外＝マスタに行を作らない・更新しない
  * ・コード入力時の自動補完もしない＝業者/商品名/品目/価格/重さは行ごとに手入力
- * 追加したいコードはこの配列に足すだけ（表記ゆれは正規化で吸収）。
+ * リストは「マスタ除外コード」シートのA列(2行目以降)で管理する。
+ * ここの配列は初期値（シートが無いときの保険＋シート作成時の種）。
+ * どちらに書いても効く（両方を合わせて判定・表記ゆれは正規化で吸収）。
  ************************************************************/
 const MASTER_EXCLUDE_CODES = ['Promotional Item'];
+const MASTER_EXCLUDE_SHEET = 'マスタ除外コード';
+
+let _masterExcludeKeysCache_ = null; // 1回の実行内でシートを読むのは1度だけ
+
+function _masterExcludeKeySet_() {
+  if (_masterExcludeKeysCache_) return _masterExcludeKeysCache_;
+  const keys = new Set();
+  MASTER_EXCLUDE_CODES.forEach(c => { const k = _masterPrimaryCodeKey_(c); if (k) keys.add(k); });
+  try {
+    const sh = SpreadsheetApp.getActive().getSheetByName(MASTER_EXCLUDE_SHEET);
+    if (sh) {
+      const last = sh.getLastRow();
+      if (last >= 2) {
+        sh.getRange(2, 1, last - 1, 1).getValues().forEach(r => {
+          const k = _masterPrimaryCodeKey_(r[0]);
+          if (k) keys.add(k);
+        });
+      }
+    }
+  } catch (e) {} // シートが読めなくても配列側の既定で動く
+  _masterExcludeKeysCache_ = keys;
+  return keys;
+}
 
 function _masterIsExcludedCode_(code) {
   const key = _masterPrimaryCodeKey_(code);
   if (!key) return false;
-  return MASTER_EXCLUDE_CODES.some(c => _masterPrimaryCodeKey_(c) === key);
+  return _masterExcludeKeySet_().has(key);
+}
+
+// メニュー用: 「マスタ除外コード」シートを作成し、配列側の既定コードを追記する
+function 商品マスタ_除外コードシートを作成() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(MASTER_EXCLUDE_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(MASTER_EXCLUDE_SHEET);
+    sh.getRange(1, 1).setValue('商品マスタ除外コード').setFontWeight('bold').setFontSize(12);
+    sh.getRange(1, 2).setValue('← ふろく等の共通コード。A2以降に1行1コードで追加すると、マスタ登録・自動補完の対象外になる')
+      .setFontColor('#888888');
+    sh.setColumnWidth(1, 220);
+    sh.setColumnWidth(2, 600);
+    sh.setFrozenRows(1);
+  }
+  const last = sh.getLastRow();
+  const existing = new Set();
+  if (last >= 2) {
+    sh.getRange(2, 1, last - 1, 1).getValues().forEach(r => {
+      const k = _masterPrimaryCodeKey_(r[0]);
+      if (k) existing.add(k);
+    });
+  }
+  const toAdd = MASTER_EXCLUDE_CODES.filter(c => {
+    const k = _masterPrimaryCodeKey_(c);
+    return k && !existing.has(k);
+  });
+  if (toAdd.length) sh.getRange(sh.getLastRow() + 1, 1, toAdd.length, 1).setValues(toAdd.map(c => [c]));
+  _masterExcludeKeysCache_ = null; // 次の判定でシートを読み直す
+  ss.toast('マスタ除外コードシートを更新しました（追加 ' + toAdd.length + '件）', '🚫 マスタ除外コード', 5);
 }
 
 
