@@ -1016,7 +1016,10 @@ const DAEGU_HACHU_MASTER_CFG = {
   HACHU_NAME: 9,     // I列 商品名
   HACHU_ITEM: 14,    // N列 品目
   HACHU_WEIGHT: 15,  // O列 重さ
-  HACHU_PRICE: 16    // P列 価格
+  HACHU_PRICE: 16,   // P列 価格
+  // コード入力時にマスタから自動補完するのは重さだけ。
+  // 商品名/品目/価格/業者は毎回発注リスト側に手入力し、その最新値がマスタへ流れる。
+  AUTOFILL_WEIGHT_ONLY: true
 };
 
 /************************************************************
@@ -1624,13 +1627,8 @@ function 商品マスタ_発注ソースから更新_(sourceCfg, sourceLabel, si
         const nextText = String(nextValue ?? '').trim();
         if (currentText === nextText) return;
 
-        // 重さだけは発注リスト側が正（常に上書き）。
-        // それ以外(コード表記/業者/商品名/品目/価格)は商品マスタで管理するため、
-        // マスタに値が入っている項目は上書きしない（空欄だけ補完する）。
-        // ※Promotional Item のような共通コードが、発注リストの別業者の行で
-        //   マスタを毎回戻してしまう問題への対策。
-        if (field.name !== 'weight' && currentText !== '') return;
-
+        // 発注リスト大邱の最新値でマスタをどんどん更新する（発注リストが正）。
+        // 共通コード(Promotional Item等)は sourceByCode 構築時点で除外済み。
         row[field.index] = nextValue;
         updatedCells++;
         rowChanged = true;
@@ -1663,7 +1661,7 @@ function 商品マスタ_発注ソースから更新_(sourceCfg, sourceLabel, si
       `更新セル：${updatedCells}件\n` +
       `商品コード統合：${uniqueResult.groups}件\n` +
       `重複削除：${uniqueResult.deleted}行\n\n` +
-      '重さは発注リストを正として上書き。\nほかの項目はマスタに値があれば残し、空欄だけ補完しています。'
+      '発注リスト大邱の最新値でマスタを更新しています（除外コードは対象外・空欄では消しません）。'
     );
 
     return {
@@ -1695,19 +1693,22 @@ function autofillHachuByCfg_(e, sheetCfg){
   const master=_masterMap();
   for(let row=firstRow;row<=lastRow;row++){
     const code=String(sh.getRange(row,sheetCfg.HACHU_CODE).getValue()).trim(); if(!code) continue;
-    if(_masterIsExcludedCode_(code)) continue; // 共通コードは自動補完しない(業者/商品名/品目は行ごとに手入力)
-    let vendor=String(sh.getRange(row,sheetCfg.HACHU_VENDOR).getValue()).trim();
+    if(_masterIsExcludedCode_(code)) continue; // 共通コードは自動補完しない(全項目を行ごとに手入力)
     const rec=_masterGetByCode_(master.bestByCode, code);
     if(!rec) continue;
 
-    if(_masterHasValue_(rec.name)) sh.getRange(row,sheetCfg.HACHU_NAME).setValue(rec.name);
-    if(_masterHasValue_(rec.item)) sh.getRange(row,sheetCfg.HACHU_ITEM).setValue(rec.item);
-    if(!vendor && _masterHasValue_(rec.vendor)){
-      vendor=String(rec.vendor || '').trim();
-      sh.getRange(row,sheetCfg.HACHU_VENDOR).setValue(vendor);
+    // AUTOFILL_WEIGHT_ONLY: マスタから返すのは重さだけ（発注リスト大邱用）。
+    // 商品名/品目/価格/業者は発注リスト側の入力が正で、マスタ更新で吸い上げる。
+    if(!sheetCfg.AUTOFILL_WEIGHT_ONLY){
+      let vendor=String(sh.getRange(row,sheetCfg.HACHU_VENDOR).getValue()).trim();
+      if(_masterHasValue_(rec.name)) sh.getRange(row,sheetCfg.HACHU_NAME).setValue(rec.name);
+      if(_masterHasValue_(rec.item)) sh.getRange(row,sheetCfg.HACHU_ITEM).setValue(rec.item);
+      if(!vendor && _masterHasValue_(rec.vendor)){
+        vendor=String(rec.vendor || '').trim();
+        sh.getRange(row,sheetCfg.HACHU_VENDOR).setValue(vendor);
+      }
+      if(_masterHasValue_(rec.price)) sh.getRange(row,sheetCfg.HACHU_PRICE).setValue(rec.price);
     }
-
-    if(_masterHasValue_(rec.price)) sh.getRange(row,sheetCfg.HACHU_PRICE).setValue(rec.price);
     if(_masterHasValue_(rec.weight)) sh.getRange(row,sheetCfg.HACHU_WEIGHT).setValue(rec.weight);
   }
 }
@@ -1898,9 +1899,7 @@ function 商品マスタ_候補行を商品コードで反映_(master, candidate
       const nextText = String(nextValue ?? '').trim();
       if (currentText === nextText) return;
 
-      // 重さ以外はマスタが正: 値が入っている項目は上書きしない（空欄だけ補完）
-      if (field.name !== 'weight' && currentText !== '') return;
-
+      // 発注側の最新値でマスタをどんどん更新する（発注リストが正）
       row[field.index] = nextValue;
       updatedCells++;
       rowChanged = true;
