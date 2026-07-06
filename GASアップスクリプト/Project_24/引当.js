@@ -22,6 +22,9 @@ function onOpen(){
   ui.createMenu('📥 受注・共通')
     .addItem('📥 最新CSVを取込(受注明細)', '取込_最新CSV')
     .addItem('🔢 商品コードで引当(商品コード入力シートの在庫で)', '商品コード引当')
+    .addItem('🧾 消込台帳を更新(発送済みの検知/確認)', '消込台帳を更新')
+    .addItem('🧾 発送済みCSVを台帳へ一括取込(移行用)', '消込台帳_発送済みCSV取込')
+    .addItem('📝 P列に注文番号を自動記入(発注共有へ)', 'P列に注文番号を自動記入')
     .addSeparator()
     .addItem('🙈 色なし注文を除外/全表示(切替)', '色なし注文の除外切替')
     .addItem('🧱 注文ごとの罫線を引き直す', '注文罫線を引く')
@@ -381,7 +384,10 @@ function 取込_最新CSV(){
     sh.getRange(startRow, 入荷C+1, out.length, 1).setValues(out);
   }
 
-  ss.toast('取込完了：'+latest.getName()+' / 受注'+body.length+'行（更新 '+upd+' / 入荷日引継 '+引継+'件）','GoQ取込',6);
+  // 消込台帳を更新: 前回いて今回消えた注文=発送済み(他の人が発送した分)を検知
+  const 台帳=消込台帳更新_();
+  ss.toast('取込完了：'+latest.getName()+' / 受注'+body.length+'行（更新 '+upd+' / 入荷日引継 '+引継+'件'
+    +(台帳.新規出荷済? ' / 🧾出荷済み検知'+台帳.新規出荷済+'件':'')+'）','GoQ取込',6);
 }
 
 // 注文ごと(受注番号が変わる境目)に太い下線を引く。全体には薄い格子。
@@ -554,6 +560,8 @@ function 引当実行(){
   const ss=SpreadsheetApp.getActive(), cfg=HIKIATE_CFG;
   const recv=ss.getSheetByName(cfg.受注);
   if(!recv){ SpreadsheetApp.getUi().alert('「'+cfg.受注+'」タブが無いで'); return; }
+  消込台帳更新_(); // 受注明細から消えた注文(発送済み)を検知して台帳を最新化
+  try{ 発注共有P列記入_(); }catch(e){} // 発注共有EMSリストのP列(注文番号)も自動記入(開けない時は黙ってスキップ)
   const R=recv.getDataRange().getValues();
 
   // 受注明細→行オブジェクト(列は見出し名で特定。並び替え・列追加に強い)
@@ -595,9 +603,44 @@ function 引当実行(){
   const findAvail=l=>{ for(const k of candKeys(l)){ if(stock[k]>0) return k; if(aliasMap[k]&&stock[aliasMap[k]]>0) return aliasMap[k]; } return null; };
   // 入荷日あり(もう割当済)を在庫から先に差し引く
   lines.filter(l=>l.kbn==='取り寄せ' && l.入荷).forEach(l=>{ const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
-  // 残りを未着の取り寄せに引き当て(古い注文順)
-  lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=>{
-    const k=findAvail(l); if(k){ const got=Math.min(l.qty, stock[k]); stock[k]-=got; l.alloc=got; l.matchedKey=k; }
+  // 出荷済み(受注明細から消えた注文=消込台帳)の分も差し引く(発送済み品が余り=日本在庫に二重計上されるのを防ぐ)
+  const 出荷済行=消込台帳_出荷済み行_();
+  出荷済行.forEach(l=>{ const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
+  // 【確定引き当て】発注共有ファイルEMSリストのP列(注文番号)で名指しされた分を最優先で割り当てる
+  const 確定=P列確定マップ_(); let 確定行数=0;
+  lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.qty>0 && 確定[l.ban]).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=>{
+    const cand=candKeys(l); let took=0;
+    確定[l.ban].forEach(e=>{
+      if(l.alloc>=l.qty || e.qty<=0) return;
+      // P列の行のコード(e.key)がこの受注行の候補キー(別名込み)に含まれるか
+      if(!cand.some(k=> k===e.key || aliasMap[k]===e.key)) return;
+      const take=Math.min(l.qty-l.alloc, e.qty, stock[e.key]||0);
+      if(take<=0) return;
+      stock[e.key]-=take; e.qty-=take; l.alloc+=take; took+=take;
+      if(!l.matchedKey) l.matchedKey=e.key;
+    });
+    if(took>0) 確定行数++;
+    l.引当成立 = l.alloc>=l.qty && l.qty>0;
+  });
+  // 【確定引き当て・コード不一致救済】REQ系(人名リクエスト)や月号付きコードは受注側とコードが一致しない。
+  // その行の商品コードがEMS在庫のどこにも無い場合に限り、P列の名指し(受注番号)だけを信じて割り当てる。
+  // ※「在庫がある別の行」が他の商品の名指し分を横取りしないよう keyInStock==null の行に限定
+  lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.qty>0 && l.alloc<l.qty && 確定[l.ban] && keyInStock(l)==null)
+    .sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=>{
+    let took=0;
+    確定[l.ban].forEach(e=>{
+      if(l.alloc>=l.qty || e.qty<=0) return;
+      const take=Math.min(l.qty-l.alloc, e.qty, stock[e.key]||0);
+      if(take<=0) return;
+      stock[e.key]-=take; e.qty-=take; l.alloc+=take; took+=take;
+      if(!l.matchedKey) l.matchedKey=e.key;
+    });
+    if(took>0) 確定行数++;
+    l.引当成立 = l.alloc>=l.qty && l.qty>0;
+  });
+  // 残り(名指しなし・名指しで足りない分)を未着の取り寄せに引き当て(古い注文順のFIFO)
+  lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.alloc<l.qty).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=>{
+    const k=findAvail(l); if(k){ const got=Math.min(l.qty-l.alloc, stock[k]); stock[k]-=got; l.alloc+=got; if(!l.matchedKey) l.matchedKey=k; }
     l.引当成立 = l.alloc>=l.qty && l.qty>0;
   });
 
@@ -698,15 +741,16 @@ function 引当実行(){
   const jpRows=[]; // 純日本在庫(行ごとの余り。EMS番号付き)
   // ===== 今回入荷EMSの在庫(台帳・色付き): 各EMS行に 状態と引き当てた受注番号 を出力 =====
   {
-    // コードごとの消費者キュー(割当済=入荷日あり → 引当=今回 の順)
+    // コードごとの消費者キュー(出荷済み=もう発送 → 割当済=入荷日あり → 引当=今回 の順)
     const consumersByCode={};
-    const pushCons=(l, qty, kind)=>{ const k=keyInStock(l); if(k==null||qty<=0) return; (consumersByCode[k]=consumersByCode[k]||[]).push({qty, ban:l.ban, kind}); };
+    const pushCons=(l, qty, kind)=>{ const k=l.matchedKey||keyInStock(l); if(k==null||qty<=0) return; (consumersByCode[k]=consumersByCode[k]||[]).push({qty, ban:l.ban, kind}); }; // 確定引当(コード不一致救済含む)はmatchedKeyの行に記帳
+    出荷済行.forEach(l=> pushCons(l, l.qty, '出荷済'));                                                  // 消込台帳の出荷済み(発送済みで受注明細から消えた分)
     lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0).forEach(l=> pushCons(l, l.qty, '割当済'));   // 入荷日あり(もう割当済)
     lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.alloc>0).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=> pushCons(l, l.alloc, '引当')); // 今回引き当て
     const ptr={};
     const consumeRow=(code, qty)=>{
       const q=consumersByCode[code]||[]; const st=ptr[code]||{i:0,used:0};
-      const got={割当済:[], 引当:[]}; let left=qty;
+      const got={出荷済:[], 割当済:[], 引当:[]}; let left=qty;
       while(left>0 && st.i<q.length){
         const e=q[st.i], avail=e.qty-st.used, take=Math.min(left, avail);
         if(take>0){ if(got[e.kind].indexOf(e.ban)<0) got[e.kind].push(e.ban); st.used+=take; left-=take; }
@@ -722,12 +766,14 @@ function 引当実行(){
       let col=null, surplus=0; const cells=[]; // cells={ban,color}
       if(qty>0){
         const r=consumeRow(c, qty);
+        r.got.出荷済.forEach(b=> cells.push({ban:b, color: cfg.色_グレー}));                        // 出荷済み=グレー(もう発送した分)
         r.got.割当済.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_着 : cfg.色_赤})); // 割当済=ラベンダー(未入金は赤)
         r.got.引当.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_黄 : cfg.色_赤}));   // 今回引当=黄(未入金は赤)
         cells.sort((a,b)=> 番号num_(a.ban)-番号num_(b.ban)); // 古い注文を左・新しいを右
         surplus=r.surplus;
         if(r.got.引当.length) col = r.surplus>0 ? cfg.色_緑 : cfg.色_黄; // 引当+余りあり=緑 / 全引当=黄
         else if(r.got.割当済.length) col=cfg.色_着;                   // もう割当済=ラベンダー
+        else if(r.got.出荷済.length) col=cfg.色_グレー;               // 出荷済みが取った分=グレー
         if(r.surplus>0) jpRows.push([row[0], 到着_(row), c, r.surplus, row[EC.EMS番号]]); // 状態/到着日/商品コード/余り数/EMS番号
       }
       const vals=[row[0], 到着_(row), c, qty, row[EC.EMS番号], surplus>0?surplus:''].concat(cells.map(x=>x.ban));
@@ -735,22 +781,24 @@ function 引当実行(){
       ledgerRows.push({vals, bg});
     });
     const maxCols=ledgerRows.reduce((m,r)=>Math.max(m,r.vals.length), EHDR.length);
-    let esh=ss.getSheetByName(cfg.日本在庫)||ss.insertSheet(cfg.日本在庫);
-    esh.clear();
+    let esh=ss.getSheetByName(cfg.日本在庫), esh新規=!esh; if(!esh) esh=ss.insertSheet(cfg.日本在庫);
+    シート値クリア_(esh); // 値・色だけ入れ替え(列幅・行高・中央揃えは保持)
     esh.getRange(1,1).setValue('最終引当: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm:ss')+' / '+ledgerRows.length+'件');
     const header=EHDR.slice(); while(header.length<maxCols) header.push('');
     esh.getRange(2,1,1,maxCols).setValues([header]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(cfg.字);
-    esh.setFrozenRows(2); esh.setRowHeight(2, cfg.行高);
+    esh.setFrozenRows(2); if(esh新規) esh.setRowHeight(2, cfg.行高);
     if(ledgerRows.length){
       const vals=ledgerRows.map(r=>{ const v=r.vals.slice(); while(v.length<maxCols) v.push(''); return v; });
       const bgs=ledgerRows.map(r=>{ const b=r.bg.slice(); while(b.length<maxCols) b.push(null); return b; });
       const rng=esh.getRange(3,1,vals.length,maxCols);
       rng.setValues(vals).setFontSize(cfg.字);
       rng.setBackgrounds(bgs);
-      esh.setRowHeights(3, vals.length, cfg.行高);
+      if(esh新規) esh.setRowHeights(3, vals.length, cfg.行高);
       esh.getRange(3,2,vals.length,1).setNumberFormat('yyyy-mm-dd'); // 到着日(B列)を 2026-07-02 形式に
-      [90,90,210,70,150,60].forEach((w,c)=> esh.setColumnWidth(c+1,w)); // 状態/到着日/商品コード/数量/EMS番号/余り
-      for(let c=6;c<maxCols;c++) esh.setColumnWidth(c+1,105); // 受注番号セルの幅
+      if(esh新規){
+        [90,90,210,70,150,60].forEach((w,c)=> esh.setColumnWidth(c+1,w)); // 状態/到着日/商品コード/数量/EMS番号/余り
+        for(let c=6;c<maxCols;c++) esh.setColumnWidth(c+1,105); // 受注番号セルの幅
+      }
     } else {
       esh.getRange(3,1).setValue('(EMS在庫なし)');
     }
@@ -759,16 +807,18 @@ function 引当実行(){
   // ===== 純粋な日本在庫(EMSで引き当たらず余った分)を行ごと(EMS番号付き)に出力 =====
   {
     const JHDR=['状態','到着日','商品コード','余り数(日本在庫)','EMS番号'];
-    let jsh=ss.getSheetByName(cfg.純在庫)||ss.insertSheet(cfg.純在庫);
-    jsh.clear();
+    let jsh=ss.getSheetByName(cfg.純在庫), jsh新規=!jsh; if(!jsh) jsh=ss.insertSheet(cfg.純在庫);
+    シート値クリア_(jsh); // 値・色だけ入れ替え(書式は保持)
     jsh.getRange(1,1).setValue('最終引当: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm:ss')+' / '+jpRows.length+'件');
     jsh.getRange(2,1,1,JHDR.length).setValues([JHDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(cfg.字);
-    jsh.setFrozenRows(2); jsh.setRowHeight(2, cfg.行高);
+    jsh.setFrozenRows(2); if(jsh新規) jsh.setRowHeight(2, cfg.行高);
     if(jpRows.length){
       jsh.getRange(3,1,jpRows.length,JHDR.length).setValues(jpRows).setFontSize(cfg.字);
       jsh.getRange(3,2,jpRows.length,1).setNumberFormat('yyyy-mm-dd'); // 到着日(B列)を 2026-07-02 形式に
-      jsh.setRowHeights(3, jpRows.length, cfg.行高);
-      [90,90,210,120,150].forEach((w,c)=> jsh.setColumnWidth(c+1,w)); // 状態/到着日/商品コード/余り数/EMS番号
+      if(jsh新規){
+        jsh.setRowHeights(3, jpRows.length, cfg.行高);
+        [90,90,210,120,150].forEach((w,c)=> jsh.setColumnWidth(c+1,w)); // 状態/到着日/商品コード/余り数/EMS番号
+      }
     } else { jsh.getRange(3,1).setValue('(日本在庫なし)'); }
   }
 
@@ -792,7 +842,7 @@ function 引当実行(){
   抽出フラグ更新_(); // 受注明細の「抽出」列(○=色あり/×=色なし)を更新→普通のフィルタで絞れる
   const 隠れ = recv.getFilter()? 'フィルタON' : (PropertiesService.getDocumentProperties().getProperty('色なし除外中')==='1'? '🙈色なし除外中' : '');
   const filt = 隠れ? ' ⚠️'+隠れ+'(行が隠れてるかも→🔻フィルタ確認/解除で全解除)' : '';
-  SpreadsheetApp.getActive().toast(`引当完了：出荷可能${ship} / 出荷GO未入金${keep} / 希望日待ち${hold} / 部分在庫${part} / 引当待ち${ord-ship-keep-hold-part}（うち入金待ち${mp}）｜入荷日自動${自動入荷}件${filt}`);
+  SpreadsheetApp.getActive().toast(`引当完了：出荷可能${ship} / 出荷GO未入金${keep} / 希望日待ち${hold} / 部分在庫${part} / 引当待ち${ord-ship-keep-hold-part}（うち入金待ち${mp}）｜入荷日自動${自動入荷}件｜P列確定${確定行数}行｜出荷済み消込${出荷済行.length}件${filt}`);
 }
 
 // EMS在庫の引当色分け: 在庫から まず入荷日あり(割当済)を差引き、残りを入荷日なし(未着)の人へ引当
@@ -822,6 +872,8 @@ function EMS消込色付け_(){
     const 入荷=M.入荷>=0 && String(row[M.入荷]||'').trim()!=='';
     if(入荷) need済[k]=(need済[k]||0)+qty; else need未[k]=(need未[k]||0)+qty;
   }
+  // 出荷済み(消込台帳)の分も「処理済みの取り分」として色なし側に加える
+  消込台帳_出荷済み行_().forEach(l=>{ const k=keyOf(l); if(k) need済[k]=(need済[k]||0)+l.qty; });
   // コードごと: 在庫から入荷済の取り分(色なし)を除き、残りを未着へ引当(色付け)
   const skipLeft={}, colorLeft={};
   Object.keys(orig).forEach(k=>{
@@ -891,17 +943,17 @@ function 在庫照合レポート(){
 
   const HDR=['在庫コード','在庫数','取り寄せ要求','引当済','残在庫','不足'];
   const hr=受注ヘッダー行_(recv), dr=hr+1; // 受注明細とヘッダー行をそろえる
-  let sh=ss.getSheetByName('照合レポート')||ss.insertSheet('照合レポート');
-  sh.clear();
+  let sh=ss.getSheetByName('照合レポート'), 新規=!sh; if(!sh) sh=ss.insertSheet('照合レポート');
+  シート値クリア_(sh); // 値・色だけ入れ替え(書式は保持)
   sh.getRange(hr,1,1,6).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(cfg.字);
   sh.setFrozenRows(hr);
-  sh.setRowHeight(hr, cfg.行高);
+  if(新規) sh.setRowHeight(hr, cfg.行高);
   if(rows.length){
     sh.getRange(dr,1,rows.length,6).setValues(rows).setFontSize(cfg.字);
-    sh.setRowHeights(dr, rows.length, cfg.行高);
+    if(新規) sh.setRowHeights(dr, rows.length, cfg.行高);
     const bg=rows.map(r=> new Array(6).fill( r[5]>0?cfg.色_赤 : (r[4]>0?cfg.色_黄:null) )); // 不足=赤 / 在庫余り=黄
     sh.getRange(dr,1,rows.length,6).setBackgrounds(bg);
-    [220,80,100,80,80,80].forEach((w,c)=> sh.setColumnWidth(c+1,w));
+    if(新規) [220,80,100,80,80,80].forEach((w,c)=> sh.setColumnWidth(c+1,w));
   }
   ss.toast('照合レポート作成：'+rows.length+'コード（不足=赤 / 在庫余り=黄）','🔍レポート',6);
 }
@@ -1329,10 +1381,20 @@ function 商品コード引当(){
   ss.toast('商品コード引当 完了：'+summaryStr, '🔢 商品コード', 8);
 }
 
+// 出力シートの中身(値・背景色・罫線)だけを消す。列幅・行高・文字揃え・フォント等の書式は保つ
+// → 一度手で整えたレイアウトが、引き当てのたびにリセットされないように
+function シート値クリア_(sh){
+  const mr=sh.getMaxRows(), mc=sh.getMaxColumns();
+  const r=sh.getRange(1,1,mr,mc);
+  r.clearContent();
+  r.setBackgrounds(Array.from({length:mr},()=>new Array(mc).fill(null)));
+  r.setBorder(false,false,false,false,false,false);
+}
+
 function 書き出し_(ss, name, hdr, rows, startRow){
   const hr=startRow||1, dr=hr+1; // hr=見出し行 / dr=データ開始行
-  let sh=ss.getSheetByName(name); if(!sh) sh=ss.insertSheet(name);
-  sh.clear();
+  let sh=ss.getSheetByName(name), 新規=!sh; if(!sh) sh=ss.insertSheet(name);
+  シート値クリア_(sh); // 値・色・罫線だけ入れ替え(列幅・行高・中央揃えは保持)
   // 押すたびに変わる印(最終引当の時刻＋行数)をA1に表示
   sh.getRange(1,1).setValue('最終引当: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm:ss')+' / '+rows.length+'行');
   const ncol=hdr.length;
@@ -1340,13 +1402,13 @@ function 書き出し_(ss, name, hdr, rows, startRow){
     .setFontWeight('bold').setFontColor('#ffffff').setBackground('#4472c4').setHorizontalAlignment('center');
   sh.setFrozenRows(hr);
   sh.getRange(hr,1,1,ncol).setFontSize(HIKIATE_CFG.字);
-  sh.setRowHeight(hr, HIKIATE_CFG.行高);
+  if(新規) sh.setRowHeight(hr, HIKIATE_CFG.行高);
   if(rows.length===0){ sh.getRange(dr,1).setValue('(対象なし)'); return; }
 
   const rng=sh.getRange(dr,1,rows.length,ncol);
   rng.setValues(rows.map(r=>r.vals));
   rng.setFontSize(HIKIATE_CFG.字);
-  sh.setRowHeights(dr, rows.length, HIKIATE_CFG.行高);
+  if(新規) sh.setRowHeights(dr, rows.length, HIKIATE_CFG.行高);
   rng.setBackgrounds(rows.map(r=>{ const a=new Array(ncol).fill(r.color);
     if(r.paid===false) a[0]=HIKIATE_CFG.色_赤;          // 未入金は受注番号セル赤
     if(r.qty>=2 && ncol>5) a[5]=HIKIATE_CFG.色_緑;      // 個数2以上は個数セル緑(見間違い防止)
@@ -1357,5 +1419,5 @@ function 書き出し_(ss, name, hdr, rows, startRow){
     if(i===rows.length-1 || rows[i+1].ban!==rows[i].ban)
       sh.getRange(dr+i,1,1,ncol).setBorder(null,null,true,null,null,null,'#000000',SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
   }
-  [150,110,100,150,360,55,80,70,55,95,150].forEach((w,c)=> { if(c<ncol) sh.setColumnWidth(c+1,w); });
+  if(新規) [150,110,100,150,360,55,80,70,55,95,150].forEach((w,c)=> { if(c<ncol) sh.setColumnWidth(c+1,w); });
 }
