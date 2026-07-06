@@ -1087,7 +1087,17 @@ function _masterExcludeKeySet_() {
   return keys;
 }
 
+// リクエスト注文などの「ラベル」判定：商品コードに半角英数字が1文字も無いもの。
+// 例) 森 富士子 / 小杉山 由乃 / 自家用 / ★コピペ → true（マスタ対象外）
+// 本物の商品コードは必ず英数字を含む（KRSJCM03、TUMBL48-5-페네로페 等）ので誤判定しない。
+function _masterIsLabelCode_(code) {
+  const raw = String(code || '').normalize('NFKC').trim();
+  if (!raw) return false;
+  return !/[0-9A-Za-z]/.test(raw);
+}
+
 function _masterIsExcludedCode_(code) {
+  if (_masterIsLabelCode_(code)) return true; // 人名・自家用・★コピペ等のラベルは商品マスタで管理しない
   const key = _masterPrimaryCodeKey_(code);
   if (!key) return false;
   return _masterExcludeKeySet_().has(key);

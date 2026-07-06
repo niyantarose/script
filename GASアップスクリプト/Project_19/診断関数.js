@@ -118,3 +118,37 @@ function 商品マスタ_健康診断() {
   Logger.log(msg);
   ss.toast('商品マスタ健康診断 完了（実行ログ参照）', '🩺 診断', 5);
 }
+
+// ==== 一時デバッグ: 小杉山行がマスタ更新されない原因調査(調査後削除OK) ====
+function DEBUG_小杉山チェック() {
+  const sourceCfg = DAEGU_HACHU_MASTER_CFG;
+  const ss = SpreadsheetApp.getActive();
+  const source = ss.getSheetByName(sourceCfg.HACHU_SHEET);
+  const master = ss.getSheetByName(CFG.MASTER_SHEET);
+  const sourceStart = sourceCfg.HACHU_HEADER_ROW + 1;
+  const sourceLast = source.getLastRow();
+  const sourceWidth = Math.max(sourceCfg.HACHU_CODE, sourceCfg.HACHU_VENDOR, sourceCfg.HACHU_NAME,
+    sourceCfg.HACHU_ITEM, sourceCfg.HACHU_PRICE, sourceCfg.HACHU_WEIGHT || 0);
+  const sv = source.getRange(sourceStart, 1, sourceLast - sourceStart + 1, sourceWidth).getValues();
+  let found = 0;
+  for (let i = 0; i < sv.length; i++) {
+    const code = String(sv[i][sourceCfg.HACHU_CODE - 1] || '').trim();
+    if (code.indexOf('小杉山') < 0) continue;
+    found++;
+    Logger.log('src row ' + (sourceStart + i) + ' code=[' + code + '] key=[' + _masterPrimaryCodeKey_(code) +
+      '] name=[' + sv[i][sourceCfg.HACHU_NAME - 1] + '] excluded=' + _masterIsExcludedCode_(code));
+  }
+  Logger.log('source hits: ' + found);
+  const mStart = CFG.MASTER_HEADER_ROW + 1;
+  const mRows = master.getLastRow() - CFG.MASTER_HEADER_ROW;
+  const mv = master.getRange(mStart, CFG.M_CODE, mRows, 6).getValues();
+  let mfound = 0;
+  for (let i = 0; i < mv.length; i++) {
+    const code = String(mv[i][0] || '').trim();
+    if (code.indexOf('小杉山') < 0) continue;
+    mfound++;
+    Logger.log('master row ' + (mStart + i) + ' code=[' + code + '] key=[' + _masterPrimaryCodeKey_(code) +
+      '] name=[' + mv[i][2] + ']');
+  }
+  Logger.log('master hits: ' + mfound + ' / masterヘッダー行=' + CFG.MASTER_HEADER_ROW + ' / master最終行=' + master.getLastRow());
+}
