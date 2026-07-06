@@ -9,6 +9,8 @@ const DAEGU_CFG = {
   HACHU_SRC: '発注リスト大邱データ',
   HACHU_DST: '発注',
   HACHU_START_ROW: 7,
+  HACHU_SRC_DATA_START: 6, // 発注リスト大邱データのデータ開始行(1-3=ボタン, 4=日本語見出し, 5=英語見出し)。
+                           // ヘッダー行の判定はこの行番号で行うので、見出し名(DorderDate等)は自由に変更してよい。
   EMS_SRC: 'EMS大邱作業データ',
   EMS_DST: 'EMSリスト',
 };
@@ -132,11 +134,11 @@ function 大邱_発注へ転送() {
     const appendRows = [];
     const appendSrcRows = []; // 背景色コピー用に元の行番号(1始まり)も保持
     for (let i = 0; i < sVals.length; i++) {
+      if (i + 1 < DAEGU_CFG.HACHU_SRC_DATA_START) continue; // 1-5行(ボタン/見出し)はデータでない=見出し名を変えても安全
       const r = sVals[i];
       const orderNo = EMS_転送購入Noキー_(r[5]);    // F 発注NO
       const code = 大邱_表示コード_(r[10]);          // K 商品コード
       if (!orderNo || !code) continue;
-      if (/発注NO|OrderNo/i.test(orderNo)) continue; // ヘッダー除外
       const key = orderNo;
       if (existing.has(key)) continue;
       existing.add(key);
@@ -249,8 +251,9 @@ function 大邱_発注の背景色を大邱に合わせる() {
     const srcBg = src.getRange(1, 1, sLast, scanCols).getBackgrounds();
     const colorByKey = {};
     for (let i = 0; i < sLast; i++) {
+      if (i + 1 < DAEGU_CFG.HACHU_SRC_DATA_START) continue; // 1-5行(ボタン/見出し)は対象外
       const key = EMS_転送購入Noキー_(sVals[i][0]);
-      if (!key || /発注NO|OrderNo/i.test(key)) continue;
+      if (!key) continue;
       if (!(key in colorByKey)) colorByKey[key] = _大邱_行ハイライト色_(srcBg[i]);
     }
 
@@ -1684,10 +1687,11 @@ function EMS大邱_購入No初回補完() {
     // 発注大邱: 商品コード別名 -> 行順の発注ライン [{no, qty}]（先入先出）
     const hVals = hac.getDataRange().getValues();
     const orderLines = {};
-    hVals.forEach(r => {
+    hVals.forEach((r, idx) => {
+      if (idx + 1 < DAEGU_CFG.HACHU_SRC_DATA_START) return; // 1-5行(ボタン/見出し)は対象外
       const no = String(r[5] || '').trim();        // F 発注NO(=一意購入No)
       const codeRaw = String(r[10] || '').trim();   // K 商品コード
-      if (!no || !codeRaw || /発注NO|OrderNo/i.test(no)) return;
+      if (!no || !codeRaw) return;
       const line = { no: no, qty: Number(r[11]) || 0, remaining: Number(r[11]) || 0 };
       枝番_コードキー_(codeRaw).forEach(code => {
         (orderLines[normCode_(code)] = orderLines[normCode_(code)] || []).push(line);
@@ -1770,8 +1774,9 @@ function 大邱発注_チェックと残り数量を設置() {
   const fVals = sh.getRange(1, 6, lastRow, 1).getValues(); // F列
   let firstData = -1, lastData = -1;
   for (let i = 0; i < fVals.length; i++) {
+    if (i + 1 < DAEGU_CFG.HACHU_SRC_DATA_START) continue; // 1-5行(ボタン/見出し)はデータでない
     const f = String(fVals[i][0] || '').trim();
-    if (f && !/発注NO|OrderNo|DorderDate/i.test(f)) { if (firstData < 0) firstData = i + 1; lastData = i + 1; }
+    if (f) { if (firstData < 0) firstData = i + 1; lastData = i + 1; }
   }
   if (firstData < 0) { ui.alert('データ行が見つかりません。'); return; }
   const n = lastData - firstData + 1;
@@ -2096,6 +2101,7 @@ function 大邱発注_送信対象スキャン_(src, L) {
   const skipped = [];         // チェックされたが購入No/商品コードが空で送らない行
   const uncheckedData = [];   // 未チェックだが購入No/コードあり＝送ってはいけない行
   for (let i = 0; i < sVals.length; i++) {
+    if (i + 1 < DAEGU_CFG.HACHU_SRC_DATA_START) continue; // 1-5行(ボタン/見出し)は送信対象外
     const r = sVals[i];
     const isChecked = (r[0] === true);            // A列チェック
     const no = EMS_転送購入Noキー_(r[5]);         // F 購入No
@@ -2225,8 +2231,9 @@ function EMS大邱_入荷日補完_() {
   const sVals = src.getRange(1, 3, sLast, 4).getValues(); // C..F（C=入荷日, F=発注NO）
   const dateByNo = {};
   for (let i = 0; i < sLast; i++) {
+    if (i + 1 < DAEGU_CFG.HACHU_SRC_DATA_START) continue; // 1-5行(ボタン/見出し)は対象外
     const no = EMS_転送購入Noキー_(sVals[i][3]);
-    if (!no || /発注NO|OrderNo/i.test(no)) continue;
+    if (!no) continue;
     if (EMS_値あり_(sVals[i][0]) && !(no in dateByNo)) dateByNo[no] = sVals[i][0];
   }
 

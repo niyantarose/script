@@ -81,7 +81,7 @@ function 発注共有P列記入_(){
     if(!pno||!code) continue;
     const m=pno.match(/^(\d{4})(\d{2})(\d{2})/); if(!m) continue; // 購入No.先頭8桁=発注日
     rows.push({ i, 末:new Date(+m[1],+m[2]-1,+m[3],23,59,59),
-      keys:codeKeys_(code), qty:Number(qy[i][0])||0, p:String(pv[i][0]||'').trim() });
+      keys:codeKeys_(code), 号:月号_(normCode_(code)), qty:Number(qy[i][0])||0, p:String(pv[i][0]||'').trim() });
   }
 
   // ---- 1周目: 既にP列にある分を必要数から差し引く(二重割当防止) ----
@@ -111,6 +111,7 @@ function 発注共有P列記入_(){
       if(left<=0) break;
       if(l.need<=0) continue;
       if(!l.shipped && l.date.getTime()>r.末.getTime()) continue; // 現役の注文だけ「注文日≦発注日」
+      if(!l.shipped && r.号 && 期待号_(l.date)!==r.号) continue;   // 月号付き(定期購読)は「注文月+1=その号」の注文だけ
       const t=Math.min(left,l.need); l.need-=t; left-=t;
       const prev=got.find(g=>g.ban===l.ban);
       if(prev) prev.take+=t; else got.push({ban:l.ban, take:t});

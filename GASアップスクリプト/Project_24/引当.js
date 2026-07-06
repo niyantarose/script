@@ -530,8 +530,21 @@ function codeKeys_(code){
   const c=normCode_(code); const keys=[c];
   const m=c.match(/^(.+)-(\d{2})(\d{2})-(\d{2})$/);
   if(m && (m[4]===m[2]||m[4]===m[3])) keys.push(m[1]+'-'+m[4]);
+  // 月号付き雑誌コード: 末尾の -YYMM / -YYYYMM (例 EBS1504B-2607, CSG1504--202607) を落とした基底コードも候補に
+  // GoQ側は月号なし(EBS1504B)で登録されているため。YY=2x・MM=01〜12の形だけ対象(巻数セット等の誤爆防止)
+  const mg=c.match(/^(.+?)-(?:20)?(2\d)(0[1-9]|1[0-2])$/);
+  if(mg){ const base=mg[1].replace(/-+$/,''); if(base && keys.indexOf(base)<0) keys.push(base); }
   return keys;
 }
+// ===== 定期購読の月号照合(例: EBS1504B_2607=7月号) =====
+// 商品ページのルール「ご注文月の翌月号をお届け」に合わせて、
+// 月号付き在庫(-YYMM/-YYYYMM)は「注文月+1＝その号」の注文にだけ引き当てる(号ズレ防止)。
+// 月号なしの在庫・注文日時が読めない行は無制限(従来通り)。P列の名指しは人の判断なので月号チェックを通さない。
+function 日付値_(v){ if(v instanceof Date) return isNaN(v.getTime())?null:v; const s=String(v||'').trim(); if(!s) return null; const d=new Date(s.replace(/\//g,'-')); return isNaN(d.getTime())?null:d; }
+function 月号_(code){ const m=String(code||'').match(/-(?:20)?(2\d)(0[1-9]|1[0-2])$/); return m? m[1]+m[2] : null; }   // 'EBS1504B-2607'→'2607'
+function 期待号_(d){ if(!d) return null; let y=d.getFullYear()%100, mo=d.getMonth()+2; if(mo>12){ mo-=12; y++; } return String(y)+('0'+mo).slice(-2); } // 注文月の翌月
+function 月号OK_(l, stockCode){ const g=月号_(stockCode); if(!g) return true; const e=期待号_(l.日時); return !e || e===g; }
+
 function 区分_(opt){
   const s=String(opt||'').trim();
   if(s==='') return '即納'; // 項目・選択肢が空 → 即納扱い
@@ -567,6 +580,8 @@ function 引当実行(){
   // 受注明細→行オブジェクト(列は見出し名で特定。並び替え・列追加に強い)
   // 着済(着いたか)の判定: 即納 or (取り寄せ かつ 入荷日あり)。取り寄せで入荷日なし=未着。
   const M=列マップ_(recv), 受注hdr=M.hr;
+  const 受注head=recv.getRange(M.hr,1,1,recv.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
+  const c日時=受注head.indexOf('注文日時'); // 月号照合(定期購読)用
   const lines=[];
   for(let i=受注hdr;i<R.length;i++){
     const row=R[i];
@@ -579,6 +594,7 @@ function 引当実行(){
     lines.push({ i, ban, sortKey:番号num_(ban),
       氏名:row[M.氏名], 届:row[M.届], 商品名:row[M.商品名],
       code, sku:String(row[M.SKU]||'').trim(), qty, kbn,
+      日時: c日時>=0? 日付値_(row[c日時]) : null,
       paid:入金済み_(row[M.入金]), 入荷, 入荷日値, 着, alloc:0, 引当成立:false, キャンセル:qty<=0 });
   }
 
@@ -599,8 +615,8 @@ function 引当実行(){
   const skuStrip_=s=>String(s||'').replace(/[A-Za-z]$/,'');
   const candKeys=l=>{ const cands=[]; if(l.sku){cands.push(skuStrip_(l.sku));cands.push(l.sku);} if(l.code)cands.push(l.code);
     const keys=[]; cands.forEach(v=> codeKeys_(v).forEach(k=>{ if(keys.indexOf(k)<0) keys.push(k); })); return keys; };
-  const keyInStock=l=>{ for(const k of candKeys(l)){ if(k in stock) return k; if(aliasMap[k] && aliasMap[k] in stock) return aliasMap[k]; } return null; };
-  const findAvail=l=>{ for(const k of candKeys(l)){ if(stock[k]>0) return k; if(aliasMap[k]&&stock[aliasMap[k]]>0) return aliasMap[k]; } return null; };
+  const keyInStock=l=>{ for(const k of candKeys(l)){ if(k in stock && 月号OK_(l,k)) return k; if(aliasMap[k] && aliasMap[k] in stock && 月号OK_(l,aliasMap[k])) return aliasMap[k]; } return null; };
+  const findAvail=l=>{ for(const k of candKeys(l)){ if(stock[k]>0 && 月号OK_(l,k)) return k; if(aliasMap[k]&&stock[aliasMap[k]]>0&&月号OK_(l,aliasMap[k])) return aliasMap[k]; } return null; };
   // 入荷日あり(もう割当済)を在庫から先に差し引く
   lines.filter(l=>l.kbn==='取り寄せ' && l.入荷).forEach(l=>{ const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
   // 出荷済み(受注明細から消えた注文=消込台帳)の分も差し引く(発送済み品が余り=日本在庫に二重計上されるのを防ぐ)
@@ -712,7 +728,7 @@ function 引当実行(){
       else if(l.kbn==='即納') col=cfg.色_水;
       else if(l.kbn==='指定なし') col=cfg.色_橙;
       else if(l.kbn==='取り寄せ'){
-        if(l.入荷) col = 入荷日今日_(l.入荷日値)? cfg.色_今着 : cfg.色_着; // 今日着(今回入荷)=濃い紫 / 過去の着済=薄ラベンダー
+        if(l.入荷) col = 入荷日今日_(l.入荷日値)? cfg.色_黄 : cfg.色_着; // 今日着(今回入荷)=黄(今日出せる分) / 過去の着済=薄ラベンダー
         else if(l.引当成立) col=cfg.色_黄;  // 今回EMS在庫が当たった=今回出せる
         // else: 在庫待ち=白(未入金は受注番号だけ赤)
       }
@@ -745,12 +761,13 @@ function 引当実行(){
     const consumersByCode={};
     const pushCons=(l, qty, kind)=>{ const k=l.matchedKey||keyInStock(l); if(k==null||qty<=0) return; (consumersByCode[k]=consumersByCode[k]||[]).push({qty, ban:l.ban, kind}); }; // 確定引当(コード不一致救済含む)はmatchedKeyの行に記帳
     出荷済行.forEach(l=> pushCons(l, l.qty, '出荷済'));                                                  // 消込台帳の出荷済み(発送済みで受注明細から消えた分)
-    lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0).forEach(l=> pushCons(l, l.qty, '割当済'));   // 入荷日あり(もう割当済)
+    lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0)
+      .forEach(l=> pushCons(l, l.qty, 入荷日今日_(l.入荷日値)?'今日着':'割当済'));                        // 入荷日=今日は「今回出せる分」として黄で見せる
     lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.alloc>0).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=> pushCons(l, l.alloc, '引当')); // 今回引き当て
     const ptr={};
     const consumeRow=(code, qty)=>{
       const q=consumersByCode[code]||[]; const st=ptr[code]||{i:0,used:0};
-      const got={出荷済:[], 割当済:[], 引当:[]}; let left=qty;
+      const got={出荷済:[], 割当済:[], 今日着:[], 引当:[]}; let left=qty;
       while(left>0 && st.i<q.length){
         const e=q[st.i], avail=e.qty-st.used, take=Math.min(left, avail);
         if(take>0){ if(got[e.kind].indexOf(e.ban)<0) got[e.kind].push(e.ban); st.used+=take; left-=take; }
@@ -766,14 +783,15 @@ function 引当実行(){
       let col=null, surplus=0; const cells=[]; // cells={ban,color}
       if(qty>0){
         const r=consumeRow(c, qty);
-        r.got.出荷済.forEach(b=> cells.push({ban:b, color: cfg.色_グレー}));                        // 出荷済み=グレー(もう発送した分)
-        r.got.割当済.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_着 : cfg.色_赤})); // 割当済=ラベンダー(未入金は赤)
+        // 出荷済みの消費は余りの計算にだけ効かせて、受注番号は表示しない(このシートは「これから出す分」の引き当て先を見る場所)
+        r.got.割当済.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_着 : cfg.色_赤})); // 過去に着いた割当済=ラベンダー(未入金は赤)
+        r.got.今日着.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_黄 : cfg.色_赤})); // 入荷日=今日(今回出せる分)=黄(未入金は赤)
         r.got.引当.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_黄 : cfg.色_赤}));   // 今回引当=黄(未入金は赤)
         cells.sort((a,b)=> 番号num_(a.ban)-番号num_(b.ban)); // 古い注文を左・新しいを右
         surplus=r.surplus;
-        if(r.got.引当.length) col = r.surplus>0 ? cfg.色_緑 : cfg.色_黄; // 引当+余りあり=緑 / 全引当=黄
-        else if(r.got.割当済.length) col=cfg.色_着;                   // もう割当済=ラベンダー
-        else if(r.got.出荷済.length) col=cfg.色_グレー;               // 出荷済みが取った分=グレー
+        if(r.got.引当.length || r.got.今日着.length) col = r.surplus>0 ? cfg.色_緑 : cfg.色_黄; // 今回分あり: 余りあり=緑 / 全部今回分=黄
+        else if(r.got.割当済.length) col=cfg.色_着;                   // 過去の割当済のみ=ラベンダー
+        // 出荷済みが取った分は色なし(番号・余りも出ない=何もすることがない行。記録は消込台帳にある)
         if(r.surplus>0) jpRows.push([row[0], 到着_(row), c, r.surplus, row[EC.EMS番号]]); // 状態/到着日/商品コード/余り数/EMS番号
       }
       const vals=[row[0], 到着_(row), c, qty, row[EC.EMS番号], surplus>0?surplus:''].concat(cells.map(x=>x.ban));
