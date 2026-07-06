@@ -1103,6 +1103,51 @@ function _masterIsExcludedCode_(code) {
   return _masterExcludeKeySet_().has(key);
 }
 
+// メニュー用: 商品マスタから「英数字なしコード」行(人名リクエスト注文・自家用・★等のラベル)を削除する。
+//   本物の商品コードは必ず英数字を含むので消えない。確認ダイアログ→下から一括削除で行ズレなし。
+function 商品マスタ_人名ラベル行を削除(silent) {
+  const ss = SpreadsheetApp.getActive();
+  const master = ss.getSheetByName(CFG.MASTER_SHEET);
+  if (!master) { if (!silent) SpreadsheetApp.getUi().alert('商品マスタが見つかりません。'); return 0; }
+
+  const start = CFG.MASTER_HEADER_ROW + 1;
+  const last = master.getLastRow();
+  if (last < start) { ss.toast('商品マスタにデータがありません。'); return 0; }
+  const n = last - start + 1;
+  const codes = master.getRange(start, CFG.M_CODE, n, 1).getValues();
+  const names = master.getRange(start, CFG.M_NAME, n, 1).getValues();
+
+  const targets = [];
+  for (let i = 0; i < n; i++) {
+    if (_masterIsLabelCode_(codes[i][0])) {
+      targets.push({ row: start + i, code: String(codes[i][0]).trim(), name: String(names[i][0] || '').slice(0, 20) });
+    }
+  }
+  Logger.log('人名ラベル行 削除対象: ' + targets.length + '件');
+  targets.forEach(t => Logger.log('  行' + t.row + ': [' + t.code + '] ' + t.name));
+  if (!targets.length) { if (!silent) SpreadsheetApp.getUi().alert('英数字なしコード(人名ラベル等)の行はありません。'); return 0; }
+
+  if (!silent) {
+    const ui = SpreadsheetApp.getUi();
+    const preview = targets.slice(0, 40).map(t => t.row + ': ' + t.code + '  ' + t.name).join('\n');
+    const res = ui.alert('商品マスタ: 人名ラベル行を削除',
+      targets.length + '件の「英数字なしコード」行(人名・自家用・★等)を削除します。\n' +
+      '本物の商品コード(英数字入り)は削除しません。\n\n' + preview +
+      (targets.length > 40 ? '\n…ほか' + (targets.length - 40) + '件' : '') + '\n\n実行する？',
+      ui.ButtonSet.YES_NO);
+    if (res !== ui.Button.YES) { ui.alert('やめました。'); return 0; }
+  }
+
+  targets.map(t => t.row).sort((a, b) => b - a).forEach(r => master.deleteRow(r)); // 下から削除=行ズレなし
+  ss.toast('人名ラベル行を削除しました: ' + targets.length + '件', '🧹 商品マスタ整理', 6);
+  return targets.length;
+}
+
+// エディタ実行用(ダイアログなし・承認済み前提で即削除)
+function 商品マスタ_人名ラベル行を削除_今すぐ() {
+  return 商品マスタ_人名ラベル行を削除(true);
+}
+
 // メニュー用: 「マスタ除外コード」シートを作成し、配列側の既定コードを追記する
 function 商品マスタ_除外コードシートを作成() {
   const ss = SpreadsheetApp.getActive();
