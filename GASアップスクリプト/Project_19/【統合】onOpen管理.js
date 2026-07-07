@@ -13,7 +13,6 @@ function onOpen() {
 .addItem('選択発送日のEMS番号ごとに罫線を更新', 'EMS_選択発送日_EMS番号ごとに罫線を更新')
 .addItem('選択行の発送日グループを更新', 'EMS_選択行の発送日だけ更新')
 .addItem('M列EMS番号の空白を削除', 'EMS_EMS番号の空白を削除')
-.addItem('P列に注文番号を自動記入(受注明細と照合)', 'EMSリスト_注文番号自動記入')
     .addSeparator()
     .addItem('M:Nの色だけクリア', 'EMS_色だけクリア')
 
