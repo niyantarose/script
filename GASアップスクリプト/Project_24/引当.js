@@ -48,6 +48,8 @@ function onOpen(){
   // ── メイン引当(在庫=EMS在庫) ──
   ui.createMenu('🏠 メイン引当(EMS在庫)')
     .addItem('🔄 EMS在庫を更新(色クリア＋最新化)', 'EMS在庫を更新')
+    .addItem('🧱 EMS在庫/今回入荷EMSの在庫：EMS番号ごとに罫線', '在庫EMS番号ごとに罫線を引く')
+    .addItem('☑ EMS番号罫線ボタンを設置', '在庫EMS番号罫線ボタンを設置')
     .addSeparator()
     .addItem('① 前段階チェック(即納に水色＋罫線)', '前段階チェック_即納')
     .addItem('② 引き当て実行(EMS在庫・入荷日で判定)', '引当実行')
@@ -61,6 +63,12 @@ function onOpen(){
     .addItem('📦 ダニエルEMS引当', 'ダニエルEMS引当')
     .addItem('🔬 ダニエルファイル診断', 'ダニエルファイル診断')
     .addToUi();
+
+  try { 在庫EMS番号罫線ボタンを設置_(true); } catch(e) {}
+}
+
+function onEdit(e){
+  if (在庫EMS番号罫線ボタン編集_(e)) return;
 }
 
 // 受注明細のヘッダー行(「受注番号」がある行)を探す。見つからなければ1行目
@@ -500,6 +508,160 @@ const HIKIATE_CFG = {
   色_今着:'#b4a7d6' // 今日到着(入荷日=②実行日=今回入荷)=濃いめ紫で目立たせる。過去の着済は薄ラベンダー(色_着)
 };
 
+const 在庫EMS番号罫線_CFG = {
+  対象シート: ['EMS在庫', '今回入荷EMSの在庫'],
+  ボタン行: 1,
+  ボタン列: 10, // J列
+  ラベル列: 11  // K列
+};
+
+function 在庫EMS番号罫線_EMSキー_(value){
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function 在庫EMS番号罫線_グループ範囲_(emsValues){
+  const groups = [];
+  let start = null, key = '';
+  for(let i=0; i<=emsValues.length; i++){
+    const cur = i<emsValues.length ? 在庫EMS番号罫線_EMSキー_(emsValues[i]) : '';
+    if(start === null){
+      if(cur){ start = i; key = cur; }
+      continue;
+    }
+    if(!cur || cur !== key){
+      groups.push({ start, count: i - start, key });
+      start = cur ? i : null;
+      key = cur || '';
+    }
+  }
+  return groups;
+}
+
+function 在庫EMS番号罫線_ヘッダー情報_(sh){
+  const rows = Math.min(sh.getLastRow() || 1, 20);
+  const cols = Math.max(sh.getLastColumn() || 1, 在庫EMS番号罫線_CFG.ラベル列);
+  const values = sh.getRange(1, 1, rows, cols).getDisplayValues();
+  for(let r=0; r<values.length; r++){
+    for(let c=0; c<values[r].length; c++){
+      if(String(values[r][c] || '').trim() === 'EMS番号'){
+        return { headerRow: r + 1, emsCol: c + 1 };
+      }
+    }
+  }
+  return null;
+}
+
+function 在庫EMS番号罫線_データ範囲_(sh, header){
+  const dataStart = header.headerRow + 1;
+  const lastRow = sh.getLastRow();
+  if(lastRow < dataStart) return null;
+
+  const scanCols = Math.max(sh.getLastColumn() || 1, header.emsCol);
+  const values = sh.getRange(dataStart, 1, lastRow - dataStart + 1, scanCols).getDisplayValues();
+  let lastIdx = -1, lastCol = header.emsCol;
+  for(let r=0; r<values.length; r++){
+    let rowHasValue = false;
+    for(let c=0; c<values[r].length; c++){
+      if(String(values[r][c] || '').trim() !== ''){
+        rowHasValue = true;
+        if(c + 1 > lastCol) lastCol = c + 1;
+      }
+    }
+    if(rowHasValue) lastIdx = r;
+  }
+  if(lastIdx < 0) return null;
+
+  return {
+    startRow: dataStart,
+    numRows: lastIdx + 1,
+    numCols: lastCol,
+    emsValues: values.slice(0, lastIdx + 1).map(row => row[header.emsCol - 1])
+  };
+}
+
+function 在庫EMS番号ごとに罫線を引く(){
+  const result = 在庫EMS番号ごとに罫線を引く_(false);
+  SpreadsheetApp.getActive().toast(
+    'EMS番号ごとに罫線: ' + result.sheets + 'シート / ' + result.groups + 'グループ',
+    'EMS在庫',
+    6
+  );
+}
+
+function 在庫EMS番号ごとに罫線を引く_(silent){
+  const ss = SpreadsheetApp.getActive();
+  let sheets = 0, groups = 0;
+  在庫EMS番号罫線_CFG.対象シート.forEach(name => {
+    const sh = ss.getSheetByName(name);
+    if(!sh) return;
+    const r = 在庫EMS番号罫線_シート_(sh);
+    if(r.ok){ sheets++; groups += r.groups; }
+  });
+  if(!silent && !sheets) SpreadsheetApp.getUi().alert('対象シートにデータが見つかりません。');
+  return { sheets, groups };
+}
+
+function 在庫EMS番号罫線_シート_(sh){
+  const header = 在庫EMS番号罫線_ヘッダー情報_(sh);
+  if(!header) return { ok:false, groups:0 };
+  const data = 在庫EMS番号罫線_データ範囲_(sh, header);
+  if(!data) return { ok:false, groups:0 };
+
+  const range = sh.getRange(data.startRow, 1, data.numRows, data.numCols);
+  range.setBorder(false, false, false, false, false, false);
+  range.setBorder(true, true, true, true, true, true, '#d9d9d9', SpreadsheetApp.BorderStyle.SOLID);
+
+  const groups = 在庫EMS番号罫線_グループ範囲_(data.emsValues);
+  groups.forEach(g => {
+    sh.getRange(data.startRow + g.start, 1, g.count, data.numCols)
+      .setBorder(true, true, true, true, null, null, '#000000', SpreadsheetApp.BorderStyle.SOLID_THICK);
+  });
+  return { ok:true, groups:groups.length };
+}
+
+function 在庫EMS番号罫線ボタンを設置(){
+  const count = 在庫EMS番号罫線ボタンを設置_(false);
+  SpreadsheetApp.getActive().toast('EMS番号罫線ボタンを設置: ' + count + 'シート', 'EMS在庫', 5);
+}
+
+function 在庫EMS番号罫線ボタンを設置_(silent){
+  const ss = SpreadsheetApp.getActive();
+  let count = 0;
+  在庫EMS番号罫線_CFG.対象シート.forEach(name => {
+    const sh = ss.getSheetByName(name);
+    if(!sh) return;
+    const check = sh.getRange(在庫EMS番号罫線_CFG.ボタン行, 在庫EMS番号罫線_CFG.ボタン列);
+    check.insertCheckboxes().setValue(false)
+      .setHorizontalAlignment('center')
+      .setBackground('#d9ead3');
+    sh.getRange(在庫EMS番号罫線_CFG.ボタン行, 在庫EMS番号罫線_CFG.ラベル列)
+      .setValue('EMS番号ごとに罫線')
+      .setFontWeight('bold')
+      .setFontColor('#274e13')
+      .setBackground('#d9ead3');
+    if(sh.getColumnWidth(在庫EMS番号罫線_CFG.ラベル列) < 150){
+      sh.setColumnWidth(在庫EMS番号罫線_CFG.ラベル列, 170);
+    }
+    count++;
+  });
+  if(!silent && !count) SpreadsheetApp.getUi().alert('対象シートが見つかりません。');
+  return count;
+}
+
+function 在庫EMS番号罫線ボタン編集_(e){
+  if(!e || !e.range || e.value !== 'TRUE') return false;
+  const sh = e.range.getSheet();
+  if(在庫EMS番号罫線_CFG.対象シート.indexOf(sh.getName()) < 0) return false;
+  if(e.range.getRow() !== 在庫EMS番号罫線_CFG.ボタン行 || e.range.getColumn() !== 在庫EMS番号罫線_CFG.ボタン列) return false;
+
+  e.range.setValue(false);
+  在庫EMS番号ごとに罫線を引く();
+  return true;
+}
+
 // 🔎 引当診断: 指定の受注番号について、入荷日の列・値・区分・EMS在庫との一致を調べる(白いままの原因特定用)
 function 引当診断(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi(), cfg=HIKIATE_CFG;
@@ -568,6 +730,13 @@ function 入荷日今日_(v){
   const t=new Date();
   return d.getFullYear()===t.getFullYear() && d.getMonth()===t.getMonth() && d.getDate()===t.getDate();
 }
+// 日付を yyyy-MM-dd 文字列に正規化(Date/文字列どちらでも)。入荷日と到着日の一致判定用。パースできない文字列はそのまま返す
+function ymd_(v){
+  let d;
+  if(v instanceof Date){ if(isNaN(v.getTime())) return ''; d=v; }
+  else { const s=String(v||'').trim(); if(!s) return ''; d=new Date(s.replace(/\//g,'-')); if(isNaN(d.getTime())) return s; }
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+}
 
 function 引当実行(){
   const ss=SpreadsheetApp.getActive(), cfg=HIKIATE_CFG;
@@ -617,8 +786,17 @@ function 引当実行(){
     const keys=[]; cands.forEach(v=> codeKeys_(v).forEach(k=>{ if(keys.indexOf(k)<0) keys.push(k); })); return keys; };
   const keyInStock=l=>{ for(const k of candKeys(l)){ if(k in stock && 月号OK_(l,k)) return k; if(aliasMap[k] && aliasMap[k] in stock && 月号OK_(l,aliasMap[k])) return aliasMap[k]; } return null; };
   const findAvail=l=>{ for(const k of candKeys(l)){ if(stock[k]>0 && 月号OK_(l,k)) return k; if(aliasMap[k]&&stock[aliasMap[k]]>0&&月号OK_(l,aliasMap[k])) return aliasMap[k]; } return null; };
-  // 入荷日あり(もう割当済)を在庫から先に差し引く
-  lines.filter(l=>l.kbn==='取り寄せ' && l.入荷).forEach(l=>{ const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
+  // 各商品コードが「今回のEMS在庫」に到着日として存在する日付の集合(yyyy-MM-dd)
+  const 到着日SetByCode={};
+  for(let i=0;i<E.length;i++){ const c=normCode_(E[i][EC.コード]); if(!c) continue; const s=ymd_(到着_(E[i])); if(s){ (到着日SetByCode[c]=到着日SetByCode[c]||new Set()).add(s); } }
+  // 入荷日付きの注文が「今回のEMS在庫」を消費してよいか。今日着(=今回の便)か、入荷日が現物の到着日と一致する分だけ。
+  // 入荷日はマッチした箱の到着日から自動記入される(下部の【入荷日を自動記入】)ので「入荷日=箱の到着日」が保証される。
+  // 前回の入荷で処理済み(入荷日が今回の到着日に無い)注文は、今回別便で来た同じ商品を消費しない=日本在庫として残す。
+  const 到着日不明_ = EC.到着 < 0; // 到着日列が無いEMS在庫では日付判定できない→従来通り全消費(誤って全部を日本在庫にしない)
+  const 入荷日一致_=l=>{ const k=keyInStock(l); if(k==null) return false; const set=到着日SetByCode[k]; return !!(set && set.has(ymd_(l.入荷日値))); };
+  const 入荷消費OK_=l=> 到着日不明_ || 入荷日今日_(l.入荷日値) || 入荷日一致_(l);
+  // 入荷日あり(もう割当済)を在庫から先に差し引く。ただし今回の便で着いた分だけ(別便で処理済みの注文には今回在庫を掴ませない)
+  lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && 入荷消費OK_(l)).forEach(l=>{ const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
   // 出荷済み(受注明細から消えた注文=消込台帳)の分も差し引く(発送済み品が余り=日本在庫に二重計上されるのを防ぐ)
   const 出荷済行=消込台帳_出荷済み行_();
   出荷済行.forEach(l=>{ const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
@@ -761,8 +939,8 @@ function 引当実行(){
     const consumersByCode={};
     const pushCons=(l, qty, kind)=>{ const k=l.matchedKey||keyInStock(l); if(k==null||qty<=0) return; (consumersByCode[k]=consumersByCode[k]||[]).push({qty, ban:l.ban, kind}); }; // 確定引当(コード不一致救済含む)はmatchedKeyの行に記帳
     出荷済行.forEach(l=> pushCons(l, l.qty, '出荷済'));                                                  // 消込台帳の出荷済み(発送済みで受注明細から消えた分)
-    lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0)
-      .forEach(l=> pushCons(l, l.qty, 入荷日今日_(l.入荷日値)?'今日着':'割当済'));                        // 入荷日=今日は「今回出せる分」として黄で見せる
+    lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0 && 入荷消費OK_(l))
+      .forEach(l=> pushCons(l, l.qty, 入荷日今日_(l.入荷日値)?'今日着':'割当済'));                        // 入荷日=今日は「今回出せる分」として黄で見せる。別便で処理済み(入荷日≠今回到着日)は消費せず日本在庫に残す
     lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.alloc>0).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=> pushCons(l, l.alloc, '引当')); // 今回引き当て
     const ptr={};
     const consumeRow=(code, qty)=>{
