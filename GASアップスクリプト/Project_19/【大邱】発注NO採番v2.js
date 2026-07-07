@@ -729,9 +729,13 @@ function 大邱発注_発注NO修復() {
       tail += '\nEMSリスト購入No補完: ' + filled + '件';
     }
 
+    // 修復で解消した箇所の赤背景を自動リセット（残った課題だけ赤が残る）
+    大邱発注_発注NOフラグ更新_();
+
     const report = [
       '発注NO修復が完了しました。',
       '大邱F列: ' + plan.updates.length + '件 / EMS大邱T列: ' + emsDaeguCount + '件 / EMSリストF列: ' + emsListCount + '件' + tail,
+      '赤背景を最新状態に更新しました（残っている赤はまだ要対応の箇所です）。',
     ];
     if (unmatched.length) {
       report.push('', '【要手動】コードが照合できず旧番号のまま（コードを入れて再実行）:');
@@ -756,13 +760,14 @@ function 大邱発注_発注NO修復() {
   }
 }
 
-// メニュー: 発注NO重複チェック（書き換えなし）
-function 大邱発注_発注NO重複チェック() {
+// 大邱F列・EMSリストF列の赤フラグを実データから塗り直す
+//   解消済みの赤（このチェックが塗ったFLAG_BGのみ）は自動でリセットされる。
+//   手動で付けた他の色には触らない。→ 集計結果を返す
+function 大邱発注_発注NOフラグ更新_() {
   const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
   const sh = ss.getSheetByName(DAEGU_CFG.HACHU_SRC);
   const emsList = ss.getSheetByName(DAEGU_CFG.EMS_DST);
-  if (!sh) { ui.alert('「' + DAEGU_CFG.HACHU_SRC + '」が見つかりません。'); return; }
+  if (!sh) return null;
 
   const orderRows = 採番v2_大邱行読込_(sh, true);
   const emsRows = [];
@@ -780,7 +785,6 @@ function 大邱発注_発注NO重複チェック() {
 
   const rep = 採番v2_チェック集計_(orderRows, emsRows, codeKeys_);
 
-  // 赤背景を塗り直す（前回このチェックが塗った色だけクリア）
   const paint = (sheet, col, startRow, lastRow, flagRows) => {
     if (!sheet || lastRow < startRow) return;
     const range = sheet.getRange(startRow, col, lastRow - startRow + 1, 1);
@@ -806,6 +810,14 @@ function 大邱発注_発注NO重複チェック() {
   if (emsList && emsHeaderRow >= 0) {
     paint(emsList, 6, emsHeaderRow + 2, emsList.getLastRow(), emsFlags);
   }
+  return rep;
+}
+
+// メニュー: 発注NO重複チェック（書き換えなし・赤背景は最新状態に更新）
+function 大邱発注_発注NO重複チェック() {
+  const ui = SpreadsheetApp.getUi();
+  const rep = 大邱発注_発注NOフラグ更新_();
+  if (!rep) { ui.alert('「' + DAEGU_CFG.HACHU_SRC + '」が見つかりません。'); return; }
 
   const lines = ['【発注リスト大邱データ】'];
   lines.push('行番号なし: ' + rep.noLine.length + '件' +
