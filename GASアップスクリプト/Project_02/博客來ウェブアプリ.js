@@ -3239,17 +3239,37 @@ function bookCodeGetUsedIds_(ss, runtime) {
 
 function bookCodeNextUnusedWorkId_(ss, runtime) {
   const used = bookCodeGetUsedIds_(ss, runtime);
-  for (let n = 1; n < 10000; n += 1) {
-    const id = String(n).padStart(4, '0');
-    if (!used.has(id)) {
-      used.add(id);
-      return id;
-    }
+  // 旧実装は 1 から順に「空き番」を探して再利用していた。
+  // 誤採番の修正などで解放された旧IDを新規作品が拾ってしまい、過去のコードと紛らわしくなるため、
+  // シート側（Project_01 onEdit）と同じ「最大値+1 ＋ ハイウォーターマーク」方式に変更（欠番は永久欠番）。
+  let max = 0;
+  used.forEach(function(id) {
+    const n = parseInt(String(id).replace(/\D/g, ''), 10);
+    if (isFinite(n) && n > max) max = n;
+  });
+
+  let savedMax = 0;
+  let props = null;
+  try {
+    // Web アプリ（スタンドアロン）なので Script Properties を使う。
+    props = PropertiesService.getScriptProperties();
+    savedMax = parseInt(props.getProperty('台湾書籍系_作品ID_ハイウォーター') || '0', 10) || 0;
+  } catch (e) {
+    props = null;
   }
-  throw new Error('使用可能な作品IDがありません');
+
+  const next = Math.max(max, savedMax) + 1;
+  if (next >= 10000) throw new Error('使用可能な作品IDがありません');
+  if (props) {
+    try { props.setProperty('台湾書籍系_作品ID_ハイウォーター', String(next)); } catch (e) {}
+  }
+
+  const id = String(next).padStart(4, '0');
+  used.add(id);
+  return id;
 }
 
-function bookCodeLookupOrCreateWork_(ss, rowData, runtime) {
+function bookCodeLookupOrCreateWork_(ss, rowData, runtime, sheetName) {
   const existingId = bookCodeWorkIdFromRow_(rowData);
   const context = bookCodeGetWorksContext_(ss, runtime);
   if (existingId && context.byId[existingId]) return context.byId[existingId];
@@ -3276,7 +3296,20 @@ function bookCodeLookupOrCreateWork_(ss, rowData, runtime) {
 
   const newId = bookCodeNextUnusedWorkId_(ss, runtime);
   const writeRow = Math.max(context.sheet.getLastRow() + 1, 2);
-  const worksKey = input.compare || input.original || input.jpAuthorKey || input.jp;
+
+  // WorksKey はシート側（Project_01）と同じ「原題||<媒体>||<比較キー>」形式で作る。
+  // 旧実装は比較キーをそのまま入れており（接頭辞も媒体コードも無し）、
+  // 媒体なしWorks行が量産される原因だった（例: 0088 費洛蒙中毒）。
+  const mediaRaw = bookCodeCategoryCode_(sheetName || '', rowData['カテゴリ']);
+  const media = /^(CM|NV|ART|MZ|GD)$/.test(mediaRaw) ? mediaRaw : '';
+  const base = input.compare || input.original || '';
+  let worksKey;
+  if (base) {
+    worksKey = media ? '原題||' + media + '||' + base : '原題||' + base;
+  } else {
+    const jpBase = input.jpAuthorKey || input.jp;
+    worksKey = media ? media + '||' + jpBase : jpBase;
+  }
   const row = BOOK_WORKS_HEADERS.map(function(header) {
     if (header === 'WorksKey') return worksKey;
     if (header === '作品ID') return newId;
@@ -3469,7 +3502,7 @@ function prepareBookCodeFieldsForItem_(ss, item, runtime) {
 
   enrichEditionShapeForRowData_(rowData);
 
-  const work = bookCodeLookupOrCreateWork_(ss, rowData, runtime || createBookCodeRuntime_(ss));
+  const work = bookCodeLookupOrCreateWork_(ss, rowData, runtime || createBookCodeRuntime_(ss), sheetName);
   const workId = bookCodeWorkId4_(work && work.id);
   if (!workId) return item;
 
