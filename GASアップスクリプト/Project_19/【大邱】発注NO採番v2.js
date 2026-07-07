@@ -46,6 +46,14 @@ function 採番v2_カート表記_(n) {
   return n <= 99 ? ('0' + n).slice(-2) : String(n);
 }
 
+// 業者名の比較キー（大文字小文字・全半角・空白の違いは同一業者とみなす）
+function 採番v2_業者キー_(v) {
+  return String(v || '')
+    .normalize('NFKC')
+    .replace(/[\s　]+/g, '')
+    .toUpperCase();
+}
+
 // rows: [{row, no, vendor}] → { carts, dateMax }
 //   carts[date|cartNum] = {date, cartNum, token, vendor, maxLine, lines{}, rows[]}
 function 採番v2_状態構築_(rows) {
@@ -59,13 +67,14 @@ function 採番v2_状態構築_(rows) {
     if (!carts[key]) {
       carts[key] = {
         date: info.date, cartNum: info.cartNum, token: info.token,
-        vendor: '', maxLine: 0, lines: {}, rows: [],
+        vendor: '', vendorKey: '', maxLine: 0, lines: {}, rows: [],
       };
     }
     const cart = carts[key];
     const vendor = String(r.vendor || '').trim();
-    if (!cart.vendor && vendor) cart.vendor = vendor;
-    cart.rows.push({ row: r.row, info: info, vendor: vendor });
+    const vendorKey = 採番v2_業者キー_(vendor);
+    if (!cart.vendorKey && vendorKey) { cart.vendor = vendor; cart.vendorKey = vendorKey; }
+    cart.rows.push({ row: r.row, info: info, vendor: vendor, vendorKey: vendorKey });
     if (info.kind === 'full') {
       cart.lines[info.line] = true;
       if (info.line > cart.maxLine) cart.maxLine = info.line;
@@ -101,7 +110,9 @@ function 採番v2_編集計画_(state, edited) {
     const key = date + '|' + num;
     carts[key] = {
       date: date, cartNum: num, token: 採番v2_カート表記_(num),
-      vendor: String(vendor || '').trim(), maxLine: 0, lines: {}, rows: [],
+      vendor: String(vendor || '').trim(),
+      vendorKey: 採番v2_業者キー_(vendor),
+      maxLine: 0, lines: {}, rows: [],
     };
     return carts[key];
   };
@@ -110,6 +121,7 @@ function 採番v2_編集計画_(state, edited) {
     const info = 採番v2_解析_(r.no);
     if (!info) { prevDateCart = null; return; }
     const vendor = String(r.vendor || '').trim();
+    const vendorKey = 採番v2_業者キー_(vendor);
     let cart = null;
     let line = 0;
 
@@ -118,17 +130,17 @@ function 採番v2_編集計画_(state, edited) {
       const canContinue = prevDateCart &&
         prevDateCart.date === info.date &&
         prevDateCart.lastRow === r.row - 1 &&
-        (!vendor || !prevDateCart.vendor || prevDateCart.vendor === vendor);
+        (!vendorKey || !prevDateCart.vendorKey || prevDateCart.vendorKey === vendorKey);
       if (canContinue) {
         cart = carts[prevDateCart.key];
-        if (!cart.vendor && vendor) cart.vendor = vendor;
+        if (!cart.vendorKey && vendorKey) { cart.vendor = vendor; cart.vendorKey = vendorKey; }
       } else {
         cart = allocCart(info.date, vendor);
       }
       line = 採番v2_空き行番号_(cart);
       prevDateCart = {
         date: info.date, key: cart.date + '|' + cart.cartNum,
-        vendor: cart.vendor || vendor, lastRow: r.row,
+        vendorKey: cart.vendorKey || vendorKey, lastRow: r.row,
       };
     } else {
       prevDateCart = null;
@@ -138,12 +150,12 @@ function 採番v2_編集計画_(state, edited) {
         // 未使用カート → そのまま使う
         cart = carts[key] = {
           date: info.date, cartNum: info.cartNum, token: info.token,
-          vendor: vendor, maxLine: 0, lines: {}, rows: [],
+          vendor: vendor, vendorKey: vendorKey, maxLine: 0, lines: {}, rows: [],
         };
         if (!dateMax[info.date] || dateMax[info.date] < info.cartNum) {
           dateMax[info.date] = info.cartNum;
         }
-      } else if (cart.vendor && vendor && cart.vendor !== vendor) {
+      } else if (cart.vendorKey && vendorKey && cart.vendorKey !== vendorKey) {
         // 別業者が使用中 → 次の空きカートへ繰り上げ
         const from = info.date + '_' + cart.token;
         if (remap[key]) {
@@ -156,8 +168,9 @@ function 採番v2_編集計画_(state, edited) {
             '「' + from + '」は' + carts[key].vendor + 'が使用中 → 「' +
             cart.date + '_' + cart.token + '」を採番');
         }
-      } else if (!cart.vendor && vendor) {
+      } else if (!cart.vendorKey && vendorKey) {
         cart.vendor = vendor;
+        cart.vendorKey = vendorKey;
       }
       if (info.kind === 'full' && !cart.lines[info.line]) {
         line = info.line; // 指定行番号が空いていればそのまま
@@ -188,7 +201,6 @@ function 採番v2_修復計画_(rows) {
 
   const updates = [];
   const stale = {};
-  const mixedKept = [];
   const dupFull = [];
   let movedBlocks = 0;
 
@@ -216,31 +228,28 @@ function 採番v2_修復計画_(rows) {
   // カートごとに業者ブロックを分割して修復
   Object.keys(carts).forEach(key => {
     const cart = carts[key];
-    // 業者ブロック分割（業者空欄は直前のブロックを継承）
+    // 業者ブロック分割（業者空欄は直前のブロックを継承。表記ゆれはキーで同一視）
     const blocks = [];
     let cur = null;
     cart.rows.forEach(cr => {
-      if (!cur || (cr.vendor && cur.vendor && cr.vendor !== cur.vendor)) {
-        cur = { vendor: cr.vendor || (cur ? cur.vendor : ''), rows: [] };
+      if (!cur || (cr.vendorKey && cur.vendorKey && cr.vendorKey !== cur.vendorKey)) {
+        cur = {
+          vendor: cr.vendor || (cur ? cur.vendor : ''),
+          vendorKey: cr.vendorKey || (cur ? cur.vendorKey : ''),
+          rows: [],
+        };
         blocks.push(cur);
-      } else if (cr.vendor && !cur.vendor) {
+      } else if (cr.vendorKey && !cur.vendorKey) {
         cur.vendor = cr.vendor;
+        cur.vendorKey = cr.vendorKey;
       }
       cur.rows.push(cr);
     });
 
     blocks.forEach((block, bi) => {
-      const hasFull = block.rows.some(cr => cr.info.kind === 'full');
-      if (bi > 0 && hasFull) {
-        // 採番済み行を含む別業者ブロック → 触らず報告
-        mixedKept.push({
-          cart: cart.date + '_' + cart.token, vendor: block.vendor,
-          rows: block.rows.map(cr => cr.row),
-        });
-        return;
-      }
       if (bi > 0) {
-        // 全行未採番の別業者ブロック → 新カートへ移動
+        // 別業者ブロック → 新カートへ移動して1から行番号
+        //（採番済みの旧番号もstaleに記録し、EMS大邱/EMSリストの参照を追随させる）
         const num = (dateMax[cart.date] || 0) + 1;
         dateMax[cart.date] = num;
         const token = 採番v2_カート表記_(num);
@@ -294,7 +303,7 @@ function 採番v2_修復計画_(rows) {
   });
 
   return {
-    updates: updates, stale: stale, mixedKept: mixedKept,
+    updates: updates, stale: stale,
     dupFull: dupFull, movedBlocks: movedBlocks,
   };
 }
@@ -386,9 +395,13 @@ function 採番v2_チェック集計_(orderRows, emsRows, codeKeyFn) {
   const mixedCarts = [];
   Object.keys(state.carts).forEach(key => {
     const cart = state.carts[key];
+    const seenVendor = {};
     const vendors = [];
     cart.rows.forEach(cr => {
-      if (cr.vendor && vendors.indexOf(cr.vendor) < 0) vendors.push(cr.vendor);
+      if (cr.vendorKey && !seenVendor[cr.vendorKey]) {
+        seenVendor[cr.vendorKey] = true;
+        vendors.push(cr.vendor);
+      }
     });
     if (vendors.length > 1) {
       mixedCarts.push({
@@ -651,7 +664,7 @@ function 大邱発注_発注NO修復() {
     const rows = 採番v2_大邱行読込_(sh, true);
     const plan = 採番v2_修復計画_(rows);
 
-    if (!plan.updates.length && !plan.mixedKept.length && !plan.dupFull.length) {
+    if (!plan.updates.length && !plan.dupFull.length) {
       ui.alert('発注NO修復', '修復対象はありません（全行採番済み）。', ui.ButtonSet.OK);
       return;
     }
@@ -659,9 +672,8 @@ function 大邱発注_発注NO修復() {
     const samples = plan.updates.slice(0, 10)
       .map(u => u.row + '行目 → ' + u.value);
     const lines = [
-      '行番号を付与: ' + plan.updates.length + '件' +
-        (plan.movedBlocks ? '（うち別業者かぶりで新カートへ移動: ' + plan.movedBlocks + 'ブロック）' : ''),
-      '採番済みで触らない業者混在: ' + plan.mixedKept.length + '件',
+      'F列の書き換え: ' + plan.updates.length + '件' +
+        (plan.movedBlocks ? '（業者混在カートの分離 ' + plan.movedBlocks + 'ブロックを含む）' : ''),
       '完全重複（手動確認）: ' + plan.dupFull.length + '件',
       '',
     ].concat(samples, plan.updates.length > 10 ? ['…ほか'] : []);
@@ -737,16 +749,14 @@ function 大邱発注_発注NO修復() {
       '大邱F列: ' + plan.updates.length + '件 / EMS大邱T列: ' + emsDaeguCount + '件 / EMSリストF列: ' + emsListCount + '件' + tail,
       '赤背景を最新状態に更新しました（残っている赤はまだ要対応の箇所です）。',
     ];
+    if (plan.movedBlocks) {
+      report.push('', '※業者混在カートを分離しました。発注シートのG列購入Noも合わせる場合は');
+      report.push('　「大邱データに発注/EMSリストを合わせる」を実行してください。');
+    }
     if (unmatched.length) {
       report.push('', '【要手動】コードが照合できず旧番号のまま（コードを入れて再実行）:');
       report.push(unmatched.slice(0, 15).join('\n'));
       if (unmatched.length > 15) report.push('…ほか ' + (unmatched.length - 15) + '件');
-    }
-    if (plan.mixedKept.length) {
-      report.push('', '【要手動】採番済みの業者混在カート:');
-      plan.mixedKept.slice(0, 10).forEach(m => {
-        report.push(m.cart + ' の ' + m.vendor + '（' + m.rows.join(',') + '行目）');
-      });
     }
     if (plan.dupFull.length) {
       report.push('', '【要手動】完全に同じ番号:');
