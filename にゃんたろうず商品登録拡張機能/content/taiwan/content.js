@@ -1648,8 +1648,24 @@ const scoreEdgeDistance = edge => {
   const titleEl = document.querySelector('h1.BD_NAME, h1[itemprop=name], .book_title h1, h1');
   const name = titleEl?.innerText?.trim() || '';
   const japaneseSubtitleInfo = getJapaneseSubtitle(name);
-  const japaneseSubtitle = japaneseSubtitleInfo.text;
-  const japaneseSubtitleTrusted = japaneseSubtitleInfo.trusted;
+  let japaneseSubtitle = japaneseSubtitleInfo.text;
+  let japaneseSubtitleTrusted = japaneseSubtitleInfo.trusted;
+
+  // タイトルから日本語題が取れない場合、詳細資料の「譯自：<原書名>」から取得する。
+  // 日本ライセンス作品は出版社公式の日本語原題がここに載る（例: 伏魔師祓清 → 悪祓士のキヨシくん）。
+  // かな文字を含む場合のみ日本語と判定（簡体字中国語・韓国語・英語の原書名を誤採用しないため。
+  // 漢字のみの日本語題は取り漏らすが、サイト照会側で拾える可能性に委ねる）。
+  if (!japaneseSubtitle) {
+    const translatedFrom = getLabeledValue(['譯自', '译自']);
+    if (translatedFrom && /[ぁ-ゖァ-ヺ]/u.test(translatedFrom)) {
+      // 譯自には巻数が付くことが多い（例: 悪祓士のキヨシくん 4）ので末尾の巻表記を除去
+      const stripped = translatedFrom
+        .replace(/[\s　]*(?:第)?[0-9０-９]{1,4}(?:巻|卷|集|冊)?[\s　]*$/u, '')
+        .trim();
+      japaneseSubtitle = stripped || translatedFrom;
+      japaneseSubtitleTrusted = true; // 出版社公式の原書名なので page_trusted 扱い
+    }
+  }
 
   // 価格（割引後優先）
   const price = getPrice();
