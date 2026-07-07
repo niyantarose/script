@@ -940,7 +940,7 @@ function 引当実行(){
     const pushCons=(l, qty, kind)=>{ const k=l.matchedKey||keyInStock(l); if(k==null||qty<=0) return; (consumersByCode[k]=consumersByCode[k]||[]).push({qty, ban:l.ban, kind}); }; // 確定引当(コード不一致救済含む)はmatchedKeyの行に記帳
     出荷済行.forEach(l=> pushCons(l, l.qty, '出荷済'));                                                  // 消込台帳の出荷済み(発送済みで受注明細から消えた分)
     lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0 && 入荷消費OK_(l))
-      .forEach(l=> pushCons(l, l.qty, 入荷日今日_(l.入荷日値)?'今日着':'割当済'));                        // 入荷日=今日は「今回出せる分」として黄で見せる。別便で処理済み(入荷日≠今回到着日)は消費せず日本在庫に残す
+      .forEach(l=> pushCons(l, l.qty, '今日着'));                                                         // ゲート通過=入荷日が今回の到着日と一致=今回の便で出す分。全て黄(今回出せる分)で見せる。別便で処理済み(入荷日≠今回到着日)はゲートで除外され日本在庫に残る。ラベンダー(割当済)は廃止=このシートは「黄=出す/色なし=在庫」に統一
     lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.alloc>0).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=> pushCons(l, l.alloc, '引当')); // 今回引き当て
     const ptr={};
     const consumeRow=(code, qty)=>{
