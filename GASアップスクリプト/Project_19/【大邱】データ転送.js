@@ -1612,56 +1612,9 @@ function 大邱データに発注とEMSを合わせる() {
 }
 
 // ============================================================
-// 発注リスト大邱データ：F列(発注NO)を一意化する採番
-//   同じ発注NO(=カート決済No)ごとに、上から _1,_2,… を付与
-//   例) 20260407_01 が4行 → 20260407_01_1, _2, _3, _4
-//   既に連番付きでも重複していれば次の空き番号へ振り直す
+// 旧「大邱発注_一意Noを採番」は v2 の「大邱発注_発注NO修復」に置き換え
+//   →（【大邱】発注NO採番v2.js）業者かぶり対応・EMS側への追随反映つき
 // ============================================================
-function 大邱発注_一意Noを採番() {
-  const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
-  const sh = ss.getSheetByName(DAEGU_CFG.HACHU_SRC);
-  if (!sh) { ui.alert('「' + DAEGU_CFG.HACHU_SRC + '」が見つかりません。'); return; }
-
-  const lock = LockService.getDocumentLock();
-  if (!lock.tryLock(2000)) { ss.toast('他の処理が実行中です。'); return; }
-  try {
-    const FCOL = 6; // F列 発注NO
-    const lastRow = sh.getLastRow();
-    if (lastRow < 1) { ss.toast('データがありません。'); return; }
-
-    const vals = sh.getRange(1, FCOL, lastRow, 1).getValues();
-    const tracker = 大邱発注_連番管理_();
-    const newCol = vals.map(r => [r[0]]);
-    let count = 0;
-    const samples = [];
-
-    for (let i = 0; i < vals.length; i++) {
-      const info = 大邱発注_データ発注No情報_(vals[i][0]);
-      if (!info) continue;
-      const seq = tracker.assign(info);
-      const fixed = info.base + '_' + seq;
-      if (String(vals[i][0] || '').trim() !== fixed) {
-        newCol[i][0] = fixed;
-        count++;
-        if (samples.length < 12) samples.push(fixed);
-      }
-    }
-
-    if (count === 0) { ss.toast('採番対象なし（重複なし）。'); return; }
-
-    const res = ui.alert('一意No採番',
-      count + '件のF列に連番を付けます（例）：\n\n' + samples.join('\n') +
-      (count > 12 ? '\n…ほか' : '') + '\n\nF列を書き換えます。実行する？',
-      ui.ButtonSet.YES_NO);
-    if (res !== ui.Button.YES) { ui.alert('やめました。'); return; }
-
-    sh.getRange(1, FCOL, lastRow, 1).setValues(newCol);
-    ss.toast('一意No採番: ' + count + '件');
-  } finally {
-    lock.releaseLock();
-  }
-}
 
 // ============================================================
 // EMS大邱作業データ：購入No(T列)を発注リスト大邱データから初回補完（先入先出）
@@ -1670,7 +1623,7 @@ function 大邱発注_一意Noを採番() {
 //   例) KRSJCM03-0506S: 発注[20260402_01_1=80, 20260614_06_1=1]
 //       発送 16+16+16+8+16+8=80 → 全部 20260402_01_1、次の1 → 20260614_06_1
 //   発注の容量を超えた発送は空のまま（手動）。
-//   ※先に「大邱発注_一意Noを採番」を実行してから使う前提。
+//   ※先に「発注NO：修復」（大邱発注_発注NO修復）で行番号を整えてから使う前提。
 // ============================================================
 function EMS大邱_購入No初回補完() {
   const ss = SpreadsheetApp.getActive();
@@ -2334,59 +2287,9 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
 }
 
 // ============================================================
-// 発注リスト大邱データ：onEditでF列の発注NOに一意の連番を付ける
-//   例) 「Wata260618_09_1」を入力済みでも、同じ番号があれば「Wata260618_09_2」にする
-//   発注NOが入った行はA列にチェックボックスも付ける。
-//   複数行貼り付けも行ごとに重複しない番号へ振る。
-//   ※ onEdit(e) 管理スクリプトから、シート名が一致したときに呼ばれる。
+// 発注リスト大邱データ：onEditのF列採番は v2 に移行済み
+//   → 大邱発注_onEdit採番v2_（【大邱】発注NO採番v2.js）
 // ============================================================
-function 大邱発注_onEdit採番_(e) {
-  if (!e || !e.range) return;
-  const F = 6; // F列 発注NO
-  const sc = e.range.getColumn(), ec = e.range.getLastColumn();
-  if (sc > F || ec < F) return; // F列を含まない編集はスルー
-
-  const sh = e.range.getSheet();
-  const startRow = e.range.getRow(), numRows = e.range.getNumRows();
-  const fCells = sh.getRange(startRow, F, numRows, 1);
-  const fVals = fCells.getValues();
-
-  const tracker = 大邱発注_連番管理_();
-  const lastRow = sh.getLastRow();
-  const allF = sh.getRange(1, F, lastRow, 1).getValues();
-  const editEndRow = startRow + numRows - 1;
-
-  for (let i = 0; i < allF.length; i++) {
-    const rowNo = i + 1;
-    if (startRow <= rowNo && rowNo <= editEndRow) continue;
-
-    const info = 大邱発注_データ発注No情報_(allF[i][0]);
-    if (!info) continue;
-
-    if (info.numbered) {
-      tracker.reserve(info.base, info.seq);
-    } else {
-      tracker.reserve(info.base, 1);
-    }
-  }
-
-  let changed = false;
-  for (let i = 0; i < fVals.length; i++) {
-    const info = 大邱発注_データ発注No情報_(fVals[i][0]);
-    if (!info) continue;
-
-    const seq = tracker.assign(info);
-    const fixed = info.base + '_' + seq;
-    if (String(fVals[i][0] || '').trim() !== fixed) {
-      fVals[i][0] = fixed;
-      changed = true;
-    }
-  }
-  if (changed) fCells.setValues(fVals);
-  大邱発注_チェックボックスを付ける_(sh, startRow, numRows);
-  大邱発注_格子罫線_(sh, Math.max(1, startRow - 2), numRows + 4);
-  大邱発注_drawGroupBorders_(sh);
-}
 
 // ============================================================
 // EMSリスト：K列(品目)の関数(XLOOKUP)を外して生データに固定する

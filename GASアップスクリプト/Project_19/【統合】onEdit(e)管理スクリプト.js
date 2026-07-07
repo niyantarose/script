@@ -18,13 +18,14 @@ function onEdit(e) {
     // 発注リスト大邱データ：F列に発注NOが入ったら一意の連番を付ける
     // =====================================================
     if (sheetName === DAEGU_CFG.HACHU_SRC) {
+      // 採番を最優先で実行（後段が30秒タイムアウトしても発注NOだけは確定させる）
+      大邱発注_onEdit採番v2_(e);
       _autoFillArrivalDateFromQty_(sh, range, 4, 3, 6, 1, 6); // D入荷数 -> C入荷日 + Aチェック
       autofillHachuByCfg_(e, DAEGU_HACHU_MASTER_CFG);
       // H業者/I商品名/K商品コード/N品目/O重さ/P価格の編集 → 編集行の最新値で商品マスタを即更新
       if (_rangeHitsAnyCol_(range.getColumn(), range.getLastColumn(), [8, 9, 11, 14, 15, 16])) {
         大邱_マスタ自動更新_(sh, range);
       }
-      大邱発注_onEdit採番_(e);
       大邱発注_WX自動計算_(sh, range);
       // C入荷日/D入荷数の編集 → 送信済みのEMS大邱行(A列空欄)へ入荷日を自動反映
       if (_rangeHitsAnyCol_(range.getColumn(), range.getLastColumn(), [3, 4]) &&
