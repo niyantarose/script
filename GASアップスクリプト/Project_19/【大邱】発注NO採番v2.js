@@ -443,6 +443,51 @@ function 採番v2_チェック集計_(orderRows, emsRows, codeKeyFn) {
   };
 }
 
+// 転送前の購入No検証（送る行の番号が「ちゃんとした状態」かを確認する）
+//   picked: [{row, no}] 送ろうとしている行 / allNos: 発注リスト大邱F列の全値
+//   opts.checkDup: 大邱シート内での同番号重複もNGにする（大邱→EMS大邱ゲート用）
+//   opts.requireExists: 発注リスト大邱に存在する番号のみ許可（EMS大邱→EMSリストゲート用）
+// → { bad: [{row, no, reason}] }
+function 採番v2_送信前検証_(picked, allNos, opts) {
+  opts = opts || {};
+  const counts = {};
+  const fullSet = {};
+  (allNos || []).forEach(v => {
+    const info = 採番v2_解析_(v);
+    if (info && info.kind === 'full') {
+      counts[info.raw] = (counts[info.raw] || 0) + 1;
+      fullSet[info.raw] = true;
+    }
+  });
+
+  const bad = [];
+  picked.forEach(p => {
+    const s = String(p.no || '').trim();
+    if (!s) { bad.push({ row: p.row, no: '(空欄)', reason: '購入Noが空欄' }); return; }
+    const info = 採番v2_解析_(s);
+    if (!info) { bad.push({ row: p.row, no: s, reason: '形式不正' }); return; }
+    if (info.kind !== 'full') {
+      bad.push({ row: p.row, no: s, reason: '行番号なし（採番未完了）' });
+      return;
+    }
+    if (opts.checkDup && counts[info.raw] > 1) {
+      bad.push({ row: p.row, no: s, reason: 'シート内で同じ番号が' + counts[info.raw] + '行ある' });
+      return;
+    }
+    if (opts.requireExists && !fullSet[info.raw]) {
+      bad.push({ row: p.row, no: s, reason: '発注リスト大邱に存在しない' });
+    }
+  });
+  return { bad: bad };
+}
+
+function 採番v2_検証結果文面_(bad, limit) {
+  const n = limit || 15;
+  const lines = bad.slice(0, n).map(b => b.row + '行目 「' + b.no + '」 … ' + b.reason);
+  if (bad.length > n) lines.push('…ほか ' + (bad.length - n) + '件');
+  return lines.join('\n');
+}
+
 // ---------------- GAS結線 ----------------
 
 // 発注リスト大邱データのデータ行範囲のF/H(/K/L)を読み込む
@@ -464,6 +509,29 @@ function 採番v2_大邱行読込_(sh, withCodeQty) {
     });
   }
   return rows;
+}
+
+// 大邱→EMS大邱 送信ゲート: 送る行の発注NOが全部確定していればnull、NGなら中止文面
+function 大邱発注_送信前購入No検証_(src, picked) {
+  const all = 採番v2_大邱行読込_(src, false).map(r => r.no);
+  const res = 採番v2_送信前検証_(
+    picked.map(p => ({ row: p.row, no: p.no })), all, { checkDup: true });
+  if (!res.bad.length) return null;
+  return '購入No（発注NO）が未確定の行があるため送信を中止しました。\n\n' +
+    採番v2_検証結果文面_(res.bad) +
+    '\n\n「発注NO：修復」を実行するか、F列を修正してから再実行してください。';
+}
+
+// EMS大邱→EMSリスト 送信ゲート: 追記行の購入Noが確定済み＆発注リスト大邱に実在すればnull
+function 大邱発注_EMSリスト転送前購入No検証_(ss, rows) {
+  const hac = ss.getSheetByName(DAEGU_CFG.HACHU_SRC);
+  const all = hac ? 採番v2_大邱行読込_(hac, false).map(r => r.no) : [];
+  const res = 採番v2_送信前検証_(
+    rows.map(o => ({ row: o.row, no: o.purchaseNo })), all, { requireExists: true });
+  if (!res.bad.length) return null;
+  return '購入Noが不正な行があるため転送を中止しました（行番号はEMS大邱作業データ）。\n\n' +
+    採番v2_検証結果文面_(res.bad) +
+    '\n\n「EMS大邱：購入Noを初回補完」または「発注NO：修復」で購入Noを整えてから再実行してください。';
 }
 
 // onEdit本体（onEditチェーンの先頭で呼ぶこと）

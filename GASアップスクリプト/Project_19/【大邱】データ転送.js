@@ -445,6 +445,7 @@ function 大邱_EMSリストへ転送() {
       const exactKeys = EMS_転送キー一覧_(purchaseNo, track, code, qty);
       const looseKeys = EMS_転送三点キー一覧_(track, code, qty);
       const item = {
+        row: i + 1,
         purchaseNo: purchaseNo,
         arrival: r[0],
         ship: r[1],
@@ -485,6 +486,12 @@ function 大邱_EMSリストへ転送() {
     if (rows.length === 0 && dateUpdates.length === 0) {
       ss.toast('追記/更新対象なし（D列EMS番号入りで未登録または日付更新が必要な行なし）。');
       return;
+    }
+
+    // 追記する行の購入Noが確定済み＆発注リスト大邱に実在するか検証してから送る
+    if (rows.length > 0) {
+      const gateNg = 大邱発注_EMSリスト転送前購入No検証_(ss, rows);
+      if (gateNg) { ui.alert('EMSリストへ転送', gateNg, ui.ButtonSet.OK); return; }
     }
 
     let debugMsg = "";
@@ -2233,6 +2240,10 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
   const preScan = 大邱発注_送信対象スキャン_(src, L);
   if (preScan.picked.length === 0) { L('終了: 送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
 
+  // 送る前に購入No（発注NO）が確定済みか検証（行番号なし・重複はここで止める）
+  const preNg = 大邱発注_送信前購入No検証_(src, preScan.picked);
+  if (preNg) { L('中止: 購入No未確定'); ui.alert('EMS大邱へ送る', preNg, ui.ButtonSet.OK); return; }
+
   const preview = preScan.picked.slice(0, 12).map(p => `${p.no} / ${p.code} / ${p.qty || 0}個`).join('\n');
   const noDatePicked = preScan.picked.filter(p => !EMS_値あり_(p.date));
   const autoFill = noDatePicked.filter(p => 大邱_入荷数値_(p.arrivalQty) > 0).length;
@@ -2254,6 +2265,10 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
     const scan = 大邱発注_送信対象スキャン_(src, L);
     const picked = scan.picked;
     if (picked.length === 0) { L('終了: 再スキャンで送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
+
+    // ダイアログ表示中にF列が変わった場合に備えてロック下でも再検証
+    const lockNg = 大邱発注_送信前購入No検証_(src, picked);
+    if (lockNg) { L('中止: 購入No未確定(再スキャン)'); ui.alert('EMS大邱へ送る', lockNg, ui.ButtonSet.OK); return; }
 
     大邱_送信前入荷日補完_(src, picked, L); // 入荷数あり・入荷日空の行は今日を入れてから送る
     const result = 大邱_EMS大邱へ追記_(dst, picked, L);
