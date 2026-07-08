@@ -84,14 +84,16 @@ function 受注個別_選択行_(sh, M){
 }
 
 // 純ロジック: EMSリスト行から、この商品に一致する「到着済・残あり」の候補を返す
-// (照合は②と同じ: 受注候補コード_→codeKeys_。残数=行数量-P列既存割当)
-function 受注個別_候補_(emsRows, sku, code){
+// (照合は②と同じ: 受注候補コード_→codeKeys_。加えてコードの受注番号タグ=この受注なら
+//  コードが多少違っても候補にする。残数=行数量-P列既存割当)
+function 受注個別_候補_(emsRows, sku, code, ban){
   const targetKeys=[];
   受注候補コード_(sku,code).forEach(v=> codeKeys_(v).forEach(k=>{ if(targetKeys.indexOf(k)<0) targetKeys.push(k); }));
   const out=[];
   emsRows.forEach(r=>{
     if(String(r.状態||'').trim()!=='到着済') return;
-    if(!codeKeys_(r.商品コード).some(k=>targetKeys.indexOf(k)>=0)) return;
+    const tagHit = !!(ban && タグ受注番号_(r.商品コード)===ban);
+    if(!tagHit && !codeKeys_(r.商品コード).some(k=>targetKeys.indexOf(k)>=0)) return;
     const used=個別対応_P注文展開_(r.注文番号, r.数量).reduce((s,e)=>s+e.qty,0);
     const 残=Math.max(0,(Number(r.数量)||0)-used);
     if(残>0) out.push({item:r, 残});
@@ -100,13 +102,15 @@ function 受注個別_候補_(emsRows, sku, code){
 }
 
 // P列にこの受注番号×この商品の割当がある行を返す(状態問わず。キャンセル用)
+// コードの受注番号タグ=この受注の行も対象(RECIPE42/10117126 と RECIPE42b/10117126 のような揺れ対策)
 function 受注個別_割当行_(emsRows, sku, code, ban){
   const targetKeys=[];
   受注候補コード_(sku,code).forEach(v=> codeKeys_(v).forEach(k=>{ if(targetKeys.indexOf(k)<0) targetKeys.push(k); }));
   const out=[];
   emsRows.forEach(r=>{
     if(!r.注文番号) return;
-    if(!codeKeys_(r.商品コード).some(k=>targetKeys.indexOf(k)>=0)) return;
+    const tagHit = !!(ban && タグ受注番号_(r.商品コード)===ban);
+    if(!tagHit && !codeKeys_(r.商品コード).some(k=>targetKeys.indexOf(k)>=0)) return;
     const cur=個別対応_P注文展開_(r.注文番号, r.数量).filter(e=>e.ban===ban).reduce((s,e)=>s+e.qty,0);
     if(cur>0) out.push({item:r, cur});
   });
@@ -203,7 +207,7 @@ function 選択行を個別引当_本体_(){
     if(!l.ban || (!l.code && !l.sku)){ results.push('行'+rowNo+': 受注番号/商品コードが読めません'); return; }
     if(l.kbn!=='取り寄せ'){ results.push(label+': 取り寄せ行ではないのでスキップ'); return; }
     if(l.qty<=0){ results.push(label+': 個数0のためスキップ'); return; }
-    const cands=受注個別_候補_(ems.rows, l.sku, l.code);
+    const cands=受注個別_候補_(ems.rows, l.sku, l.code, l.ban);
     if(!cands.length){
       // 残あり箱が無くても、既にこの受注が到着済の箱に名指しされていれば「割当済み=出せる」なので黄に塗る
       const 既=受注個別_割当行_(ems.rows, l.sku, l.code, l.ban).filter(h=>String(h.item.状態||'').trim()==='到着済');

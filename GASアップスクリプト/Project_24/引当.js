@@ -727,17 +727,20 @@ function SKU枝番あり_(sku, code){
   return !!(s && c && s!==c && s.indexOf(c)===0 && /^[A-Z]+$/.test(s.slice(c.length)));
 }
 function 受注候補コード_(sku, code){
-  // 候補の優先順: ①SKUそのまま(丸めない一致を最優先) ②商品コード列 ③SKU末尾1字落とし(a/b枝番の保険)
+  // 候補の優先順: ①SKUそのまま(丸めない一致を最優先) ②商品コード列 ③末尾1字落とし(a/b枝番の保険)
   // かつて枝番あり時にSKUだけへ絞っていたが、それだと限定版(例 JPSJCM39-03S+SKU=…Sb)や
   // SKU=コード+枝番(例 MOFUN-IV-09a)がEMS在庫のコードと一致せず、
   // 「今回の便なのにラベンダー」「在庫が消費されず他へ二重割当」になる。
+  // ③は受注番号タグを外した基底コードに対して行う(例 RECIPE42b/10117126 → RECIPE42B → RECIPE42。
+  // 生の文字列のままだと末尾が数字なので枝番bが落ちない)。
   // 名指し(P列)の横取りは引当実行側の注文所有キー_ガードで防ぐので、ここで候補を削る必要はない。
   const s=String(sku||'').trim(), c=String(code||'').trim();
   const out=[];
   const push=v=>{ const t=String(v||'').trim(); if(t && !out.some(o=>normCode_(o)===normCode_(t))) out.push(t); };
   push(s);
   push(c);
-  push(s.replace(/[A-Za-z]$/,''));
+  push(normCode_(s).replace(/[A-Za-z]$/,''));
+  push(normCode_(c).replace(/[A-Za-z]$/,''));
   return out;
 }
 function codeKeys_(code){
