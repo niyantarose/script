@@ -10,7 +10,7 @@ const COL_DESC        = 6;   // F列: Description / Title
 const COL_ITEM        = 8;   // H列: ItemCode
 const COL_QTY         = 9;   // I列: Qty
 const COL_TYPE        = 11;  // K列: Type
-const COL_WEIGHT      = 12;  // L列: weight(g)
+const COL_WEIGHT      = 17;  // Q列: 総重量  ★L列(weight(g))ではなくQ列(総重量)を転記
 const COL_BILLED_UNIT = 18;  // R列: Billed Unit Price(円)
 const COL_BILLED_AMT  = 19;  // S列: Billed Amount(円)
 
@@ -26,7 +26,7 @@ const DST_C = 3;  // C列: ItemCode
 const DST_D = 4;  // D列: Qty
 // E列(5): 列2 → 空
 const DST_F = 6;  // F列: Type
-const DST_G = 7;  // G列: weight(g)
+const DST_G = 7;  // G列: weight(g) ← ここにQ列(総重量)を書き込む
 const DST_H = 8;  // H列: Unit Price(円)
 // Amount(円)はExcelマクロが計算するので不要
 
@@ -42,7 +42,7 @@ function showSidebar() {
   SpreadsheetApp.getUi().showSidebar(html);
 }
 
-function インボイスメニューを追加_() {
+function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('インボイス作成')
     .addItem('📦 積荷NOW 転記サイドバー', 'showSidebar')
@@ -77,7 +77,7 @@ function transferToIntegration() {
     const item   = emsSheet.getRange(r, COL_ITEM).getValue();
     const qty    = emsSheet.getRange(r, COL_QTY).getValue();
     const type   = emsSheet.getRange(r, COL_TYPE).getValue();
-    const weight = emsSheet.getRange(r, COL_WEIGHT).getValue();
+    const weight = emsSheet.getRange(r, COL_WEIGHT).getValue();  // Q列: 総重量
     const bUnit  = emsSheet.getRange(r, COL_BILLED_UNIT).getValue();
 
     if (!desc && !item) continue;
@@ -106,7 +106,7 @@ function transferToIntegration() {
     destSheet.getRange(r, DST_C).setValue(row.item);
     destSheet.getRange(r, DST_D).setValue(row.qty);
     destSheet.getRange(r, DST_F).setValue(row.type);
-    destSheet.getRange(r, DST_G).setValue(row.weight);
+    destSheet.getRange(r, DST_G).setValue(row.weight);   // Q列(総重量) → 積荷NOW G列(weight(g))
     destSheet.getRange(r, DST_H).setValue(row.bUnit);
   });
 

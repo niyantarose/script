@@ -34,8 +34,11 @@ function Pタッチ印刷用Excelを保存() {
     const name = String(values[i][nameCol] || '').trim();
     const qty  = parseInt(values[i][qtyCol], 10) || 1;
 
-    if (code === 'Promotional Item') {
-      // Promotional Itemは商品名ごとに別キーで管理
+    // スペース有無・大文字小文字を無視してPromotional Item判定
+    const codeNormalized = code.replace(/\s/g, '').toLowerCase();
+
+    if (codeNormalized === 'promotionalitem') {
+      // Promotional Itemは商品名ごとに別キーで管理（合体させない）
       const key = 'PROMO_' + promoCount++;
       merged[key] = { code: code, name: name, qty: qty };
     } else {
