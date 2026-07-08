@@ -879,6 +879,11 @@ function 引当実行(){
       if(used>0){ l.履歴Alloc=(l.履歴Alloc||0)+used; l.履歴成立=残必要_(l)<=0; }
     });
   }catch(e){}
+  // 各注文が実際に持つ商品キー(別名込み)。下の救済(コード不一致引き当て)で、同じ注文の
+  // 別商品行に名指しされた分を、コードの合わない行が横取りしないためのガードに使う。
+  const 注文所有キー_={};
+  lines.forEach(l=>{ const s=注文所有キー_[l.ban]||(注文所有キー_[l.ban]=new Set());
+    candKeys(l).forEach(k=>{ s.add(k); if(aliasMap[k]!=null) s.add(aliasMap[k]); }); });
   // 【確定引き当て】発注共有ファイルEMSリストのP列(注文番号)で名指しされた分を最優先で割り当てる
   const 確定=P列確定マップ_(); let 確定行数=0;
   lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.qty>0 && 残必要_(l)>0 && 確定[l.ban]).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=>{
@@ -903,6 +908,10 @@ function 引当実行(){
     let took=0;
     確定[l.ban].forEach(e=>{
       if(残必要_(l)<=0 || e.qty<=0) return;
+      // 名指しコード(e.key)が同じ注文の別商品行の分なら横取りしない(複数商品注文で、相方が入荷して
+      // 名指しされた分を、まだ入荷していないこの行が奪って誤って入荷日が付くのを防ぐ)。
+      // REQ系(どの行のコードにも一致しない名指し)だけが救済で引き当たる。
+      if(注文所有キー_[l.ban] && 注文所有キー_[l.ban].has(e.key)) return;
       const take=Math.min(残必要_(l), e.qty, stock[e.key]||0);
       if(take<=0) return;
       stock[e.key]-=take; e.qty-=take; l.alloc+=take; took+=take;
