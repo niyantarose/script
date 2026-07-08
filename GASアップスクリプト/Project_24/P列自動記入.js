@@ -34,7 +34,7 @@ function 発注共有P列記入_(){
     const s=String(v||'').trim(); if(!s) return null;
     const d=new Date(s.replace(/\//g,'-')); return isNaN(d.getTime())?null:d; };
   const キー展開_=(sku,code)=>{ const keys=new Set();
-    [String(sku||'').replace(/[A-Za-z]$/,''), sku, code].forEach(v=>{ if(v) codeKeys_(v).forEach(k=>keys.add(k)); });
+    受注候補コード_(sku,code).forEach(v=>{ if(v) codeKeys_(v).forEach(k=>keys.add(k)); });
     return keys; };
   const lines=[];
   for(let i=M.hr;i<R.length;i++){
@@ -54,6 +54,8 @@ function 発注共有P列記入_(){
     const keys=キー展開_(t.sku, t.code); if(!keys.size) return;
     lines.push({ban:t.ban, keys, need:t.qty, date:new Date(0), seq:lines.length, shipped:true});
   });
+  // 引当履歴の「在庫反映済み/過去取込」分も必要数から差し引き、古い箱で割当済みの注文を新しい箱に二重記入しない。
+  try{ 引当履歴_需要を差し引く_(lines); }catch(e){}
 
   const byKey={};
   lines.forEach(l=>l.keys.forEach(k=>(byKey[k]=byKey[k]||[]).push(l)));
