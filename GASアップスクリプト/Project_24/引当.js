@@ -44,6 +44,7 @@ function onOpen(){
       .addItem('ダニエル出荷可能', 'ダニエル出荷を消す')
       .addItem('商品コード引当', '商品コード引当を消す')
       .addItem('照合レポート', '照合レポートを消す')
+      .addItem('入荷日チェック', '入荷日チェックを消す')
       .addSeparator()
       .addItem('全部まとめて', '全データを消す'))
     .addToUi();

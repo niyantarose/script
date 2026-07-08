@@ -8,6 +8,23 @@
 //   ・手入力した入荷日(EMS便以外の入荷など)
 //   ・EMSリスト側の到着日を後から書き換えた場合
 
+// ===== 一覧を消す(図形ボタン割り当て用) =====
+// タイトル行(1)と見出し行(2)は残して、3行目以降の一覧だけ消す。
+// 一覧は🔎整合チェックでいつでも作り直せる診断結果なので確認ダイアログなしの1クリック。
+function 入荷日チェックを消す(){
+  const ss=SpreadsheetApp.getActive();
+  const sh=ss.getSheetByName('入荷日チェック');
+  if(!sh){ ss.toast('「入荷日チェック」タブが無いで','🗑',5); return; }
+  const mr=sh.getMaxRows(), mc=sh.getMaxColumns();
+  if(mr>=3){
+    const r=sh.getRange(3,1,mr-2,mc);
+    r.clearContent();
+    r.setBackgrounds(Array.from({length:mr-2},()=>new Array(mc).fill(null)));
+  }
+  sh.getRange(1,1).setValue('入荷日の整合チェック: (未実行) 🔎整合チェックを実行すると一覧が出ます');
+  ss.toast('入荷日チェックの一覧を消しました','🗑入荷日',5);
+}
+
 // ===== 一覧の入荷日を一括クリア =====
 // 入荷日整合チェックの一覧に出た行の入荷日を、確認のうえ受注明細から一括で消す。
 // 行ズレ対策: 受注番号+商品コード/SKU+入荷日が一覧と一致する行だけをクリアし、結果をI列に書く。
