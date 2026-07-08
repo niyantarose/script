@@ -1,0 +1,73 @@
+// ===== 入荷日の整合チェック(誤記入の検出) =====
+// 受注明細の「取り寄せ＋入荷日あり」行について、その入荷日と同じ到着日で
+// その商品が発注共有ファイルのEMSリストに存在するかを照合する。
+// 見つからない行＝引当バグ(救済横取り)や手入力ミスで付いた可能性のある入荷日として一覧に出す。
+// 読み取り専用: 受注明細は一切書き換えない。消すかどうかは一覧を見て手で判断する。
+//
+// 誤検出になりうるもの(正しい場合もある):
+//   ・手入力した入荷日(EMS便以外の入荷など)
+//   ・EMSリスト側の到着日を後から書き換えた場合
+
+function 入荷日整合チェック(){
+  const ss=SpreadsheetApp.getActive();
+  const recv=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!recv){ SpreadsheetApp.getUi().alert('「'+HIKIATE_CFG.受注+'」タブが無いで'); return; }
+
+  // --- 発注共有EMSリスト: 到着日(yyyy-MM-dd) → その日に到着した商品キー集合 ---
+  let sh;
+  try{ sh=SpreadsheetApp.openById(P_KAKUTEI_CFG.発注共有ID).getSheetByName(P_KAKUTEI_CFG.シート); }
+  catch(e){ SpreadsheetApp.getUi().alert('発注共有ファイルが開けません:\n'+e.message); return; }
+  if(!sh){ SpreadsheetApp.getUi().alert('発注共有ファイルに「'+P_KAKUTEI_CFG.シート+'」がありません'); return; }
+  const hr=P_KAKUTEI_CFG.ヘッダー行, last=sh.getLastRow();
+  if(last<=hr){ SpreadsheetApp.getUi().alert('EMSリストにデータがありません'); return; }
+  const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
+  const f=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
+  const cC=f('商品コード');
+  let cA=f('EMS到着日','到着日','到着'); if(cA<0) cA=4; // 既定E列
+  if(cC<0){ SpreadsheetApp.getUi().alert('EMSリストの'+hr+'行目に「商品コード」見出しがありません'); return; }
+  const vals=sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getValues();
+  const byDate={}; // ymd -> Set(正規化キー。別名込み)
+  vals.forEach(r=>{
+    const code=normCode_(r[cC]); if(!code) return;
+    const d=ymd_(r[cA]); if(!d) return;
+    const set=byDate[d]||(byDate[d]=new Set());
+    codeKeys_(code).forEach(k=>set.add(k));
+  });
+
+  // --- 受注明細の入荷日付き行を照合 ---
+  const M=列マップ_(recv);
+  if(M.入荷<0){ SpreadsheetApp.getUi().alert('受注明細に「入荷日」列がありません'); return; }
+  const R=recv.getDataRange().getValues();
+  const out=[];
+  for(let i=M.hr;i<R.length;i++){
+    const row=R[i];
+    const ban=String(row[M.番号]||'').trim(); if(!ban) continue;
+    if(区分_(row[M.選択肢])!=='取り寄せ') continue;
+    const 入荷日値=row[M.入荷]; if(String(入荷日値||'').trim()==='') continue;
+    const code=String(row[M.コード]||'').trim(), sku=M.SKU>=0?String(row[M.SKU]||'').trim():'';
+    const d=ymd_(入荷日値);
+    const set=byDate[d];
+    const keys=[]; 受注候補コード_(sku,code).forEach(v=> codeKeys_(v).forEach(k=>{ if(keys.indexOf(k)<0) keys.push(k); }));
+    const hit = !!(set && keys.some(k=>set.has(k)));
+    if(hit) continue;
+    out.push([i+1, ban, String(row[M.氏名]||''), code, sku, Number(row[M.個数])||0, d||String(入荷日値||''),
+      set? 'この日の到着EMSに、この商品が無い' : 'この日に到着したEMSが無い']);
+  }
+
+  // --- 結果を「入荷日チェック」シートへ(受注明細は触らない) ---
+  const NAME='入荷日チェック';
+  let rep=ss.getSheetByName(NAME); if(!rep) rep=ss.insertSheet(NAME);
+  rep.clearContents();
+  rep.getRange(1,1).setValue('入荷日の整合チェック: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
+    +' / 疑わしい行 '+out.length+'件（消す前に必ず目視確認。手入力の入荷日は正しい場合あり）');
+  const HDR=['受注明細の行','受注番号','氏名','商品コード','SKU','個数','入荷日','理由'];
+  rep.getRange(2,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
+  rep.setFrozenRows(2);
+  if(out.length){
+    rep.getRange(3,1,out.length,HDR.length).setValues(out).setFontSize(HIKIATE_CFG.字);
+  } else {
+    rep.getRange(3,1).setValue('(問題なし: 全ての入荷日がEMSリストの到着日と一致)');
+  }
+  ss.setActiveSheet(rep);
+  ss.toast('入荷日チェック: 疑わしい行 '+out.length+'件','🔎入荷日',8);
+}
