@@ -740,6 +740,10 @@ function 大邱発注_発注NO修復() {
       const filled = EMSリスト_購入No自動補完(true);
       tail += '\nEMSリスト購入No補完: ' + filled + '件';
     }
+    if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
+      発注_EMS発送数数式を一括修正();
+      tail += '\n発注EMS発送数/消込色: 再計算済み';
+    }
 
     // 修復で解消した箇所の赤背景を自動リセット（残った課題だけ赤が残る）
     大邱発注_発注NOフラグ更新_();
@@ -770,6 +774,56 @@ function 大邱発注_発注NO修復() {
   }
 }
 
+function 採番v2_背景色あり_(bg) {
+  const key = String(bg || '').toLowerCase();
+  return !!key && key !== '#ffffff' && key !== 'white' && key !== 採番V2_CFG.FLAG_BG;
+}
+
+function 採番v2_フラグ解除復元背景_(rowBackgrounds, flagColIndex) {
+  const row = rowBackgrounds || [];
+  for (let offset = 1; offset < row.length; offset++) {
+    const left = flagColIndex - offset;
+    if (left >= 0 && 採番v2_背景色あり_(row[left])) return row[left];
+
+    const right = flagColIndex + offset;
+    if (right < row.length && 採番v2_背景色あり_(row[right])) return row[right];
+  }
+  return null;
+}
+
+function 採番v2_フラグ背景プロパティ_() {
+  if (typeof PropertiesService === 'undefined') return null;
+  return PropertiesService.getDocumentProperties();
+}
+
+function 採番v2_フラグ背景キー_(sheet, row, col) {
+  const sheetKey = sheet && typeof sheet.getSheetId === 'function'
+    ? sheet.getSheetId()
+    : (sheet && typeof sheet.getName === 'function' ? sheet.getName() : 'sheet');
+  return ['SAIBAN_V2_FLAG_BG', sheetKey, row, col].join('|');
+}
+
+function 採番v2_背景保存値_(bg) {
+  const key = String(bg || '').toLowerCase();
+  if (!key || key === '#ffffff' || key === 'white') return '';
+  return bg;
+}
+
+function 採番v2_フラグ元背景保存_(props, sheet, row, col, bg) {
+  if (!props) return;
+  const key = 採番v2_フラグ背景キー_(sheet, row, col);
+  if (props.getProperty(key) === null) props.setProperty(key, 採番v2_背景保存値_(bg));
+}
+
+function 採番v2_フラグ元背景取得して削除_(props, sheet, row, col) {
+  if (!props) return { found: false, value: null };
+  const key = 採番v2_フラグ背景キー_(sheet, row, col);
+  const value = props.getProperty(key);
+  if (value === null) return { found: false, value: null };
+  props.deleteProperty(key);
+  return { found: true, value: value || null };
+}
+
 // 大邱F列・EMSリストF列の赤フラグを実データから塗り直す
 //   解消済みの赤（このチェックが塗ったFLAG_BGのみ）は自動でリセットされる。
 //   手動で付けた他の色には触らない。→ 集計結果を返す
@@ -797,14 +851,27 @@ function 大邱発注_発注NOフラグ更新_() {
 
   const paint = (sheet, col, startRow, lastRow, flagRows) => {
     if (!sheet || lastRow < startRow) return;
-    const range = sheet.getRange(startRow, col, lastRow - startRow + 1, 1);
+    const numRows = lastRow - startRow + 1;
+    const range = sheet.getRange(startRow, col, numRows, 1);
     const bgs = range.getBackgrounds();
+    const rowBgWidth = Math.max(col, sheet.getLastColumn());
+    const rowBgs = sheet.getRange(startRow, 1, numRows, rowBgWidth).getBackgrounds();
+    const props = 採番v2_フラグ背景プロパティ_();
     let dirty = false;
     for (let i = 0; i < bgs.length; i++) {
+      const rowNo = startRow + i;
       const want = flagRows[startRow + i] ? 採番V2_CFG.FLAG_BG : null;
       const curIsFlag = bgs[i][0] === 採番V2_CFG.FLAG_BG;
-      if (want && !curIsFlag) { bgs[i][0] = 採番V2_CFG.FLAG_BG; dirty = true; }
-      else if (!want && curIsFlag) { bgs[i][0] = null; dirty = true; }
+      if (want && !curIsFlag) {
+        採番v2_フラグ元背景保存_(props, sheet, rowNo, col, bgs[i][0]);
+        bgs[i][0] = 採番V2_CFG.FLAG_BG;
+        dirty = true;
+      }
+      else if (!want && curIsFlag) {
+        const saved = 採番v2_フラグ元背景取得して削除_(props, sheet, rowNo, col);
+        bgs[i][0] = saved.found ? saved.value : 採番v2_フラグ解除復元背景_(rowBgs[i], col - 1);
+        dirty = true;
+      }
     }
     if (dirty) range.setBackgrounds(bgs);
   };

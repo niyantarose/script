@@ -413,6 +413,35 @@ function colorKeshikomiAllRows_(sh) {
   colorKeshikomiRows_(sh, cfg.START_ROW, numRows);
 }
 
+function keshikomiManagedColors_() {
+  return Object.keys(KESHIKOMI_COLOR_CFG.COLORS).reduce((acc, key) => {
+    acc[String(KESHIKOMI_COLOR_CFG.COLORS[key]).toLowerCase()] = true;
+    return acc;
+  }, {});
+}
+
+function keshikomiColorForStatus_(status) {
+  if (status === '消込OK') return KESHIKOMI_COLOR_CFG.COLORS.OK;
+  if (status.indexOf('韓国残') !== -1) return KESHIKOMI_COLOR_CFG.COLORS.KOREA_REMAIN;
+  return null;
+}
+
+function keshikomiBackgroundRow_(status, currentRow, width) {
+  const color = keshikomiColorForStatus_(status);
+  const managed = keshikomiManagedColors_();
+
+  return Array(width).fill(null).map((_, i) => {
+    const cur = currentRow ? currentRow[i] : null;
+    const key = String(cur || '').toLowerCase();
+    const isBlank = !key || key === '#ffffff' || key === 'white';
+    const isManaged = !!managed[key];
+
+    if (color) return (!isBlank && !isManaged) ? cur : color;
+    if (isBlank) return null;
+    return isManaged ? null : cur;
+  });
+}
+
 
 /**
  * AA列の消込判定を見て行色をつける
@@ -437,20 +466,15 @@ function colorKeshikomiRows_(sh, startRow, numRows) {
     .getRange(startRow, cfg.STATUS_COL, numRows, 1)
     .getDisplayValues();
 
-  const backgrounds = statusValues.map(row => {
+  const targetRange = sh.getRange(startRow, startCol, numRows, width);
+  const currentBackgrounds = targetRange.getBackgrounds();
+
+  const backgrounds = statusValues.map((row, i) => {
     const status = String(row[0] || '').trim();
-    let color = null;
-
-    if (status === '消込OK') {
-      color = cfg.COLORS.OK;
-    } else if (status.indexOf('韓国残') !== -1) {
-      color = cfg.COLORS.KOREA_REMAIN;
-    }
-
-    return Array(width).fill(color);
+    return keshikomiBackgroundRow_(status, currentBackgrounds[i], width);
   });
 
-  sh.getRange(startRow, startCol, numRows, width).setBackgrounds(backgrounds);
+  targetRange.setBackgrounds(backgrounds);
 }
 
 
