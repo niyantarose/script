@@ -335,6 +335,13 @@ function 取込_最新CSV(){
     '取込ファイル：'+latest.getName()+'\n更新：'+upd+'\n\n受注明細を全消去して、このCSVで丸ごと入れ替えます。ええ？',
     ui.ButtonSet.OK_CANCEL);
   if(ans!==ui.Button.OK) return;
+  直列_(()=>取込_実行_(latest)); // 連続クリック対策: 他の処理と排他して実行
+}
+
+// 取込の本体(確認ダイアログの後)。直列_で他の処理と排他して実行する
+function 取込_実行_(latest){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi(), cfg=GOQ_CFG;
+  const upd=Utilities.formatDate(latest.getLastUpdated(),'Asia/Tokyo','MM/dd HH:mm');
 
   // Shift-JISで読み込み→CSVパース
   const text=latest.getBlob().getDataAsString(cfg.文字コード);
@@ -473,8 +480,20 @@ function 色つき注文でフィルタ(){
   ss.toast('色つき(抽出=○)の注文だけ表示にしました。元に戻すなら🔻フィルタ確認/解除','フィルタ',6);
 }
 
+// ===== ボタン連続クリック対策: 書き込み系の処理をドキュメントロックで直列化 =====
+// ①受注明細を更新→②即納チェック→③EMS在庫を更新→④引当実行 と連続で押しても、
+// 前の処理が終わってから次が走る(同時実行で「①のリセットが②の色を消す」等の競合を防ぐ)。
+function 直列_(fn){
+  const lock=LockService.getDocumentLock();
+  try{ lock.waitLock(10*60*1000); } // 前の処理を最大10分待つ
+  catch(e){ SpreadsheetApp.getActive().toast('前の処理が終わらないため中断しました。少し待ってからもう一度押してください','⏳順番待ち',8); return; }
+  try{ return fn(); }
+  finally{ try{ lock.releaseLock(); }catch(e){} }
+}
+
 // ①前段階チェック: 受注明細で「即納」行に水色＋注文ごとの太線(引当前の目視確認用)
-function 前段階チェック_即納(){
+function 前段階チェック_即納(){ 直列_(前段階チェック_即納_本体_); }
+function 前段階チェック_即納_本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi(), cfg=HIKIATE_CFG;
   const recv=ss.getSheetByName(cfg.受注);
   if(!recv){ ui.alert('「'+cfg.受注+'」タブが無いで'); return; }
@@ -818,7 +837,8 @@ function 発送可否判定_(arr, paid){
   return paid ? '発送可能' : '発送可能入金待ち';
 }
 
-function 引当実行(){
+function 引当実行(){ 直列_(引当実行_本体_); }
+function 引当実行_本体_(){
   const ss=SpreadsheetApp.getActive(), cfg=HIKIATE_CFG;
   const recv=ss.getSheetByName(cfg.受注);
   if(!recv){ SpreadsheetApp.getUi().alert('「'+cfg.受注+'」タブが無いで'); return; }
@@ -1360,7 +1380,8 @@ function 全データを消す(){
 }
 
 // 🔄 EMS在庫を更新: 残った色・罫線を全部消して、QUERY(IMPORTRANGE)を再計算させる
-function EMS在庫を更新(){
+function EMS在庫を更新(){ 直列_(EMS在庫を更新_本体_); }
+function EMS在庫を更新_本体_(){
   const ss=SpreadsheetApp.getActive(), cfg=HIKIATE_CFG;
   const emv=ss.getSheetByName(cfg.EMS在庫);
   if(!emv){ SpreadsheetApp.getUi().alert('「'+cfg.EMS在庫+'」タブが無いで'); return; }
@@ -1375,7 +1396,16 @@ function EMS在庫を更新(){
   // QUERY数式(データ先頭セル=A{offset})を入れ直して最新化。ヘッダーがあればA2、無ければA1
   const fcell=emv.getRange(ems.offset,1);
   const f=fcell.getFormula();
-  if(f){ fcell.clearContent(); SpreadsheetApp.flush(); fcell.setFormula(f); }
+  if(f){
+    fcell.clearContent(); SpreadsheetApp.flush(); fcell.setFormula(f);
+    // IMPORTRANGE/QUERYの再計算完了を待つ(③→④と連続クリックしても④が空/古い在庫を読まないように)
+    SpreadsheetApp.flush();
+    for(let i=0;i<30;i++){
+      const v=String(fcell.getDisplayValue()||'');
+      if(v && v.indexOf('Loading')<0) break; // '#N/A'(0件)も確定として扱う
+      Utilities.sleep(1000); SpreadsheetApp.flush();
+    }
+  }
   ss.toast('EMS在庫を更新しました(色クリア＋最新化)','🔄EMS更新',6);
 }
 

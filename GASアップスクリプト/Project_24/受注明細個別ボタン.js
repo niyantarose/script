@@ -185,7 +185,8 @@ function 受注個別_行情報_(row, M){
   };
 }
 
-function 選択行を個別引当(){
+function 選択行を個別引当(){ 直列_(選択行を個別引当_本体_); }
+function 選択行を個別引当_本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
   const sh=ss.getActiveSheet();
   if(sh.getName()!==HIKIATE_CFG.受注){ ui.alert('受注明細で対象の行を選択してからボタンを押してください。'); return; }
@@ -258,7 +259,8 @@ function 選択行を個別引当(){
   ui.alert('個別引当の結果', results.join('\n'), ui.ButtonSet.OK);
 }
 
-function 選択行の引当キャンセル(){
+function 選択行の引当キャンセル(){ 直列_(選択行の引当キャンセル_本体_); }
+function 選択行の引当キャンセル_本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
   const sh=ss.getActiveSheet();
   if(sh.getName()!==HIKIATE_CFG.受注){ ui.alert('受注明細で対象の行を選択してからボタンを押してください。'); return; }
