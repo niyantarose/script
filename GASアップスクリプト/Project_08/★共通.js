@@ -706,8 +706,7 @@ const クレジット種別 = 取得(cn.クレジット種別);
               原題
             };
           } else {
-            作品データ.maxId++;
-            作品ID = String(作品データ.maxId).padStart(4, '0');
+            作品ID = 新規作品IDを採番_(作品データ, cfg);
 
             作品データ.keyToId[worksKey] = 作品ID;
             作品データ.keyToRow[worksKey] = null;
@@ -1275,6 +1274,48 @@ function 作品シートを確保(ss, cfg) {
   return sh;
 }
 
+/* ============================================================
+ * 作品ID 永続ハイウォーターマーク
+ *
+ * Works行が削除・破損しても、過去に採番した番号を再利用しない
+ * ための保険（欠番は再利用しない）。発行済みSKUに埋め込まれた
+ * 作品IDと新規作品のIDが衝突するのを防ぐ。
+ * 保存先はドキュメントプロパティ（スプレッドシート単位）、
+ * キーは作品シート名ごとに分ける。
+ * ============================================================ */
+function 作品IDハイウォーターキー_(cfg) {
+  return 'KYOUTUU_作品ID_HWM_' + String((cfg && cfg.作品シート名) || '');
+}
+
+function 作品IDハイウォーター取得_(cfg) {
+  try {
+    const store = PropertiesService.getDocumentProperties();
+    if (!store) return 0;
+    const n = parseInt(store.getProperty(作品IDハイウォーターキー_(cfg)) || '0', 10);
+    return isNaN(n) ? 0 : n;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function 作品IDハイウォーター更新_(cfg, id数値) {
+  const n = parseInt(id数値, 10);
+  if (isNaN(n) || n <= 0) return;
+  try {
+    const store = PropertiesService.getDocumentProperties();
+    if (!store) return;
+    const key = 作品IDハイウォーターキー_(cfg);
+    const 現在 = parseInt(store.getProperty(key) || '0', 10) || 0;
+    if (n > 現在) store.setProperty(key, String(n));
+  } catch (e) {}
+}
+
+function 新規作品IDを採番_(作品データ, cfg) {
+  作品データ.maxId++;
+  作品IDハイウォーター更新_(cfg, 作品データ.maxId);
+  return String(作品データ.maxId).padStart(4, '0');
+}
+
 function 全作品データを読み込み(作品シート, cfg) {
   const result = {
     keyToId: {},
@@ -1282,7 +1323,9 @@ function 全作品データを読み込み(作品シート, cfg) {
     keyToRow: {},
     keyToVols: {},
     keyTo予約最新巻: {},
-    maxId: 0,
+    // 採番基準はシート上の最大IDと永続ハイウォーターマークの大きい方。
+    // Works行が全部消えていても過去の番号は再利用しない。
+    maxId: 作品IDハイウォーター取得_(cfg),
     newRows: [],
     keyUpdates: [],
     titleToKey: {}
@@ -1352,6 +1395,9 @@ function 全作品データを読み込み(作品シート, cfg) {
       if (!result.titleToKey[titleKey]) result.titleToKey[titleKey] = key;
     }
   }
+
+  // シート上で確認できた最大IDをハイウォーターマークへ反映（自己修復）
+  作品IDハイウォーター更新_(cfg, result.maxId);
 
   return result;
 }
@@ -1603,8 +1649,7 @@ if (行既存作品ID候補) {
           作品IDから既存WorksKey[作品ID] = 更新先WorksKey;
 
         } else {
-          作品データ.maxId++;
-          作品ID = String(作品データ.maxId).padStart(4, '0');
+          作品ID = 新規作品IDを採番_(作品データ, cfg);
 
           作品データ.keyToId[worksKey] = 作品ID;
           作品データ.keyToData[worksKey] = {
@@ -1798,7 +1843,12 @@ function 一括更新を実行(cfg) {
   try {
     const 正規化結果 = WorksKey再正規化を実行(作品シート, cfg);
     const 孤立結果 = { 削除数: 0 };
-    const ID結果 = WorksID振り直しを実行(作品シート, cfg);
+    // 作品IDの振り直しは一括更新では行わない。
+    // 発行済みSKUには作品ID4桁が埋め込まれており、振り直すと発行済みコードと
+    // Worksの対応が崩れ、空いた旧IDが別作品に再割当てされて衝突する
+    // （台湾書籍系で実害が出て封鎖済みの破壊経路）。
+    // 必要な場合のみメンテナンスメニューから WorksID振り直しを実行 を明示的に呼ぶこと。
+    const ID結果 = { 変更数: 0, 旧新マップ: {} };
     const 作品データ = 全作品データを読み込み(作品シート, cfg);
 
     const colWorksタイトル = 列番号安全取得_(列マップ, cn.Worksタイトル);
@@ -1964,8 +2014,7 @@ let 原題 = 取得(cn.原題) || 商品タイトル;
     };
 
   } else {
-    作品データ.maxId++;
-    作品ID = String(作品データ.maxId).padStart(4, '0');
+    作品ID = 新規作品IDを採番_(作品データ, cfg);
 
     作品データ.keyToId[worksKey] = 作品ID;
     作品データ.keyToData[worksKey] = {

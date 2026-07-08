@@ -31,6 +31,7 @@ const 設定_韓国雑誌 = {
   年:               '年',
   月:               '月',
   号数:             '号数',
+  バリエーション:   'バリエーションコード',
   表紙情報:         '表紙情報',
   売価:             '売価',
   原価:             '原価',
@@ -207,6 +208,26 @@ function 韓国雑誌_略称候補_(name) {
   return cleaned ? cleaned.slice(0, 8) : '';
 }
 
+/**
+ * バリエーションコードの正規化。
+ * うちのコード体系はハイフン・アンダースコア等の区切りを入れない
+ * （例: MARI2607A）ので、英数字以外を全部落とす。大文字小文字は保持。
+ */
+function 韓国雑誌_バリエーション正規化_(v) {
+  return String(v || '').trim().replace(/[^A-Za-z0-9]/g, '');
+}
+
+/**
+ * シート上のバリエーションコード列の実ヘッダー名を返す。
+ * 設定の列名が見つからなければ「バリエーション」を含むヘッダーを探す。
+ */
+function 韓国雑誌_バリエーション列名_(列マップ) {
+  const 設定名 = 設定_韓国雑誌.列名.バリエーション;
+  if (設定名 && 列マップ[設定名]) return 設定名;
+  const hit = Object.keys(列マップ).find(k => k.indexOf('バリエーション') !== -1);
+  return hit || '';
+}
+
 /* ============================================================
  * ローカル韓国マスター作成
  * ============================================================ */
@@ -249,7 +270,7 @@ function 韓国雑誌シートを作成() {
   const sh = ss.insertSheet(シート名);
 
   const ヘッダー = [
-    '発番発行', '登録状況', '雑誌名', '年', '月', '号数', '表紙情報', '特典メモ',
+    '発番発行', '登録状況', '雑誌名', '年', '月', '号数', 'バリエーションコード', '表紙情報', '特典メモ',
     '商品コード(SKU)', '商品名（出品用）', '粗利益率', '登録日',
     '売価', '配送パターン', '登録者', '商品説明',
     '原価', '原題タイトル', '原題商品名', 'アラジン商品コード', 'アラジンURL',
@@ -264,6 +285,7 @@ function 韓国雑誌シートを作成() {
     '年': '#6aa84f',
     '月': '#6aa84f',
     '号数': '#6aa84f',
+    'バリエーションコード': '#6aa84f',
     '表紙情報': '#f1c232',
     '特典メモ': '#f1c232',
     '商品コード(SKU)': '#999999',
@@ -318,6 +340,7 @@ function 韓国雑誌シートを作成() {
 
   const 列幅マップ = {
     '発番発行': 60, '登録状況': 80, '雑誌名': 180, '年': 60, '月': 50, '号数': 70,
+    'バリエーションコード': 110,
     '表紙情報': 200, '特典メモ': 240,
     '商品コード(SKU)': 140, '商品名（出品用）': 360, '粗利益率': 90, '登録日': 120,
     '売価': 80, '配送パターン': 100, '登録者': 80, '商品説明': 150,
@@ -436,17 +459,20 @@ function 韓国雑誌_マスターに完全一致するか_(候補名) {
  * コード生成 / 商品名生成
  * ============================================================ */
 
-function 韓国雑誌_商品コードSKUを生成_(雑誌名, 年, 月, 号数) {
+function 韓国雑誌_商品コードSKUを生成_(雑誌名, 年, 月, 号数, バリエーション) {
   const info = 韓国雑誌_マスターを検索_(雑誌名);
   if (!info || !info.略称) return 'ERROR:マスター未登録';
 
+  // 表紙違い・セット等の枝番は区切りなしで末尾に連結する（例: MARI2607A）
+  const 枝番 = 韓国雑誌_バリエーション正規化_(バリエーション);
+
   if (info.コード型 === '号数型') {
     if (!号数) return 'ERROR:号数未入力';
-    return `${info.略称}${String(号数).trim()}`;
+    return `${info.略称}${String(号数).trim()}${枝番}`;
   }
 
   if (!年 || !月) return 'ERROR:年月未入力';
-  return `${info.略称}${String(年).slice(-2)}${String(月).padStart(2, '0')}`;
+  return `${info.略称}${String(年).slice(-2)}${String(月).padStart(2, '0')}${枝番}`;
 }
 
 function 韓国雑誌_出品用商品名を生成_(雑誌名, 年, 月, 号数, 表紙情報, 特典メモ) {
@@ -484,11 +510,18 @@ function monthAsNumber_(v) {
  * 行再計算
  * ============================================================ */
 
-function 韓国雑誌_行を再計算_(sh, row) {
-  if (!sh || sh.getName() !== '韓国雑誌' || row < 2) return;
+function 韓国雑誌_行を再計算_(sh, row, opts) {
+  if (!sh || sh.getName() !== 設定_韓国雑誌.マスターシート名 || row < 2) return;
 
-  const 列 = 韓国雑誌_ヘッダーMap_(sh);
-  const get = (名前) => 列[名前] ? sh.getRange(row, 列[名前]).getValue() : '';
+  // opts.列マップ / opts.rowValues を渡すと、複数行処理時に
+  // ヘッダーやセル値の再読み込みを省略できる（読み取りのみ。書き込みはセル単位）
+  const 列 = (opts && opts.列マップ) || 韓国雑誌_ヘッダーMap_(sh);
+  const rowValues = opts && opts.rowValues;
+  const get = (名前) => {
+    if (!列[名前]) return '';
+    if (rowValues) return rowValues[列[名前] - 1];
+    return sh.getRange(row, 列[名前]).getValue();
+  };
   const set = (名前, v) => { if (列[名前]) sh.getRange(row, 列[名前]).setValue(v); };
 
   const 雑誌名入力 = get('雑誌名');
@@ -507,8 +540,18 @@ function 韓国雑誌_行を再計算_(sh, row) {
 
   set('原題タイトル', 雑誌名);
 
-  const 商品コードSKU = 韓国雑誌_商品コードSKUを生成_(雑誌名, 年, 月, 号数);
-set('商品コード(SKU)', 商品コードSKU);
+  const バリエーション列 = 韓国雑誌_バリエーション列名_(列);
+  const バリエーション = バリエーション列 ? get(バリエーション列) : '';
+
+  const 商品コードSKU = 韓国雑誌_商品コードSKUを生成_(雑誌名, 年, 月, 号数, バリエーション);
+
+  // ダニエル取得で確定したコード（Set等の生成できない特殊コード含む）は
+  // 生成コードで上書きしない。SKUセルのノートが目印。
+  const SKU列番号 = 列['商品コード(SKU)'];
+  const ダニエル固定 = SKU列番号
+    ? String(sh.getRange(row, SKU列番号).getNote() || '').indexOf('ダニエル取得') === 0
+    : false;
+  if (!ダニエル固定) set('商品コード(SKU)', 商品コードSKU);
 
   const 商品名 = 韓国雑誌_出品用商品名を生成_(雑誌名, 年, 月, 号数, 表紙情報, 特典メモ);
   if (商品名) set('商品名（出品用）', 商品名);
@@ -521,12 +564,30 @@ set('商品コード(SKU)', 商品コードSKU);
  * ============================================================ */
 
 function 韓国雑誌_onEdit(e) {
-  const sh = e.range.getSheet();
-  if (sh.getName() !== '韓国雑誌') return;
+  if (!e || !e.range) return;
 
-  const row = e.range.getRow();
-  if (row < 2) return;
+  const sh = e.range.getSheet();
+  if (sh.getName() !== 設定_韓国雑誌.マスターシート名) return;
+
+  // 複数行・複数列の貼り付けにも対応（台湾雑誌と同じ方式）
+  const 開始行 = e.range.getRow();
+  const 行数 = e.range.getNumRows();
+  if (開始行 + 行数 - 1 < 2) return;
   if (typeof 自己更新中か_ === 'function' && 自己更新中か_()) return;
+
+  const 列 = 韓国雑誌_ヘッダーMap_(sh);
+  const 監視列 = ['雑誌名', '年', '月', '号数', '表紙情報', '特典メモ'];
+  const バリエーション列 = 韓国雑誌_バリエーション列名_(列);
+  if (バリエーション列) 監視列.push(バリエーション列);
+  const 監視列番号 = 監視列.map(名前 => 列[名前]).filter(Boolean);
+
+  const 編集開始列 = e.range.getColumn();
+  const 編集終了列 = e.range.getLastColumn();
+  if (!監視列番号.some(c => c >= 編集開始列 && c <= 編集終了列)) return;
+
+  const 雑誌名列 = 列['雑誌名'];
+  const 雑誌名を編集した =
+    !!雑誌名列 && 雑誌名列 >= 編集開始列 && 雑誌名列 <= 編集終了列;
 
   const lock = LockService.getDocumentLock();
   try {
@@ -538,20 +599,25 @@ function 韓国雑誌_onEdit(e) {
   try {
     if (typeof 自己更新を開始_ === 'function') 自己更新を開始_();
 
-    const 列 = 韓国雑誌_ヘッダーMap_(sh);
-    const col = e.range.getColumn();
-    const 編集列名 = Object.keys(列).find(h => 列[h] === col);
-    const 監視列 = ['雑誌名', '年', '月', '号数', '表紙情報', '特典メモ'];
-    if (!監視列.includes(編集列名)) return;
+    // 編集範囲の値を一括で読み、1行ずつ再計算する
+    const lastCol = sh.getLastColumn();
+    const 範囲値 = sh.getRange(開始行, 1, 行数, lastCol).getValues();
 
-    韓国雑誌_行を再計算_(sh, row);
+    for (let r = 開始行; r < 開始行 + 行数; r++) {
+      if (r < 2) continue;
 
-    if (編集列名 === '雑誌名') {
-      韓国雑誌_未解決候補を自動追加_(sh, row);
+      韓国雑誌_行を再計算_(sh, r, {
+        列マップ: 列,
+        rowValues: 範囲値[r - 開始行]
+      });
+
+      if (雑誌名を編集した) {
+        韓国雑誌_未解決候補を自動追加_(sh, r);
+      }
     }
   } finally {
     if (typeof 自己更新を終了_ === 'function') 自己更新を終了_();
-    lock.releaseLock();
+    try { lock.releaseLock(); } catch (_) {}
   }
 }
 
@@ -559,11 +625,14 @@ function 韓国雑誌_onEdit(e) {
  * 確定発行
  * ============================================================ */
 
-function 韓国雑誌_重複キーを作成_(雑誌名, 年, 月, 号数) {
+function 韓国雑誌_重複キーを作成_(雑誌名, 年, 月, 号数, バリエーション) {
   const normalizedName = 韓国雑誌_雑誌名を正規化_(雑誌名);
   if (!normalizedName) return '';
-  if (号数) return `${normalizedName}-${号数}`;
-  if (年 && 月) return `${normalizedName}-${年}-${月}`;
+  // 表紙違い・セットは別商品なので、バリエーションコードもキーに含める
+  const 枝番 = 韓国雑誌_バリエーション正規化_(バリエーション).toUpperCase();
+  const 枝 = 枝番 ? `-${枝番}` : '';
+  if (号数) return `${normalizedName}-${号数}${枝}`;
+  if (年 && 月) return `${normalizedName}-${年}-${月}${枝}`;
   return '';
 }
 
@@ -586,13 +655,15 @@ function 韓国雑誌_確定発行() {
   if (対象行リスト.length === 0) { 韓国雑誌_安全alert_('発番発行列にチェックが入っている行がありません'); return; }
 
   // 重複チェック
+  const バリ列名 = 韓国雑誌_バリエーション列名_(列);
   const 重複チェックMap = {};
   全データ.forEach((row, i) => {
     const key = 韓国雑誌_重複キーを作成_(
       String(get行(row, '雑誌名') || '').trim(),
       String(get行(row, '年') || '').trim(),
       String(get行(row, '月') || '').trim(),
-      String(get行(row, '号数') || '').trim()
+      String(get行(row, '号数') || '').trim(),
+      バリ列名 ? String(get行(row, バリ列名) || '').trim() : ''
     );
     if (!key) return;
     if (!重複チェックMap[key]) 重複チェックMap[key] = [];
@@ -605,7 +676,8 @@ function 韓国雑誌_確定発行() {
       String(get行(row, '雑誌名') || '').trim(),
       String(get行(row, '年') || '').trim(),
       String(get行(row, '月') || '').trim(),
-      String(get行(row, '号数') || '').trim()
+      String(get行(row, '号数') || '').trim(),
+      バリ列名 ? String(get行(row, バリ列名) || '').trim() : ''
     );
     if (!key) return;
     const 重複行 = (重複チェックMap[key] || []).filter(r => r !== rowNum);
@@ -819,86 +891,38 @@ function 韓国雑誌_未解決候補を自動追加_(sh, row) {
 }
 
 /* ============================================================
- * 候補 → ローカル韓国マスター反映
+ * 候補 → 共通マスター反映（正本を更新する台湾雑誌と同じ方式）
+ *
+ * 以前はローカルの「雑誌マスター（韓国）」へ直接書き込んでいたが、
+ * ローカルマスターはプルダウン更新のたびに共通マスターから
+ * clearContents() で作り直される同期コピーのため、反映内容が
+ * 次の同期で消えてしまっていた。正本（雑誌マスター（共通））側を
+ * ライブラリ経由で更新する方式に統一。
  * ============================================================ */
 
 function 韓国雑誌_候補を正式マスターへ反映() {
-  const candidateSh = 韓国雑誌_共通SS_().getSheetByName(設定_韓国雑誌.候補シート名);
-  if (!candidateSh || candidateSh.getLastRow() < 2) {
-    韓国雑誌_安全alert_('候補シートにデータがありません');
+  const ui = SpreadsheetApp.getUi();
+  if (
+    ui.alert(
+      '確認',
+      '雑誌マスター候補（共通）で「反映」にチェックした行を、共通ファイルの雑誌マスター（共通）へ反映します。\n' +
+      '（マスター共通ファイル側を更新します。このファイルの「雑誌マスター（韓国）」へは、続けてプルダウン更新を実行すると同期されます）\n\n' +
+      '続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    ) !== ui.Button.OK
+  ) {
     return;
   }
 
-  const ss = SpreadsheetApp.getActive();
-  const 韓国マスター = ss.getSheetByName(設定_韓国雑誌.雑誌マスター名);
-  if (!韓国マスター) {
-    韓国雑誌_安全alert_('雑誌マスター（韓国）シートが見つかりません');
-    return;
-  }
-
-  const 全データ = candidateSh.getRange(2, 1, candidateSh.getLastRow() - 1, 候補列数).getValues();
-
-  const 対象行リスト = [];
-  全データ.forEach((row, i) => {
-    if (row[候補列.反映 - 1] === true) {
-      対象行リスト.push({ data: row, rowNum: i + 2 });
-    }
-  });
-
-  if (対象行リスト.length === 0) {
-    韓国雑誌_安全alert_('「反映」にチェックが入っている行がありません');
-    return;
-  }
-
-  let 反映数 = 0;
-  const スキップリスト = [];
-  const 反映済み行番号 = [];
-
-  対象行リスト.forEach(({ data, rowNum }) => {
-    const 言語 = String(data[候補列.言語 - 1] || '').trim().toUpperCase();
-    if (!(言語 === 'KR' || 言語 === '韓国' || 言語 === '')) return;
-
-    const 英字名 = String(data[候補列.英字名 - 1] || '').trim();
-    const 略称 = String(data[候補列.略称コード - 1] || '').trim();
-    const カタカナ = String(data[候補列.カタカナ名 - 1] || '').trim();
-    const 基本キー型 = String(data[候補列.基本キー型 - 1] || '').trim() || '年月型';
-    const コード型 = 基本キー型 === '号数型' ? '号数型' : '年月型';
-
-    if (!英字名) {
-      スキップリスト.push(`${rowNum}行目: 雑誌名（英字）が空`);
-      return;
-    }
-    if (!略称) {
-      スキップリスト.push(`${rowNum}行目 [${英字名}]: 略称コードが空`);
-      return;
-    }
-    if (韓国雑誌_マスターに完全一致するか_(英字名)) {
-      スキップリスト.push(`${rowNum}行目 [${英字名}]: 既にローカル韓国マスターに登録済み`);
-      candidateSh.getRange(rowNum, 候補列.ステータス).setValue(候補ステータス.登録済み);
-      candidateSh.getRange(rowNum, 候補列.反映).setValue(false);
-      return;
-    }
-
-    const writeRow = Math.max(韓国マスター.getLastRow() + 1, 2);
-    韓国マスター.getRange(writeRow, 1, 1, 5).setValues([[
-      英字名, カタカナ, 略称, コード型, ''
-    ]]);
-
-    反映済み行番号.push(rowNum);
-    反映数++;
-  });
-
-  反映済み行番号.forEach(rowNum => {
-    candidateSh.getRange(rowNum, 候補列.ステータス).setValue(候補ステータス.登録済み);
-    candidateSh.getRange(rowNum, 候補列.反映).setValue(false);
-  });
-
-  let msg = `✅ 反映完了: ${反映数}件`;
-  if (スキップリスト.length > 0) {
-    msg += `\n\n⚠️ スキップ:\n${スキップリスト.join('\n')}`;
-  }
-  msg += '\n\n続けて「韓国雑誌_プルダウン更新」を実行してください';
-  韓国雑誌_安全alert_(msg);
+  const r = _kyoutuu.共通雑誌候補をマスターへ反映(韓国雑誌_共通SS_());
+  ui.alert(
+    '完了',
+    (r
+      ? `新規追加: ${r.追加}件\n別名として追加: ${r.別名追加}件\n既存一致: ${r.一致}件`
+      : '候補データがありませんでした（または反映チェックなし）') +
+    '\n\n続けて「韓国雑誌_プルダウン更新」を実行すると、雑誌マスター（韓国）へ同期されます。',
+    ui.ButtonSet.OK
+  );
 }
 
 /* ============================================================
@@ -1036,5 +1060,299 @@ const colLetter = 韓国雑誌_列番号を英字へ_(商品コードSKU列);
     `✅ 韓国雑誌 プルダウン更新完了（韓国マスター同期 ${同期件数}件）`,
     '完了',
     3
+  );
+}
+
+/* ============================================================
+ * ダニエル(kstargate)商品コード取得
+ *
+ * 韓国雑誌の商品コードはダニエルの通販サイト kstargate.com の
+ * 採番（商品詳細ページの「kstargate ID」）をそのまま使う。
+ *
+ * 取得の流れ:
+ *   ① 略称+年月（例 MARI2607）/ 略称+号数（例 CIN211564）の
+ *      ベースコードでサイト内検索（説明文のIDに部分一致するので
+ *      表紙違い・セットも全部ヒットする）
+ *   ② ヒットしない場合は 雑誌名(英字)+年 で検索し、商品名の
+ *      年月・号数で絞り込む
+ *   ③ 詳細ページから kstargate ID を読み取り、行のバリエーション
+ *      コードと突き合わせて1件に決まったら書き込む
+ *
+ * 書き込み時はうちのコード体系に合わせて区切り文字を除去する
+ * （AKOR2607_D → AKOR2607D）。取得したセルにはノートを付け、
+ * onEditの再計算が生成コードで上書きしないよう保護する。
+ * ============================================================ */
+
+const ダニエル設定 = {
+  ベースURL: 'https://www.kstargate.com',
+  待機ミリ秒: 350,   // 仕入先サイトなので必ず間隔をあける
+  最大フェッチ数: 100, // 1回の実行でのHTTPアクセス上限
+  行上限: 20,          // 1回の実行で処理する行数上限
+  候補詳細上限: 6      // 1行あたり詳細ページを見る候補数上限
+};
+
+let ダニエル_fetch回数_ = 0;
+
+function ダニエル_コード正規化_(v) {
+  return String(v || '').trim().replace(/[^A-Za-z0-9]/g, '');
+}
+
+function ダニエル_HTML取得_(url) {
+  if (ダニエル_fetch回数_ >= ダニエル設定.最大フェッチ数) {
+    throw new Error('FETCH_LIMIT');
+  }
+  ダニエル_fetch回数_++;
+  Utilities.sleep(ダニエル設定.待機ミリ秒);
+
+  const resp = UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+  });
+  if (resp.getResponseCode() !== 200) return '';
+  // kstargateはEUC-JP
+  return resp.getContentText('EUC-JP');
+}
+
+/** サイト内検索。結果一覧から brandcode(12桁) と商品名のペアを返す */
+function ダニエル_検索_(キーワード) {
+  const url = ダニエル設定.ベースURL + '/shop/shopbrand.html?search=' + encodeURIComponent(キーワード);
+  const html = ダニエル_HTML取得_(url);
+  if (!html) return [];
+
+  const seen = {};
+  const list = [];
+  const re = /shopdetail\.html\?brandcode=(\d+)[^>]*>([^<]+)</g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const 名前 = m[2].replace(/\s+/g, ' ').trim();
+    if (!名前) continue;           // 画像リンク側はテキストが無いのでスキップ
+    if (seen[m[1]]) continue;
+    seen[m[1]] = true;
+    list.push({ brandcode: m[1], 商品名: 名前 });
+  }
+  return list;
+}
+
+/** 商品詳細ページから「kstargate ID」を読み取る */
+function ダニエル_商品コードを取得_(brandcode) {
+  const html = ダニエル_HTML取得_(ダニエル設定.ベースURL + '/shopdetail/' + brandcode + '/');
+  if (!html) return '';
+  let m = html.match(/kstargate ID<\/strong>(?:&#160;|&nbsp;|\s)*([A-Za-z0-9_\-]+)/i);
+  if (!m) m = html.match(/kstargate ID(?:&(?:amp;)?#160;|&nbsp;|\s)*([A-Za-z0-9_\-]+)/i);
+  return m ? m[1] : '';
+}
+
+/** 候補（検索結果）の詳細ページを見て kstargate ID を集める */
+function ダニエル_候補詳細_(候補) {
+  const out = [];
+  候補.slice(0, ダニエル設定.候補詳細上限).forEach(c => {
+    const code = ダニエル_商品コードを取得_(c.brandcode);
+    if (code) out.push({ brandcode: c.brandcode, 商品名: c.商品名, コード: code });
+  });
+  return out;
+}
+
+function ダニエル_枝番_(コード, ベース) {
+  if (!ベース) return '';
+  const n = ダニエル_コード正規化_(コード);
+  if (n.toUpperCase().indexOf(ベース.toUpperCase()) !== 0) return '';
+  return n.slice(ベース.length);
+}
+
+/**
+ * 詳細リストの中から行に対応する1件を決める。
+ * - バリエーション込みの完全一致が最優先
+ * - バリエーション未入力なら、ベース前方一致が1件だけのとき採用
+ * - 前方一致が複数なら「複数」として人に返す
+ */
+function ダニエル_詳細からマッチ_(詳細, ベース, 期待, バリエーション) {
+  if (詳細.length === 0) return null;
+
+  const norm = c => ダニエル_コード正規化_(c).toUpperCase();
+
+  if (期待) {
+    const exact = 詳細.filter(d => norm(d.コード) === 期待);
+    if (exact.length === 1) {
+      return {
+        状態: '確定',
+        コード: exact[0].コード,
+        brandcode: exact[0].brandcode,
+        枝番: ダニエル_枝番_(exact[0].コード, ベース)
+      };
+    }
+  }
+
+  if (ベース) {
+    const pre = 詳細.filter(d => norm(d.コード).indexOf(ベース.toUpperCase()) === 0);
+    if (pre.length === 1 && !バリエーション) {
+      return {
+        状態: '確定',
+        コード: pre[0].コード,
+        brandcode: pre[0].brandcode,
+        枝番: ダニエル_枝番_(pre[0].コード, ベース)
+      };
+    }
+    if (pre.length > 1) return { 状態: '複数', 候補: pre };
+  }
+
+  return null;
+}
+
+/** 1行分の探索本体 */
+function ダニエル_行のコードを探す_(雑誌名, 年, 月, 号数, バリエーション) {
+  // ベースコード（略称+号数 / 略称+年下2桁+月2桁）
+  const info = 韓国雑誌_マスターを検索_(雑誌名);
+  let ベース = '';
+  if (info && info.略称) {
+    if (info.コード型 === '号数型') {
+      if (号数) ベース = info.略称 + String(号数).trim();
+    } else if (年 && 月) {
+      ベース = info.略称 + String(年).slice(-2) + String(月).padStart(2, '0');
+    }
+  }
+  const 期待 = ベース ? (ベース + バリエーション).toUpperCase() : '';
+
+  // ① ベースコードで直接検索
+  if (ベース) {
+    const 候補 = ダニエル_検索_(ベース);
+    if (候補.length > 0) {
+      const 詳細 = ダニエル_候補詳細_(候補);
+      const r = ダニエル_詳細からマッチ_(詳細, ベース, 期待, バリエーション);
+      if (r) return r;
+    }
+  }
+
+  // ② 雑誌名(英字)+年（または号数）で検索して商品名で絞り込む
+  const kw = (雑誌名 + ' ' + (号数 ? 号数 : (年 || '')))
+    .replace(/[^\x20-\x7E]/g, ' ')  // サイトがEUC-JPなので検索語はASCIIに限定する
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!kw) return { 状態: '不明', 理由: '検索キーワードを作れません' };
+
+  const 候補 = ダニエル_検索_(kw);
+  if (候補.length === 0) return { 状態: '不明', 理由: `検索ヒットなし (${kw})` };
+
+  let 絞り込み = 候補;
+  if (号数) {
+    絞り込み = 候補.filter(c => c.商品名.indexOf(String(号数)) !== -1);
+  } else if (年 && 月) {
+    絞り込み = 候補.filter(c =>
+      c.商品名.indexOf(`${年}年`) !== -1 &&
+      c.商品名.indexOf(`${parseInt(月, 10)}月`) !== -1
+    );
+  }
+  if (絞り込み.length === 0) 絞り込み = 候補;
+
+  const 詳細 = ダニエル_候補詳細_(絞り込み);
+  const r = ダニエル_詳細からマッチ_(詳細, ベース, 期待, バリエーション);
+  if (r) return r;
+
+  if (詳細.length === 1) {
+    return { 状態: '確定', コード: 詳細[0].コード, brandcode: 詳細[0].brandcode, 枝番: '' };
+  }
+  if (詳細.length > 1) return { 状態: '複数', 候補: 詳細 };
+  return { 状態: '不明', 理由: 'kstargate IDを読み取れませんでした' };
+}
+
+/** メニュー本体：未登録・未取得の行にダニエルの商品コードを記入する */
+function 韓国雑誌_ダニエル商品コード取得() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(設定_韓国雑誌.マスターシート名);
+  if (!sh || sh.getLastRow() < 2) { 韓国雑誌_安全alert_('データがありません'); return; }
+
+  const 列 = 韓国雑誌_ヘッダーMap_(sh);
+  const SKU列 = 列['商品コード(SKU)'];
+  if (!列['雑誌名'] || !SKU列) {
+    韓国雑誌_安全alert_('「雑誌名」「商品コード(SKU)」列が見つかりません');
+    return;
+  }
+
+  const バリ列名 = 韓国雑誌_バリエーション列名_(列);
+  const 最終行 = sh.getLastRow();
+  const 全データ = sh.getRange(2, 1, 最終行 - 1, sh.getLastColumn()).getValues();
+  const SKUノート = sh.getRange(2, SKU列, 最終行 - 1, 1).getNotes();
+
+  const get行 = (row, 名前) =>
+    列[名前] ? String(row[列[名前] - 1] == null ? '' : row[列[名前] - 1]).trim() : '';
+
+  const 対象 = [];
+  全データ.forEach((row, i) => {
+    if (!get行(row, '雑誌名')) return;
+    // 年月か号数が入っていない行は特定できないので対象外
+    const 年月あり = get行(row, '年') && get行(row, '月');
+    if (!年月あり && !get行(row, '号数')) return;
+    if (get行(row, '登録状況').indexOf('登録済') === 0) return;
+    if (String(SKUノート[i][0] || '').indexOf('ダニエル取得') === 0) return; // 取得済み
+    対象.push({ row, rowNum: i + 2 });
+  });
+
+  if (対象.length === 0) {
+    韓国雑誌_安全alert_('対象行がありません\n（未登録で、まだダニエル取得していない行が対象です）');
+    return;
+  }
+
+  const 今回 = 対象.slice(0, ダニエル設定.行上限);
+  const 確認 = ui.alert(
+    '🚚 ダニエル商品コード取得',
+    `対象 ${対象.length}行のうち ${今回.length}行を処理します。` +
+    (対象.length > 今回.length ? `\n（1回の実行は${ダニエル設定.行上限}行まで。残りは再実行してください）` : '') +
+    '\n\nkstargate.com に接続します。続行しますか？',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (確認 !== ui.Button.OK) return;
+
+  ダニエル_fetch回数_ = 0;
+  let 確定数 = 0, 複数数 = 0, 不明数 = 0;
+  const レポート = [];
+
+  try {
+    今回.forEach(({ row, rowNum }, idx) => {
+      ss.toast(`${idx + 1}/${今回.length}件目（${rowNum}行目）を照会中...`, '🚚 ダニエル取得', 5);
+
+      const 雑誌名 = 韓国雑誌_雑誌名を正規化_(get行(row, '雑誌名'));
+      const 年 = get行(row, '年');
+      const 月 = get行(row, '月');
+      const 号数 = get行(row, '号数');
+      const バリエーション = 韓国雑誌_バリエーション正規化_(バリ列名 ? get行(row, バリ列名) : '');
+
+      const 結果 = ダニエル_行のコードを探す_(雑誌名, 年, 月, 号数, バリエーション);
+      const cell = sh.getRange(rowNum, SKU列);
+
+      if (結果.状態 === '確定') {
+        cell.setValue(ダニエル_コード正規化_(結果.コード));
+        cell.setNote(
+          'ダニエル取得: ' + 結果.コード + '\n' +
+          ダニエル設定.ベースURL + '/shopdetail/' + 結果.brandcode + '/\n' +
+          '雑誌名・年月・バリエーションを変えた場合はこのノートを消して再取得してください'
+        );
+        // バリエーションが空でサイト側に枝番があれば逆記入しておく
+        if (バリ列名 && !バリエーション && 結果.枝番) {
+          sh.getRange(rowNum, 列[バリ列名]).setValue(結果.枝番);
+        }
+        確定数++;
+      } else if (結果.状態 === '複数') {
+        cell.setNote(
+          '候補(ダニエル): 以下から選んで商品コードを記入してください\n' +
+          結果.候補.map(c => ダニエル_コード正規化_(c.コード) + ' … ' + c.商品名).join('\n')
+        );
+        レポート.push(`${rowNum}行目: 候補複数 → ${結果.候補.map(c => ダニエル_コード正規化_(c.コード)).join(', ')}`);
+        複数数++;
+      } else {
+        レポート.push(`${rowNum}行目: 見つからず${結果.理由 ? '（' + 結果.理由 + '）' : ''}`);
+        不明数++;
+      }
+    });
+  } catch (e) {
+    if (String(e.message) !== 'FETCH_LIMIT') throw e;
+    レポート.push('⚠ 今回のアクセス上限に達したため途中で停止しました。残りは再実行してください。');
+  }
+
+  韓国雑誌_安全alert_(
+    `✅ ダニエル商品コード取得 完了\n` +
+    `確定: ${確定数}件 / 候補複数: ${複数数}件 / 見つからず: ${不明数}件` +
+    (レポート.length ? '\n\n' + レポート.join('\n') : '') +
+    '\n\n※ 候補複数の行は商品コード(SKU)セルのノートに候補一覧を書いてあります'
   );
 }
