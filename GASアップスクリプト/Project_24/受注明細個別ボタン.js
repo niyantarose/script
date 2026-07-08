@@ -129,6 +129,51 @@ function 受注個別_行色_(sh, M, rowNo, color){
   rng.setBackgrounds([out]);
 }
 
+// 「今回入荷EMSの在庫」の該当行を、EMSリストP列の今の割当(entries)に合わせて更新する。
+// 余り(F)・受注番号セル(G以降)・行の色(A〜F)を②と同じ約束事で書き直す:
+//   割当あり: 余りあり=緑/余りなし=黄、受注番号セルは入金済=黄・未入金=赤
+//   割当なし: 色クリア・余り=数量
+// 行が見つからない/シートが無い場合は黙ってスキップ(②が正なので次回②で必ず揃う)
+function 受注個別_台帳更新_(ss, item, entries, R, M){
+  try{
+    const sh=ss.getSheetByName(HIKIATE_CFG.日本在庫);
+    if(!sh || sh.getLastRow()<3) return;
+    const nc=sh.getLastColumn();
+    const vals=sh.getRange(3,1,sh.getLastRow()-2,nc).getDisplayValues();
+    const key=normCode_(item.商品コード), 着=ymd_(item.EMS到着日), ems=String(item.EMS番号||'').trim();
+    let rowNo=-1;
+    for(let i=0;i<vals.length;i++){
+      const r=vals[i];
+      if(String(r[4]||'').trim()!==ems) continue;
+      if(normCode_(r[2])!==key) continue;
+      if(着 && ymd_(r[1])!==着) continue;
+      rowNo=3+i; break;
+    }
+    if(rowNo<0) return;
+    const qty=Number(item.数量)||0;
+    const used=entries.reduce((s,e)=>s+e.qty,0);
+    const surplus=Math.max(0, qty-used);
+    const paid=ban=>{ for(let i=M.hr;i<R.length;i++){ const row=R[i];
+      if(String(row[M.番号]||'').trim()===ban && 入金済み_(row[M.入金])) return true; } return false; };
+    const bans=entries.map(e=>e.ban).filter((b,i,a)=>a.indexOf(b)===i).sort((a,b)=>番号num_(a)-番号num_(b));
+    // F=余り
+    sh.getRange(rowNo,6).setValue(surplus>0?surplus:'');
+    // G以降=受注番号(余った古いセルはクリア)
+    const nBanCells=Math.max(0,nc-6);
+    if(nBanCells>0){
+      const v=[], bg=[];
+      for(let i=0;i<nBanCells;i++){
+        v.push(i<bans.length? bans[i] : '');
+        bg.push(i<bans.length? (paid(bans[i])? HIKIATE_CFG.色_黄 : HIKIATE_CFG.色_赤) : null);
+      }
+      sh.getRange(rowNo,7,1,nBanCells).setValues([v]).setBackgrounds([bg]);
+    }
+    // A〜F=行の状態色
+    const col= bans.length? (surplus>0? HIKIATE_CFG.色_緑 : HIKIATE_CFG.色_黄) : null;
+    sh.getRange(rowNo,1,1,6).setBackgrounds([new Array(6).fill(col)]);
+  }catch(e){}
+}
+
 function 受注個別_行情報_(row, M){
   return {
     ban: String(row[M.番号]||'').trim(),
@@ -163,6 +208,8 @@ function 選択行を個別引当(){
       const 既=受注個別_割当行_(ems.rows, l.sku, l.code, l.ban).filter(h=>String(h.item.状態||'').trim()==='到着済');
       if(既.length){
         受注個別_行色_(sh, M, rowNo, HIKIATE_CFG.色_黄);
+        既.forEach(h=>{ const live=個別対応_P注文展開_(ems.sh.getRange(h.item.row, ems.c.注文番号+1).getDisplayValue(), h.item.数量);
+          受注個別_台帳更新_(ss, h.item, live, R, M); });
         results.push(label+': 既に割当済み('+既.reduce((s,h)=>s+h.cur,0)+'個)。行を黄にしました');
       } else {
         results.push(label+': 到着済の箱にこの商品(残あり)が見つかりません');
@@ -205,6 +252,7 @@ function 選択行を個別引当(){
       msg+=' / 入荷日 '+pick.item.EMS到着日;
     }
     受注個別_行色_(sh, M, rowNo, HIKIATE_CFG.色_黄); // 引き当たった=今回出せる分として即座に黄
+    受注個別_台帳更新_(ss, pick.item, entries, R, M); // 今回入荷EMSの在庫の該当行も連動更新
     results.push(msg);
   });
   ui.alert('個別引当の結果', results.join('\n'), ui.ButtonSet.OK);
@@ -244,6 +292,7 @@ function 選択行の引当キャンセル(){
       cell.setValue(text);
       cell.setBackground(/[,:：、]/.test(text)?'#fff2cc':null);
       引当履歴_キャンセル_(個別対応_履歴Rec_(h.item, l.ban, cut, '個別引当'), cut);
+      受注個別_台帳更新_(ss, h.item, kept, R, M); // 今回入荷EMSの在庫の該当行も連動更新(色クリア・余り復元)
       removed+=cut;
     });
     SpreadsheetApp.flush(); // 入荷日クリアの「他に有効割当があるか」判定が書き込み後のP列を見るように
