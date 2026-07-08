@@ -30,11 +30,15 @@ function 入荷日チェック_一覧をクリア本体_(){
     ui.ButtonSet.OK_CANCEL);
   if(ans!==ui.Button.OK) return;
   const R=recv.getDataRange().getValues();
-  let ok=0, ng=0;
+  let ok=0, ng=0, 保留=0;
   const 結果=[];
   list.forEach(r=>{
     const rowNo=Number(r[0])||0, ban=String(r[1]||'').trim(), code=String(r[3]||'').trim(), sku=String(r[4]||'').trim(), listed=ymd_(r[6]);
     let res='';
+    if(String(r[7]||'').indexOf('台湾/中国ルート')===0){
+      結果.push(['台湾/中国ルートのためスキップ(消す場合は手動で)']); 保留++;
+      return;
+    }
     if(rowNo>M.hr && rowNo<=R.length){
       const row=R[rowNo-1];
       const banOk=String(row[M.番号]||'').trim()===ban;
@@ -53,7 +57,7 @@ function 入荷日チェック_一覧をクリア本体_(){
   });
   rep.getRange(2,9).setValue('処理結果').setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
   rep.getRange(3,9,結果.length,1).setValues(結果);
-  ss.toast('入荷日クリア: '+ok+'行 / スキップ '+ng+'行。仕上げに②引き当て実行を回してください','🧹入荷日',8);
+  ss.toast('入荷日クリア: '+ok+'行 / 台湾・中国スキップ '+保留+'行 / 不一致スキップ '+ng+'行。仕上げに②引き当て実行を回してください','🧹入荷日',8);
 }
 
 function 入荷日整合チェック(){
@@ -98,8 +102,11 @@ function 入荷日整合チェック(){
     const keys=[]; 受注候補コード_(sku,code).forEach(v=> codeKeys_(v).forEach(k=>{ if(keys.indexOf(k)<0) keys.push(k); }));
     const hit = !!(set && keys.some(k=>set.has(k)));
     if(hit) continue;
+    // 台湾・中国ルートは韓国EMSに照合先が無い=手入力の入荷日が正。理由を分けて🧹の対象外にする
+    const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
     out.push([i+1, ban, String(row[M.氏名]||''), code, sku, Number(row[M.個数])||0, d||String(入荷日値||''),
-      set? 'この日の到着EMSに、この商品が無い' : 'この日に到着したEMSが無い']);
+      別ルート? '台湾/中国ルート: 手入力の入荷日なら正しい(🧹では消しません)'
+        : (set? 'この日の到着EMSに、この商品が無い' : 'この日に到着したEMSが無い')]);
   }
 
   // --- 結果を「入荷日チェック」シートへ(受注明細は触らない) ---
