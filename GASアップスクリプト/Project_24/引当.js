@@ -696,11 +696,13 @@ function 引当診断(){
   ui.alert('引当診断', msg, ui.ButtonSet.OK);
 }
 
-// 商品コード末尾の「（受注番号）」タグ(中古品などの名指し買付。例 POEM65（10116569）)は照合前に取り除き、
-// 基底コード(POEM65)で一致させる。タグ自体の名指しはP列自動記入が拾う(タグ受注番号_)。
-function normCode_(v){ return String(v||'').trim().replace(/[\s　]*[（(]\s*\d{7,}\s*[）)]\s*$/,'').toUpperCase().replace(/_/g,'-'); }
-// コード末尾の（受注番号）タグから受注番号を取り出す。無ければ''(7桁以上の数字だけ=巻数カッコ等の誤検出防止)
-function タグ受注番号_(v){ const m=String(v||'').trim().match(/[（(]\s*(\d{7,})\s*[）)]\s*$/); return m? m[1] : ''; }
+// 商品コード末尾の受注番号タグ(中古品などの名指し買付)は照合前に取り除き、基底コードで一致させる。
+// 対応書式: 「POEM65（10116569）」「POEM65(10116569)」「RECIPE42/10117126」(カッコは全角/半角、スラッシュは/／)
+// タグ自体の名指しはP列自動記入が拾う(タグ受注番号_)。
+function normCode_(v){ return String(v||'').trim().replace(/[\s　]*(?:[（(]\s*\d{7,}\s*[）)]|[/／]\s*\d{7,})\s*$/,'').toUpperCase().replace(/_/g,'-'); }
+// コード末尾の受注番号タグ(（受注番号）または /受注番号)から受注番号を取り出す。
+// 無ければ''(7桁以上の数字だけ=巻数カッコや枝番の誤検出防止)
+function タグ受注番号_(v){ const m=String(v||'').trim().match(/(?:[（(]\s*(\d{7,})\s*[）)]|[/／]\s*(\d{7,}))\s*$/); return m? (m[1]||m[2]) : ''; }
 function SKU枝番あり_(sku, code){
   const s=normCode_(sku), c=normCode_(code);
   return !!(s && c && s!==c && s.indexOf(c)===0 && /^[A-Z]+$/.test(s.slice(c.length)));
