@@ -89,8 +89,12 @@ function 発注共有P列記入_(){
     const m=pno.match(/^(\d{4})(\d{2})(\d{2})/); if(!m) continue; // 購入No.先頭8桁=発注日
     rows.push({ i, 末:new Date(+m[1],+m[2]-1,+m[3],23,59,59),
       keys:codeKeys_(code), 号:月号_(normCode_(code)), qty:Number(qy[i][0])||0, p:String(pv[i][0]||'').trim(),
-      着:ymd_(av[i][0]) }); // 箱の到着日(yyyy-MM-dd)。出荷済みの紐付け判定に使う
+      着:ymd_(av[i][0]),        // 箱の到着日(yyyy-MM-dd)。出荷済みの紐付け判定に使う
+      tag:タグ受注番号_(code) }); // コード末尾の（受注番号）タグ=人の名指し(中古品の名指し買付など)
   }
+  // 受注番号→注文行(タグの名指しで必要数を消し込むためのインデックス)
+  const byBan={};
+  lines.forEach(l=>(byBan[l.ban]=byBan[l.ban]||[]).push(l));
 
   // ---- 1周目: 既にP列にある分を必要数から差し引く(二重割当防止) ----
   const parse_=(t,rq)=>{ const out=[];
@@ -108,9 +112,18 @@ function 発注共有P列記入_(){
   });
 
   // ---- 2周目: 空欄の行へ発注日順にFIFOで記入 ----
-  const target=rows.filter(r=>!r.p && r.qty>0 && r.末.getTime()>=受注最古).sort((a,b)=>a.末-b.末||a.i-b.i);
+  const target=rows.filter(r=>!r.p && r.qty>0 && (r.tag || r.末.getTime()>=受注最古)).sort((a,b)=>a.末-b.末||a.i-b.i);
   let 記入=0, 分割=0, 在庫=0; const writes=[];
   target.forEach(r=>{
+    // コードに（受注番号）タグがある行=人の名指し。日付や照合を問わずその受注番号をそのまま記入(全量)。
+    // 同じ受注の必要数は消し込んで、他の箱への二重割当を防ぐ。
+    if(r.tag){
+      let left=r.qty;
+      for(const l of (byBan[r.tag]||[])){ if(left<=0) break; if(l.need<=0) continue;
+        const t=Math.min(left,l.need); l.need-=t; left-=t; }
+      writes.push({ i:r.i, text:r.tag, warn:false });
+      記入++; return;
+    }
     const seen=new Set(), cand=[];
     r.keys.forEach(k=>(byKey[k]||[]).forEach(l=>{ if(!seen.has(l.seq)){ seen.add(l.seq); cand.push(l); } }));
     cand.sort(順_);
