@@ -113,6 +113,22 @@ function 受注個別_割当行_(emsRows, sku, code, ban){
   return out;
 }
 
+// 受注明細の1行を塗る/クリアする(color=nullでクリア)。未入金の受注番号セル(赤)と
+// 個数>=2の個数セル(緑)のマークは維持する(②の色分けと同じ約束事)
+function 受注個別_行色_(sh, M, rowNo, color){
+  const nc=sh.getLastColumn();
+  const rng=sh.getRange(rowNo,1,1,nc);
+  const cur=rng.getBackgrounds()[0];
+  const 赤=HIKIATE_CFG.色_赤.toLowerCase(), 緑=HIKIATE_CFG.色_緑.toLowerCase();
+  const out=cur.map((c,i)=>{
+    const lc=String(c||'').toLowerCase();
+    if(M.番号>=0 && i===M.番号 && lc===赤) return c;
+    if(M.個数>=0 && i===M.個数 && lc===緑) return c;
+    return color;
+  });
+  rng.setBackgrounds([out]);
+}
+
 function 受注個別_行情報_(row, M){
   return {
     ban: String(row[M.番号]||'').trim(),
@@ -142,7 +158,17 @@ function 選択行を個別引当(){
     if(l.kbn!=='取り寄せ'){ results.push(label+': 取り寄せ行ではないのでスキップ'); return; }
     if(l.qty<=0){ results.push(label+': 個数0のためスキップ'); return; }
     const cands=受注個別_候補_(ems.rows, l.sku, l.code);
-    if(!cands.length){ results.push(label+': 到着済の箱にこの商品(残あり)が見つかりません'); return; }
+    if(!cands.length){
+      // 残あり箱が無くても、既にこの受注が到着済の箱に名指しされていれば「割当済み=出せる」なので黄に塗る
+      const 既=受注個別_割当行_(ems.rows, l.sku, l.code, l.ban).filter(h=>String(h.item.状態||'').trim()==='到着済');
+      if(既.length){
+        受注個別_行色_(sh, M, rowNo, HIKIATE_CFG.色_黄);
+        results.push(label+': 既に割当済み('+既.reduce((s,h)=>s+h.cur,0)+'個)。行を黄にしました');
+      } else {
+        results.push(label+': 到着済の箱にこの商品(残あり)が見つかりません');
+      }
+      return;
+    }
     let pick=cands[0];
     if(cands.length>1){
       const menu=cands.map((c,i)=>(i+1)+') '+(c.item.EMS到着日||'?')+'着 '+c.item.EMS番号+(c.item.BoxNo?' Box'+c.item.BoxNo:'')+' 残'+c.残).join('\n');
@@ -178,6 +204,7 @@ function 選択行を個別引当(){
       sh.getRange(rowNo, M.入荷+1).setValue(pick.item.EMS到着日).setNumberFormat('yyyy-mm-dd');
       msg+=' / 入荷日 '+pick.item.EMS到着日;
     }
+    受注個別_行色_(sh, M, rowNo, HIKIATE_CFG.色_黄); // 引き当たった=今回出せる分として即座に黄
     results.push(msg);
   });
   ui.alert('個別引当の結果', results.join('\n'), ui.ButtonSet.OK);
@@ -221,6 +248,7 @@ function 選択行の引当キャンセル(){
     });
     SpreadsheetApp.flush(); // 入荷日クリアの「他に有効割当があるか」判定が書き込み後のP列を見るように
     const cleared=個別対応_入荷日クリア_(l.ban, l.code||l.sku, '');
+    受注個別_行色_(sh, M, rowNo, null); // キャンセルした行は色をクリア(未入金の赤・個数の緑マークは残す)
     results.push(label+': キャンセル '+removed+'個'+(cleared?' / 入荷日クリア '+cleared+'行':''));
   });
   ui.alert('引当キャンセルの結果', results.join('\n'), ui.ButtonSet.OK);
