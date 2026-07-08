@@ -21,10 +21,16 @@
 3. 作業ツリーに身に覚えのない変更が残っていたら、それはオンライン編集の反映なので
    削除・上書きせず sync コミットとして取り込んでから作業する
 
-**反映（push）するとき：**
+**反映（push）するとき — 全プロジェクト共通：**
 
-- Project_19 → `tools\p19_safe_push.ps1`（必須）
-- その他のプロジェクト → 直前に `gas_pull_sync.ps1` で取り込み確認してから `clasp push`
+- **素の `clasp push` は全プロジェクト（Project_01〜24）で禁止。** 必ず安全pushを使う：
+  `powershell -ExecutionPolicy Bypass -File tools\gas_safe_push.ps1 Project_XX`
+  （Project_19は従来どおり `tools\p19_safe_push.ps1` でも同じ＝中身は共通版への委譲）
+- 安全pushは前回push時の基準（tools/sync_state/<Project>.json）との3方向同期で
+  全ファイルを保護する: オンラインだけ変更→自動取り込み / ローカルだけ変更→push /
+  両方変更→対話確認。基準ファイルはスクリプトが自動更新・コミットする
+- 初回実行時にオンライン側へ未知の変更があると対話確認が出ることがある
+  （先に `gas_pull_sync.ps1` で取り込んでおけば出ない）
 
 ## Project_19（発注EMSリスト）の反映ルール — 最重要
 
@@ -32,9 +38,7 @@
    共同作業者の貼り付け更新が巻き戻って消える事故が実際に起きた（2026-07-07）
 2. 反映は必ず `tools/p19_safe_push.ps1` を使う:
    `powershell -ExecutionPolicy Bypass -File tools\p19_safe_push.ps1`
-   Project_19の**全ファイル**を、前回push時の状態（tools/p19_sync_state.json）を基準に
-   3方向同期で保護する: オンラインだけ変更→自動取り込み / ローカルだけ変更→push /
-   両方変更→どちらを残すか対話確認。基準ファイルはスクリプトが自動更新・コミットする
+   （中身は全プロジェクト共通の `gas_safe_push.ps1`。基準は tools/sync_state/Project_19.json）
 3. 作業開始時は必ず `git pull`（2台のPCで作業しているため、ローカルが古いことがある）
 4. `インボイス.js`・`P-touch系` は主に共同作業者が更新するファイル。こちらから書き換える
    場合は「両方変更」の衝突を避けるため、共同作業者が作業していない時間帯に行い、
