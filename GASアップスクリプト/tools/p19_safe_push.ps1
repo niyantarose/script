@@ -36,10 +36,11 @@ $absorbed = @()
 $warn = @()
 Get-ChildItem $tmp -File | Where-Object Name -ne '.clasp.json' | ForEach-Object {
   $local = Join-Path $p19 $_.Name
-  $differs = (-not (Test-Path $local)) -or
-    ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $local).Hash)
+  $isNew = -not (Test-Path $local)
+  $differs = $isNew -or ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $local).Hash)
   if (-not $differs) { return }
-  if ($remoteOwned -contains $_.Name) {
+  # オンラインにしかない新規ファイルは無条件で取り込む（pushで消してしまわないように）
+  if ($isNew -or ($remoteOwned -contains $_.Name)) {
     Copy-Item $_.FullName $local -Force
     $absorbed += $_.Name
   } else {
