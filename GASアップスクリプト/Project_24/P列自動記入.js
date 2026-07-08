@@ -5,7 +5,7 @@
 //
 // ルール:
 //   ・P列に既に値がある行は触らない(手動修正が常に優先)
-//   ・出荷済み(消込台帳)を最優先で割り当て(物理的に先に取っていった分)
+//   ・出荷済み(消込台帳)を最優先で割り当て(物理的に先に取っていった分)。ただし台帳の入荷日=箱の到着日の箱だけ
 //   ・現役の注文は「注文日≦発注日」のものだけ確定(後から来た注文は引き当て時のFIFOに任せる)
 //   ・全量1注文=番号だけ / 分割=「番号:個数」カンマ区切り(セルは薄黄で要確認マーク)
 
@@ -50,9 +50,12 @@ function 発注共有P列記入_(){
   const 受注最古=lines.reduce((m,l)=>Math.min(m,l.date.getTime()),Infinity); // ※現役の注文だけで計算
 
   // ---- 出荷済み(消込台帳)も候補に(発送済みでも「誰の分だったか」をP列に残す) ----
+  // ただし付けてよいのは「その注文が実際に受けた箱」=台帳の入荷日と箱の到着日が一致する行だけ。
+  // (日付を見ないと、直近に出荷された注文が後から到着した別の箱まで吸い付き、
+  //  在庫買い分の箱に発送済みの古い受注番号が大量に記入される)
   消込台帳_出荷済み行_().forEach(t=>{
     const keys=キー展開_(t.sku, t.code); if(!keys.size) return;
-    lines.push({ban:t.ban, keys, need:t.qty, date:new Date(0), seq:lines.length, shipped:true});
+    lines.push({ban:t.ban, keys, need:t.qty, date:new Date(0), seq:lines.length, shipped:true, 入荷ymd:ymd_(t.入荷日)});
   });
   // 引当履歴の「在庫反映済み/過去取込」分も必要数から差し引き、古い箱で割当済みの注文を新しい箱に二重記入しない。
   try{ 引当履歴_需要を差し引く_(lines); }catch(e){}
@@ -70,6 +73,7 @@ function 発注共有P列記入_(){
   const colPu=(eh.indexOf('購入No.')>=0? eh.indexOf('購入No.'):5)+1;
   const colC=(eh.indexOf('商品コード')>=0? eh.indexOf('商品コード'):8)+1;
   const colQ=(eh.indexOf('数量')>=0? eh.indexOf('数量'):9)+1;
+  const colA=(eh.indexOf('EMS到着日')>=0? eh.indexOf('EMS到着日') : (eh.indexOf('到着日')>=0? eh.indexOf('到着日') : 4))+1; // E列既定
   if(colP===0) return {error:'EMSリストの'+hr+'行目に「注文番号」見出しがありません'};
 
   const n=last-hr;
@@ -77,13 +81,15 @@ function 発注共有P列記入_(){
   const cd=ems.getRange(hr+1,colC,n,1).getDisplayValues();
   const qy=ems.getRange(hr+1,colQ,n,1).getValues();
   const pv=ems.getRange(hr+1,colP,n,1).getDisplayValues();
+  const av=ems.getRange(hr+1,colA,n,1).getDisplayValues();
   const rows=[];
   for(let i=0;i<n;i++){
     const pno=String(pu[i][0]||'').trim(), code=String(cd[i][0]||'').trim();
     if(!pno||!code) continue;
     const m=pno.match(/^(\d{4})(\d{2})(\d{2})/); if(!m) continue; // 購入No.先頭8桁=発注日
     rows.push({ i, 末:new Date(+m[1],+m[2]-1,+m[3],23,59,59),
-      keys:codeKeys_(code), 号:月号_(normCode_(code)), qty:Number(qy[i][0])||0, p:String(pv[i][0]||'').trim() });
+      keys:codeKeys_(code), 号:月号_(normCode_(code)), qty:Number(qy[i][0])||0, p:String(pv[i][0]||'').trim(),
+      着:ymd_(av[i][0]) }); // 箱の到着日(yyyy-MM-dd)。出荷済みの紐付け判定に使う
   }
 
   // ---- 1周目: 既にP列にある分を必要数から差し引く(二重割当防止) ----
@@ -112,6 +118,7 @@ function 発注共有P列記入_(){
     for(const l of cand){
       if(left<=0) break;
       if(l.need<=0) continue;
+      if(l.shipped && (!l.入荷ymd || !r.着 || l.入荷ymd!==r.着)) continue; // 出荷済みは「実際に受けた箱(入荷日=到着日)」だけ
       if(!l.shipped && l.date.getTime()>r.末.getTime()) continue; // 現役の注文だけ「注文日≦発注日」
       if(!l.shipped && r.号 && 期待号_(l.date)!==r.号) continue;   // 月号付き(定期購読)は「注文月+1=その号」の注文だけ
       const t=Math.min(left,l.need); l.need-=t; left-=t;

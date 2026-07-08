@@ -865,9 +865,12 @@ function 引当実行(){
   const 入荷消費OK_=l=> 到着日不明_ || 入荷日今日_(l.入荷日値) || 入荷日一致_(l);
   // 入荷日あり(もう割当済)を在庫から先に差し引く。ただし今回の便で着いた分だけ(別便で処理済みの注文には今回在庫を掴ませない)
   lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && 入荷消費OK_(l)).forEach(l=>{ const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
-  // 出荷済み(受注明細から消えた注文=消込台帳)の分も差し引く(発送済み品が余り=日本在庫に二重計上されるのを防ぐ)
+  // 出荷済み(受注明細から消えた注文=消込台帳)の分も差し引く(発送済み品が余り=日本在庫に二重計上されるのを防ぐ)。
+  // ただし台帳の入荷日が今回の到着日と一致する分だけ(別の箱/即納在庫から出た出荷済みに、後から着いた箱を食わせない)
   const 出荷済行=消込台帳_出荷済み行_();
-  出荷済行.forEach(l=>{ const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
+  const 出荷済消費OK_=l=>{ if(到着日不明_) return true; const k=keyInStock(l); if(k==null) return false;
+    const set=到着日SetByCode[k]; return !!(set && set.has(ymd_(l.入荷日))); };
+  出荷済行.forEach(l=>{ if(!出荷済消費OK_(l)) return; const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
   // 引当履歴の反映済み分は「すでに古い箱で割当済み」として扱い、今回の在庫を再度つかませない。
   try{
     const hist=引当履歴_反映済み割当マップ_();
@@ -1009,7 +1012,7 @@ function 引当実行(){
     // コードごとの消費者キュー(出荷済み=もう発送 → 割当済=入荷日あり → 引当=今回 の順)
     const consumersByCode={};
     const pushCons=(l, qty, kind)=>{ const k=l.matchedKey||keyInStock(l); if(k==null||qty<=0) return; (consumersByCode[k]=consumersByCode[k]||[]).push({qty, ban:l.ban, kind}); }; // 確定引当(コード不一致救済含む)はmatchedKeyの行に記帳
-    出荷済行.forEach(l=> pushCons(l, l.qty, '出荷済'));                                                  // 消込台帳の出荷済み(発送済みで受注明細から消えた分)
+    出荷済行.filter(出荷済消費OK_).forEach(l=> pushCons(l, l.qty, '出荷済'));                             // 消込台帳の出荷済み(入荷日=今回の到着日の分だけ。別便から出た出荷済みは今回の箱を食わない)
     lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0 && 入荷消費OK_(l))
       .forEach(l=> pushCons(l, l.qty, '今日着'));                                                         // ゲート通過=入荷日が今回の到着日と一致=今回の便で出す分。全て黄(今回出せる分)で見せる。別便で処理済み(入荷日≠今回到着日)はゲートで除外され日本在庫に残る。ラベンダー(割当済)は廃止=このシートは「黄=出す/色なし=在庫」に統一
     lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.alloc>0).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=> pushCons(l, l.alloc, '引当')); // 今回引き当て
