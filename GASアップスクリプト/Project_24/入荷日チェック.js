@@ -8,6 +8,54 @@
 //   ・手入力した入荷日(EMS便以外の入荷など)
 //   ・EMSリスト側の到着日を後から書き換えた場合
 
+// ===== 一覧の入荷日を一括クリア =====
+// 入荷日整合チェックの一覧に出た行の入荷日を、確認のうえ受注明細から一括で消す。
+// 行ズレ対策: 受注番号+商品コード/SKU+入荷日が一覧と一致する行だけをクリアし、結果をI列に書く。
+// 残したい行(手入力の正しい入荷日など)は、実行前に一覧からその行を削除しておく。
+function 入荷日チェック_一覧をクリア(){ 直列_(入荷日チェック_一覧をクリア本体_); }
+function 入荷日チェック_一覧をクリア本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const rep=ss.getSheetByName('入荷日チェック');
+  if(!rep || rep.getLastRow()<3){ ui.alert('「入荷日チェック」の一覧がありません。先に 🔎 入荷日の整合チェック を実行してください。'); return; }
+  const recv=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!recv){ ui.alert('「'+HIKIATE_CFG.受注+'」タブがありません'); return; }
+  const M=列マップ_(recv);
+  if(M.入荷<0){ ui.alert('受注明細に「入荷日」列がありません'); return; }
+  const list=rep.getRange(3,1,rep.getLastRow()-2,8).getDisplayValues().filter(r=>String(r[1]||'').trim());
+  if(!list.length){ ui.alert('一覧が空です(問題なし)。'); return; }
+  const ans=ui.alert('入荷日の一括クリア',
+    '一覧の '+list.length+' 行の入荷日を受注明細から消します。\n\n'+
+    '※「これは手入力の正しい入荷日」という行が一覧にあれば、\n'+
+    '　キャンセルして一覧からその行を削除してから実行してください。ええ？',
+    ui.ButtonSet.OK_CANCEL);
+  if(ans!==ui.Button.OK) return;
+  const R=recv.getDataRange().getValues();
+  let ok=0, ng=0;
+  const 結果=[];
+  list.forEach(r=>{
+    const rowNo=Number(r[0])||0, ban=String(r[1]||'').trim(), code=String(r[3]||'').trim(), sku=String(r[4]||'').trim(), listed=ymd_(r[6]);
+    let res='';
+    if(rowNo>M.hr && rowNo<=R.length){
+      const row=R[rowNo-1];
+      const banOk=String(row[M.番号]||'').trim()===ban;
+      const rowCode=String(row[M.コード]||'').trim(), rowSku=M.SKU>=0?String(row[M.SKU]||'').trim():'';
+      const codeOk=(code!=='' && rowCode===code)||(sku!=='' && rowSku===sku);
+      const dateOk=listed!=='' && ymd_(row[M.入荷])===listed;
+      if(banOk && codeOk && dateOk){
+        recv.getRange(rowNo, M.入荷+1).clearContent();
+        try{ 受注個別_行色_(recv, M, rowNo, null); }catch(e){} // 着済色も一緒にクリア
+        res='クリア済み'; ok++;
+      } else {
+        res='不一致のためスキップ(🔎整合チェックを実行し直してください)'; ng++;
+      }
+    } else { res='行番号が範囲外(🔎整合チェックを実行し直してください)'; ng++; }
+    結果.push([res]);
+  });
+  rep.getRange(2,9).setValue('処理結果').setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
+  rep.getRange(3,9,結果.length,1).setValues(結果);
+  ss.toast('入荷日クリア: '+ok+'行 / スキップ '+ng+'行。仕上げに②引き当て実行を回してください','🧹入荷日',8);
+}
+
 function 入荷日整合チェック(){
   const ss=SpreadsheetApp.getActive();
   const recv=ss.getSheetByName(HIKIATE_CFG.受注);
