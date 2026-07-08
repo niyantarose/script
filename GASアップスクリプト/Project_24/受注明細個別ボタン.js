@@ -24,6 +24,21 @@ const UKE_KOBETSU_PNG = {
 
 function 受注明細個別ボタンを設置(){ 受注明細個別ボタンを設置_(false); }
 
+// 図形ボタン運用に切り替えたときの掃除用: スクリプトが挿入したボタン画像を全部消す
+function 受注明細個別ボタン画像を削除(){
+  const ss=SpreadsheetApp.getActive();
+  const sh=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!sh){ SpreadsheetApp.getUi().alert('「'+HIKIATE_CFG.受注+'」タブがありません'); return; }
+  let n=0;
+  try{
+    sh.getImages().forEach(img=>{
+      const t=String(img.getAltTextTitle&&img.getAltTextTitle()||'');
+      if(t.indexOf('受注個別ボタン_')===0){ img.remove(); n++; }
+    });
+  }catch(e){}
+  ss.toast('ボタン画像を'+n+'個削除しました。図形ボタン(スクリプト割り当て)をお使いください','🧹個別',6);
+}
+
 function 受注明細個別ボタンを設置_(silent){
   const ss=SpreadsheetApp.getActive(), cfg=UKE_KOBETSU_CFG;
   const sh=ss.getSheetByName(HIKIATE_CFG.受注);
