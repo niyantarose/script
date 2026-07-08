@@ -761,12 +761,19 @@ function 入荷日今日_(v){
   const t=new Date();
   return d.getFullYear()===t.getFullYear() && d.getMonth()===t.getMonth() && d.getDate()===t.getDate();
 }
-// 日付を yyyy-MM-dd 文字列に正規化(Date/文字列どちらでも)。入荷日と到着日の一致判定用。パースできない文字列はそのまま返す
+// 日付を yyyy-MM-dd 文字列に正規化(Date/文字列どちらでも)。入荷日と到着日の一致判定用。
+// 手入力の「26/07/09(木)」のような2桁年・曜日付きも読む。パースできない文字列はそのまま返す
 function ymd_(v){
-  let d;
-  if(v instanceof Date){ if(isNaN(v.getTime())) return ''; d=v; }
-  else { const s=String(v||'').trim(); if(!s) return ''; d=new Date(s.replace(/\//g,'-')); if(isNaN(d.getTime())) return s; }
-  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+  const p=n=>('0'+n).slice(-2);
+  if(v instanceof Date){ if(isNaN(v.getTime())) return ''; return v.getFullYear()+'-'+p(v.getMonth()+1)+'-'+p(v.getDate()); }
+  const s=String(v||'').trim(); if(!s) return '';
+  const d=new Date(s.replace(/\//g,'-'));
+  if(!isNaN(d.getTime())) return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
+  let m=s.match(/(20\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+  if(m) return m[1]+'-'+p(+m[2])+'-'+p(+m[3]);
+  m=s.match(/(\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+  if(m) return '20'+m[1]+'-'+p(+m[2])+'-'+p(+m[3]);
+  return s;
 }
 
 // 「今回入荷EMS」として扱う着済行か。実行日だけでなく、今回EMS在庫の到着日と入荷日が一致する行も対象。
