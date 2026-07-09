@@ -9,6 +9,52 @@
 //   ・現役の注文は「注文日≦発注日」のものだけ確定(後から来た注文は引き当て時のFIFOに任せる)
 //   ・全量1注文=番号だけ / 分割=「番号:個数」カンマ区切り(セルは薄黄で要確認マーク)
 
+// ♻️ P列を書き直す: EMSリストの「到着済」行のP列を一旦すべて消して、現行ロジックで自動記入し直す。
+// バグ時代の古い書き込み(残骸=幽霊の名指し・誤った個数配分)を一括で除去するためのもの。
+// 手で書いた名指しも消える(商品コード末尾の（受注番号）タグは書き直しで再現される)ので確認してから実行。
+// 在庫反映済みなど過去の行は触らない(履歴として保持)。
+function P列を書き直す(){ 直列_(P列を書き直す本体_); }
+function P列を書き直す本体_(){
+  const ui=SpreadsheetApp.getUi(), cfg=P_KAKUTEI_CFG;
+  const ans=ui.alert('P列の書き直し(到着済のみ)',
+    'EMSリストの「到着済」行のP列(注文番号)を全部消して、今のロジックで書き直します。\n\n'+
+    '・バグ時代の古い割当(残骸)が一掃されます\n'+
+    '・手で書いた名指しも消えます(コード末尾の（受注番号）タグは自動で再現)\n'+
+    '・在庫反映済みなど過去の行は触りません\n\n実行しますか？',
+    ui.ButtonSet.OK_CANCEL);
+  if(ans!==ui.Button.OK) return;
+  let sh;
+  try{ sh=SpreadsheetApp.openById(cfg.発注共有ID).getSheetByName(cfg.シート); }
+  catch(e){ ui.alert('発注共有ファイルが開けません:\n'+e.message); return; }
+  if(!sh){ ui.alert('発注共有ファイルに「'+cfg.シート+'」がありません'); return; }
+  const hr=cfg.ヘッダー行, last=sh.getLastRow();
+  if(last<=hr){ ui.alert('EMSリストにデータがありません'); return; }
+  const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
+  const f=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
+  const cSt=f('ステータス列','ステータス'), cP=f('注文番号');
+  if(cP<0){ ui.alert('EMSリストの'+hr+'行目に「注文番号」見出しがありません'); return; }
+  const n=last-hr;
+  const st=cSt>=0? sh.getRange(hr+1,cSt+1,n,1).getDisplayValues() : null;
+  const pRange=sh.getRange(hr+1,cP+1,n,1);
+  const pv=pRange.getDisplayValues();
+  const clearedA1=[];
+  let cleared=0;
+  for(let i=0;i<n;i++){
+    if(st && String(st[i][0]||'').trim()!=='到着済') continue; // 到着済だけ(ステータス列が無ければ全行)
+    if(String(pv[i][0]||'').trim()===''){ continue; }
+    pv[i][0]=''; cleared++;
+    clearedA1.push(sh.getRange(hr+1+i, cP+1).getA1Notation());
+  }
+  pRange.setValues(pv);
+  if(clearedA1.length) sh.getRangeList(clearedA1).setBackground(null); // 薄黄の要確認マークもクリア
+  SpreadsheetApp.flush();
+  const r=発注共有P列記入_();
+  if(r.error){ ui.alert('書き直しでエラー:\n'+r.error); return; }
+  SpreadsheetApp.getActive().toast(
+    'P列書き直し: クリア'+cleared+'行 → 記入'+r.記入+'行'+(r.分割?'（分割'+r.分割+'行）':'')+
+    ' / 在庫扱い'+r.在庫+'行。仕上げに ②引き当て実行 を回してください','♻️P列',8);
+}
+
 function P列に注文番号を自動記入(){
   const r=発注共有P列記入_();
   if(r.error){ SpreadsheetApp.getUi().alert(r.error); return; }
