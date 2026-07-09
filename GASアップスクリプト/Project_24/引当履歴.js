@@ -262,6 +262,73 @@ function 引当履歴_キャンセル_(rec, cancelQty){
   return {更新:updated, 残:left===Infinity?0:left};
 }
 
+// ===== 便の締め: 到着済の箱を「在庫反映済み」にして、引当履歴を過去取込へ昇格 =====
+// 使いどころ: その便の出荷作業が終わったとき。図形ボタンに「到着済を在庫反映済みへ」を割り当てて使う。
+// やること: ①今のP列を履歴に記録(最新化) → ②指定EMS番号(空欄=到着済ぜんぶ)の行を在庫反映済みへ
+//          → ③履歴を過去取込に昇格(以後、②やP列書き直しの需要差引きが効く) → ④EMS在庫を最新化
+function 到着済を在庫反映済みへ(){ 直列_(到着済を在庫反映済みへ本体_); }
+function 到着済を在庫反映済みへ本体_(){
+  const ui=SpreadsheetApp.getUi(), cfg=P_KAKUTEI_CFG;
+  let sh;
+  try{ sh=SpreadsheetApp.openById(cfg.発注共有ID).getSheetByName(cfg.シート); }
+  catch(e){ ui.alert('発注共有ファイルが開けません:\n'+e.message); return; }
+  if(!sh){ ui.alert('発注共有ファイルに「'+cfg.シート+'」がありません'); return; }
+  const hr=cfg.ヘッダー行, last=sh.getLastRow();
+  if(last<=hr){ ui.alert('EMSリストにデータがありません'); return; }
+  const lastCol=sh.getLastColumn();
+  const head=sh.getRange(hr,1,1,lastCol).getValues()[0].map(v=>String(v||'').trim());
+  const c=引当履歴_EMSリスト列_(head);
+  const data=sh.getRange(hr+1,1,last-hr,lastCol).getDisplayValues();
+
+  // 今「到着済」の箱をEMS番号ごとに集計して選ばせる
+  const counts={};
+  data.forEach(r=>{
+    if(String(r[c.状態]||'').trim()!=='到着済') return;
+    const ems=String(r[c.EMS番号]||'').trim()||'(EMS番号なし)';
+    counts[ems]=(counts[ems]||0)+1;
+  });
+  const list=Object.keys(counts);
+  if(!list.length){ ui.alert('「到着済」の行がありません。'); return; }
+  const resp=ui.prompt('到着済を在庫反映済みへ(便の締め)',
+    '今「到着済」の箱:\n'+list.map(e=>'・'+e+'（'+counts[e]+'行）').join('\n')+
+    '\n\n在庫反映済みにするEMS番号を入力\n（複数はカンマ区切り／空欄でOK=全部）',
+    ui.ButtonSet.OK_CANCEL);
+  if(resp.getSelectedButton()!==ui.Button.OK) return;
+  const input=String(resp.getResponseText()||'').trim();
+  const targets= input? input.split(/[,、\s]+/).map(s=>s.trim()).filter(Boolean) : list.slice();
+  const bad=targets.filter(t=>!counts[t]);
+  if(bad.length){ ui.alert('到着済に無いEMS番号があります: '+bad.join(', ')+'\n入力し直してください。'); return; }
+
+  // ① 締める前に、今のP列の割当を履歴へ記録(最新のP列を確実に残す)
+  try{ 引当履歴_今回到着分を記録_(true); }catch(e){}
+
+  // ② 対象行のステータスを「在庫反映済み」へ
+  const flipA1=[];
+  for(let i=0;i<data.length;i++){
+    if(String(data[i][c.状態]||'').trim()!=='到着済') continue;
+    const ems=String(data[i][c.EMS番号]||'').trim()||'(EMS番号なし)';
+    if(targets.indexOf(ems)<0) continue;
+    flipA1.push(sh.getRange(hr+1+i, c.状態+1).getA1Notation());
+  }
+  if(!flipA1.length){ ui.alert('対象行がありません。'); return; }
+  sh.getRangeList(flipA1).setValue('在庫反映済み');
+  SpreadsheetApp.flush();
+
+  // ③ 履歴を過去取込へ昇格(既存の記録は取込区分/EMS状態が更新され、需要差引きの対象になる)
+  let up={追加:0,重複:0,対象:0};
+  try{ const r=引当履歴_EMSリストから記録_(['在庫反映済み'],'過去取込'); if(r && !r.error) up=r; }catch(e){}
+
+  // ④ EMS在庫を最新化(反映済みがQUERYから消えるのを待つ)
+  try{ EMS在庫を更新_本体_(); }catch(e){}
+
+  ui.alert('✅ 便の締め 完了',
+    '在庫反映済みへ: '+flipA1.length+'行（'+targets.join(', ')+'）\n'+
+    '引当履歴: 過去取込へ昇格・追加'+(up.追加||0)+'件/既存更新'+(up.重複||0)+'件\n'+
+    'EMS在庫: 最新化済み\n\n'+
+    'このあと「② 引き当て実行」を回すと、締めた便の分は需要から差し引かれます。',
+    ui.ButtonSet.OK);
+}
+
 function 引当履歴_反映済み割当マップ_(){
   const sh=SpreadsheetApp.getActive().getSheetByName(HIKIATE_HISTORY_CFG.シート);
   if(!sh || sh.getLastRow()<=1) return {};
