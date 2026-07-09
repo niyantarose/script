@@ -705,15 +705,68 @@ function 引当診断(){
   const 入荷列=[]; head.forEach((h,i)=>{ if(h==='入荷日') 入荷列.push('列'+(i+1)); }); // 入荷日ヘッダーの重複チェック
   const emv=ss.getSheetByName(cfg.EMS在庫); const emsD=emv?EMS明細_(emv):{rows:[],cols:{コード:1}};
   const stockKeys={}; emsD.rows.forEach(r=>{ const c=normCode_(r[emsD.cols.コード]); if(c) codeKeys_(c).forEach(k=>stockKeys[k]=true); });
-  let msg='受注番号：'+ban+'\n入荷日ヘッダー：'+(入荷列.join(' , ')||'なし')+(入荷列.length>1?'  ⚠️重複あり！':'')+'\n②が読む入荷日＝'+(M.入荷>=0?'列'+(M.入荷+1):'なし')+' / コード＝列'+(M.コード+1)+' / SKU＝列'+(M.SKU+1)+'\n\n';
+  let msg='受注番号：'+ban+'\n入荷日ヘッダー：'+(入荷列.join(' , ')||'なし')+(入荷列.length>1?'  ⚠️重複あり！':'')+'\n\n■ 受注明細の行\n';
   let hit=0;
   for(let i=M.hr;i<R.length;i++){ if(String(R[i][M.番号]||'').trim()!==ban) continue; hit++;
     const r=R[i], code=String(r[M.コード]||'').trim(), sku=String(r[M.SKU]||'').trim();
     const 入荷v=M.入荷>=0?String(r[M.入荷]||'').trim():'(列なし)';
     const 一致=受注候補コード_(sku,code).some(v=>codeKeys_(v).some(k=>stockKeys[k]));
-    msg+=hit+') コード:'+code+' / SKU:'+sku+' / ②が見る入荷日:「'+(入荷v||'空')+'」/ 区分:'+区分_(r[M.選択肢])+' / EMS在庫一致:'+(一致?'○':'×')+'\n';
+    msg+=hit+') 行'+(i+1)+' '+(code||sku)+' x'+(Number(r[M.個数])||0)+' / '+区分_(r[M.選択肢])+' / 入荷日:「'+(入荷v||'空')+'」/ EMS在庫一致:'+(一致?'○':'×')+'\n';
   }
-  if(!hit) msg+='(この受注番号は見つからへん)';
+  if(!hit) msg+='(受注明細に見つからへん。🔻フィルタ確認/解除で非表示を解除して確認してや)\n';
+
+  // EMSリスト(発注共有)のP列で、この受注が名指しされている箱と個数
+  msg+='\n■ EMSリストのP列名指し(どの箱に何個)\n';
+  try{
+    const ems=個別対応_EMSリスト_();
+    if(ems.error){ msg+='(EMSリストが読めません)\n'; }
+    else{
+      let total=0, cnt=0;
+      ems.rows.forEach(r=>{
+        if(!r.注文番号) return;
+        const q=個別対応_P注文展開_(r.注文番号, r.数量).filter(e=>e.ban===ban).reduce((s,e)=>s+e.qty,0);
+        if(q<=0) return;
+        cnt++; total+=q;
+        msg+='・['+(r.状態||'?')+'] '+(r.EMS到着日||'?')+'着 '+r.商品コード+' に '+q+'個\n';
+      });
+      msg+= cnt? ('　→ 名指し合計 '+total+'個\n') : '(P列にこの受注の名指しなし)\n';
+    }
+  }catch(e){ msg+='(P列確認でエラー: '+e.message+')\n'; }
+
+  // 消込台帳
+  msg+='\n■ 消込台帳\n';
+  try{
+    const tsh=ss.getSheetByName(KESHIKOMI_CFG.シート);
+    if(tsh && tsh.getLastRow()>1){
+      const tv=tsh.getRange(2,1,tsh.getLastRow()-1,KESHIKOMI_CFG.HDR.length).getDisplayValues();
+      let n=0;
+      tv.forEach(r=>{ if(String(r[0]||'').trim()!==ban) return; n++;
+        msg+='・'+r[1]+' x'+r[3]+' / 状態:'+r[5]+' / 入荷日:'+(r[4]||'-')+'\n'; });
+      if(!n) msg+='(記録なし)\n';
+    } else msg+='(台帳なし)\n';
+  }catch(e){ msg+='(台帳確認でエラー)\n'; }
+
+  // 引当履歴(需要から差し引かれるものに印)
+  msg+='\n■ 引当履歴\n';
+  try{
+    const hsh=ss.getSheetByName(HIKIATE_HISTORY_CFG.シート);
+    if(hsh && hsh.getLastRow()>1){
+      const hc=引当履歴_列_(hsh);
+      const hv=hsh.getRange(2,1,hsh.getLastRow()-1,hsh.getLastColumn()).getDisplayValues();
+      let n=0;
+      hv.forEach(r=>{
+        const b=hc['受注番号']?String(r[hc['受注番号']-1]||'').trim():'';
+        if(b!==ban) return; n++;
+        const kind=hc['取込区分']?String(r[hc['取込区分']-1]||''):'', st=hc['EMSリスト状態']?String(r[hc['EMSリスト状態']-1]||''):'',
+              code=hc['商品コード']?String(r[hc['商品コード']-1]||''):'', q=hc['引当数']?String(r[hc['引当数']-1]||''):'',
+              state=hc['状態']?String(r[hc['状態']-1]||''):'';
+        const 差引き=(state!=='キャンセル済み') && (kind==='過去取込' || st==='在庫反映済み');
+        msg+='・'+code+' x'+q+' / '+kind+' / EMS状態:'+st+' / '+(state||'有効')+(差引き?' ←需要から差引き':'')+'\n';
+      });
+      if(!n) msg+='(記録なし)\n';
+    } else msg+='(履歴なし)\n';
+  }catch(e){ msg+='(履歴確認でエラー)\n'; }
+
   ui.alert('引当診断', msg, ui.ButtonSet.OK);
 }
 
