@@ -9,12 +9,20 @@ const P_KAKUTEI_CFG = {
   ヘッダー行: 6 // No./ステータス列/商品コード/数量/照合キー/注文番号 の見出し行
 };
 
+// 発注共有ファイルは1回の実行で何度も開くと遅い(②はP列記入・確定・履歴で複数回開いていた)。
+// 実行中は同じハンドルを使い回してopenByIdの回数を減らす(GASのグローバルは実行ごとにリセットされる)。
+var _発注共有SS_キャッシュ=null;
+function 発注共有を開く_(){
+  if(!_発注共有SS_キャッシュ) _発注共有SS_キャッシュ=SpreadsheetApp.openById(P_KAKUTEI_CFG.発注共有ID);
+  return _発注共有SS_キャッシュ;
+}
+
 // 到着済のEMSリスト行のP列を読んで、受注番号→[{key:正規化コード, qty:名指し個数}] を返す
 // P列の書式: 「10117052」(行の全量) / 「10117060:3, 10117052:1」(分割)
 function P列確定マップ_(){
   const cfg=P_KAKUTEI_CFG;
   let sh;
-  try{ sh=SpreadsheetApp.openById(cfg.発注共有ID).getSheetByName(cfg.シート); }
+  try{ sh=発注共有を開く_().getSheetByName(cfg.シート); }
   catch(e){ return {}; } // 開けない(権限・ID変更等)時は確定なし=従来FIFOのみで動く
   if(!sh) return {};
   const last=sh.getLastRow(); if(last<=cfg.ヘッダー行) return {};

@@ -34,7 +34,7 @@ function P列を書き直す本体_(){
 function P列書き直し実行_(){
   const cfg=P_KAKUTEI_CFG;
   let sh;
-  try{ sh=SpreadsheetApp.openById(cfg.発注共有ID).getSheetByName(cfg.シート); }
+  try{ sh=発注共有を開く_().getSheetByName(cfg.シート); }
   catch(e){ return {error:'発注共有ファイルが開けません:\n'+e.message}; }
   if(!sh) return {error:'発注共有ファイルに「'+cfg.シート+'」がありません'};
   const hr=cfg.ヘッダー行, last=sh.getLastRow();
@@ -115,7 +115,7 @@ function P列に注文番号を自動記入(){
 function 発注共有P列記入_(){
   const cfg=P_KAKUTEI_CFG, ss=SpreadsheetApp.getActive();
   let ems;
-  try{ ems=SpreadsheetApp.openById(cfg.発注共有ID).getSheetByName(cfg.シート); }
+  try{ ems=発注共有を開く_().getSheetByName(cfg.シート); }
   catch(e){ return {error:'発注共有ファイルが開けません:\n'+e.message}; }
   if(!ems) return {error:'発注共有ファイルに「'+cfg.シート+'」がありません'};
   const recv=ss.getSheetByName(HIKIATE_CFG.受注);

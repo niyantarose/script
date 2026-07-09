@@ -86,7 +86,7 @@ function 入荷日整合_スキャン_(){
 
   // --- 発注共有EMSリスト: 到着日(yyyy-MM-dd) → その日に到着した商品キー集合 ---
   let sh;
-  try{ sh=SpreadsheetApp.openById(P_KAKUTEI_CFG.発注共有ID).getSheetByName(P_KAKUTEI_CFG.シート); }
+  try{ sh=発注共有を開く_().getSheetByName(P_KAKUTEI_CFG.シート); }
   catch(e){ return {error:'発注共有ファイルが開けません:\n'+e.message}; }
   if(!sh) return {error:'発注共有ファイルに「'+P_KAKUTEI_CFG.シート+'」がありません'};
   const hr=P_KAKUTEI_CFG.ヘッダー行, last=sh.getLastRow();

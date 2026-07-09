@@ -175,7 +175,7 @@ function 個別対応_P注文整形_(entries, rowQty){
 function 個別対応_EMSリスト_(){
   const cfg=P_KAKUTEI_CFG;
   let sh;
-  try{ sh=SpreadsheetApp.openById(cfg.発注共有ID).getSheetByName(cfg.シート); }
+  try{ sh=発注共有を開く_().getSheetByName(cfg.シート); }
   catch(e){ return {error:'発注共有ファイルが開けません:\n'+e.message}; }
   if(!sh) return {error:'発注共有ファイルに「'+cfg.シート+'」がありません'};
   const hr=cfg.ヘッダー行, last=sh.getLastRow();
