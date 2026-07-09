@@ -444,12 +444,15 @@ function 取込_実行_(latest){
   // 【処理済(発送済み)の確定登録】CSVに処理済で載っていた分を消込台帳へ「出荷済み(確定)」として登録。
   // 消えた=発送だろうの推測でなく、CSVの事実で在庫を差し引ける(土日にGoQで発送・入荷日未入力の分も確実に拾う)
   let 処理済結果=null;
-  if(処理済行.length){ try{ 処理済結果=消込台帳_処理済を登録_(data[0], 処理済行); }catch(e){} }
+  if(処理済行.length){
+    try{ 処理済結果=消込台帳_処理済を登録_(data[0], 処理済行); }catch(e){}
+    try{ 仕分け証跡シートへ_(ss, '発送済み', data[0], 処理済行, latest.getName()); }catch(e){}
+  }
 
   // 【キャンセルの自動仕分け】CSVにあったキャンセル行を「キャンセル」シートに証跡として残しつつ一括処理
   let キャンセル結果=null;
   if(キャンセル番号.length){
-    try{ キャンセル仕分けシートへ_(ss, data[0], キャンセル行, latest.getName()); }catch(e){}
+    try{ 仕分け証跡シートへ_(ss, 'キャンセル', data[0], キャンセル行, latest.getName()); }catch(e){}
     try{ キャンセル結果=キャンセル処理_(キャンセル番号); }catch(e){}
   }
 
@@ -467,15 +470,13 @@ function 取込_実行_(latest){
   }
 }
 
-// 取込で仕分けたキャンセル行を「キャンセル」シートへ追記(証跡)。取込のCSV見出し＋取込元＋日時を付ける
-function キャンセル仕分けシートへ_(ss, header, rows, srcName){
+// 取込で仕分けた行を証跡シートへ追記する共通関数。取込のCSV見出し＋取込元＋日時を頭に付ける
+function 仕分け証跡シートへ_(ss, NAME, header, rows, srcName){
   if(!rows || !rows.length) return;
-  const NAME='キャンセル';
-  let sh=ss.getSheetByName(NAME), 新規=!sh;
+  let sh=ss.getSheetByName(NAME);
   if(!sh) sh=ss.insertSheet(NAME);
   const ncol=header.length;
   const HDR=['取込日時','取込元'].concat(header.map(h=>String(h||'')));
-  // 見出しが無い/変わっていたら1行目に敷き直す
   const cur=sh.getRange(1,1,1,Math.max(sh.getLastColumn(),HDR.length)).getDisplayValues()[0].slice(0,HDR.length).join('\t');
   if(cur!==HDR.join('\t')){
     sh.getRange(1,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
