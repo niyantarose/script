@@ -250,6 +250,54 @@ function キャンセル処理_(bans){
   return {results, 台帳更新, P除去};
 }
 
+// 取込で仕分けた「処理済(発送済み)」行を消込台帳へ「出荷済み(確定)」として登録する。
+// header=CSV見出し行(配列)、rows=処理済のデータ行(配列の配列)。取り寄せ行だけが在庫に効く。
+// 既に台帳にいる(受注番号|コード|SKU)は触らない。入荷日はCSVにあれば事実として使い、無ければ空。
+function 消込台帳_処理済を登録_(header, rows){
+  if(!rows || !rows.length) return {追加:0, 既存:0, 対象外:0};
+  const ss=SpreadsheetApp.getActive(), cfg=KESHIKOMI_CFG;
+  const H=header.map(v=>String(v||'').trim());
+  const f=(...names)=>{ for(const n of names){ const i=H.indexOf(n); if(i>=0) return i; } return -1; };
+  const c番号=f('受注番号'), cコード=f('商品コード'), cSKU=f('商品SKU','SKU'),
+        c個数=f('個数'), c選択肢=f('項目・選択肢','項目選択肢'), c入荷=f('入荷日'), c出荷=f('出荷日');
+  if(c番号<0||cコード<0) return {追加:0, 既存:0, 対象外:0};
+
+  let sh=ss.getSheetByName(cfg.シート);
+  if(!sh){
+    sh=ss.insertSheet(cfg.シート);
+    sh.getRange(1,1,1,cfg.HDR.length).setValues([cfg.HDR])
+      .setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
+    sh.setFrozenRows(1);
+    [110,180,180,60,100,110,100,100,200].forEach((w,c)=> sh.setColumnWidth(c+1,w));
+  }
+  const last=sh.getLastRow();
+  const existing=new Set();
+  if(last>1){ sh.getRange(2,1,last-1,3).getValues().forEach(r=>
+    existing.add(String(r[0]).trim()+'|'+String(r[1]).trim()+'|'+String(r[2]).trim())); }
+
+  const today=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd');
+  const add=[]; let 既存=0, 対象外=0;
+  rows.forEach(r=>{
+    const ban=String(r[c番号]||'').replace(/^niyantarose-/i,'').trim(); if(!ban) return;
+    if(c選択肢>=0 && 区分_(r[c選択肢])!=='取り寄せ'){ 対象外++; return; } // 即納などはEMS在庫と無関係
+    const qty=Number(r[c個数])||0; if(qty<=0) return;
+    const code=String(r[cコード]||'').trim();
+    const sku=cSKU>=0? String(r[cSKU]||'').trim():'';
+    const key=ban+'|'+code+'|'+sku;
+    if(existing.has(key)){ 既存++; return; }
+    const 入荷v=(c入荷>=0 && String(r[c入荷]||'').trim())? r[c入荷] : '';
+    add.push([ban,code,sku,qty,入荷v,'出荷済み',today,today,'CSV処理済']);
+    existing.add(key);
+  });
+  if(add.length){
+    const start=sh.getLastRow()+1;
+    sh.getRange(start,1,add.length,cfg.HDR.length).setValues(add)
+      .setBackgrounds(add.map(()=>new Array(cfg.HDR.length).fill('#efefef')));
+    sh.getRange(start,5,add.length,1).setNumberFormat('yyyy-mm-dd');
+  }
+  return {追加:add.length, 既存, 対象外};
+}
+
 // メニュー用: 台帳を更新してシートを開く
 function 消込台帳を更新(){
   const r=消込台帳更新_();
