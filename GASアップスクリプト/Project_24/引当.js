@@ -1250,6 +1250,12 @@ function 引当実行_本体_(){
   抽出フラグ更新_(); // 受注明細の「抽出」列(○=色あり/×=色なし)を更新→普通のフィルタで絞れる
   const 隠れ = recv.getFilter()? 'フィルタON' : (PropertiesService.getDocumentProperties().getProperty('色なし除外中')==='1'? '🙈色なし除外中' : '');
   const filt = 隠れ? ' ⚠️'+隠れ+'(行が隠れてるかも→🔻フィルタ確認/解除で全解除)' : '';
+  // 誤入荷日(対応する箱が到着日に無い入荷日)も毎回自動カウント(台湾/中国ルートは正扱いで除外)
+  let 誤入荷=-1; try{ 誤入荷=入荷日整合_件数_(); }catch(e){}
+  if(誤入荷>0){
+    try{ const eshx=ss.getSheetByName(cfg.日本在庫);
+      if(eshx){ const a1=eshx.getRange(1,1); a1.setValue(a1.getDisplayValue()+' ｜ 誤入荷日⚠️'+誤入荷+'件'); } }catch(e){}
+  }
   // 突き合わせ結果: 合わないときだけダイアログで明細を出す(OKならトーストに式だけ)
   if(突合宙.length){
     SpreadsheetApp.getUi().alert('⚠️ 突き合わせ：箱と合わない割当があります',
@@ -1258,7 +1264,7 @@ function 引当実行_本体_(){
       +'\n\n🔎 入荷日の整合チェック と 🔎 引当診断(該当の受注番号) で確認してください。',
       SpreadsheetApp.getUi().ButtonSet.OK);
   }
-  SpreadsheetApp.getActive().toast(`突合せ ${突合宙.length? '⚠️'+突合宙.length+'件不一致' : 'OK『'+突合式+'』'}｜引当完了：出荷可能${ship} / 出荷GO未入金${keep} / 希望日待ち${hold} / 部分在庫${part} / 引当待ち${ord-ship-keep-hold-part}（うち入金待ち${mp}）｜入荷日自動${自動入荷}件｜P列確定${確定行数}行｜出荷済み消込${出荷済行.length}件${filt}`);
+  SpreadsheetApp.getActive().toast(`突合せ ${突合宙.length? '⚠️'+突合宙.length+'件不一致' : 'OK『'+突合式+'』'}${誤入荷>0? '｜誤入荷日⚠️'+誤入荷+'件(→🔎整合チェック)':''}｜引当完了：出荷可能${ship} / 出荷GO未入金${keep} / 希望日待ち${hold} / 部分在庫${part} / 引当待ち${ord-ship-keep-hold-part}（うち入金待ち${mp}）｜入荷日自動${自動入荷}件｜P列確定${確定行数}行｜出荷済み消込${出荷済行.length}件${filt}`);
 }
 
 // EMS在庫の引当色分け: 在庫から まず入荷日あり(割当済)を差引き、残りを入荷日なし(未着)の人へ引当

@@ -77,23 +77,25 @@ function 入荷日チェック_一覧をクリア本体_(){
   ss.toast('入荷日クリア: '+ok+'行 / 台湾・中国スキップ '+保留+'行 / 不一致スキップ '+ng+'行。仕上げに②引き当て実行を回してください','🧹入荷日',8);
 }
 
-function 入荷日整合チェック(){
+// 照合スキャン(共通): 受注明細の入荷日×EMSリスト到着日を突き合わせ、疑わしい行の一覧を返す
+// 戻り: {error:'…'} または {list:[[受注明細の行,受注番号,氏名,商品コード,SKU,個数,入荷日,理由],…]}
+function 入荷日整合_スキャン_(){
   const ss=SpreadsheetApp.getActive();
   const recv=ss.getSheetByName(HIKIATE_CFG.受注);
-  if(!recv){ SpreadsheetApp.getUi().alert('「'+HIKIATE_CFG.受注+'」タブが無いで'); return; }
+  if(!recv) return {error:'「'+HIKIATE_CFG.受注+'」タブが無いで'};
 
   // --- 発注共有EMSリスト: 到着日(yyyy-MM-dd) → その日に到着した商品キー集合 ---
   let sh;
   try{ sh=SpreadsheetApp.openById(P_KAKUTEI_CFG.発注共有ID).getSheetByName(P_KAKUTEI_CFG.シート); }
-  catch(e){ SpreadsheetApp.getUi().alert('発注共有ファイルが開けません:\n'+e.message); return; }
-  if(!sh){ SpreadsheetApp.getUi().alert('発注共有ファイルに「'+P_KAKUTEI_CFG.シート+'」がありません'); return; }
+  catch(e){ return {error:'発注共有ファイルが開けません:\n'+e.message}; }
+  if(!sh) return {error:'発注共有ファイルに「'+P_KAKUTEI_CFG.シート+'」がありません'};
   const hr=P_KAKUTEI_CFG.ヘッダー行, last=sh.getLastRow();
-  if(last<=hr){ SpreadsheetApp.getUi().alert('EMSリストにデータがありません'); return; }
+  if(last<=hr) return {error:'EMSリストにデータがありません'};
   const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
   const f=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
   const cC=f('商品コード');
   let cA=f('EMS到着日','到着日','到着'); if(cA<0) cA=4; // 既定E列
-  if(cC<0){ SpreadsheetApp.getUi().alert('EMSリストの'+hr+'行目に「商品コード」見出しがありません'); return; }
+  if(cC<0) return {error:'EMSリストの'+hr+'行目に「商品コード」見出しがありません'};
   const vals=sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getValues();
   const byDate={}; // ymd -> Set(正規化キー。別名込み)
   vals.forEach(r=>{
@@ -105,7 +107,7 @@ function 入荷日整合チェック(){
 
   // --- 受注明細の入荷日付き行を照合 ---
   const M=列マップ_(recv);
-  if(M.入荷<0){ SpreadsheetApp.getUi().alert('受注明細に「入荷日」列がありません'); return; }
+  if(M.入荷<0) return {error:'受注明細に「入荷日」列がありません'};
   const R=recv.getDataRange().getValues();
   const out=[];
   for(let i=M.hr;i<R.length;i++){
@@ -125,6 +127,21 @@ function 入荷日整合チェック(){
       別ルート? '台湾/中国ルート: 手入力の入荷日なら正しい(🧹では消しません)'
         : (set? 'この日の到着EMSに、この商品が無い' : 'この日に到着したEMSが無い')]);
   }
+  return {list:out};
+}
+
+// ②の完了時に呼ぶ件数版(台湾/中国ルートは正扱いなので除外)。読めない時は-1
+function 入荷日整合_件数_(){
+  const r=入荷日整合_スキャン_();
+  if(r.error) return -1;
+  return r.list.filter(x=>String(x[7]||'').indexOf('台湾/中国ルート')!==0).length;
+}
+
+function 入荷日整合チェック(){
+  const ss=SpreadsheetApp.getActive();
+  const r=入荷日整合_スキャン_();
+  if(r.error){ SpreadsheetApp.getUi().alert(r.error); return; }
+  const out=r.list;
 
   // --- 結果を「入荷日チェック」シートへ(受注明細は触らない) ---
   const NAME='入荷日チェック';
