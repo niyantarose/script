@@ -270,6 +270,24 @@ function 消込台帳_処理済を登録_(header, rows){
     sh.setFrozenRows(1);
     [110,180,180,60,100,110,100,100,200].forEach((w,c)=> sh.setColumnWidth(c+1,w));
   }
+  // 前回の取込で登録した「CSV処理済」行は毎回消してから貼り直す(常に最新CSVの処理済＝直近60日だけに保つ。
+  // 消えた注文の出荷済み?・手動キャンセルは残す)。これで掃除ボタンを手で押す必要がなくなる。
+  {
+    const last0=sh.getLastRow();
+    if(last0>1){
+      const vals0=sh.getRange(2,1,last0-1,cfg.HDR.length).getValues();
+      const keep=vals0.filter(r=> String(r[8]||'').trim()!=='CSV処理済');
+      if(keep.length!==vals0.length){
+        sh.getRange(2,1,sh.getMaxRows()-1,cfg.HDR.length).clearContent().setBackground(null);
+        if(keep.length){
+          sh.getRange(2,1,keep.length,cfg.HDR.length).setValues(keep);
+          const bg=keep.map(r=>{ const st=String(r[5]||''); const c= st.indexOf('出荷済み')===0?'#efefef':st==='キャンセル'?'#f4cccc':null; return new Array(cfg.HDR.length).fill(c); });
+          sh.getRange(2,1,keep.length,cfg.HDR.length).setBackgrounds(bg);
+          sh.getRange(2,5,keep.length,1).setNumberFormat('yyyy-mm-dd');
+        }
+      }
+    }
+  }
   const last=sh.getLastRow();
   const existing=new Set();
   if(last>1){ sh.getRange(2,1,last-1,3).getValues().forEach(r=>
