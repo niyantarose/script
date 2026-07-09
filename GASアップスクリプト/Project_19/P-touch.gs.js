@@ -22,7 +22,7 @@ function Pタッチ印刷用Excelを保存() {
   if (nameCol === -1) throw new Error('「Description / Title」列がありません。');
 
   // ステップ1: 選択行を抽出しつつ重複をまとめる
-  // Promotional Item は別扱いでキーをユニークにする
+  // Promotional Item と 注文番号（数字のみコード）は合体させず商品名ごとに別管理
   const merged = {};
   let promoCount = 0;
   const printedRows = []; // シール発行済みにする行番号(U列)
@@ -36,9 +36,11 @@ function Pタッチ印刷用Excelを保存() {
 
     // スペース有無・大文字小文字を無視してPromotional Item判定
     const codeNormalized = code.replace(/\s/g, '').toLowerCase();
+    // コードが数字だけ（注文番号）かどうか判定
+    const isOrderNumber = /^\d+$/.test(code);
 
-    if (codeNormalized === 'promotionalitem') {
-      // Promotional Itemは商品名ごとに別キーで管理（合体させない）
+    if (codeNormalized === 'promotionalitem' || isOrderNumber) {
+      // Promotional Item と 注文番号コードは商品名ごとに別キーで管理（合体させない）
       const key = 'PROMO_' + promoCount++;
       merged[key] = { code: code, name: name, qty: qty };
     } else {
@@ -59,8 +61,15 @@ function Pタッチ印刷用Excelを保存() {
   const rows = [['商品コード', '商品名']];
   for (const key in merged) {
     const { code, name, qty } = merged[key];
+
+    // Promotional Item系だけ表示用に置き換え。注文番号（数字コード）はそのまま表示
+    const codeNormalized = code.replace(/\s/g, '').toLowerCase();
+    const displayCode = (codeNormalized === 'promotionalitem')
+      ? 'ささやかなおまけ(謝恩品)'
+      : code;
+
     for (let i = 0; i < qty; i++) {
-      rows.push([code, name]);
+      rows.push([displayCode, name]);
     }
   }
 
