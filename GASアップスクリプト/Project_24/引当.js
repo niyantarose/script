@@ -714,7 +714,8 @@ function 引当診断(){
     const 入荷raw=M.入荷>=0? r[M.入荷] : '';
     const 入荷v=M.入荷>=0? (String(入荷raw||'').trim()? (ymd_(入荷raw)||String(入荷raw)) : '') : '(列なし)';
     const 一致=受注候補コード_(sku,code).some(v=>codeKeys_(v).some(k=>stockKeys[k]));
-    msg+=hit+') 行'+(i+1)+' '+(code||sku)+' x'+(Number(r[M.個数])||0)+' / '+区分_(r[M.選択肢])+' / 入荷日:「'+(入荷v||'空')+'」/ EMS在庫一致:'+(一致?'○':'×')+'\n';
+    const 品表示=(code||sku)+(sku && sku!==code? '（SKU:'+sku+'）':''); // 同一コードの種類違いをSKUで見分けられるように
+    msg+=hit+') 行'+(i+1)+' '+品表示+' x'+(Number(r[M.個数])||0)+' / '+区分_(r[M.選択肢])+' / 入荷日:「'+(入荷v||'空')+'」/ EMS在庫一致:'+(一致?'○':'×')+'\n';
   }
   if(!hit) msg+='(受注明細に見つからへん。🔻フィルタ確認/解除で非表示を解除して確認してや)\n';
 
