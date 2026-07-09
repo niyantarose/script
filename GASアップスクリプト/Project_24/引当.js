@@ -1146,6 +1146,30 @@ function 引当実行_本体_(){
     l.引当成立 = l.alloc>0 && 残必要_(l)<=0 && l.qty>0;
   });
 
+  // 【箱の割当を各行に付ける】どのEMS番号(箱)から出すかを、今回入荷EMSの在庫と同じFIFOで割り出して
+  // 各注文行に l.箱EMS として持たせる(出荷可能などのシートにEMS番号列で出す→ピッキングで箱が分かる)
+  {
+    const consumersByCode={};
+    const pushC=(l, qty, kind)=>{ const k=l.matchedKey||keyInStock(l); if(k==null||qty<=0) return; (consumersByCode[k]=consumersByCode[k]||[]).push({qty, ban:l.ban, k, kind}); };
+    出荷済行.filter(出荷済消費OK_).forEach(l=> pushC(l, l.qty, '出荷済'));
+    lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0 && 入荷消費OK_(l)).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=> pushC(l, l.qty-(l.過去箱分||0), '今日着'));
+    lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.alloc>0).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=> pushC(l, l.alloc, '引当'));
+    const ptr={};
+    const 箱Map={}; // ban|code -> Set(EMS番号)
+    E.forEach(row=>{
+      const c=normCode_(row[EC.コード]); const qty=Number(row[EC.数量])||0; if(!c||qty<=0) return;
+      const ems=String(row[EC.EMS番号]||'').trim();
+      const q=consumersByCode[c]||[]; const st=ptr[c]||{i:0,used:0}; let left=qty;
+      while(left>0 && st.i<q.length){
+        const e=q[st.i], avail=e.qty-st.used, take=Math.min(left, avail);
+        if(take>0){ if(ems){ const key=e.ban+'|'+e.k; (箱Map[key]=箱Map[key]||new Set()).add(ems); } st.used+=take; left-=take; }
+        if(st.used>=e.qty){ st.i++; st.used=0; }
+      }
+      ptr[c]=st;
+    });
+    lines.forEach(l=>{ const k=l.matchedKey||keyInStock(l); const s= k? 箱Map[l.ban+'|'+k]:null; l.箱EMS= s? Array.from(s).join(', '):''; });
+  }
+
   // 注文ごと: 入金済み(1行でも入金日があれば入金済み。注文単位入金)
   const byOrder={};
   lines.forEach(l=> (byOrder[l.ban]=byOrder[l.ban]||[]).push(l));
@@ -1160,7 +1184,7 @@ function 引当実行_本体_(){
   const 発送可否_=ban=> 発送可否判定_(byOrder[ban], paidOrder[ban]);
 
   // 出力(行の色=到着状況。未入金は受注番号セルだけ赤)
-  const HDR=['受注番号','氏名','お届け日','商品コード','商品名','個数','区分','入荷日','入金','状態'];
+  const HDR=['受注番号','氏名','お届け日','商品コード','商品名','個数','区分','入荷日','入金','状態','EMS番号'];
   const HDR_待=HDR.concat(['発送可否']); // 引当待ちだけK列に発送可否を足す
   const seen=new Set(), seq=[]; lines.forEach(l=>{ if(!seen.has(l.ban)){ seen.add(l.ban); seq.push(l.ban);} });
   const waitRows=[], partRows=[], keepRows=[], holdRows=[], shipRows=[];
@@ -1172,7 +1196,7 @@ function 引当実行_本体_(){
       const 状態=引当行状態_(l, cfg, 入荷消費OK_);
       let st=状態.st, color=状態.color;
       if(!l.キャンセル && !paid) st+='・入金待ち';
-      const vals=[ban,l.氏名,l.届,l.code,l.商品名,l.qty,l.kbn,l.入荷日値,paid?'済':'未',st];
+      const vals=[ban,l.氏名,l.届,l.code,l.商品名,l.qty,l.kbn,l.入荷日値,paid?'済':'未',st,l.箱EMS||''];
       if(b==='wait') vals.push(可否);
       target.push({ vals, color, ban, paid, qty:l.qty });
     });
@@ -1962,5 +1986,5 @@ function 書き出し_(ss, name, hdr, rows, startRow){
     if(i===rows.length-1 || rows[i+1].ban!==rows[i].ban)
       sh.getRange(dr+i,1,1,ncol).setBorder(null,null,true,null,null,null,'#000000',SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
   }
-  if(新規) [150,110,100,150,360,55,80,70,55,95,150].forEach((w,c)=> { if(c<ncol) sh.setColumnWidth(c+1,w); });
+  if(新規) [150,110,100,150,360,55,80,70,55,95,150,120].forEach((w,c)=> { if(c<ncol) sh.setColumnWidth(c+1,w); });
 }
