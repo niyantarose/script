@@ -54,6 +54,7 @@ function onOpen(){
   ui.createMenu('🏠 メイン引当(EMS在庫)')
     .addItem('🔄 EMS在庫を更新(色クリア＋最新化)', 'EMS在庫を更新')
     .addItem('🧱 EMS在庫/今回入荷EMSの在庫：EMS番号ごとに罫線', '在庫EMS番号ごとに罫線を引く')
+    .addItem('🎨 日本在庫を罫線+色分け(EMS番号ごと)', '日本在庫の罫線と色分け')
     .addItem('☑ EMS番号罫線ボタンを設置', '在庫EMS番号罫線ボタンを設置')
     .addSeparator()
     .addItem('① 前段階チェック(即納に水色＋罫線)', '前段階チェック_即納')
@@ -653,6 +654,30 @@ function 在庫EMS番号罫線_シート_(sh){
       .setBorder(true, true, true, true, null, null, '#000000', SpreadsheetApp.BorderStyle.SOLID_THICK);
   });
   return { ok:true, groups:groups.length };
+}
+
+// ===== 日本在庫: EMS番号ごとに罫線+色分け(図形ボタン用) =====
+// 余り(日本在庫)を箱ごとに見分けやすくする。②のたびにシートが書き直される(色も消える)ので、見たいときに押す。
+const 日本在庫色分け_パレット=['#e8f0fe','#e6f4ea','#fef7e0','#fde9e9','#f3e8fd']; // 淡い5色を循環
+function 日本在庫の罫線と色分け(){ 直列_(日本在庫の罫線と色分け本体_); }
+function 日本在庫の罫線と色分け本体_(){
+  const ss=SpreadsheetApp.getActive();
+  const sh=ss.getSheetByName(HIKIATE_CFG.純在庫);
+  if(!sh){ SpreadsheetApp.getUi().alert('「'+HIKIATE_CFG.純在庫+'」タブがありません'); return; }
+  const header=在庫EMS番号罫線_ヘッダー情報_(sh);
+  if(!header){ SpreadsheetApp.getUi().alert('「EMS番号」の見出しが見つかりません'); return; }
+  const data=在庫EMS番号罫線_データ範囲_(sh, header);
+  if(!data){ ss.toast('日本在庫にデータがありません','🎨日本在庫',5); return; }
+  在庫EMS番号罫線_シート_(sh); // 薄い格子+EMS番号グループの太枠
+  // 色分け: EMS番号グループごとに淡い色を循環(EMS番号が空白の行は白のまま)
+  const groups=在庫EMS番号罫線_グループ範囲_(data.emsValues);
+  const bg=Array.from({length:data.numRows},()=>new Array(data.numCols).fill(null));
+  groups.forEach((g,gi)=>{
+    const col=日本在庫色分け_パレット[gi % 日本在庫色分け_パレット.length];
+    for(let r=g.start; r<g.start+g.count; r++) bg[r].fill(col);
+  });
+  sh.getRange(data.startRow,1,data.numRows,data.numCols).setBackgrounds(bg);
+  ss.toast('日本在庫: '+groups.length+'箱を罫線+色分けしました','🎨日本在庫',5);
 }
 
 function 在庫EMS番号罫線ボタンを設置(){
