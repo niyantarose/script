@@ -1114,7 +1114,11 @@ function 引当実行_本体_(){
       const got={出荷済:[], 割当済:[], 今日着:[], 引当:[]}; let left=qty;
       while(left>0 && st.i<q.length){
         const e=q[st.i], avail=e.qty-st.used, take=Math.min(left, avail);
-        if(take>0){ if(got[e.kind].indexOf(e.ban)<0) got[e.kind].push(e.ban); st.used+=take; left-=take; }
+        if(take>0){
+          const arr=got[e.kind]; const prev=arr.find(g=>g.ban===e.ban);
+          if(prev) prev.qty+=take; else arr.push({ban:e.ban, qty:take}); // 同じ受注は個数を合算(2個以上は「番号:個数」で表示)
+          st.used+=take; left-=take;
+        }
         if(st.used>=e.qty){ st.i++; st.used=0; }
       }
       ptr[code]=st; return {got, surplus:left};
@@ -1128,9 +1132,9 @@ function 引当実行_本体_(){
       if(qty>0){
         const r=consumeRow(c, qty);
         // 出荷済みの消費は余りの計算にだけ効かせて、受注番号は表示しない(このシートは「これから出す分」の引き当て先を見る場所)
-        r.got.割当済.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_着 : cfg.色_赤})); // 過去に着いた割当済=ラベンダー(未入金は赤)
-        r.got.今日着.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_黄 : cfg.色_赤})); // 入荷日=今日(今回出せる分)=黄(未入金は赤)
-        r.got.引当.forEach(b=> cells.push({ban:b, color: paidOrder[b]? cfg.色_黄 : cfg.色_赤}));   // 今回引当=黄(未入金は赤)
+        r.got.割当済.forEach(g=> cells.push({ban:g.ban, qty:g.qty, color: paidOrder[g.ban]? cfg.色_着 : cfg.色_赤})); // 過去に着いた割当済=ラベンダー(未入金は赤)
+        r.got.今日着.forEach(g=> cells.push({ban:g.ban, qty:g.qty, color: paidOrder[g.ban]? cfg.色_黄 : cfg.色_赤})); // 入荷日=今日(今回出せる分)=黄(未入金は赤)
+        r.got.引当.forEach(g=> cells.push({ban:g.ban, qty:g.qty, color: paidOrder[g.ban]? cfg.色_黄 : cfg.色_赤}));   // 今回引当=黄(未入金は赤)
         cells.sort((a,b)=> 番号num_(a.ban)-番号num_(b.ban)); // 古い注文を左・新しいを右
         surplus=r.surplus;
         if(r.got.引当.length || r.got.今日着.length) col = r.surplus>0 ? cfg.色_緑 : cfg.色_黄; // 今回分あり: 余りあり=緑 / 全部今回分=黄
@@ -1138,7 +1142,7 @@ function 引当実行_本体_(){
         // 出荷済みが取った分は色なし(番号・余りも出ない=何もすることがない行。記録は消込台帳にある)
         if(r.surplus>0) jpRows.push([row[0], 到着_(row), c, r.surplus, row[EC.EMS番号]]); // 状態/到着日/商品コード/余り数/EMS番号
       }
-      const vals=[row[0], 到着_(row), c, qty, row[EC.EMS番号], surplus>0?surplus:''].concat(cells.map(x=>x.ban));
+      const vals=[row[0], 到着_(row), c, qty, row[EC.EMS番号], surplus>0?surplus:''].concat(cells.map(x=> x.ban+(x.qty>1?':'+x.qty:'')));
       const bg=[col,col,col,col,col,col].concat(cells.map(x=>x.color));     // A〜F=行の状態色 / G以降=注文ごとの色
       ledgerRows.push({vals, bg});
     });

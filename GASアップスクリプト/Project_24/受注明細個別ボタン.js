@@ -159,15 +159,16 @@ function 受注個別_台帳更新_(ss, item, entries, R, M){
     const surplus=Math.max(0, qty-used);
     const paid=ban=>{ for(let i=M.hr;i<R.length;i++){ const row=R[i];
       if(String(row[M.番号]||'').trim()===ban && 入金済み_(row[M.入金])) return true; } return false; };
-    const bans=entries.map(e=>e.ban).filter((b,i,a)=>a.indexOf(b)===i).sort((a,b)=>番号num_(a)-番号num_(b));
+    const agg={}; entries.forEach(e=>{ agg[e.ban]=(agg[e.ban]||0)+e.qty; });
+    const bans=Object.keys(agg).sort((a,b)=>番号num_(a)-番号num_(b));
     // F=余り
     sh.getRange(rowNo,6).setValue(surplus>0?surplus:'');
-    // G以降=受注番号(余った古いセルはクリア)
+    // G以降=受注番号(2個以上は「番号:個数」表示。余った古いセルはクリア)
     const nBanCells=Math.max(0,nc-6);
     if(nBanCells>0){
       const v=[], bg=[];
       for(let i=0;i<nBanCells;i++){
-        v.push(i<bans.length? bans[i] : '');
+        v.push(i<bans.length? (bans[i]+(agg[bans[i]]>1?':'+agg[bans[i]]:'')) : '');
         bg.push(i<bans.length? (paid(bans[i])? HIKIATE_CFG.色_黄 : HIKIATE_CFG.色_赤) : null);
       }
       sh.getRange(rowNo,7,1,nBanCells).setValues([v]).setBackgrounds([bg]);
