@@ -60,6 +60,7 @@ function onOpen(){
     .addItem('① 前段階チェック(即納に水色＋罫線)', '前段階チェック_即納')
     .addItem('② 引き当て実行(EMS在庫・入荷日で判定)', '引当実行')
     .addItem('📦 到着済を在庫反映済みへ(便の締め)', '到着済を在庫反映済みへ')
+    .addItem('⚖️ この便の引当をやり直す(到着日指定)', '便の引当をやり直す')
     .addItem('🔎 引当診断(受注番号で調べる)', '引当診断')
     .addItem('🔎 入荷日の整合チェック(誤記入の検出)', '入荷日整合チェック')
     .addItem('🧹 チェック一覧の入荷日をクリア', '入荷日チェック_一覧をクリア')
@@ -1152,6 +1153,7 @@ function 引当実行_本体_(){
     const pushCons=(l, qty, kind)=>{ const k=l.matchedKey||keyInStock(l); if(k==null||qty<=0) return; (consumersByCode[k]=consumersByCode[k]||[]).push({qty, ban:l.ban, kind}); }; // 確定引当(コード不一致救済含む)はmatchedKeyの行に記帳
     出荷済行.filter(出荷済消費OK_).forEach(l=> pushCons(l, l.qty, '出荷済'));                             // 消込台帳の出荷済み(入荷日=今回の到着日の分だけ。別便から出た出荷済みは今回の箱を食わない)
     lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && l.qty>0 && 入荷消費OK_(l))
+      .sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i) // 古い注文を先頭の箱行に乗せる(箱↔注文の対応を注文順に)
       .forEach(l=> pushCons(l, l.qty-(l.過去箱分||0), '今日着'));                                                         // ゲート通過=入荷日が今回の到着日と一致=今回の便で出す分。全て黄(今回出せる分)で見せる。別便で処理済み(入荷日≠今回到着日)はゲートで除外され日本在庫に残る。ラベンダー(割当済)は廃止=このシートは「黄=出す/色なし=在庫」に統一
     lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.alloc>0).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=> pushCons(l, l.alloc, '引当')); // 今回引き当て
     const ptr={};

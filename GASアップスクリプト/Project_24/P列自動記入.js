@@ -15,7 +15,7 @@
 // 在庫反映済みなど過去の行は触らない(履歴として保持)。
 function P列を書き直す(){ 直列_(P列を書き直す本体_); }
 function P列を書き直す本体_(){
-  const ui=SpreadsheetApp.getUi(), cfg=P_KAKUTEI_CFG;
+  const ui=SpreadsheetApp.getUi();
   const ans=ui.alert('P列の書き直し(到着済のみ)',
     'EMSリストの「到着済」行のP列(注文番号)を全部消して、今のロジックで書き直します。\n\n'+
     '・バグ時代の古い割当(残骸)が一掃されます\n'+
@@ -23,16 +23,26 @@ function P列を書き直す本体_(){
     '・在庫反映済みなど過去の行は触りません\n\n実行しますか？',
     ui.ButtonSet.OK_CANCEL);
   if(ans!==ui.Button.OK) return;
+  const r=P列書き直し実行_();
+  if(r.error){ ui.alert('書き直しでエラー:\n'+r.error); return; }
+  SpreadsheetApp.getActive().toast(
+    'P列書き直し: クリア'+r.クリア+'行 → 記入'+r.記入+'行'+(r.分割?'（分割'+r.分割+'行）':'')+
+    ' / 在庫扱い'+r.在庫+'行。仕上げに ②引き当て実行 を回してください','♻️P列',8);
+}
+
+// P列書き直しの本体(ダイアログなし)。到着済行のP列クリア→自動記入。⚖️便の引き直しからも使う
+function P列書き直し実行_(){
+  const cfg=P_KAKUTEI_CFG;
   let sh;
   try{ sh=SpreadsheetApp.openById(cfg.発注共有ID).getSheetByName(cfg.シート); }
-  catch(e){ ui.alert('発注共有ファイルが開けません:\n'+e.message); return; }
-  if(!sh){ ui.alert('発注共有ファイルに「'+cfg.シート+'」がありません'); return; }
+  catch(e){ return {error:'発注共有ファイルが開けません:\n'+e.message}; }
+  if(!sh) return {error:'発注共有ファイルに「'+cfg.シート+'」がありません'};
   const hr=cfg.ヘッダー行, last=sh.getLastRow();
-  if(last<=hr){ ui.alert('EMSリストにデータがありません'); return; }
+  if(last<=hr) return {error:'EMSリストにデータがありません'};
   const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
   const f=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
   const cSt=f('ステータス列','ステータス'), cP=f('注文番号');
-  if(cP<0){ ui.alert('EMSリストの'+hr+'行目に「注文番号」見出しがありません'); return; }
+  if(cP<0) return {error:'EMSリストの'+hr+'行目に「注文番号」見出しがありません'};
   const n=last-hr;
   const st=cSt>=0? sh.getRange(hr+1,cSt+1,n,1).getDisplayValues() : null;
   const pRange=sh.getRange(hr+1,cP+1,n,1);
@@ -49,10 +59,49 @@ function P列を書き直す本体_(){
   if(clearedA1.length) sh.getRangeList(clearedA1).setBackground(null); // 薄黄の要確認マークもクリア
   SpreadsheetApp.flush();
   const r=発注共有P列記入_();
-  if(r.error){ ui.alert('書き直しでエラー:\n'+r.error); return; }
-  SpreadsheetApp.getActive().toast(
-    'P列書き直し: クリア'+cleared+'行 → 記入'+r.記入+'行'+(r.分割?'（分割'+r.分割+'行）':'')+
-    ' / 在庫扱い'+r.在庫+'行。仕上げに ②引き当て実行 を回してください','♻️P列',8);
+  if(r.error) return {error:r.error};
+  return {クリア:cleared, 記入:r.記入, 分割:r.分割, 在庫:r.在庫};
+}
+
+// ⚖️ 便の引当をやり直す: 指定した到着日の入荷日を白紙に→P列書き直し→②まで一括実行。
+// バグ時代に「新しい注文が先に確定」してしまった便を、古い注文順で公平に引き直すためのリセット。
+// 台湾/中国ルートの行は触らない。手入力の同日付スタンプも消える(②が正しい順で貼り直す)。
+function 便の引当をやり直す(){ 直列_(便の引当をやり直す本体_); }
+function 便の引当をやり直す本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const recv=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!recv){ ui.alert('「'+HIKIATE_CFG.受注+'」タブがありません'); return; }
+  const M=列マップ_(recv);
+  if(M.入荷<0){ ui.alert('受注明細に「入荷日」列がありません'); return; }
+  const resp=ui.prompt('⚖️ 便の引当をやり直す',
+    'やり直す便の到着日を入力してください(例 2026-07-09)。\n\n'+
+    'この日付の入荷日(取り寄せ行・台湾/中国ルートは除く)を全部白紙にし、\n'+
+    'P列を書き直して、②引き当て実行まで自動で回します。\n'+
+    '→ 古い注文から順に引き当て直されます。',
+    ui.ButtonSet.OK_CANCEL);
+  if(resp.getSelectedButton()!==ui.Button.OK) return;
+  const d=ymd_(String(resp.getResponseText()||'').trim());
+  if(!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)){ ui.alert('日付が読めません: '+resp.getResponseText()); return; }
+  const R=recv.getDataRange().getValues();
+  const a1=[];
+  for(let i=M.hr;i<R.length;i++){
+    const row=R[i];
+    if(区分_(row[M.選択肢])!=='取り寄せ') continue;
+    if(ymd_(row[M.入荷])!==d) continue;
+    const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
+    if(別ルート) continue;
+    a1.push(recv.getRange(i+1, M.入荷+1).getA1Notation());
+  }
+  if(!a1.length){ ui.alert('入荷日が '+d+' の取り寄せ行はありません。'); return; }
+  const ans=ui.alert('確認',
+    d+' の入荷日 '+a1.length+' 行を白紙にして、古い注文順で引き直します。\n(P列書き直し→②引き当て実行まで自動で回ります) ええ？',
+    ui.ButtonSet.OK_CANCEL);
+  if(ans!==ui.Button.OK) return;
+  recv.getRangeList(a1).clearContent();
+  SpreadsheetApp.flush();
+  const r=P列書き直し実行_();
+  if(r.error){ ui.alert('P列書き直しでエラー:\n'+r.error); return; }
+  引当実行_本体_(); // ②まで一気に。完了ダイアログの突合せで結果を確認
 }
 
 function P列に注文番号を自動記入(){
