@@ -372,12 +372,13 @@ function 取込_実行_(latest){
   // (需要に化けるのを防ぐ)、受注番号だけ拾ってあとで一括キャンセル処理する。全件CSV運用で、
   // 誰がキャンセルしても取込だけで自動反映される(手で番号を聞かなくてよい)。
   const stCol = data.length? data[0].indexOf('受注ステータス') : -1;
-  const キャンセル番号=[];
+  const キャンセル番号=[]; const キャンセル行=[]; // 別シート「キャンセル」へ残す証跡(取り除いた生データ)
   if(stCol>=0 && banCol>=0){
     for(let r=data.length-1; r>=1; r--){ // 後ろから消すのでインデックスがズレない
       if(/キャンセル/.test(String(data[r][stCol]||''))){
         const ban=String(data[r][banCol]||'').trim();
         if(ban && キャンセル番号.indexOf(ban)<0) キャンセル番号.push(ban);
+        キャンセル行.unshift(data[r].slice()); // 元の並び順で保存
         data.splice(r,1); // 受注明細に書かない
       }
     }
@@ -435,9 +436,12 @@ function 取込_実行_(latest){
   // 消込台帳を更新: 前回いて今回消えた注文=発送済み(他の人が発送した分)を検知
   const 台帳=消込台帳更新_();
 
-  // 【キャンセルの自動仕分け】CSVにあったキャンセル行を一括処理(台帳→キャンセル/P列除去/履歴/表示連動)
+  // 【キャンセルの自動仕分け】CSVにあったキャンセル行を「キャンセル」シートに証跡として残しつつ一括処理
   let キャンセル結果=null;
-  if(キャンセル番号.length){ try{ キャンセル結果=キャンセル処理_(キャンセル番号); }catch(e){} }
+  if(キャンセル番号.length){
+    try{ キャンセル仕分けシートへ_(ss, data[0], キャンセル行, latest.getName()); }catch(e){}
+    try{ キャンセル結果=キャンセル処理_(キャンセル番号); }catch(e){}
+  }
 
   ss.toast('取込完了：'+latest.getName()+' / 受注'+body.length+'行（更新 '+upd+' / 入荷日引継 '+引継+'件'
     +(台帳.新規出荷済? ' / 🧾出荷済み検知'+台帳.新規出荷済+'件':'')
@@ -450,6 +454,26 @@ function 取込_実行_(latest){
       '\n\nこのあと「② 引き当て実行」を回すと、その分の在庫が解放されます。',
       SpreadsheetApp.getUi().ButtonSet.OK);
   }
+}
+
+// 取込で仕分けたキャンセル行を「キャンセル」シートへ追記(証跡)。取込のCSV見出し＋取込元＋日時を付ける
+function キャンセル仕分けシートへ_(ss, header, rows, srcName){
+  if(!rows || !rows.length) return;
+  const NAME='キャンセル';
+  let sh=ss.getSheetByName(NAME), 新規=!sh;
+  if(!sh) sh=ss.insertSheet(NAME);
+  const ncol=header.length;
+  const HDR=['取込日時','取込元'].concat(header.map(h=>String(h||'')));
+  // 見出しが無い/変わっていたら1行目に敷き直す
+  const cur=sh.getRange(1,1,1,Math.max(sh.getLastColumn(),HDR.length)).getDisplayValues()[0].slice(0,HDR.length).join('\t');
+  if(cur!==HDR.join('\t')){
+    sh.getRange(1,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
+    sh.setFrozenRows(1);
+  }
+  const now=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm:ss');
+  const out=rows.map(r=>{ const a=r.slice(0,ncol); while(a.length<ncol) a.push(''); return [now, srcName].concat(a); });
+  const start=sh.getLastRow()+1;
+  sh.getRange(start,1,out.length,HDR.length).setValues(out).setFontSize(HIKIATE_CFG.字);
 }
 
 // 注文ごと(受注番号が変わる境目)に太い下線を引く。全体には薄い格子。
