@@ -188,16 +188,25 @@ function 消込台帳_発送済みCSV取込(){
 // 仕上げに「② 引き当て実行」を回すと、その分の在庫が次の注文/余りに解放される。
 function 注文をキャンセル扱いにする(){ 直列_(注文をキャンセル扱い本体_); }
 function 注文をキャンセル扱い本体_(){
-  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const ui=SpreadsheetApp.getUi();
   const resp=ui.prompt('🚫 注文をキャンセル扱いにする',
     'キャンセルになった受注番号を入力（複数はカンマ区切り）',ui.ButtonSet.OK_CANCEL);
   if(resp.getSelectedButton()!==ui.Button.OK) return;
   const bans=String(resp.getResponseText()||'').split(/[,、\s]+/).map(s=>s.trim()).filter(s=>/^\d{5,}$/.test(s));
   if(!bans.length){ ui.alert('受注番号が読めません。'); return; }
-  const results=[];
+  const r=キャンセル処理_(bans);
+  ui.alert('🚫 キャンセル扱い 完了',
+    bans.join(', ')+'\n\n'+r.results.join('\n')+'\n\nこのあと「② 引き当て実行」を回すと、その分の在庫が解放されます。',
+    ui.ButtonSet.OK);
+}
+
+// キャンセル処理の本体(受注番号の配列を受け取る。ダイアログなし)。取込のキャンセル自動仕分けからも使う。
+//  ①消込台帳を「キャンセル」へ ②EMSリストP列から名指し除去 ③引当履歴キャンセル ④今回入荷EMSの在庫を連動更新
+function キャンセル処理_(bans){
+  const ss=SpreadsheetApp.getActive();
+  const results=[]; let 台帳更新=0, P除去=0;
 
   // ① 消込台帳の状態を「キャンセル」へ
-  let 台帳更新=0;
   const tsh=ss.getSheetByName(KESHIKOMI_CFG.シート);
   if(tsh && tsh.getLastRow()>1){
     const n=tsh.getLastRow()-1;
@@ -213,7 +222,6 @@ function 注文をキャンセル扱い本体_(){
   results.push('消込台帳: '+台帳更新+'行を「キャンセル」に');
 
   // ② EMSリストのP列から名指しを除去(状態問わず) + ③履歴キャンセル + ④今回入荷EMSの在庫を連動更新
-  let P除去=0;
   try{
     const ems=個別対応_EMSリスト_();
     if(ems.error){ results.push('P列: EMSリストが読めずスキップ'); }
@@ -239,9 +247,7 @@ function 注文をキャンセル扱い本体_(){
     }
   }catch(e){ results.push('P列: エラーでスキップ('+e.message+')'); }
 
-  ui.alert('🚫 キャンセル扱い 完了',
-    bans.join(', ')+'\n\n'+results.join('\n')+'\n\nこのあと「② 引き当て実行」を回すと、その分の在庫が解放されます。',
-    ui.ButtonSet.OK);
+  return {results, 台帳更新, P除去};
 }
 
 // メニュー用: 台帳を更新してシートを開く

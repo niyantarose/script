@@ -368,6 +368,21 @@ function 取込_実行_(latest){
   const banCol = data.length? data[0].indexOf('受注番号') : -1;
   if(banCol>=0) for(let r=1;r<data.length;r++){ data[r][banCol]=String(data[r][banCol]||'').replace(/^niyantarose-/i,''); }
 
+  // 【キャンセルの自動仕分け】CSVに「キャンセル」の受注ステータス行が含まれていたら、受注明細には入れず
+  // (需要に化けるのを防ぐ)、受注番号だけ拾ってあとで一括キャンセル処理する。全件CSV運用で、
+  // 誰がキャンセルしても取込だけで自動反映される(手で番号を聞かなくてよい)。
+  const stCol = data.length? data[0].indexOf('受注ステータス') : -1;
+  const キャンセル番号=[];
+  if(stCol>=0 && banCol>=0){
+    for(let r=data.length-1; r>=1; r--){ // 後ろから消すのでインデックスがズレない
+      if(/キャンセル/.test(String(data[r][stCol]||''))){
+        const ban=String(data[r][banCol]||'').trim();
+        if(ban && キャンセル番号.indexOf(ban)<0) キャンセル番号.push(ban);
+        data.splice(r,1); // 受注明細に書かない
+      }
+    }
+  }
+
   // 書式・ヘッダーは残し、ヘッダー行の下のデータだけ入れ替える
   let sh=ss.getSheetByName(cfg.受注シート); if(!sh) sh=ss.insertSheet(cfg.受注シート);
   const hdrRow=受注ヘッダー行_(sh);       // 例:6行目(無ければ1)
@@ -419,8 +434,22 @@ function 取込_実行_(latest){
 
   // 消込台帳を更新: 前回いて今回消えた注文=発送済み(他の人が発送した分)を検知
   const 台帳=消込台帳更新_();
+
+  // 【キャンセルの自動仕分け】CSVにあったキャンセル行を一括処理(台帳→キャンセル/P列除去/履歴/表示連動)
+  let キャンセル結果=null;
+  if(キャンセル番号.length){ try{ キャンセル結果=キャンセル処理_(キャンセル番号); }catch(e){} }
+
   ss.toast('取込完了：'+latest.getName()+' / 受注'+body.length+'行（更新 '+upd+' / 入荷日引継 '+引継+'件'
-    +(台帳.新規出荷済? ' / 🧾出荷済み検知'+台帳.新規出荷済+'件':'')+'）','GoQ取込',6);
+    +(台帳.新規出荷済? ' / 🧾出荷済み検知'+台帳.新規出荷済+'件':'')
+    +(キャンセル番号.length? ' / 🚫キャンセル自動処理'+キャンセル番号.length+'件':'')+'）','GoQ取込',6);
+  if(キャンセル番号.length){
+    SpreadsheetApp.getUi().alert('🚫 キャンセルを自動処理しました',
+      'CSVに含まれていたキャンセル注文 '+キャンセル番号.length+'件を、受注明細に入れず後始末しました:\n'+
+      キャンセル番号.slice(0,20).join(', ')+(キャンセル番号.length>20?' …他'+(キャンセル番号.length-20)+'件':'')+
+      (キャンセル結果? '\n\n'+キャンセル結果.results.join('\n'):'')+
+      '\n\nこのあと「② 引き当て実行」を回すと、その分の在庫が解放されます。',
+      SpreadsheetApp.getUi().ButtonSet.OK);
+  }
 }
 
 // 注文ごと(受注番号が変わる境目)に太い下線を引く。全体には薄い格子。
