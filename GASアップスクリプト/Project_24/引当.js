@@ -1100,6 +1100,7 @@ function 引当実行_本体_(){
   EMS消込色付け_();
 
   const jpRows=[]; // 純日本在庫(行ごとの余り。EMS番号付き)
+  const 突合宙=[]; let 突合式=''; // 突き合わせ検算: 到着済=出荷済+割当+余り / 箱に乗り切らなかった割当の一覧
   // ===== 今回入荷EMSの在庫(台帳・色付き): 各EMS行に 状態と引き当てた受注番号 を出力 =====
   {
     // コードごとの消費者キュー(出荷済み=もう発送 → 割当済=入荷日あり → 引当=今回 の順)
@@ -1126,6 +1127,7 @@ function 引当実行_本体_(){
     };
     const EHDR=['状態','到着日','商品コード','数量','EMS番号','余り','引き当てた受注番号（左=古い → 右=新しい）'];
     const ledgerRows=[]; // {vals,bg} 受注番号を1セル1番号で右へ展開
+    let 突_供給=0, 突_出荷=0, 突_割当=0, 突_余り=0; // 突き合わせ用の集計
     E.forEach(row=>{
       const c=normCode_(row[EC.コード]), qty=Number(row[EC.数量])||0;
       if(!c) return;
@@ -1138,6 +1140,9 @@ function 引当実行_本体_(){
         r.got.引当.forEach(g=> cells.push({ban:g.ban, qty:g.qty, color: paidOrder[g.ban]? cfg.色_黄 : cfg.色_赤}));   // 今回引当=黄(未入金は赤)
         cells.sort((a,b)=> 番号num_(a.ban)-番号num_(b.ban)); // 古い注文を左・新しいを右
         surplus=r.surplus;
+        突_供給+=qty; 突_余り+=r.surplus;
+        突_出荷+=r.got.出荷済.reduce((s,g)=>s+g.qty,0);
+        突_割当+=r.got.割当済.concat(r.got.今日着, r.got.引当).reduce((s,g)=>s+g.qty,0);
         if(r.got.引当.length || r.got.今日着.length) col = r.surplus>0 ? cfg.色_緑 : cfg.色_黄; // 今回分あり: 余りあり=緑 / 全部今回分=黄
         else if(r.got.割当済.length) col=cfg.色_着;                   // 過去の割当済のみ=ラベンダー
         // 出荷済みが取った分は色なし(番号・余りも出ない=何もすることがない行。記録は消込台帳にある)
@@ -1147,6 +1152,17 @@ function 引当実行_本体_(){
       const bg=[col,col,col,col,col,col].concat(cells.map(x=>x.color));     // A〜F=行の状態色 / G以降=注文ごとの色
       ledgerRows.push({vals, bg});
     });
+    // ===== 突き合わせ: 箱(到着済)に乗り切らなかった消費者を検出 =====
+    // 入荷日付き/出荷済みの数量が箱の数量を超えている=二重引当・誤入荷日・台帳の重複の疑い。
+    // (今回引当はstock残でキャップされるので、ここに出るのは入荷日付き/出荷済みだけのはず)
+    Object.keys(consumersByCode).forEach(code=>{
+      const q=consumersByCode[code], st=ptr[code]||{i:0,used:0};
+      for(let i=st.i;i<q.length;i++){
+        const left=q[i].qty-(i===st.i? st.used:0);
+        if(left>0) 突合宙.push('・'+q[i].ban+' '+code+' x'+left+'（'+(q[i].kind==='今日着'?'着済':q[i].kind)+'）');
+      }
+    });
+    突合式='到着済'+突_供給+'＝出荷済'+突_出荷+'＋割当'+突_割当+'＋余り'+突_余り;
     const maxCols=ledgerRows.reduce((m,r)=>Math.max(m,r.vals.length), EHDR.length);
     let esh=ss.getSheetByName(cfg.日本在庫), esh新規=!esh; if(!esh) esh=ss.insertSheet(cfg.日本在庫);
     シート値クリア_(esh); // 値・色だけ入れ替え(列幅・行高・中央揃えは保持)
@@ -1216,7 +1232,15 @@ function 引当実行_本体_(){
   抽出フラグ更新_(); // 受注明細の「抽出」列(○=色あり/×=色なし)を更新→普通のフィルタで絞れる
   const 隠れ = recv.getFilter()? 'フィルタON' : (PropertiesService.getDocumentProperties().getProperty('色なし除外中')==='1'? '🙈色なし除外中' : '');
   const filt = 隠れ? ' ⚠️'+隠れ+'(行が隠れてるかも→🔻フィルタ確認/解除で全解除)' : '';
-  SpreadsheetApp.getActive().toast(`引当完了：出荷可能${ship} / 出荷GO未入金${keep} / 希望日待ち${hold} / 部分在庫${part} / 引当待ち${ord-ship-keep-hold-part}（うち入金待ち${mp}）｜入荷日自動${自動入荷}件｜P列確定${確定行数}行｜出荷済み消込${出荷済行.length}件${filt}`);
+  // 突き合わせ結果: 合わないときだけダイアログで明細を出す(OKならトーストに式だけ)
+  if(突合宙.length){
+    SpreadsheetApp.getUi().alert('⚠️ 突き合わせ：箱と合わない割当があります',
+      'EMS在庫(到着済)の数量より多く割り当たっています。二重引当か誤入荷日、消込台帳の重複の疑い:\n\n'
+      +突合宙.slice(0,25).join('\n')+(突合宙.length>25? '\n…他'+(突合宙.length-25)+'件' : '')
+      +'\n\n🔎 入荷日の整合チェック と 🔎 引当診断(該当の受注番号) で確認してください。',
+      SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+  SpreadsheetApp.getActive().toast(`引当完了：出荷可能${ship} / 出荷GO未入金${keep} / 希望日待ち${hold} / 部分在庫${part} / 引当待ち${ord-ship-keep-hold-part}（うち入金待ち${mp}）｜入荷日自動${自動入荷}件｜P列確定${確定行数}行｜出荷済み消込${出荷済行.length}件${filt}｜突合せ ${突合宙.length? '⚠️'+突合宙.length+'件不一致' : 'OK『'+突合式+'』'}`);
 }
 
 // EMS在庫の引当色分け: 在庫から まず入荷日あり(割当済)を差引き、残りを入荷日なし(未着)の人へ引当
