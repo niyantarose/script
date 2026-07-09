@@ -709,7 +709,8 @@ function 引当診断(){
   let hit=0;
   for(let i=M.hr;i<R.length;i++){ if(String(R[i][M.番号]||'').trim()!==ban) continue; hit++;
     const r=R[i], code=String(r[M.コード]||'').trim(), sku=String(r[M.SKU]||'').trim();
-    const 入荷v=M.入荷>=0?String(r[M.入荷]||'').trim():'(列なし)';
+    const 入荷raw=M.入荷>=0? r[M.入荷] : '';
+    const 入荷v=M.入荷>=0? (String(入荷raw||'').trim()? (ymd_(入荷raw)||String(入荷raw)) : '') : '(列なし)';
     const 一致=受注候補コード_(sku,code).some(v=>codeKeys_(v).some(k=>stockKeys[k]));
     msg+=hit+') 行'+(i+1)+' '+(code||sku)+' x'+(Number(r[M.個数])||0)+' / '+区分_(r[M.選択肢])+' / 入荷日:「'+(入荷v||'空')+'」/ EMS在庫一致:'+(一致?'○':'×')+'\n';
   }
