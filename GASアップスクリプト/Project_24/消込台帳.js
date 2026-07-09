@@ -180,6 +180,70 @@ function 消込台帳_発送済みCSV取込(){
     ui.ButtonSet.OK);
 }
 
+// ===== 注文をキャンセル扱いにする =====
+// GoQでキャンセルになった注文の後始末を1発で:
+//  ①消込台帳の該当行を「キャンセル」へ(出荷済み?の誤検知を訂正。在庫を食わなくなる)
+//  ②EMSリストのP列からその番号の名指しを除去 ③引当履歴をキャンセル済みに
+//  ④今回入荷EMSの在庫の該当行を連動更新
+// 仕上げに「② 引き当て実行」を回すと、その分の在庫が次の注文/余りに解放される。
+function 注文をキャンセル扱いにする(){ 直列_(注文をキャンセル扱い本体_); }
+function 注文をキャンセル扱い本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const resp=ui.prompt('🚫 注文をキャンセル扱いにする',
+    'キャンセルになった受注番号を入力（複数はカンマ区切り）',ui.ButtonSet.OK_CANCEL);
+  if(resp.getSelectedButton()!==ui.Button.OK) return;
+  const bans=String(resp.getResponseText()||'').split(/[,、\s]+/).map(s=>s.trim()).filter(s=>/^\d{5,}$/.test(s));
+  if(!bans.length){ ui.alert('受注番号が読めません。'); return; }
+  const results=[];
+
+  // ① 消込台帳の状態を「キャンセル」へ
+  let 台帳更新=0;
+  const tsh=ss.getSheetByName(KESHIKOMI_CFG.シート);
+  if(tsh && tsh.getLastRow()>1){
+    const n=tsh.getLastRow()-1;
+    const tv=tsh.getRange(2,1,n,KESHIKOMI_CFG.HDR.length).getValues();
+    for(let i=0;i<n;i++){
+      const ban=String(tv[i][0]||'').trim();
+      if(bans.indexOf(ban)<0) continue;
+      if(String(tv[i][5]||'').trim()==='キャンセル') continue;
+      tsh.getRange(2+i,6).setValue('キャンセル');
+      台帳更新++;
+    }
+  }
+  results.push('消込台帳: '+台帳更新+'行を「キャンセル」に');
+
+  // ② EMSリストのP列から名指しを除去(状態問わず) + ③履歴キャンセル + ④今回入荷EMSの在庫を連動更新
+  let P除去=0;
+  try{
+    const ems=個別対応_EMSリスト_();
+    if(ems.error){ results.push('P列: EMSリストが読めずスキップ'); }
+    else{
+      const recv=ss.getSheetByName(HIKIATE_CFG.受注);
+      const M=recv? 列マップ_(recv):null, R=recv? recv.getDataRange().getValues():[];
+      ems.rows.forEach(rw=>{
+        if(!rw.注文番号) return;
+        const entries=個別対応_P注文展開_(rw.注文番号, rw.数量);
+        const kept=entries.filter(e=> bans.indexOf(e.ban)<0);
+        if(kept.length===entries.length) return;
+        const cell=ems.sh.getRange(rw.row, ems.c.注文番号+1);
+        const text=個別対応_P注文整形_(kept, rw.数量);
+        cell.setValue(text);
+        cell.setBackground(/[,:：、]/.test(text)?'#fff2cc':null);
+        entries.filter(e=>bans.indexOf(e.ban)>=0).forEach(e=>{
+          try{ 引当履歴_キャンセル_(個別対応_履歴Rec_(rw, e.ban, e.qty, '個別引当'), e.qty); }catch(err){}
+          P除去+=e.qty;
+        });
+        if(M) try{ 受注個別_台帳更新_(ss, rw, kept, R, M); }catch(err){}
+      });
+      results.push('P列の名指し除去: '+P除去+'個（引当履歴もキャンセル済みに）');
+    }
+  }catch(e){ results.push('P列: エラーでスキップ('+e.message+')'); }
+
+  ui.alert('🚫 キャンセル扱い 完了',
+    bans.join(', ')+'\n\n'+results.join('\n')+'\n\nこのあと「② 引き当て実行」を回すと、その分の在庫が解放されます。',
+    ui.ButtonSet.OK);
+}
+
 // メニュー用: 台帳を更新してシートを開く
 function 消込台帳を更新(){
   const r=消込台帳更新_();
