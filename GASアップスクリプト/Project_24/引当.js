@@ -1375,6 +1375,20 @@ function 引当実行_本体_(){
       if(自動入荷){ recv.getRange(rs,M.入荷+1,入荷col.length,1).setValues(入荷col).setNumberFormat('yyyy-mm-dd'); }
     }
   }
+
+  // 【EMS番号を記入】受注明細に「EMS番号」列(無ければ末尾に作成)を用意し、各行がどの箱から出すかを書く。
+  // ①取込のCSVには無い列なのでCSV列より後ろに作る→取込で消えても②で毎回書き直される。
+  {
+    const rs=受注hdr+1, rl=recv.getLastRow();
+    if(rl>=rs){
+      let emsC=受注head.indexOf('EMS番号'); // 0始まり。無ければ末尾に作る
+      if(emsC<0){ emsC=recv.getLastColumn(); recv.getRange(受注hdr,emsC+1).setValue('EMS番号').setFontWeight('bold'); }
+      const col=recv.getRange(rs,emsC+1,rl-rs+1,1).getValues();
+      for(let idx=0;idx<col.length;idx++) col[idx][0]=''; // 一旦クリア(前回の割当が残らないように)
+      lines.forEach(l=>{ const idx=l.i-受注hdr; if(idx>=0 && idx<col.length && l.箱EMS) col[idx][0]=l.箱EMS; });
+      recv.getRange(rs,emsC+1,col.length,1).setValues(col);
+    }
+  }
   抽出フラグ更新_(); // 受注明細の「抽出」列(○=色あり/×=色なし)を更新→普通のフィルタで絞れる
   const 隠れ = recv.getFilter()? 'フィルタON' : (PropertiesService.getDocumentProperties().getProperty('色なし除外中')==='1'? '🙈色なし除外中' : '');
   const filt = 隠れ? ' ⚠️'+隠れ+'(行が隠れてるかも→🔻フィルタ確認/解除で全解除)' : '';
