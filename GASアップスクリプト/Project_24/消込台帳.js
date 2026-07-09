@@ -276,17 +276,22 @@ function 消込台帳_処理済を登録_(header, rows){
     existing.add(String(r[0]).trim()+'|'+String(r[1]).trim()+'|'+String(r[2]).trim())); }
 
   const today=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd');
-  const add=[]; let 既存=0, 対象外=0;
+  const limit=new Date(); limit.setDate(limit.getDate()-cfg.有効日数); // これより前に発送された分は今の箱と無関係
+  const add=[]; let 既存=0, 対象外=0, 古い=0;
   rows.forEach(r=>{
     const ban=String(r[c番号]||'').replace(/^niyantarose-/i,'').trim(); if(!ban) return;
     if(c選択肢>=0 && 区分_(r[c選択肢])!=='取り寄せ'){ 対象外++; return; } // 即納などはEMS在庫と無関係
     const qty=Number(r[c個数])||0; if(qty<=0) return;
+    // 出荷日が有効日数(60日)より前=既に別の箱から出て完結済み。在庫差し引き対象外なので登録しない(古い発送が今の箱を食わない)
+    const shipY=ymd_(c出荷>=0? r[c出荷] : '');
+    if(shipY){ const d=new Date(shipY); if(!isNaN(d.getTime()) && d.getTime()<limit.getTime()){ 古い++; return; } }
     const code=String(r[cコード]||'').trim();
     const sku=cSKU>=0? String(r[cSKU]||'').trim():'';
     const key=ban+'|'+code+'|'+sku;
     if(existing.has(key)){ 既存++; return; }
     const 入荷v=(c入荷>=0 && String(r[c入荷]||'').trim())? r[c入荷] : '';
-    add.push([ban,code,sku,qty,入荷v,'出荷済み',today,today,'CSV処理済']);
+    const 発送日=shipY||today; // 消滅日に出荷日を入れる→有効日数の窓が正しく効く
+    add.push([ban,code,sku,qty,入荷v,'出荷済み',発送日,発送日,'CSV処理済']);
     existing.add(key);
   });
   if(add.length){
@@ -295,7 +300,33 @@ function 消込台帳_処理済を登録_(header, rows){
       .setBackgrounds(add.map(()=>new Array(cfg.HDR.length).fill('#efefef')));
     sh.getRange(start,5,add.length,1).setNumberFormat('yyyy-mm-dd');
   }
-  return {追加:add.length, 既存, 対象外};
+  return {追加:add.length, 既存, 対象外, 古い};
+}
+
+// 消込台帳から「CSV処理済」で登録した行だけを消す(消滅日=今日で登録された古い残骸の掃除用)。
+// 消えた注文の出荷済み?・手動キャンセルは残す。このあと処理済含むCSVを取り込むと最近の発送だけ登録し直される。
+function 消込台帳のCSV処理済をクリア(){ 直列_(消込台帳のCSV処理済をクリア本体_); }
+function 消込台帳のCSV処理済をクリア本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi(), cfg=KESHIKOMI_CFG;
+  const sh=ss.getSheetByName(cfg.シート);
+  if(!sh || sh.getLastRow()<2){ ui.alert('消込台帳がありません。'); return; }
+  const n=sh.getLastRow()-1;
+  const vals=sh.getRange(2,1,n,cfg.HDR.length).getValues();
+  const keep=vals.filter(r=> String(r[8]||'').trim()!=='CSV処理済');
+  const removed=n-keep.length;
+  if(!removed){ ui.alert('「CSV処理済」で登録された行はありません。'); return; }
+  const mr=sh.getMaxRows();
+  sh.getRange(2,1,mr-1,cfg.HDR.length).clearContent().setBackground(null);
+  if(keep.length){
+    sh.getRange(2,1,keep.length,cfg.HDR.length).setValues(keep);
+    const bg=keep.map(r=>{ const st=String(r[5]||''); const c= st.indexOf('出荷済み')===0?'#efefef':st==='キャンセル'?'#f4cccc':null; return new Array(cfg.HDR.length).fill(c); });
+    sh.getRange(2,1,keep.length,cfg.HDR.length).setBackgrounds(bg);
+    sh.getRange(2,5,keep.length,1).setNumberFormat('yyyy-mm-dd');
+  }
+  ui.alert('🧹 消込台帳のCSV処理済をクリア',
+    '削除: '+removed+'行 / 残り: '+keep.length+'行\n\n'+
+    'このあと「① 受注明細を更新」(処理済を含むCSV)を取り込むと、出荷日が直近'+cfg.有効日数+'日の発送だけ登録し直されます。',
+    ui.ButtonSet.OK);
 }
 
 // メニュー用: 台帳を更新してシートを開く
