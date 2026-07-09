@@ -168,7 +168,7 @@ function 受注個別_台帳更新_(ss, item, entries, R, M){
     if(nBanCells>0){
       const v=[], bg=[];
       for(let i=0;i<nBanCells;i++){
-        v.push(i<bans.length? (bans[i]+(agg[bans[i]]>1?':'+agg[bans[i]]:'')) : '');
+        v.push(i<bans.length? (bans[i]+(agg[bans[i]]>1?'*'+agg[bans[i]]:'')) : '');
         bg.push(i<bans.length? (paid(bans[i])? HIKIATE_CFG.色_黄 : HIKIATE_CFG.色_赤) : null);
       }
       sh.getRange(rowNo,7,1,nBanCells).setValues([v]).setBackgrounds([bg]);

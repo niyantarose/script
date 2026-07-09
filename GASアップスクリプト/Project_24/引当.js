@@ -1143,7 +1143,7 @@ function 引当実行_本体_(){
         // 出荷済みが取った分は色なし(番号・余りも出ない=何もすることがない行。記録は消込台帳にある)
         if(r.surplus>0) jpRows.push([row[0], 到着_(row), c, r.surplus, row[EC.EMS番号]]); // 状態/到着日/商品コード/余り数/EMS番号
       }
-      const vals=[row[0], 到着_(row), c, qty, row[EC.EMS番号], surplus>0?surplus:''].concat(cells.map(x=> x.ban+(x.qty>1?':'+x.qty:'')));
+      const vals=[row[0], 到着_(row), c, qty, row[EC.EMS番号], surplus>0?surplus:''].concat(cells.map(x=> x.ban+(x.qty>1?'*'+x.qty:'')));
       const bg=[col,col,col,col,col,col].concat(cells.map(x=>x.color));     // A〜F=行の状態色 / G以降=注文ごとの色
       ledgerRows.push({vals, bg});
     });
