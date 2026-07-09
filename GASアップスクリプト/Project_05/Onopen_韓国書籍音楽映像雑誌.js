@@ -58,7 +58,6 @@ function onOpen() {
 
     .addSubMenu(
       ui.createMenu('韓国雑誌')
-        .addItem('🚚 ダニエル商品コード取得',   '韓国雑誌_ダニエル商品コード取得')
         .addItem('① 確定発行',                 '韓国雑誌_確定発行')
         .addItem('⑥ プルダウン更新',           '韓国雑誌_プルダウン更新')
         .addSeparator()
