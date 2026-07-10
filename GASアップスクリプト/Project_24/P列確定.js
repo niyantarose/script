@@ -17,7 +17,8 @@ function 発注共有を開く_(){
   return _発注共有SS_キャッシュ;
 }
 
-// 到着済のEMSリスト行のP列を読んで、受注番号→[{key:正規化コード, qty:名指し個数}] を返す
+// 到着済のEMSリスト行のP列を読んで、
+// 受注番号→[{key:正規化コード, qty:名指し個数, arrival:EMS到着日, ems:EMS番号}] を返す
 // P列の書式: 「10117052」(行の全量) / 「10117060:3, 10117052:1」(分割)
 function P列確定マップ_(){
   const cfg=P_KAKUTEI_CFG;
@@ -28,7 +29,8 @@ function P列確定マップ_(){
   const last=sh.getLastRow(); if(last<=cfg.ヘッダー行) return {};
   const head=sh.getRange(cfg.ヘッダー行,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
   const f=n=>head.indexOf(n);
-  const cSt=f('ステータス列'), cCode=f('商品コード'), cQty=f('数量'), cP=f('注文番号');
+  const cSt=f('ステータス列'), cCode=f('商品コード'), cQty=f('数量'), cP=f('注文番号'),
+        cArrival=f('EMS到着日'), cEms=f('EMS番号');
   if(cP<0 || cCode<0) return {};
   const vals=sh.getRange(cfg.ヘッダー行+1,1,last-cfg.ヘッダー行,sh.getLastColumn()).getDisplayValues();
   const map={};
@@ -40,7 +42,12 @@ function P列確定マップ_(){
     p.split(/[,、]/).forEach(part=>{
       const m=String(part).trim().match(/^(\d{5,})(?:[:：]\s*(\d+))?$/);
       if(!m) return;
-      (map[m[1]]=map[m[1]]||[]).push({ key, qty: m[2]? Number(m[2]) : rowQty });
+      (map[m[1]]=map[m[1]]||[]).push({
+        key,
+        qty: m[2]? Number(m[2]) : rowQty,
+        arrival: cArrival>=0? String(r[cArrival]||'').trim() : '',
+        ems: cEms>=0? String(r[cEms]||'').trim() : ''
+      });
     });
   });
   return map;

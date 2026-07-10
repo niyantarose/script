@@ -983,7 +983,7 @@ function ymd_(v){
 
 // 「今回入荷EMS」として扱う着済行か。実行日だけでなく、今回EMS在庫の到着日と入荷日が一致する行も対象。
 function 今回到着扱い_(l, 入荷消費OK){
-  return !!(l && l.入荷 && (typeof 入荷消費OK === 'function' ? 入荷消費OK(l) : 入荷日今日_(l.入荷日値)));
+  return !!(l && (l.今回P || (l.入荷 && (typeof 入荷消費OK === 'function' ? 入荷消費OK(l) : 入荷日今日_(l.入荷日値)))));
 }
 function 今回行判定_(l, 入荷消費OK){
   return !!(l && (l.引当成立 || 今回到着扱い_(l, 入荷消費OK)));
@@ -1110,25 +1110,6 @@ function 引当実行_本体_(){
       if(used>0){ l.履歴Alloc=(l.履歴Alloc||0)+used; l.履歴成立=残必要_(l)<=0; }
     });
   }catch(e){}
-  // 【入荷日ズレの自動修復】EMS追跡の同期などで箱の到着日が後から実日付に直ると(例 7/9→7/10)、
-  // ②が先に書いた入荷日がどの到着済の箱とも一致しなくなり、今回の便なのにラベンダー扱いになる。
-  // 「商品が今の到着済在庫にある」「履歴で過去箱の受取が判明していない」「箱の到着日とのズレが3日以内」の
-  // 行はスタンプの方が古いとみなし、箱の到着日に貼り直して今回分(黄色)に戻す。
-  // 日数が離れている行(=過去便で受け取り済みの可能性が高い)や、同じ商品の箱が複数の到着日に
-  // またがる行(どの箱か推測になる)は触らず、完了ダイアログの「入荷日ズレ」一覧で知らせる。
-  let ズレ修復=0;
-  lines.forEach(l=>{
-    if(l.kbn!=='取り寄せ' || !l.入荷 || l.qty<=0) return;
-    if((l.過去箱分||0)>=l.qty) return;   // 在庫反映済み(過去箱の受取が履歴で判明)=正しいラベンダー
-    if(入荷消費OK_(l)) return;           // 既に箱と一致している(黄色になる)行は触らない
-    const k=keyInStock(l); if(k==null) return; // 商品自体が今の到着済に無い=過去便の正常な着済
-    const set=到着日SetByCode[k]; if(!set || set.size!==1) return;
-    const d0=Array.from(set)[0], s=ymd_(l.入荷日値);
-    if(!/^20\d{2}-\d{2}-\d{2}$/.test(s) || !/^20\d{2}-\d{2}-\d{2}$/.test(d0)) return;
-    const diff=Math.abs((new Date(d0+'T00:00:00').getTime()-new Date(s+'T00:00:00').getTime())/86400000);
-    if(diff>3) return;
-    l.入荷日値=new Date(d0+'T00:00:00'); l.修復入荷=true; ズレ修復++;
-  });
   // 入荷日あり(もう割当済)を在庫から先に差し引く。ただし今回の便で着いた分だけ、かつ過去箱分を除いた残り
   lines.filter(l=>l.kbn==='取り寄せ' && l.入荷 && 入荷消費OK_(l)).forEach(l=>{
     const take=l.qty-(l.過去箱分||0); if(take<=0) return;
@@ -1164,15 +1145,28 @@ function 引当実行_本体_(){
     candKeys(l).forEach(k=>{ s.add(k); if(aliasMap[k]!=null) s.add(aliasMap[k]); }); });
   // 【確定引き当て】発注共有ファイルEMSリストのP列(注文番号)で名指しされた分を最優先で割り当てる
   const 確定=P列確定マップ_(); let 確定行数=0;
-  lines.filter(l=>l.kbn==='取り寄せ' && !l.入荷 && l.qty>0 && 残必要_(l)>0 && 確定[l.ban]).sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=>{
+  // 入荷日が箱とズレていても、現在「到着済」のP列で名指しされた注文だけは今回便を正とする。
+  // 同一コードというだけでは修復しないため、在庫買い分や後発注文を誤って黄色にしない。
+  const 確定残必要_=l=>Math.max(0, 残必要_(l)-(l.入荷?(l.過去箱分||0):0));
+  lines.filter(l=>l.kbn==='取り寄せ' && (!l.入荷 || !入荷消費OK_(l)) && l.qty>0 && 確定残必要_(l)>0 && 確定[l.ban])
+    .sort((a,b)=> a.sortKey-b.sortKey || a.i-b.i).forEach(l=>{
     const cand=candKeys(l); let took=0;
     確定[l.ban].forEach(e=>{
-      if(残必要_(l)<=0 || e.qty<=0) return;
+      if(確定残必要_(l)<=0 || e.qty<=0) return;
       // P列の行のコード(e.key)がこの受注行の候補キー(別名込み)に含まれるか
       if(!cand.some(k=> k===e.key || aliasMap[k]===e.key)) return;
-      const take=Math.min(残必要_(l), e.qty, stock[e.key]||0);
+      const take=Math.min(確定残必要_(l), e.qty, stock[e.key]||0);
       if(take<=0) return;
+      // 古い予定日が残った行は、P列で現在便への名指しが確認できた時だけ未着へ戻して再引当する。
+      if(l.入荷 && !入荷消費OK_(l)){
+        l.今回P旧入荷日値=l.入荷日値;
+        if(l.過去箱分){ l.履歴Alloc=(l.履歴Alloc||0)+l.過去箱分; l.過去箱分=0; }
+        l.入荷=false; l.着=false;
+      }
       stock[e.key]-=take; e.qty-=take; l.alloc+=take; took+=take;
+      l.今回P=true;
+      if(!l.今回P入荷日値 && e.arrival) l.今回P入荷日値=e.arrival;
+      if(!l.今回PEMS && e.ems) l.今回PEMS=e.ems;
       if(!l.matchedKey) l.matchedKey=e.key;
     });
     if(took>0) 確定行数++;
@@ -1225,7 +1219,8 @@ function 引当実行_本体_(){
       }
       ptr[c]=st;
     });
-    lines.forEach(l=>{ const k=l.matchedKey||keyInStock(l); const s= k? 箱Map[l.ban+'|'+k]:null; l.箱EMS= s? Array.from(s).join(', '):''; });
+    lines.forEach(l=>{ const k=l.matchedKey||keyInStock(l); const s= k? 箱Map[l.ban+'|'+k]:null;
+      l.箱EMS=l.今回PEMS || (s? Array.from(s).join(', '):''); });
   }
 
   // 注文ごと: 入金済み(1行でも入金日があれば入金済み。注文単位入金)
@@ -1416,14 +1411,22 @@ function 引当実行_本体_(){
   const part=partRows.length? new Set(partRows.map(r=>r.ban)).size:0;
   const mp=Object.keys(paidOrder).filter(b=>!paidOrder[b]).length;
   // 【入荷日を自動記入】EMS在庫で引き当たった未着の注文へ、その商品のEMS到着日を入荷日として書く(空欄のみ・手入力は上書きしない)
-  let 自動入荷=0, 入荷表示統一=0;
+  let 自動入荷=0, 入荷表示統一=0, P入荷日訂正=0;
   if(M.入荷>=0){
     const rs=受注hdr+1, rl=recv.getLastRow();
     if(rl>=rs){
       const 入荷col=recv.getRange(rs,M.入荷+1,rl-rs+1,1).getValues();
       lines.forEach(l=>{
         const idx=l.i-受注hdr; if(idx<0 || idx>=入荷col.length) return;
-        if(l.修復入荷){ 入荷col[idx][0]=l.入荷日値; return; } // ズレ修復: 箱の到着日に貼り直した分をシートへも反映
+        if(l.今回P && l.引当成立){
+          const v=l.今回P入荷日値 || (l.matchedKey?code到着[l.matchedKey]:'');
+          const d=ymd_(v);
+          if(/^20\d{2}-\d{2}-\d{2}$/.test(d)){
+            入荷col[idx][0]=new Date(d+'T00:00:00'); l.入荷日値=入荷col[idx][0]; P入荷日訂正++;
+          }
+          return;
+        }
+        if(l.今回P旧入荷日値 && !l.引当成立){ 入荷col[idx][0]=''; P入荷日訂正++; return; }
         if(l.入荷) return;
         if(l.履歴成立 && l.履歴入荷日値){
           入荷col[idx][0]=l.履歴入荷日値; 自動入荷++;
@@ -1442,7 +1445,7 @@ function 引当実行_本体_(){
         const dd=new Date(s+'T00:00:00'); if(isNaN(dd.getTime())) continue;
         入荷col[idx][0]=dd; 入荷表示統一++;
       }
-      if(自動入荷||入荷表示統一||ズレ修復){ recv.getRange(rs,M.入荷+1,入荷col.length,1).setValues(入荷col).setNumberFormat('yyyy-mm-dd'); }
+      if(自動入荷||入荷表示統一||P入荷日訂正){ recv.getRange(rs,M.入荷+1,入荷col.length,1).setValues(入荷col).setNumberFormat('yyyy-mm-dd'); }
     }
   }
 
@@ -1489,11 +1492,11 @@ function 引当実行_本体_(){
     ui.alert(ok? '✅ 引当完了（整合OK）' : '⚠️ 引当完了（要確認 '+(突合宙.length+入荷日ズレ.length)+'件）',
       '■ 突合せ（引当＋在庫 と EMS到着済）\n'+突合行
       +(入荷日ズレ.length? '\n\n⚠️ 入荷日が箱の到着日とズレてラベンダーの行 '+入荷日ズレ.length+'件\n'
-        +入荷日ズレ.slice(0,10).join('\n')+(入荷日ズレ.length>10?'\n…他'+(入荷日ズレ.length-10)+'件':'')
-        +'\n→ 🔎入荷日の整合チェック → 🧹一括クリア → ②再実行 で正しい日付が入り直ります' : '')
+      +入荷日ズレ.slice(0,10).join('\n')+(入荷日ズレ.length>10?'\n…他'+(入荷日ズレ.length-10)+'件':'')
+      +'\n→ 🔎入荷日の整合チェック → 🧹一括クリア → ②再実行 で正しい日付が入り直ります' : '')
       +'\n\n■ 注文の分類\n出荷可能 '+ship+' ／ 出荷GO未入金 '+keep+' ／ 希望日待ち '+hold+' ／ 部分在庫 '+part+' ／ 引当待ち '+(ord-ship-keep-hold-part)+'（うち入金待ち '+mp+'）'
       +'\n\n■ 処理内容\n入荷日自動記入 '+自動入荷+'件'+(入荷表示統一?'（表示をyyyy-MM-ddに統一 '+入荷表示統一+'件）':'')
-      +(ズレ修復? ' ／ 🔧入荷日ズレ修復 '+ズレ修復+'件（箱の到着日に貼り直し）':'')
+      +(P入荷日訂正? ' ／ 🔧P列確定の入荷日訂正 '+P入荷日訂正+'件':'')
       +' ／ P列確定 '+確定行数+'行 ／ 発送済み消込 '+出荷済行.length+'件（内訳は「発送済み」シート）'
       +(隠れ? '\n\n⚠️ '+隠れ+'：行が隠れています（🔻フィルタ確認/解除で全解除）':''),
       ui.ButtonSet.OK);
