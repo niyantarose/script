@@ -56,6 +56,10 @@ function 入荷日チェック_一覧をクリア本体_(){
       結果.push(['台湾/中国ルートのためスキップ(消す場合は手動で)']); 保留++;
       return;
     }
+    if(String(r[7]||'').indexOf('未到着扱い:')===0){
+      結果.push(['入荷日は正しい可能性が高いためスキップ(EMSリスト側のステータスを「到着済」に直してください)']); 保留++;
+      return;
+    }
     if(rowNo>M.hr && rowNo<=R.length){
       const row=R[rowNo-1];
       const banOk=String(row[M.番号]||'').trim()===ban;
@@ -74,7 +78,7 @@ function 入荷日チェック_一覧をクリア本体_(){
   });
   rep.getRange(2,9).setValue('処理結果').setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
   rep.getRange(3,9,結果.length,1).setValues(結果);
-  ss.toast('入荷日クリア: '+ok+'行 / 台湾・中国スキップ '+保留+'行 / 不一致スキップ '+ng+'行。仕上げに②引き当て実行を回してください','🧹入荷日',8);
+  ss.toast('入荷日クリア: '+ok+'行 / 対象外スキップ '+保留+'行 / 不一致スキップ '+ng+'行。仕上げに②引き当て実行を回してください','🧹入荷日',8);
 }
 
 // 照合スキャン(共通): 受注明細の入荷日×EMSリスト到着日を突き合わせ、疑わしい行の一覧を返す
@@ -95,14 +99,24 @@ function 入荷日整合_スキャン_(){
   const f=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
   const cC=f('商品コード');
   let cA=f('EMS到着日','到着日','到着'); if(cA<0) cA=4; // 既定E列
+  const cSt=f('ステータス列');
   if(cC<0) return {error:'EMSリストの'+hr+'行目に「商品コード」見出しがありません'};
   const vals=sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getValues();
-  const byDate={}; // ymd -> Set(正規化キー。別名込み)
+  // ②の引当は「到着済」の箱しか見ない(EMS在庫タブのQUERYと同じ)ので、照合もステータスで分ける。
+  // 到着済でない箱に日付だけ合っていても②ではラベンダーのまま=「一覧に出ないのにラベンダー」の見逃しになる
+  const byDate={};   // ymd -> Set(正規化キー。別名込み)。ステータス=到着済 の箱だけ(②と同じ見え方)
+  const byDate他={}; // ymd -> {正規化キー: ステータス}。到着済以外の箱(ステータス違いの検出用)
   vals.forEach(r=>{
     const code=normCode_(r[cC]); if(!code) return;
     const d=ymd_(r[cA]); if(!d) return;
-    const set=byDate[d]||(byDate[d]=new Set());
-    codeKeys_(code).forEach(k=>set.add(k));
+    const st=cSt>=0? String(r[cSt]||'').trim() : '到着済'; // ステータス列が無い古い形式は従来通り全行を到着済扱い
+    if(st==='到着済'){
+      const set=byDate[d]||(byDate[d]=new Set());
+      codeKeys_(code).forEach(k=>set.add(k));
+    } else {
+      const m=byDate他[d]||(byDate他[d]={});
+      codeKeys_(code).forEach(k=>{ if(!(k in m)) m[k]=st; });
+    }
   });
 
   // --- 受注明細の入荷日付き行を照合 ---
@@ -121,6 +135,15 @@ function 入荷日整合_スキャン_(){
     const keys=[]; 受注候補コード_(sku,code).forEach(v=> codeKeys_(v).forEach(k=>{ if(keys.indexOf(k)<0) keys.push(k); }));
     const hit = !!(set && keys.some(k=>set.has(k)));
     if(hit) continue;
+    // EMSリストのこの日にはあるが、箱のステータス列が「到着済」でない → ②は在庫として見ないのでラベンダーのまま。
+    // 入荷日は正しい可能性が高い(箱側の直し忘れ)ので🧹の対象外にし、箱のステータスを直すよう案内する
+    const m他=byDate他[d];
+    const kSt= m他? keys.find(k=> k in m他) : undefined;
+    if(kSt!==undefined){
+      out.push([i+1, ban, String(row[M.氏名]||''), code, sku, Number(row[M.個数])||0, d||String(入荷日値||''),
+        '未到着扱い: EMSリストのこの日にあるがステータスが「'+(m他[kSt]||'空')+'」。箱が着いていれば「到着済」に直すと②で黄色になります(🧹では消しません)']);
+      continue;
+    }
     // 台湾・中国ルートは韓国EMSに照合先が無い=手入力の入荷日が正。理由を分けて🧹の対象外にする
     const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
     out.push([i+1, ban, String(row[M.氏名]||''), code, sku, Number(row[M.個数])||0, d||String(入荷日値||''),
