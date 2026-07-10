@@ -1,6 +1,8 @@
 // ===== 棚卸箱の下書きを生成(Yahoo在庫CSV × 未出荷注文) =====
 // 「机上棚卸」: 現物を数える代わりに、待ち注文の確保分だけを持つ棚卸箱を作る。
-//   棚卸箱数量(基底コード) = max(0, 未出荷の取り寄せ数 - 未着箱の入荷予定数)
+//   棚卸箱数量(基底コード) = max(0, 待ち需要(入荷日なしの未出荷取り寄せ) - 実箱供給(未着+到着済))
+//   ※入荷日が付いた注文(=箱/過去便で確保済み)と、実箱で賄える分は数えない(二重計上防止)。
+//     到着済を差し引かなかった旧式は、箱の到着後に再生成すると同じ需要を二重に持った(実例: OFW304/305系 2026-07-10)
 // 自由在庫(即納a)は Yahoo在庫DB が唯一の正なので、引当ファイル側へは持ち込まない
 // (写すと「正が2つ」になり再び乖離が生まれる。②に必要なのは待ち注文の確保分だけ)。
 // Yahoo在庫CSV は「その注文の商品が本当に届いているか」の突き合わせ材料(内訳列)として使う。
@@ -138,8 +140,8 @@ function Yahoo在庫を読む_(){
 // 棚卸箱の自動数量。EMSリストに一度も載ったことが無い商品(実績なし)は、予約・未発注なのに
 // 「棚にある」ことにされてゴースト在庫を生む(実例: KRSJCM20-01S, JMEE-SPKZ系 2026-07-10)ため、
 // 自動計上せず数量0で要確認に回す。現物が本当にあれば人が数量を手入力して貼る。
-function 棚卸自動数量_(需要数, 未着数, EMS実績あり){
-  const qty=Math.max(0, (Number(需要数)||0)-(Number(未着数)||0));
+function 棚卸自動数量_(需要数, 供給数, EMS実績あり){
+  const qty=Math.max(0, (Number(需要数)||0)-(Number(供給数)||0));
   if(qty>0 && !EMS実績あり) return {qty:0, 注意:'EMS到着実績なし(予約/未発注の可能性)。現物があれば数量を手入力'};
   return {qty:qty, 注意:''};
 }
@@ -153,7 +155,8 @@ function 棚卸箱の下書きを生成本体_(){
   if(y.error){ ui.alert(y.error); return; }
   const a在庫=y.a在庫, 商品名=y.商品名, subなし=y.subなし, 解析スキップ=y.解析スキップ;
 
-  // --- 2) 受注明細: 未出荷の取り寄せ数(台湾/中国ルートは韓国便対象外なので除外) ---
+  // --- 2) 受注明細: 待ち需要 = 入荷日が空の未出荷取り寄せ(台湾/中国ルートは韓国便対象外なので除外) ---
+  //        入荷日が付いた行はどこかの箱/過去便で確保済みなので数えない(棚卸箱で二重に持たない)
   const recv=ss.getSheetByName(HIKIATE_CFG.受注);
   if(!recv){ ui.alert('「'+HIKIATE_CFG.受注+'」タブがありません'); return; }
   const M=列マップ_(recv);
@@ -166,6 +169,7 @@ function 棚卸箱の下書きを生成本体_(){
     const qty=Number(row[M.個数])||0; if(qty<=0) continue;
     const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
     if(別ルート) continue;
+    if(M.入荷>=0 && String(row[M.入荷]||'').trim()!=='') continue; // 確保済み(入荷日あり)は対象外
     const sku=M.SKU>=0? String(row[M.SKU]||'').trim():'';
     let base=normCode_(sku || String(row[M.コード]||''));
     if(/[AB]$/.test(base) && base.length>2) base=base.slice(0,-1); // 末尾のa/b枝番を落として基底へ
@@ -174,9 +178,10 @@ function 棚卸箱の下書きを生成本体_(){
     if(!商品名[base] && M.商品名>=0) 商品名[base]=String(row[M.商品名]||'').trim();
   }
 
-  // --- 3) 未着箱の入荷予定数(発注共有EMSリスト): まだ棚に無い分は棚卸箱に入れない ---
-  //        あわせて「EMSに載ったことがある商品」の集合を作る(過去の棚卸箱は実績に数えない)
-  const 未着供給={};
+  // --- 3) 実箱の供給数(発注共有EMSリスト): 箱で賄える分は棚卸箱に入れない ---
+  //        未着(入荷予定)も到着済(いまの在庫)も差し引く。在庫反映済み(締め済み=Yahoo側へ反映済み)と
+  //        棚卸箱の行は数えない。あわせて「EMSに載ったことがある商品」の集合を作る
+  const 実箱供給={};
   const EMS実績=new Set();
   let 実績確認可=false;
   try{
@@ -192,25 +197,26 @@ function 棚卸箱の下書きを生成本体_(){
           sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getDisplayValues().forEach(r=>{
             const base=normCode_(r[cCode]); if(!base) return;
             const ems=cEms>=0? String(r[cEms]||'').trim():'';
-            if(!/^棚卸/.test(ems)) EMS実績.add(base); // 実績=本物のEMS行のみ(棚卸箱は数えない)
+            if(/^棚卸/.test(ems)) return; // 棚卸箱は実績にも供給にも数えない(再生成前に削除される前提)
+            EMS実績.add(base);
             const st=cSt>=0? String(r[cSt]||'').trim():'';
-            if(st==='到着済'||st==='在庫反映済み') return; // 着いている分は対象外(未着だけ)
+            if(st==='在庫反映済み') return; // 締め済み=残りはYahoo自由在庫へ反映済みなので供給に数えない
             const q=cQty>=0? (Number(r[cQty])||0):1;
-            未着供給[base]=(未着供給[base]||0)+q;
+            実箱供給[base]=(実箱供給[base]||0)+q;
           });
         }
       }
     }
-  }catch(e){ /* 発注共有が読めない時は未着差引きなし(棚卸箱が大きめに出る=安全側ではないので注意書きを出す) */ }
+  }catch(e){ /* 発注共有が読めない時は差引きなし(棚卸箱が大きめに出る=安全側ではないので注意書きを出す) */ }
 
-  // --- 4) 棚卸箱数量 = max(0, 需要 - 未着供給)。待ち注文の確保分だけ(自由在庫はYahooが正) ---
+  // --- 4) 棚卸箱数量 = max(0, 待ち需要 - 実箱供給)。箱に無い現物(棚の確保分)だけを補う ---
   //        EMSに載ったことが無い商品は自動計上しない(予約/未発注のゴースト防止。数量0で要確認)
   const today=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd');
   const 箱番号='棚卸'+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyyMMdd');
   const out=[];
   let 要確認数=0;
   Object.keys(需要).sort().forEach(base=>{
-    const a=a在庫[base]||0, d=需要[base]||0, m=未着供給[base]||0;
+    const a=a在庫[base]||0, d=需要[base]||0, m=実箱供給[base]||0;
     const g=棚卸自動数量_(d, m, 実績確認可? EMS実績.has(base) : true);
     if(g.qty<=0 && !g.注意) return;
     if(g.注意) 要確認数++;
@@ -223,9 +229,9 @@ function 棚卸箱の下書きを生成本体_(){
   rep.getRange(1,1).setValue('棚卸箱下書き: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
     +' / CSV: '+y.fileName+' / '+out.length+'コード'
     +(要確認数? ' ／ ⚠️EMS到着実績なし(数量0) '+要確認数+'件=現物があれば数量を手入力':'')
-    +' ｜ 数量 = max(0, 未出荷取り寄せ - 未着入荷予定)＝待ち注文の確保分のみ(自由在庫はYahooが正)。'
+    +' ｜ 数量 = max(0, 待ち需要(入荷日なし) - 実箱供給(未着+到着済))＝箱に無い現物の確保分のみ(自由在庫はYahooが正)。'
     +'内容を確認して発注共有「EMSリスト」へ貼る(②はEMSリストしか読まない)');
-  const HDR=['ステータス列','EMS到着日','商品コード','数量','EMS番号','(内訳)即納a在庫','(内訳)未出荷取り寄せ','(内訳)未着入荷予定','商品名','(注意)'];
+  const HDR=['ステータス列','EMS到着日','商品コード','数量','EMS番号','(内訳)即納a在庫','(内訳)待ち需要(入荷日なし)','(内訳)実箱供給(未着+到着済)','商品名','(注意)'];
   rep.getRange(2,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
   rep.setFrozenRows(2);
   if(out.length){
@@ -243,7 +249,7 @@ function 棚卸箱の下書きを生成本体_(){
     (解析スキップ? '※解析できず読み飛ばした行: '+解析スキップ+'行\n':'')+
     (要確認数? '⚠️EMS到着実績なしのため数量0にした商品: '+要確認数+'件\n'+
       '　(予約/未発注の可能性。現物が本当にあるものだけ数量を手入力してください)\n':'')+'\n'+
-    '数量は「待ち注文の確保分」だけです（自由在庫はYahoo在庫DBが正なので持ち込みません）。\n\n'+
+    '数量は「箱に無い現物(待ち注文の確保分)」だけです（入荷日付きの注文と実箱で賄える分は除外。自由在庫はYahooが正）。\n\n'+
     '次の手順:\n'+
     '1) 一覧を確認（⚠️整合チェックの数量超過に出た商品は現物と突き合わせて数量を直す）\n'+
     '2) 📦 棚卸箱をEMSリストへ追記（数量0の行は貼られません）\n'+
