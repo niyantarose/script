@@ -1511,6 +1511,10 @@ function 引当実行_本体_(){
         +'\n→ 気になる分だけ 🔎商品診断 で1個単位で確認（急ぎでなければ後回しでOK）'
       : '✅ 整合OK 『'+突合式+'』';
     const ok= 突合宙.length===0 && 入荷日ズレ.length===0;
+    // 便の締め(到着済を在庫反映済みへ)のガード用に、②の整合状態を残す。
+    // ⚠️が残ったまま締めると幽霊スタンプ(実物なしのラベンダー)が過去便として固定されるため。
+    try{ PropertiesService.getDocumentProperties().setProperty('引当_整合状態',
+      JSON.stringify({ts:Date.now(), 要確認:突合宙.length+入荷日ズレ.length})); }catch(e){}
     ui.alert(ok? '✅ 引当完了（整合OK）' : '⚠️ 引当完了（要確認 '+(突合宙.length+入荷日ズレ.length)+'件）',
       '■ 突合せ（引当＋在庫 と EMS到着済）\n'+突合行
       +(入荷日ズレ.length? '\n\n⚠️ 入荷日が箱の到着日とズレてラベンダーの行 '+入荷日ズレ.length+'件\n'

@@ -101,6 +101,7 @@ function 入荷日整合_スキャン_(){
   let cA=f('EMS到着日','到着日','到着'); if(cA<0) cA=4; // 既定E列
   const cSt=f('ステータス列');
   const cQ=f('数量','個数');
+  const cP=f('注文番号');
   if(cC<0) return {error:'EMSリストの'+hr+'行目に「商品コード」見出しがありません'};
   const vals=sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getValues();
   // ②の引当は「到着済」の箱しか見ない(EMS在庫タブのQUERYと同じ)ので、照合もステータスで分ける。
@@ -108,6 +109,7 @@ function 入荷日整合_スキャン_(){
   const byDate={};   // ymd -> Set(正規化キー。別名込み)。ステータス=到着済 の箱だけ(②と同じ見え方)
   const byDate他={}; // ymd -> {正規化キー: {st:ステータス, c:元コード}}。到着済以外の箱
   const 反映済み供給={}; // ymd -> {元コード: 個数}。締め済み(在庫反映済み)箱の中身。幽霊スタンプ検出用
+  const 反映済み名指し={}; // ymd -> {元コード: Set(P列の注文番号)}。実物の持ち主の証拠
   vals.forEach(r=>{
     const code=normCode_(r[cC]); if(!code) return;
     const d=ymd_(r[cA]); if(!d) return;
@@ -121,6 +123,15 @@ function 入荷日整合_スキャン_(){
       if(st==='在庫反映済み'){
         const g=反映済み供給[d]||(反映済み供給[d]={});
         g[code]=(g[code]||0)+(cQ>=0? (Number(r[cQ])||0) : 1);
+        // P列(注文番号)の名指し=その注文が実物を受け取った強い証拠。幽霊候補の切り分けに使う
+        if(cP>=0){
+          const p=String(r[cP]||'').trim();
+          if(p){
+            const nm=反映済み名指し[d]||(反映済み名指し[d]={});
+            const set=nm[code]||(nm[code]=new Set());
+            p.split(/[,、\s]+/).forEach(b=>{ const t=b.trim(); if(t) set.add(t); });
+          }
+        }
       }
     }
   });
@@ -164,7 +175,7 @@ function 入荷日整合_スキャン_(){
         const g=幽霊需要[d]||(幽霊需要[d]={});
         const gg=g[srcC]||(g[srcC]={qty:0, rows:[]});
         gg.qty+=Number(row[M.個数])||0;
-        if(gg.rows.length<12) gg.rows.push(ban+'('+String(row[M.氏名]||'').trim()+')x'+(Number(row[M.個数])||0));
+        if(gg.rows.length<12) gg.rows.push({ban:ban, txt:ban+'('+String(row[M.氏名]||'').trim()+')x'+(Number(row[M.個数])||0)});
         continue;
       }
       out.push([i+1, ban, String(row[M.氏名]||''), code, sku, Number(row[M.個数])||0, d||String(入荷日値||''),
@@ -199,7 +210,12 @@ function 入荷日整合_スキャン_(){
       const live=幽霊需要[d][c];
       const shipped=(出荷済需要[d]&&出荷済需要[d][c])||0;
       const over=live.qty+shipped-supply;
-      if(over>0) 幽霊超過.push({d:d, c:c, supply:supply, liveQty:live.qty, shipped:shipped, over:over, rows:live.rows});
+      if(over>0){
+        // P列名指しがある注文=実物を受け取った強い証拠。名指しの無い候補から疑う
+        const nmSet=(反映済み名指し[d]&&反映済み名指し[d][c])||null;
+        const rows=live.rows.map(o=> o.txt+(nmSet? (nmSet.has(o.ban)? '【★P列名指し=実物あり】':'【名指しなし←疑い】') : ''));
+        幽霊超過.push({d:d, c:c, supply:supply, liveQty:live.qty, shipped:shipped, over:over, rows:rows});
+      }
     });
   });
 

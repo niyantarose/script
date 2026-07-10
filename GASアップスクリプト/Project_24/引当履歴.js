@@ -269,6 +269,21 @@ function 引当履歴_キャンセル_(rec, cancelQty){
 function 到着済を在庫反映済みへ(){ 直列_(到着済を在庫反映済みへ本体_); }
 function 到着済を在庫反映済みへ本体_(){
   const ui=SpreadsheetApp.getUi(), cfg=P_KAKUTEI_CFG;
+  // 【締めガード】⚠️が残ったまま締めると、実物を持たない注文のスタンプ(幽霊)が
+  // 「過去便受取済み」として封印され、後から実在庫と合わなくなる(例: 10117220の6/22便)。
+  // ②が保存した整合状態を確認し、⚠️あり/②未実行(6時間超)なら締める前に警告する。
+  try{
+    const raw=PropertiesService.getDocumentProperties().getProperty('引当_整合状態');
+    const st=raw? JSON.parse(raw) : null;
+    const 古い=!st || (Date.now()-(st.ts||0))>6*60*60*1000;
+    if(古い || (st&&st.要確認>0)){
+      const msg= 古い
+        ? '直近6時間以内に ②引き当て実行 が走っていません。\n締める前に②を実行し、⚠️要確認が無いことを確認するのがおすすめです。'
+        : '②の完了サマリに ⚠️要確認 '+st.要確認+'件 が残っています。\nこのまま締めると、実物を持たない注文のスタンプ(幽霊)が「過去便受取済み」として固定され、後から実在庫と合わなくなります。\n\n先に⚠️を解消（🔎商品診断／🔎整合チェック→🧹→②）してから締めるのがおすすめです。';
+      const a=ui.alert('締めの前に確認', msg+'\n\nそれでも今すぐ締めますか？', ui.ButtonSet.OK_CANCEL);
+      if(a!==ui.Button.OK) return;
+    }
+  }catch(e){ /* ガードが読めなくても締め自体は止めない */ }
   let sh;
   try{ sh=発注共有を開く_().getSheetByName(cfg.シート); }
   catch(e){ ui.alert('発注共有ファイルが開けません:\n'+e.message); return; }
