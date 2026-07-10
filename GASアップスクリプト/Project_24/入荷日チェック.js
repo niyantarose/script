@@ -100,12 +100,14 @@ function 入荷日整合_スキャン_(){
   const cC=f('商品コード');
   let cA=f('EMS到着日','到着日','到着'); if(cA<0) cA=4; // 既定E列
   const cSt=f('ステータス列');
+  const cQ=f('数量','個数');
   if(cC<0) return {error:'EMSリストの'+hr+'行目に「商品コード」見出しがありません'};
   const vals=sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getValues();
   // ②の引当は「到着済」の箱しか見ない(EMS在庫タブのQUERYと同じ)ので、照合もステータスで分ける。
   // 到着済でない箱に日付だけ合っていても②ではラベンダーのまま=「一覧に出ないのにラベンダー」の見逃しになる
   const byDate={};   // ymd -> Set(正規化キー。別名込み)。ステータス=到着済 の箱だけ(②と同じ見え方)
-  const byDate他={}; // ymd -> {正規化キー: ステータス}。到着済以外の箱(ステータス違いの検出用)
+  const byDate他={}; // ymd -> {正規化キー: {st:ステータス, c:元コード}}。到着済以外の箱
+  const 反映済み供給={}; // ymd -> {元コード: 個数}。締め済み(在庫反映済み)箱の中身。幽霊スタンプ検出用
   vals.forEach(r=>{
     const code=normCode_(r[cC]); if(!code) return;
     const d=ymd_(r[cA]); if(!d) return;
@@ -115,7 +117,11 @@ function 入荷日整合_スキャン_(){
       codeKeys_(code).forEach(k=>set.add(k));
     } else {
       const m=byDate他[d]||(byDate他[d]={});
-      codeKeys_(code).forEach(k=>{ if(!(k in m)) m[k]=st; });
+      codeKeys_(code).forEach(k=>{ if(!(k in m)) m[k]={st:st, c:code}; });
+      if(st==='在庫反映済み'){
+        const g=反映済み供給[d]||(反映済み供給[d]={});
+        g[code]=(g[code]||0)+(cQ>=0? (Number(r[cQ])||0) : 1);
+      }
     }
   });
 
@@ -130,6 +136,10 @@ function 入荷日整合_スキャン_(){
   // サマリの日付を見れば分かる(今日/直近の日付が出ていたら要確認)。
   const 反映済みサマリ={};
   let 反映済み行数=0;
+  // 幽霊スタンプ検出: 締め済み箱を指すラベンダー行を 日付×供給コード で集計し、
+  // 「箱に入っていた個数」より「受取済み扱いの個数(ラベンダー＋出荷済み)」が多い組を炙り出す。
+  // (実物が他の注文に出て行ったのに入荷日スタンプだけ残っている行=幽霊 を見つけるため)
+  const 幽霊需要={}; // ymd -> {供給コード: {qty, rows:[受注番号(氏名)xN,…]}}
   for(let i=M.hr;i<R.length;i++){
     const row=R[i];
     const ban=String(row[M.番号]||'').trim(); if(!ban) continue;
@@ -146,10 +156,15 @@ function 入荷日整合_スキャン_(){
     const m他=byDate他[d];
     const kSt= m他? keys.find(k=> k in m他) : undefined;
     if(kSt!==undefined){
-      const 箱St=m他[kSt]||'空';
+      const 箱St=(m他[kSt]&&m他[kSt].st)||'空';
       if(箱St==='在庫反映済み'){
         反映済みサマリ[d]=(反映済みサマリ[d]||0)+1;
         反映済み行数++;
+        const srcC=m他[kSt].c;
+        const g=幽霊需要[d]||(幽霊需要[d]={});
+        const gg=g[srcC]||(g[srcC]={qty:0, rows:[]});
+        gg.qty+=Number(row[M.個数])||0;
+        if(gg.rows.length<12) gg.rows.push(ban+'('+String(row[M.氏名]||'').trim()+')x'+(Number(row[M.個数])||0));
         continue;
       }
       out.push([i+1, ban, String(row[M.氏名]||''), code, sku, Number(row[M.個数])||0, d||String(入荷日値||''),
@@ -162,7 +177,33 @@ function 入荷日整合_スキャン_(){
       別ルート? '台湾/中国ルート: 手入力の入荷日なら正しい(🧹では消しません)'
         : (set? 'この日の到着EMSに、この商品が無い' : 'この日に到着したEMSが無い')]);
   }
-  return {list:out, 反映済みサマリ:反映済みサマリ, 反映済み行数:反映済み行数};
+  // --- 幽霊スタンプの超過判定 ---
+  // 需要 = ラベンダー行(上で集計) + 出荷済み(消込台帳。発送済みで受注明細から消えた分も同じ箱を食った)
+  const 出荷済需要={};
+  try{
+    消込台帳_出荷済み行_().forEach(l=>{
+      const d=ymd_(l.入荷日); if(!d || !反映済み供給[d]) return;
+      const cands=[]; 受注候補コード_(l.sku,l.code).forEach(v=> codeKeys_(v).forEach(k=>{ if(cands.indexOf(k)<0) cands.push(k); }));
+      if(byDate[d] && cands.some(k=>byDate[d].has(k))) return; // 同日に到着済の箱がある商品は②の突合せ側の領分
+      const sup=反映済み供給[d]; let hitC=null;
+      for(const sc in sup){ const sks=codeKeys_(sc); if(cands.some(k=> k===sc || sks.indexOf(k)>=0)){ hitC=sc; break; } }
+      if(!hitC) return;
+      const g=出荷済需要[d]||(出荷済需要[d]={}); g[hitC]=(g[hitC]||0)+(Number(l.qty)||0);
+    });
+  }catch(e){ /* 台帳が読めない時は出荷済み消費0として計算(超過が出やすくなる=安全側) */ }
+
+  const 幽霊超過=[];
+  Object.keys(幽霊需要).sort().forEach(d=>{
+    Object.keys(幽霊需要[d]).sort().forEach(c=>{
+      const supply=(反映済み供給[d]&&反映済み供給[d][c])||0;
+      const live=幽霊需要[d][c];
+      const shipped=(出荷済需要[d]&&出荷済需要[d][c])||0;
+      const over=live.qty+shipped-supply;
+      if(over>0) 幽霊超過.push({d:d, c:c, supply:supply, liveQty:live.qty, shipped:shipped, over:over, rows:live.rows});
+    });
+  });
+
+  return {list:out, 反映済みサマリ:反映済みサマリ, 反映済み行数:反映済み行数, 幽霊超過:幽霊超過};
 }
 
 // ②の完了時に呼ぶ件数版(台湾/中国ルートは正扱いなので除外)。読めない時は-1
@@ -182,9 +223,11 @@ function 入荷日整合チェック(){
   const NAME='入荷日チェック';
   let rep=ss.getSheetByName(NAME); if(!rep) rep=ss.insertSheet(NAME);
   rep.clearContents();
+  const 幽霊=r.幽霊超過||[];
   rep.getRange(1,1).setValue('入荷日の整合チェック: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
     +' / 疑わしい行 '+out.length+'件（消す前に必ず目視確認。手入力の入荷日は正しい場合あり）'
-    +((r.反映済み行数||0)>0? '／在庫反映済み(締め済み過去便)の '+r.反映済み行数+'件は下部サマリに集約':''));
+    +((r.反映済み行数||0)>0? '／在庫反映済み(締め済み過去便)の '+r.反映済み行数+'件は下部サマリに集約':'')
+    +(幽霊.length? '／⚠️締め済み便の数量超過 '+幽霊.length+'組(下部・幽霊スタンプの疑い)':''));
   const HDR=['受注明細の行','受注番号','氏名','商品コード','SKU','個数','入荷日','理由'];
   rep.getRange(2,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
   rep.setFrozenRows(2);
@@ -193,17 +236,30 @@ function 入荷日整合チェック(){
   } else {
     rep.getRange(3,1).setValue('(問題なし: 一覧に出すべき入荷日ズレはありません)');
   }
+  let cursor=3+Math.max(out.length,1)+1;
+  // ⚠️ 締め済み便の数量超過(幽霊スタンプ)。B列(受注番号)が空なので🧹の対象にはならない
+  if(幽霊.length){
+    rep.getRange(cursor,1).setValue('⚠️ 締め済み便の数量超過(幽霊スタンプの疑い) '+幽霊.length+'組: '
+      +'箱に入っていた個数より「受取済み扱い」の個数が多い＝実物を持っていない注文が混ざっています。'
+      +'候補の中から実物が無い注文の入荷日を消して②を再実行してください')
+      .setFontWeight('bold').setFontColor('#cc0000').setFontSize(HIKIATE_CFG.字);
+    const grows=幽霊.map(g=>[g.d, '', g.c, '', '', '',
+      '箱'+g.supply+'個 / ラベンダー'+g.liveQty+'個'+(g.shipped? '＋出荷済み'+g.shipped+'個':'')+' → 超過'+g.over+'個',
+      '候補: '+g.rows.join('、')]);
+    rep.getRange(cursor+1,1,grows.length,8).setValues(grows).setFontSize(HIKIATE_CFG.字).setBackground('#fce5cd');
+    cursor+=1+grows.length+1;
+  }
   // 在庫反映済み(締め済み過去便)の日付別サマリ。受注番号列(B)が空なので🧹の対象にはならない
   const サマリ日付=Object.keys(r.反映済みサマリ||{}).sort();
   if(サマリ日付.length){
-    let base=3+Math.max(out.length,1)+1;
-    rep.getRange(base,1).setValue('■ 在庫反映済み(締め済み過去便)の箱を指す行: '+r.反映済み行数+'件 — 正常のため一覧から除外。'
+    rep.getRange(cursor,1).setValue('■ 在庫反映済み(締め済み過去便)の箱を指す行: '+r.反映済み行数+'件 — 数量超過が無い分は正常のため一覧から除外。'
       +'箱をまだ使う場合だけ発注共有のEMSリストで「到着済」に戻してください（直近の日付が出ていたら締めが早すぎた可能性）')
       .setFontWeight('bold').setFontSize(HIKIATE_CFG.字);
     const rows=サマリ日付.map(dd=>[dd,'この日の箱(在庫反映済み)を指す行 '+r.反映済みサマリ[dd]+'件']);
-    rep.getRange(base+1,7,rows.length,2).setValues(rows).setFontSize(HIKIATE_CFG.字);
+    rep.getRange(cursor+1,7,rows.length,2).setValues(rows).setFontSize(HIKIATE_CFG.字);
   }
   ss.setActiveSheet(rep);
   ss.toast('入荷日チェック: 疑わしい行 '+out.length+'件'
+    +(幽霊.length? '／⚠️数量超過 '+幽霊.length+'組':'')
     +((r.反映済み行数||0)>0? '（在庫反映済み'+r.反映済み行数+'件はサマリ集約）':''),'🔎入荷日',8);
 }
