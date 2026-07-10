@@ -394,6 +394,10 @@ function 取込_実行_(latest){
   let sh=ss.getSheetByName(cfg.受注シート); if(!sh) sh=ss.insertSheet(cfg.受注シート);
   const hdrRow=受注ヘッダー行_(sh);       // 例:6行目(無ければ1)
   const startRow=hdrRow+1;               // データ開始行
+  // CSVで列がズレないよう、取込前に既存の「EMS番号」列(前回②が個数の隣に作った分)を一旦削除する。
+  // 取込の最後に個数の隣へ作り直す→常に「個数の隣」に固定される。
+  { const h0=sh.getRange(hdrRow,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
+    const e=h0.indexOf('EMS番号'); if(e>=0) sh.deleteColumn(e+1); }
   // 【入荷日を引き継ぐ】上書き前に、今の入荷日を 受注番号+商品コード+SKU をキーに退避(取込で消えないように)
   const 退避入荷={};
   { const M0=列マップ_(sh);
@@ -438,6 +442,7 @@ function 取込_実行_(latest){
       if(v!==undefined) 引継++; return [ v!==undefined ? v : '' ]; });
     sh.getRange(startRow, 入荷C+1, out.length, 1).setValues(out);
   }
+  EMS番号列を用意_(sh); // 個数の隣に「EMS番号」列を作り直す(中身は②が書く)。取込のたびに個数の隣に固定される
 
   // 消込台帳を更新: 前回いて今回消えた注文=発送済み(他の人が発送した分)を検知
   const 台帳=消込台帳更新_();
@@ -487,6 +492,18 @@ function 仕分け証跡シートへ_(ss, NAME, header, rows, srcName){
   const out=rows.map(r=>{ const a=r.slice(0,ncol); while(a.length<ncol) a.push(''); return [now, srcName].concat(a); });
   const start=sh.getLastRow()+1;
   sh.getRange(start,1,out.length,HDR.length).setValues(out).setFontSize(HIKIATE_CFG.字);
+}
+
+// 受注明細に「EMS番号」列を個数の隣に用意し、その列番号(1始まり)を返す。既にあればその位置。
+// 取込でCSV上書き前に一旦削除→取込後にこれで作り直す→常に「個数の隣」に固定される。
+function EMS番号列を用意_(recv){
+  const hr=受注ヘッダー行_(recv);
+  const head=recv.getRange(hr,1,1,Math.max(recv.getLastColumn(),1)).getValues()[0].map(v=>String(v||'').trim());
+  const idx=head.indexOf('EMS番号'); if(idx>=0) return idx+1;
+  let g=head.indexOf('個数'); if(g<0) g=head.length-1; // 個数が無ければ末尾
+  recv.insertColumnAfter(g+1);
+  recv.getRange(hr, g+2).setValue('EMS番号').setFontWeight('bold');
+  return g+2;
 }
 
 // 注文ごと(受注番号が変わる境目)に太い下線を引く。全体には薄い格子。
@@ -1382,17 +1399,15 @@ function 引当実行_本体_(){
     }
   }
 
-  // 【EMS番号を記入】受注明細に「EMS番号」列(無ければ末尾に作成)を用意し、各行がどの箱から出すかを書く。
-  // ①取込のCSVには無い列なのでCSV列より後ろに作る→取込で消えても②で毎回書き直される。
+  // 【EMS番号を記入】各行がどの箱から出すかを、個数の隣の「EMS番号」列に書く(取込で個数の隣に作られている)
   {
     const rs=受注hdr+1, rl=recv.getLastRow();
     if(rl>=rs){
-      let emsC=受注head.indexOf('EMS番号'); // 0始まり。無ければ末尾に作る
-      if(emsC<0){ emsC=recv.getLastColumn(); recv.getRange(受注hdr,emsC+1).setValue('EMS番号').setFontWeight('bold'); }
-      const col=recv.getRange(rs,emsC+1,rl-rs+1,1).getValues();
+      const emsC=EMS番号列を用意_(recv); // 個数の隣。無ければ作る(1始まり)
+      const col=recv.getRange(rs,emsC,rl-rs+1,1).getValues();
       for(let idx=0;idx<col.length;idx++) col[idx][0]=''; // 一旦クリア(前回の割当が残らないように)
       lines.forEach(l=>{ const idx=l.i-受注hdr; if(idx>=0 && idx<col.length && l.箱EMS) col[idx][0]=l.箱EMS; });
-      recv.getRange(rs,emsC+1,col.length,1).setValues(col);
+      recv.getRange(rs,emsC,col.length,1).setValues(col);
     }
   }
   抽出フラグ更新_(); // 受注明細の「抽出」列(○=色あり/×=色なし)を更新→普通のフィルタで絞れる
