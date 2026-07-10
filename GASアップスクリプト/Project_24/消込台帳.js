@@ -355,6 +355,29 @@ function 消込台帳のCSV処理済をクリア本体_(){
     ui.ButtonSet.OK);
 }
 
+// ===== 出荷済みの重複排除(読み取り集計用) =====
+// 受注/台帳側の基底コード: SKU優先→normCode_(受注番号タグ除去)→末尾のa/b在庫枝番を落とす(棚卸の需要側と同じ規則)
+function 受注基底コード_(sku, code){
+  let base=normCode_(String(sku||'').trim() || String(code||''));
+  if(/[AB]$/.test(base) && base.length>2) base=base.slice(0,-1);
+  return base;
+}
+
+// 同じ発送が表記ゆれ(受注番号タグ付きコード/a・b枝番SKU)で複数行になっている場合、
+// 「受注番号+基底コード」で1件(数量が最大の行)にまとめる。受注番号が無い行は素通し。
+// 適用先は読み取り専用の集計(全件検算レポート)のみ。②の消費ロジックには適用しない
+// (実測で調整済みの挙動を変えないため)。
+function 出荷済み重複排除_(rows){
+  const best={}; const 素通し=[];
+  (rows||[]).forEach(r=>{
+    const ban=String(r.ban||'').trim();
+    if(!ban){ 素通し.push(r); return; }
+    const key=ban+'|'+受注基底コード_(r.sku, r.code);
+    if(!(key in best) || (Number(r.qty)||0)>(Number(best[key].qty)||0)) best[key]=r;
+  });
+  return 素通し.concat(Object.keys(best).map(k=>best[k]));
+}
+
 // メニュー用: 台帳を更新してシートを開く
 function 消込台帳を更新(){
   const r=消込台帳更新_();

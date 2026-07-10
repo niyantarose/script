@@ -65,48 +65,31 @@ function 棚卸箱をEMSリストへ追記本体_(){
     ui.ButtonSet.OK);
 }
 
-function 棚卸箱の下書きを生成(){ 直列_(棚卸箱の下書きを生成本体_); }
-function 棚卸箱の下書きを生成本体_(){
-  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
-
-  // --- 1) Yahoo在庫CSV(フォルダ内で最新のもの)を読む ---
-  const folders=DriveApp.getFoldersByName(TANAOROSHI_CFG.フォルダ名);
-  if(!folders.hasNext()){ ui.alert('ドライブにフォルダ「'+TANAOROSHI_CFG.フォルダ名+'」が見つかりません'); return; }
-  const folder=folders.next();
-  let newest=null;
-  const it=folder.getFiles();
-  while(it.hasNext()){
-    const f=it.next();
-    if(!/\.csv$/i.test(f.getName())) continue;
-    if(!newest || f.getLastUpdated().getTime()>newest.getLastUpdated().getTime()) newest=f;
-  }
-  if(!newest){ ui.alert('フォルダ「'+TANAOROSHI_CFG.フォルダ名+'」にCSVがありません'); return; }
-
-  const text=newest.getBlob().getDataAsString('Shift_JIS');
-  // Utilities.parseCsv は商品名内の不正な引用符などで全体が「テキストを解析できませんでした」に
-  // なるため使わない。1行ずつ寛容に分解し、壊れた行はスキップして続行する。
-  const lines=text.split(/\r?\n/);
-  if(lines.length<2){ ui.alert('CSVが空です: '+newest.getName()); return; }
-
-  // "a","b","c" 形式の1行をフィールド配列へ(引用符の "" エスケープ対応)
-  function 行分解_(line){
-    const out=[]; let cur=''; let inQ=false;
-    for(let i=0;i<line.length;i++){
-      const ch=line[i];
-      if(inQ){
-        if(ch==='"'){ if(line[i+1]==='"'){ cur+='"'; i++; } else { inQ=false; } }
-        else cur+=ch;
-      } else {
-        if(ch==='"') inQ=true;
-        else if(ch===','){ out.push(cur); cur=''; }
-        else cur+=ch;
-      }
+// ===== Yahoo在庫CSVの読み込み(棚卸と全件検算で共用) =====
+// "a","b","c" 形式の1行をフィールド配列へ(引用符の "" エスケープ対応)
+function CSV行分解_(line){
+  const out=[]; let cur=''; let inQ=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(inQ){
+      if(ch==='"'){ if(line[i+1]==='"'){ cur+='"'; i++; } else { inQ=false; } }
+      else cur+=ch;
+    } else {
+      if(ch==='"') inQ=true;
+      else if(ch===','){ out.push(cur); cur=''; }
+      else cur+=ch;
     }
-    out.push(cur);
-    return out;
   }
+  out.push(cur);
+  return out;
+}
 
-  // 列: code,name,sub-code,quantity,...(先頭行がヘッダー)
+// Yahoo在庫CSVのテキストを集計する(純粋関数)。列: code,name,sub-code,quantity,...(先頭行がヘッダー)
+// sub-code末尾 a=即納(quantity=物理の自由在庫) / b=お取り寄せ(販売枠なので無視)
+// 戻り: {a在庫:{基底コード:数量}, 商品名:{基底コード:商品名}, subなし:[…], 解析スキップ:n} または {error}
+function YahooCSV集計_(text){
+  const lines=String(text||'').split(/\r?\n/);
+  if(lines.length<2) return {error:'CSVが空です'};
   const a在庫={};   // 基底コード -> 即納aの在庫数(自由在庫)
   const 商品名={};  // 基底コード -> 商品名
   const subなし=[]; // sub-code無しで在庫>0(a/b運用外。要確認)
@@ -114,7 +97,7 @@ function 棚卸箱の下書きを生成本体_(){
   for(let i=1;i<lines.length;i++){
     const line=lines[i]; if(!line || !line.trim()) continue;
     let r;
-    try{ r=行分解_(line); }catch(e){ 解析スキップ++; continue; }
+    try{ r=CSV行分解_(line); }catch(e){ 解析スキップ++; continue; }
     if(!r || r.length<4){ 解析スキップ++; continue; }
     const code=String(r[0]||'').trim(), name=String(r[1]||'').trim();
     const sub=String(r[2]||'').trim(), qty=Number(r[3])||0;
@@ -127,6 +110,39 @@ function 棚卸箱の下書きを生成本体_(){
     if(qty>0) a在庫[base]=(a在庫[base]||0)+qty;
     if(!商品名[base]) 商品名[base]=name;
   }
+  return {a在庫, 商品名, subなし, 解析スキップ};
+}
+
+// Googleドライブの最新Yahoo在庫CSVを読んで集計する。
+// Utilities.parseCsv は商品名内の不正な引用符などで全体が「テキストを解析できませんでした」に
+// なるため使わない。1行ずつ寛容に分解し、壊れた行はスキップして続行する。
+// 戻り: {a在庫,商品名,subなし,解析スキップ,fileName} または {error:'…'}
+function Yahoo在庫を読む_(){
+  const folders=DriveApp.getFoldersByName(TANAOROSHI_CFG.フォルダ名);
+  if(!folders.hasNext()) return {error:'ドライブにフォルダ「'+TANAOROSHI_CFG.フォルダ名+'」が見つかりません'};
+  const folder=folders.next();
+  let newest=null;
+  const it=folder.getFiles();
+  while(it.hasNext()){
+    const f=it.next();
+    if(!/\.csv$/i.test(f.getName())) continue;
+    if(!newest || f.getLastUpdated().getTime()>newest.getLastUpdated().getTime()) newest=f;
+  }
+  if(!newest) return {error:'フォルダ「'+TANAOROSHI_CFG.フォルダ名+'」にCSVがありません'};
+  const r=YahooCSV集計_(newest.getBlob().getDataAsString('Shift_JIS'));
+  if(r.error) return {error:r.error+': '+newest.getName()};
+  r.fileName=newest.getName();
+  return r;
+}
+
+function 棚卸箱の下書きを生成(){ 直列_(棚卸箱の下書きを生成本体_); }
+function 棚卸箱の下書きを生成本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+
+  // --- 1) Yahoo在庫CSV(フォルダ内で最新のもの)を読む ---
+  const y=Yahoo在庫を読む_();
+  if(y.error){ ui.alert(y.error); return; }
+  const a在庫=y.a在庫, 商品名=y.商品名, subなし=y.subなし, 解析スキップ=y.解析スキップ;
 
   // --- 2) 受注明細: 未出荷の取り寄せ数(台湾/中国ルートは韓国便対象外なので除外) ---
   const recv=ss.getSheetByName(HIKIATE_CFG.受注);
@@ -187,7 +203,7 @@ function 棚卸箱の下書きを生成本体_(){
   let rep=ss.getSheetByName(TANAOROSHI_CFG.出力シート); if(!rep) rep=ss.insertSheet(TANAOROSHI_CFG.出力シート);
   rep.clearContents();
   rep.getRange(1,1).setValue('棚卸箱下書き: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
-    +' / CSV: '+newest.getName()+' / '+out.length+'コード'
+    +' / CSV: '+y.fileName+' / '+out.length+'コード'
     +' ｜ 数量 = max(0, 未出荷取り寄せ - 未着入荷予定)＝待ち注文の確保分のみ(自由在庫はYahooが正)。'
     +'内容を確認して発注共有「EMSリスト」へ貼る(②はEMSリストしか読まない)');
   const HDR=['ステータス列','EMS到着日','商品コード','数量','EMS番号','(内訳)即納a在庫','(内訳)未出荷取り寄せ','(内訳)未着入荷予定','商品名'];
@@ -204,7 +220,7 @@ function 棚卸箱の下書きを生成本体_(){
   }
   ss.setActiveSheet(rep);
   ui.alert('棚卸箱下書き 完成',
-    out.length+'コードを出力しました（CSV: '+newest.getName()+'）。\n'+
+    out.length+'コードを出力しました（CSV: '+y.fileName+'）。\n'+
     (解析スキップ? '※解析できず読み飛ばした行: '+解析スキップ+'行\n':'')+'\n'+
     '数量は「待ち注文の確保分」だけです（自由在庫はYahoo在庫DBが正なので持ち込みません）。\n\n'+
     '次の手順:\n'+

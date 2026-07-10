@@ -17,7 +17,8 @@ function 引当データの全リセット本体_(){
     '・受注明細の入荷日スタンプ(台湾/中国ルートの手入力は保持)\n'+
     '・受注明細の行の背景色(②再実行で貼り直されます)\n'+
     '・引当履歴の全行\n\n'+
-    '注文データ・消込台帳・発注共有のEMSリストは消しません。\n\n'+
+    '注文データ・消込台帳・発注共有のEMSリストは消しません。\n'+
+    '実行前に引当ファイル全体をDriveへ自動バックアップします。\n\n'+
     '実行後の手順:\n'+
     '1) 現物が残っている箱を発注共有のEMSリストで「到着済」に戻す\n'+
     '2) ②引き当て実行(現物とP列から割当を再構築)\n'+
@@ -26,6 +27,20 @@ function 引当データの全リセット本体_(){
   if(a!==ui.Button.OK) return;
   const b=ui.prompt('最終確認','間違い防止のため「リセット」と入力してください', ui.ButtonSet.OK_CANCEL);
   if(b.getSelectedButton()!==ui.Button.OK || String(b.getResponseText()||'').trim()!=='リセット'){ ui.alert('中止しました(何も変更していません)'); return; }
+
+  // 事前バックアップ: 引当履歴の消去は取り消せないため、消す前にファイルごとDriveへ複製する。
+  // コピーが作れなければ何も消さずに中止(発注共有はリセットで変更しないので対象外)
+  let バックアップ名='';
+  try{
+    const file=DriveApp.getFileById(ss.getId());
+    バックアップ名='引当ファイル_リセット前_'+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyyMMdd_HHmmss');
+    const parents=file.getParents();
+    const copy= parents.hasNext()? file.makeCopy(バックアップ名, parents.next()) : file.makeCopy(バックアップ名);
+    if(!copy || !copy.getId()) throw new Error('コピーのIDが取得できません');
+  }catch(e){
+    ui.alert('バックアップの作成に失敗したため中止しました(何も変更していません)。\n\n'+e.message);
+    return;
+  }
 
   const lock=LockService.getDocumentLock(); lock.waitLock(30000);
   let cleared=0, kept=0, histCleared=0;
@@ -63,7 +78,8 @@ function 引当データの全リセット本体_(){
 
   ui.alert('リセット完了',
     '入荷日クリア: '+cleared+'行（台湾/中国ルート保持: '+kept+'行）\n'+
-    '引当履歴クリア: '+histCleared+'行\n\n'+
+    '引当履歴クリア: '+histCleared+'行\n'+
+    'バックアップ: '+バックアップ名+'（元ファイルと同じフォルダ）\n\n'+
     '次の手順:\n'+
     '1) 現物が残っている箱を発注共有のEMSリストで「到着済」に戻す\n'+
     '2) ②引き当て実行\n'+
