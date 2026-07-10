@@ -1,8 +1,9 @@
 // ===== 棚卸箱の下書きを生成(Yahoo在庫CSV × 未出荷注文) =====
-// 「机上棚卸」: 現物を数える代わりに、
-//   棚卸箱数量(基底コード) = Yahoo即納a在庫(自由在庫の正) + max(0, 未出荷の取り寄せ数 - 未着箱の入荷予定数)
-// を計算して、発注共有EMSリストに貼る「棚卸箱」の下書きを作る。
-// Yahoo在庫CSV: ストアクリエイターProの在庫CSV(code,name,sub-code,quantity,… / CP932)。
+// 「机上棚卸」: 現物を数える代わりに、待ち注文の確保分だけを持つ棚卸箱を作る。
+//   棚卸箱数量(基底コード) = max(0, 未出荷の取り寄せ数 - 未着箱の入荷予定数)
+// 自由在庫(即納a)は Yahoo在庫DB が唯一の正なので、引当ファイル側へは持ち込まない
+// (写すと「正が2つ」になり再び乖離が生まれる。②に必要なのは待ち注文の確保分だけ)。
+// Yahoo在庫CSV は「その注文の商品が本当に届いているか」の突き合わせ材料(内訳列)として使う。
 //   sub-code 末尾 a=即納(quantity=物理の自由在庫) / b=お取り寄せ(販売枠なので無視)。
 // 使い方: 🔄全リセット → これで下書き生成 → 内容確認 → EMSリストへ棚卸箱として貼る → ② → 🔎
 const TANAOROSHI_CFG = {
@@ -117,17 +118,13 @@ function 棚卸箱の下書きを生成本体_(){
     }
   }catch(e){ /* 発注共有が読めない時は未着差引きなし(棚卸箱が大きめに出る=安全側ではないので注意書きを出す) */ }
 
-  // --- 4) 棚卸箱数量 = a在庫 + max(0, 需要 - 未着供給) ---
-  const 全コード={};
-  Object.keys(a在庫).forEach(k=>全コード[k]=1);
-  Object.keys(需要).forEach(k=>全コード[k]=1);
+  // --- 4) 棚卸箱数量 = max(0, 需要 - 未着供給)。待ち注文の確保分だけ(自由在庫はYahooが正) ---
   const today=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd');
   const 箱番号='棚卸'+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyyMMdd');
   const out=[];
-  Object.keys(全コード).sort().forEach(base=>{
+  Object.keys(需要).sort().forEach(base=>{
     const a=a在庫[base]||0, d=需要[base]||0, m=未着供給[base]||0;
-    const 確保=Math.max(0, d-m);
-    const qty=a+確保;
+    const qty=Math.max(0, d-m);
     if(qty<=0) return;
     out.push(['到着済', today, base, qty, 箱番号, a, d, m, 商品名[base]||'']);
   });
@@ -137,7 +134,8 @@ function 棚卸箱の下書きを生成本体_(){
   rep.clearContents();
   rep.getRange(1,1).setValue('棚卸箱下書き: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
     +' / CSV: '+newest.getName()+' / '+out.length+'コード'
-    +' ｜ 数量 = Yahoo即納a在庫 + max(0, 未出荷取り寄せ - 未着入荷予定)。内容を確認して発注共有EMSリストへ貼る');
+    +' ｜ 数量 = max(0, 未出荷取り寄せ - 未着入荷予定)＝待ち注文の確保分のみ(自由在庫はYahooが正)。'
+    +'内容を確認して発注共有「EMSリスト」へ貼る(②はEMSリストしか読まない)');
   const HDR=['ステータス列','EMS到着日','商品コード','数量','EMS番号','(内訳)即納a在庫','(内訳)未出荷取り寄せ','(内訳)未着入荷予定','商品名'];
   rep.getRange(2,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
   rep.setFrozenRows(2);
@@ -154,9 +152,10 @@ function 棚卸箱の下書きを生成本体_(){
   ui.alert('棚卸箱下書き 完成',
     out.length+'コードを出力しました（CSV: '+newest.getName()+'）。\n'+
     (解析スキップ? '※解析できず読み飛ばした行: '+解析スキップ+'行\n':'')+'\n'+
+    '数量は「待ち注文の確保分」だけです（自由在庫はYahoo在庫DBが正なので持ち込みません）。\n\n'+
     '次の手順:\n'+
     '1) 一覧を確認（⚠️整合チェックの数量超過に出た商品は現物と突き合わせて数量を直す）\n'+
-    '2) A〜E列を発注共有のEMSリストへ「棚卸箱」として貼る\n'+
+    '2) A〜E列を発注共有の「EMSリスト」へ「棚卸箱」として貼る（②はEMSリストしか読みません）\n'+
     '3) ②引き当て実行 → 🔎整合チェックで検証',
     ui.ButtonSet.OK);
 }
