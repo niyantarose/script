@@ -119,11 +119,37 @@ function 入荷日整合_スキャン_(){
     }
   });
 
+  // --- 引当履歴: 「過去取込 or EMSリスト状態=在庫反映済み」でカバー済みの 受注番号×コード 集合 ---
+  // 締め済み過去便を指す行(箱ステータス=在庫反映済み)は、履歴に受取記録があれば
+  // ②が正しくラベンダーにする正常系。一覧に出してもやることが無い(🧹対象外)ので
+  // 非表示にして件数だけ知らせ、一覧を「本当に見るべき行」だけにする。
+  const 履歴カバー=new Set();
+  try{
+    const hsh=ss.getSheetByName(HIKIATE_HISTORY_CFG.シート);
+    if(hsh && hsh.getLastRow()>1){
+      const hc=引当履歴_列_(hsh);
+      if(hc['受注番号'] && hc['商品コード']){
+        const hv=hsh.getRange(2,1,hsh.getLastRow()-1,hsh.getLastColumn()).getDisplayValues();
+        hv.forEach(r=>{
+          const state=hc['状態']?String(r[hc['状態']-1]||'').trim():'';
+          if(state==='キャンセル済み') return;
+          const kind=hc['取込区分']?String(r[hc['取込区分']-1]||'').trim():'';
+          const st=hc['EMSリスト状態']?String(r[hc['EMSリスト状態']-1]||'').trim():'';
+          if(!(kind==='過去取込' || st==='在庫反映済み')) return; // ②の差引き条件と同一
+          const b=String(r[hc['受注番号']-1]||'').trim();
+          const c=normCode_(r[hc['商品コード']-1]);
+          if(b && c) 履歴カバー.add(b+'||'+c);
+        });
+      }
+    }
+  }catch(e){ /* 履歴が読めない時は従来どおり全件表示(安全側) */ }
+
   // --- 受注明細の入荷日付き行を照合 ---
   const M=列マップ_(recv);
   if(M.入荷<0) return {error:'受注明細に「入荷日」列がありません'};
   const R=recv.getDataRange().getValues();
   const out=[];
+  let カバー済み=0;
   for(let i=M.hr;i<R.length;i++){
     const row=R[i];
     const ban=String(row[M.番号]||'').trim(); if(!ban) continue;
@@ -140,8 +166,15 @@ function 入荷日整合_スキャン_(){
     const m他=byDate他[d];
     const kSt= m他? keys.find(k=> k in m他) : undefined;
     if(kSt!==undefined){
+      const 箱St=m他[kSt]||'空';
+      // 締め済み過去便(在庫反映済み)で履歴に受取記録がある行＝正しいラベンダー。一覧から除外
+      if(箱St==='在庫反映済み'){
+        const covered=受注候補コード_(sku,code).some(v=>履歴カバー.has(ban+'||'+normCode_(v)));
+        if(covered){ カバー済み++; continue; }
+      }
       out.push([i+1, ban, String(row[M.氏名]||''), code, sku, Number(row[M.個数])||0, d||String(入荷日値||''),
-        '未到着扱い: EMSリストのこの日にあるがステータスが「'+(m他[kSt]||'空')+'」。箱が着いていれば「到着済」に直すと②で黄色になります(🧹では消しません)']);
+        '未到着扱い: EMSリストのこの日にあるがステータスが「'+箱St+'」。箱が着いていれば「到着済」に直すと②で黄色になります(🧹では消しません)'
+        +(箱St==='在庫反映済み'? '／締め済みなのに引当履歴に受取記録が無い行です(要確認)':'')]);
       continue;
     }
     // 台湾・中国ルートは韓国EMSに照合先が無い=手入力の入荷日が正。理由を分けて🧹の対象外にする
@@ -150,7 +183,7 @@ function 入荷日整合_スキャン_(){
       別ルート? '台湾/中国ルート: 手入力の入荷日なら正しい(🧹では消しません)'
         : (set? 'この日の到着EMSに、この商品が無い' : 'この日に到着したEMSが無い')]);
   }
-  return {list:out};
+  return {list:out, カバー済み:カバー済み};
 }
 
 // ②の完了時に呼ぶ件数版(台湾/中国ルートは正扱いなので除外)。読めない時は-1
@@ -171,7 +204,8 @@ function 入荷日整合チェック(){
   let rep=ss.getSheetByName(NAME); if(!rep) rep=ss.insertSheet(NAME);
   rep.clearContents();
   rep.getRange(1,1).setValue('入荷日の整合チェック: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
-    +' / 疑わしい行 '+out.length+'件（消す前に必ず目視確認。手入力の入荷日は正しい場合あり）');
+    +' / 疑わしい行 '+out.length+'件（消す前に必ず目視確認。手入力の入荷日は正しい場合あり）'
+    +((r.カバー済み||0)>0? '／締め済み過去便・履歴カバー済み '+r.カバー済み+'件は正常のため非表示':''));
   const HDR=['受注明細の行','受注番号','氏名','商品コード','SKU','個数','入荷日','理由'];
   rep.getRange(2,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
   rep.setFrozenRows(2);
@@ -181,5 +215,6 @@ function 入荷日整合チェック(){
     rep.getRange(3,1).setValue('(問題なし: 全ての入荷日がEMSリストの到着日と一致)');
   }
   ss.setActiveSheet(rep);
-  ss.toast('入荷日チェック: 疑わしい行 '+out.length+'件','🔎入荷日',8);
+  ss.toast('入荷日チェック: 疑わしい行 '+out.length+'件'
+    +((r.カバー済み||0)>0? '（カバー済み'+r.カバー済み+'件は非表示）':''),'🔎入荷日',8);
 }
