@@ -134,4 +134,33 @@ if (manhuaResolved.japaneseTitle !== 'モニターごしの恋') {
   throw new Error(`Chinese-original echo should be skipped for JP license title, got ${manhuaResolved.japaneseTitle}`);
 }
 
+// === 簡体字・繁体字が混在する中文原題もエコーとして除外する ===
+// 博客來の商品名「今生我来當家主」に対し、MU は「今生我來當家主」と
+// 日本語ライセンス題「今世は当主になります」を Associated Names に返す。
+const matriarchDetail = {
+  title: 'I Shall Master This Family',
+  associated: [
+    { title: '今生我來當家主' },
+    { title: '今世は当主になります' },
+    { title: '이번 생은 가주가 되겠습니다' },
+    { title: 'I Shall Master This Family' },
+  ],
+};
+const matriarchRow = {
+  hit_title: '今生我來當家主',
+  record: { title: 'I Shall Master This Family' },
+};
+const matriarchQueries = ['今生我来當家主'];
+const matriarchKeys = matriarchQueries.map(t.normalizeTitleKey);
+const matriarchResolved = t.tryResolveMatchedDetail_(
+  matriarchDetail,
+  matriarchRow,
+  matriarchKeys,
+  matriarchQueries,
+  []
+);
+if (matriarchResolved.japaneseTitle !== '今世は当主になります') {
+  throw new Error(`Mixed-script Chinese echo should be skipped, got: ${matriarchResolved.japaneseTitle}`);
+}
+
 console.log('manga-updates-client.test.js: ok');
