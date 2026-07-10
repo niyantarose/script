@@ -145,7 +145,7 @@ function 台湾照会_かな有_(v) {
  */
 function 台湾照会_aniListで日本語題_(query) {
   const payload = JSON.stringify({
-    query: 'query($s:String){Page(perPage:6){media(search:$s,type:MANGA){title{native romaji english}synonyms}}}',
+    query: 'query($s:String){Page(perPage:6){media(search:$s,type:MANGA){countryOfOrigin title{native romaji english}synonyms}}}',
     variables: { s: query },
   });
   const res = UrlFetchApp.fetch('https://graphql.anilist.co', {
@@ -168,9 +168,20 @@ function 台湾照会_aniListで日本語題_(query) {
     const names = [t.native, t.romaji, t.english].concat(Array.isArray(m.synonyms) ? m.synonyms : []).filter(Boolean);
     const 一致 = names.some(function (n) { return 台湾照会_キー_(n) === qk; });
     if (!一致) continue; // クエリが登録名と一致した作品だけ採用（誤マッチ防止）
+    // 日本原作（countryOfOrigin=JP）なら native は日本語題そのもの。
+    // 漢字のみの題（例: 呪術廻戦、怪獣８号）もかな縛りなしで安全に採用できる。
+    // ただしクエリのエコー（クエリ自身がnativeに一致しただけ）は除外。
+    const nat = String(t.native || '').trim();
+    if (nat && String(m.countryOfOrigin || '') === 'JP' && 台湾照会_キー_(nat) !== qk) {
+      return nat;
+    }
+    // 韓国・中国原作は native が原語（ハングル/中文）なので、synonyms から
+    // かな入りの日本語ライセンス題を探す（例: 이번 생은…→今世は当主になります）。
     const 候補 = [t.native].concat(Array.isArray(m.synonyms) ? m.synonyms : []).filter(Boolean);
     for (let c = 0; c < 候補.length; c += 1) {
-      if (台湾照会_かな有_(候補[c])) return String(候補[c]).trim();
+      const cand = String(候補[c]).trim();
+      if (台湾照会_キー_(cand) === qk) continue; // クエリのエコーは除外
+      if (台湾照会_かな有_(cand)) return cand;
     }
   }
   return '';
