@@ -1,3 +1,76 @@
+// ===== 引当データの全リセット(再構築用) =====
+// 入荷日スタンプと引当履歴に過去の誤り(幽霊スタンプ・締めの早すぎ等)が堆積したとき、
+// 現在の事実(EMSリストの箱・P列名指し・消込台帳・現物)だけからやり直すための機能。
+// 消すもの: 受注明細の入荷日(台湾/中国ルートの手入力は保持)・行の背景色・引当履歴の全行
+// 消さないもの: 受注明細の注文データ / 消込台帳 / 発注共有のEMSリスト / GoQ側
+// 実行後の手順: 1)現物が残っている箱をEMSリストで「到着済」に戻す → 2)②引き当て実行 → 3)🔎整合チェックで検証
+function 引当データの全リセット(){ 直列_(引当データの全リセット本体_); }
+function 引当データの全リセット本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const recv=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!recv){ ui.alert('「'+HIKIATE_CFG.受注+'」タブがありません'); return; }
+  const M=列マップ_(recv);
+  if(M.入荷<0){ ui.alert('受注明細に「入荷日」列がありません'); return; }
+
+  const a=ui.alert('引当データの全リセット(再構築用)',
+    '次を消して、現在の事実から引当をやり直せる状態にします。\n\n'+
+    '・受注明細の入荷日スタンプ(台湾/中国ルートの手入力は保持)\n'+
+    '・受注明細の行の背景色(②再実行で貼り直されます)\n'+
+    '・引当履歴の全行\n\n'+
+    '注文データ・消込台帳・発注共有のEMSリストは消しません。\n\n'+
+    '実行後の手順:\n'+
+    '1) 現物が残っている箱を発注共有のEMSリストで「到着済」に戻す\n'+
+    '2) ②引き当て実行(現物とP列から割当を再構築)\n'+
+    '3) 🔎整合チェックで検証 → 出荷が済んだ便から締め直す\n\n'+
+    '続行しますか？', ui.ButtonSet.OK_CANCEL);
+  if(a!==ui.Button.OK) return;
+  const b=ui.prompt('最終確認','間違い防止のため「リセット」と入力してください', ui.ButtonSet.OK_CANCEL);
+  if(b.getSelectedButton()!==ui.Button.OK || String(b.getResponseText()||'').trim()!=='リセット'){ ui.alert('中止しました(何も変更していません)'); return; }
+
+  const lock=LockService.getDocumentLock(); lock.waitLock(30000);
+  let cleared=0, kept=0, histCleared=0;
+  try{
+    const R=recv.getDataRange().getValues();
+    const n=R.length-M.hr;
+    if(n>0){
+      const colRange=recv.getRange(M.hr+1, M.入荷+1, n, 1);
+      const colVals=colRange.getValues();
+      for(let i=M.hr;i<R.length;i++){
+        const row=R[i], idx=i-M.hr;
+        const ban=String(row[M.番号]||'').trim(); if(!ban) continue;
+        if(String(colVals[idx][0]||'').trim()==='') continue;
+        // 台湾/中国ルートは韓国EMSに照合先が無く手入力の入荷日が正なので保持する
+        const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
+        if(別ルート){ kept++; continue; }
+        colVals[idx][0]='';
+        cleared++;
+      }
+      colRange.setValues(colVals);
+      // 行の背景色(黄/ラベンダー等)は②が管理しているので一括クリア。②再実行で正しい色が貼り直される
+      recv.getRange(M.hr+1, 1, n, recv.getLastColumn()).setBackground(null);
+    }
+    // 引当履歴のデータ行をクリア(過去の誤記録ごと消す。締め直しの時に現P列から再記録される)
+    try{
+      const hsh=ss.getSheetByName(HIKIATE_HISTORY_CFG.シート);
+      if(hsh && hsh.getLastRow()>1){
+        histCleared=hsh.getLastRow()-1;
+        hsh.getRange(2,1,hsh.getLastRow()-1,hsh.getLastColumn()).clearContent();
+      }
+    }catch(e){}
+    // ②の整合状態も破棄(締めガードが「②未実行」として正しく警告するように)
+    try{ PropertiesService.getDocumentProperties().deleteProperty('引当_整合状態'); }catch(e){}
+  } finally { lock.releaseLock(); }
+
+  ui.alert('リセット完了',
+    '入荷日クリア: '+cleared+'行（台湾/中国ルート保持: '+kept+'行）\n'+
+    '引当履歴クリア: '+histCleared+'行\n\n'+
+    '次の手順:\n'+
+    '1) 現物が残っている箱を発注共有のEMSリストで「到着済」に戻す\n'+
+    '2) ②引き当て実行\n'+
+    '3) 🔎整合チェックで検証(⚠️超過ゼロならきれいな状態)',
+    ui.ButtonSet.OK);
+}
+
 // ===== 入荷日の整合チェック(誤記入の検出) =====
 // 受注明細の「取り寄せ＋入荷日あり」行について、その入荷日と同じ到着日で
 // その商品が発注共有ファイルのEMSリストに存在するかを照合する。
