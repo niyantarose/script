@@ -40,18 +40,23 @@
     if (!list.length) return '';
     // 原語題（中文原題など）がクエリと一致してエコーされている場合は除外する。
     // 例: 中華漫画の Associated に「中文原題 + 日本語ライセンス題」が並ぶケースで
-    // 中文原題ではなく日本語題を採用するため。字体差のある日本語漢字題は除外しない。
+    // 中文原題ではなく日本語題を採用するため。來/来・當/当だけが異なる
+    // 原題エコーも除外する一方、語句自体が異なる日本語題は候補に残す。
     var skip = {};
+    var skipCjkVariants = {};
     var qs = Array.isArray(echoQueries) ? echoQueries : (echoQueries ? [echoQueries] : []);
     var i;
     for (i = 0; i < qs.length; i += 1) {
       var qk = normalizeTitleKey(qs[i]);
       if (qk) skip[qk] = true;
+      var qvk = normalizeCjkEchoKey(qs[i]);
+      if (qvk) skipCjkVariants[qvk] = true;
     }
     var pool = [];
     for (i = 0; i < list.length; i += 1) {
       var key = normalizeTitleKey(list[i]);
-      if (key && skip[key]) continue;
+      var variantKey = normalizeCjkEchoKey(list[i]);
+      if ((key && skip[key]) || (variantKey && skipCjkVariants[variantKey])) continue;
       pool.push(list[i]);
     }
     if (!pool.length) pool = list;
@@ -147,6 +152,22 @@
         var m = media[mi];
         var nat = m && m.title ? String(m.title.native || '').trim() : '';
         if (nat && hasJapaneseTitleSignal(nat) && nativeIsValid(nat, m)) return nat;
+        // 韓国・中国原作は native が原語（ハングル/簡体字）のため上の判定を通らないが、
+        // 日本語ライセンス題は synonyms 側に入っていることが多い
+        // （例: 今生我來當家主 → native=이번 생은 가주가 되겠습니다, synonyms に 今世は当主になります）。
+        // クエリが登録名一致で作品確定している場合のみ、synonyms から
+        // 「かな入り」かつ「クエリのエコー（中文題そのもの）でない」名前を日本語題として採用する。
+        // ※漢字のみの synonym は中文題と区別できないため採用しない（かな縛り）。
+        if (Array.isArray(m.synonyms) && m.synonyms.length && seriesMatchesQuery(m)) {
+          var si;
+          for (si = 0; si < m.synonyms.length; si += 1) {
+            var syn = String(m.synonyms[si] || '').trim();
+            if (!syn) continue;
+            var synKey = normalizeTitleKey(syn);
+            if (synKey && valKeySet[synKey]) continue; // クエリのエコーは除外
+            if (hasKanaJapaneseSignal(syn)) return syn;
+          }
+        }
       }
     }
     return '';
@@ -290,6 +311,14 @@
       .toLowerCase()
       .replace(/[\s　\-_:：!！?？.,，。、'"’‘“”（）()【】\[\]{}~～]/g, '')
       .trim();
+  }
+
+  function normalizeCjkEchoKey(value) {
+    return normalizeTitleKey(value)
+      // 博客來の商品名と MU の Associated Names は簡体字・繁体字が
+      // 混在することがあるため、原題エコー判定に必要な字形だけ正規化する。
+      .replace(/來/g, '来')
+      .replace(/當/g, '当');
   }
 
   function collectDetailTitles(detail) {
