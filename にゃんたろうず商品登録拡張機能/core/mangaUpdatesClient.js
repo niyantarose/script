@@ -23,6 +23,98 @@
     map.set(key, value);
   }
 
+  /**
+   * 作品単位の最終結果キャッシュ。
+   * - _resultMemo: 同一実行内の同作品・別巻のデデュープ（一括保存で同じ作品を2回照会しない）
+   * - chrome.storage.local: サービスワーカー停止・ポップアップ終了をまたいで持続。
+   *   resolved は30日、クリーンな不発（not_found等）は7日で自動失効して再照会される。
+   *   不発の記憶が特に重要: 未登録作品は再スクレイプのたびに数十リクエスト浪費していた。
+   */
+  var _resultMemo = new Map();
+  var RESULT_CACHE_PREFIX = 'jpTitleLookupV1:';
+  var RESULT_TTL_RESOLVED_MS = 30 * 24 * 60 * 60 * 1000;
+  var RESULT_TTL_MISS_MS = 7 * 24 * 60 * 60 * 1000;
+
+  function resultCacheKey_(queries) {
+    var k = normalizeTitleKey((queries || [])[0] || '');
+    return k ? RESULT_CACHE_PREFIX + k : '';
+  }
+
+  function storageAvailable_() {
+    try {
+      return typeof chrome !== 'undefined' && !!(chrome.storage && chrome.storage.local);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function readPersistedResult_(key) {
+    if (!key || !storageAvailable_()) return null;
+    try {
+      var obj = await chrome.storage.local.get(key);
+      var hit = obj && obj[key];
+      if (!hit || !hit.ts || !hit.status) return null;
+      var ttl = hit.status === 'resolved' ? RESULT_TTL_RESOLVED_MS : RESULT_TTL_MISS_MS;
+      if (Date.now() - hit.ts > ttl) return null;
+      return hit;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function persistResult_(key, payload) {
+    if (!key || !storageAvailable_()) return;
+    try {
+      var entry = {};
+      entry[key] = payload;
+      chrome.storage.local.set(entry);
+    } catch (_) { /* 容量超過等は無視（キャッシュは補助機能） */ }
+  }
+
+  function cachedToResult_(hit, queries, from) {
+    return {
+      status: hit.status,
+      japaneseTitle: hit.japaneseTitle || '',
+      provider: hit.provider || '',
+      queries: queries,
+      matchedTitles: hit.matchedTitles || [],
+      candidates: hit.japaneseTitle
+        ? toCandidateList([hit.japaneseTitle], hit.provider || 'cache', 900)
+        : [],
+      trace: (hit.trace || '') + '|' + from,
+      errors: [],
+    };
+  }
+
+  function shouldCacheResult_(result) {
+    if (!result) return false;
+    if (result.status === 'resolved') return true;
+    // 不発は「通信エラーなしのクリーンな不発」だけ記憶する（一時障害を固定化しない）
+    if (
+      (result.status === 'not_found' || result.status === 'series_found_no_japanese') &&
+      (!result.errors || !result.errors.length)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function finalizeLookupResult_(cacheKey, result) {
+    if (cacheKey && shouldCacheResult_(result)) {
+      var payload = {
+        status: result.status,
+        japaneseTitle: result.japaneseTitle || '',
+        provider: result.provider || '',
+        matchedTitles: (result.matchedTitles || []).slice(0, 6),
+        trace: result.trace || '',
+        ts: Date.now(),
+      };
+      _resultMemo.set(cacheKey, payload);
+      persistResult_(cacheKey, payload);
+    }
+    return result;
+  }
+
   function hasKanaJapaneseSignal(value) {
     return /[\u3041-\u3096\u30A1-\u30FA\u30FC\u309D\u309E\u3005\u3006\u3007]/.test(String(value || ''));
   }
@@ -636,7 +728,43 @@
     return list.length > 1 ? list[0] + '+' + (list.length - 1) + 'cand' : list[0];
   }
 
-  async function searchAndCollectDetails(q, errors) {
+  /**
+   * 検索結果の行を「詳細取得する価値」で事前ランク付けする。
+   * 2点: hit_title/タイトル/関連名がクエリと正規化一致（＝作品確定級）
+   * 1点: クエリと漢字が2文字以上重なる（簡繁・字体差の救済）
+   * 0点: 無関係とみなし詳細を取らない。
+   * 以前は上位8件を無条件で全詳細取得しており、1クエリで最大9リクエスト発生していた。
+   */
+  function rankSearchRowsForDetail_(results, queryKeys, rawQueries) {
+    var scored = [];
+    var i;
+    for (i = 0; i < (results || []).length; i += 1) {
+      var row = results[i];
+      var titles = getSearchResultTitles(row);
+      var score = 0;
+      var t;
+      for (t = 0; t < titles.length; t += 1) {
+        var k = normalizeTitleKey(titles[t]);
+        if (k && (queryKeys || []).indexOf(k) >= 0) { score = 2; break; }
+      }
+      if (!score) {
+        var best = 0;
+        for (t = 0; t < titles.length && best < 2; t += 1) {
+          var qj;
+          for (qj = 0; qj < (rawQueries || []).length; qj += 1) {
+            best = Math.max(best, hanOverlapScore(titles[t], rawQueries[qj]));
+            if (best >= 2) break;
+          }
+        }
+        if (best >= 2) score = 1;
+      }
+      if (score) scored.push({ row: row, score: score, index: i });
+    }
+    scored.sort(function(a, b) { return b.score - a.score || a.index - b.index; });
+    return scored.map(function(s) { return s.row; });
+  }
+
+  async function searchAndCollectDetails(q, errors, queryKeys, rawQueries) {
     var results = [];
     try {
       results = await mangaUpdatesSearch(q);
@@ -644,7 +772,10 @@
       if (errors) errors.push('search(' + q + '): ' + (err.message || err));
       results = [];
     }
-    var slice = results.slice(0, MU_SEARCH_TOP);
+    // 一致候補がある場合はその上位3件だけ、無い場合でも保険は上位2件まで
+    // （検索段の名前に出ない Associated 一致の取りこぼし対策）。
+    var ranked = rankSearchRowsForDetail_(results, queryKeys, rawQueries);
+    var slice = ranked.length ? ranked.slice(0, 3) : results.slice(0, 2);
     var details = await Promise.all(
       slice.map(function(row) {
         var seriesId = getSearchResultSeriesId(row);
@@ -656,7 +787,8 @@
           : Promise.resolve(null);
       })
     );
-    return { results: results, details: details };
+    // rows は details と添字対応（呼び出し側でペアとして扱う）。results は全件（aniList用クエリ収穫向け）。
+    return { rows: slice, results: results, details: details };
   }
 
   /**
@@ -679,6 +811,19 @@
         errors: errors,
       };
     }
+    // 作品単位キャッシュ: 同じ作品の別巻・再スクレイプでネットワーク照会を繰り返さない
+    var cacheKey = resultCacheKey_(queries);
+    if (cacheKey) {
+      if (_resultMemo.has(cacheKey)) {
+        return cachedToResult_(_resultMemo.get(cacheKey), queries, 'memo_hit');
+      }
+      var persisted = await readPersistedResult_(cacheKey);
+      if (persisted) {
+        _resultMemo.set(cacheKey, persisted);
+        return cachedToResult_(persisted, queries, 'cache_hit');
+      }
+    }
+
     var queryKeys = uniqQueries(
       queries.concat(queries.map(stripVolumeSuffix)).filter(Boolean)
     ).map(normalizeTitleKey).filter(Boolean);
@@ -688,10 +833,10 @@
     var traceQuery = makeTraceQuery(queries);
     var qi;
     for (qi = 0; qi < queries.length; qi += 1) {
-      var pack = await searchAndCollectDetails(queries[qi], errors);
+      var pack = await searchAndCollectDetails(queries[qi], errors, queryKeys, queries);
       var dj;
       for (dj = 0; dj < pack.details.length; dj += 1) {
-        var searchRow = (pack.results || [])[dj] || {};
+        var searchRow = (pack.rows || pack.results || [])[dj] || {};
         var resolved = tryResolveMatchedDetail_(
           pack.details[dj],
           searchRow,
@@ -769,7 +914,7 @@
       }
     }
     if (verifiedJp) {
-      return {
+      return finalizeLookupResult_(cacheKey, {
         status: 'resolved',
         japaneseTitle: verifiedJp,
         provider: 'mangaUpdates',
@@ -778,7 +923,7 @@
         candidates: toCandidateList([verifiedJp], 'mangaUpdates', 900),
         trace: 'mangaUpdates:hit(q=' + traceQuery + ')',
         errors: errors,
-      };
+      });
     }
     // 検索は aniQueries（MU検索で拾った英題等を含む広めの集合）で行うが、
     // 採用判定は元クエリ（商品名由来 queries）と漢字重なりで検証する。
@@ -787,7 +932,7 @@
       return '';
     });
     if (fromAni) {
-      return {
+      return finalizeLookupResult_(cacheKey, {
         status: 'resolved',
         japaneseTitle: fromAni,
         provider: 'aniList(via_mangaupdatesClient)',
@@ -796,10 +941,10 @@
         candidates: toCandidateList([fromAni], 'aniList(via_mangaupdatesClient)', 850),
         trace: 'aniListNative:hit(q=' + traceQuery + ')',
         errors: errors,
-      };
+      });
     }
     if (matchedTitles.length) {
-      return {
+      return finalizeLookupResult_(cacheKey, {
         status: 'series_found_no_japanese',
         japaneseTitle: '',
         provider: 'mangaUpdates',
@@ -808,9 +953,9 @@
         candidates: toCandidateList(matchedTitles, 'mangaUpdates(series)', 100),
         trace: 'mangaUpdates:series_hit_no_japanese(q=' + traceQuery + ' titles=' + matchedTitles.slice(0, 4).join('/') + ')',
         errors: errors,
-      };
+      });
     }
-    return {
+    return finalizeLookupResult_(cacheKey, {
       status: 'not_found',
       japaneseTitle: '',
       provider: '',
@@ -819,7 +964,7 @@
       candidates: [],
       trace: 'mangaUpdates:not_found(q=' + traceQuery + ')',
       errors: errors,
-    };
+    });
   }
 
   /**
