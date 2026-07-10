@@ -11,6 +11,60 @@ const TANAOROSHI_CFG = {
   出力シート: '棚卸箱下書き',
 };
 
+// ===== 棚卸箱をEMSリストへ追記(手貼りの代行) =====
+// EMSリストは見出しが6行目で列順も下書きと異なるため、手貼りは事故りやすい。
+// 見出し名(ステータス列/商品コード/数量/EMS到着日/EMS番号)で列を探して末尾に追記する。
+// 他の列(No./照合キー/注文番号/数式列など)には一切書き込まない。
+function 棚卸箱をEMSリストへ追記(){ 直列_(棚卸箱をEMSリストへ追記本体_); }
+function 棚卸箱をEMSリストへ追記本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const rep=ss.getSheetByName(TANAOROSHI_CFG.出力シート);
+  if(!rep || rep.getLastRow()<3){ ui.alert('「'+TANAOROSHI_CFG.出力シート+'」がありません。先に 📦 棚卸箱の下書きを生成 を実行してください。'); return; }
+  const vals=rep.getRange(3,1,rep.getLastRow()-2,5).getDisplayValues()
+    .filter(r=>String(r[2]||'').trim() && (Number(r[3])||0)>0); // 商品コードあり・数量>0の行だけ
+  if(!vals.length){ ui.alert('下書きに追記できる行がありません'); return; }
+  const 箱番号=String(vals[0][4]||'').trim();
+
+  let sh;
+  try{ sh=発注共有を開く_().getSheetByName(P_KAKUTEI_CFG.シート); }
+  catch(e){ ui.alert('発注共有ファイルが開けません:\n'+e.message); return; }
+  if(!sh){ ui.alert('発注共有に「'+P_KAKUTEI_CFG.シート+'」がありません'); return; }
+  const hr=P_KAKUTEI_CFG.ヘッダー行;
+  const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
+  const f=n=>head.indexOf(n)+1; // 1始まり。0=見出し無し
+  const cSt=f('ステータス列'), cCode=f('商品コード'), cQty=f('数量'), cEms=f('EMS番号');
+  let cArr=f('EMS到着日'); if(!cArr) cArr=5; // 既定E列(整合チェックのスキャンと同じ既定)
+  if(!cSt||!cCode||!cQty){ ui.alert('EMSリストの'+hr+'行目に ステータス列/商品コード/数量 の見出しが見つかりません'); return; }
+
+  // 二重貼り防止: 同じ箱番号が既にあれば中止
+  const last=sh.getLastRow();
+  if(cEms && last>hr){
+    const emsVals=sh.getRange(hr+1,cEms,last-hr,1).getDisplayValues();
+    if(emsVals.some(r=>String(r[0]||'').trim()===箱番号)){
+      ui.alert('EMSリストに既に「'+箱番号+'」の行があります。\n貼り直す場合は先にEMSリストからその行を削除してください(二重計上防止)。');
+      return;
+    }
+  }
+
+  const a=ui.alert('棚卸箱をEMSリストへ追記',
+    vals.length+'行を「'+P_KAKUTEI_CFG.シート+'」の末尾('+(last+1)+'行目〜)に追記します。\n'+
+    'EMS番号: '+箱番号+' ／ ステータス: 到着済\n\n続行しますか？',
+    ui.ButtonSet.OK_CANCEL);
+  if(a!==ui.Button.OK) return;
+
+  const start=last+1;
+  // 列ごとに書く(他の列の数式・チェックボックスに触らない)
+  sh.getRange(start,cSt,vals.length,1).setValues(vals.map(function(r){return ['到着済'];}));
+  sh.getRange(start,cArr,vals.length,1).setValues(vals.map(function(r){return [r[1]];}));
+  sh.getRange(start,cCode,vals.length,1).setValues(vals.map(function(r){return [r[2]];}));
+  sh.getRange(start,cQty,vals.length,1).setValues(vals.map(function(r){return [Number(r[3])||0];}));
+  if(cEms) sh.getRange(start,cEms,vals.length,1).setValues(vals.map(function(r){return [r[4]];}));
+
+  ui.alert('追記完了',
+    vals.length+'行を追記しました('+start+'行目〜)。\n\n次: ②引き当て実行 → 🔎整合チェックで⚠️超過ゼロを確認',
+    ui.ButtonSet.OK);
+}
+
 function 棚卸箱の下書きを生成(){ 直列_(棚卸箱の下書きを生成本体_); }
 function 棚卸箱の下書きを生成本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
