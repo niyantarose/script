@@ -62,6 +62,17 @@ test('YahooCSV集計_: 空のCSVはエラー', () => {
   assert.ok(context.YahooCSV集計_('').error);
 });
 
+test('棚卸自動数量_: EMS到着実績が無い商品は自動計上しない(予約ゴースト防止)', () => {
+  const g = context.棚卸自動数量_(2, 0, false); // 需要2・未着0だが実績なし
+  assert.strictEqual(g.qty, 0);
+  assert.ok(g.注意.indexOf('EMS到着実績なし') === 0);
+  assert.strictEqual(context.棚卸自動数量_(2, 0, true).qty, 2);  // 実績ありは従来どおり
+  assert.strictEqual(context.棚卸自動数量_(2, 1, true).qty, 1);  // 未着分は差し引く
+  const z = context.棚卸自動数量_(1, 3, false); // 未着で賄える分は実績なしでも要確認にしない
+  assert.strictEqual(z.qty, 0);
+  assert.strictEqual(z.注意, '');
+});
+
 // ===== Task3: 出荷済みの重複排除(消込台帳.js) =====
 
 test('受注基底コード_: SKU優先・タグ除去・末尾A/B落とし', () => {

@@ -135,6 +135,15 @@ function Yahoo在庫を読む_(){
   return r;
 }
 
+// 棚卸箱の自動数量。EMSリストに一度も載ったことが無い商品(実績なし)は、予約・未発注なのに
+// 「棚にある」ことにされてゴースト在庫を生む(実例: KRSJCM20-01S, JMEE-SPKZ系 2026-07-10)ため、
+// 自動計上せず数量0で要確認に回す。現物が本当にあれば人が数量を手入力して貼る。
+function 棚卸自動数量_(需要数, 未着数, EMS実績あり){
+  const qty=Math.max(0, (Number(需要数)||0)-(Number(未着数)||0));
+  if(qty>0 && !EMS実績あり) return {qty:0, 注意:'EMS到着実績なし(予約/未発注の可能性)。現物があれば数量を手入力'};
+  return {qty:qty, 注意:''};
+}
+
 function 棚卸箱の下書きを生成(){ 直列_(棚卸箱の下書きを生成本体_); }
 function 棚卸箱の下書きを生成本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
@@ -166,7 +175,10 @@ function 棚卸箱の下書きを生成本体_(){
   }
 
   // --- 3) 未着箱の入荷予定数(発注共有EMSリスト): まだ棚に無い分は棚卸箱に入れない ---
+  //        あわせて「EMSに載ったことがある商品」の集合を作る(過去の棚卸箱は実績に数えない)
   const 未着供給={};
+  const EMS実績=new Set();
+  let 実績確認可=false;
   try{
     const sh=発注共有を開く_().getSheetByName(P_KAKUTEI_CFG.シート);
     if(sh){
@@ -174,12 +186,15 @@ function 棚卸箱の下書きを生成本体_(){
       if(last>hr){
         const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
         const f=n=>head.indexOf(n);
-        const cSt=f('ステータス列'), cCode=f('商品コード'), cQty=f('数量');
+        const cSt=f('ステータス列'), cCode=f('商品コード'), cQty=f('数量'), cEms=f('EMS番号');
         if(cCode>=0){
+          実績確認可=true;
           sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getDisplayValues().forEach(r=>{
+            const base=normCode_(r[cCode]); if(!base) return;
+            const ems=cEms>=0? String(r[cEms]||'').trim():'';
+            if(!/^棚卸/.test(ems)) EMS実績.add(base); // 実績=本物のEMS行のみ(棚卸箱は数えない)
             const st=cSt>=0? String(r[cSt]||'').trim():'';
             if(st==='到着済'||st==='在庫反映済み') return; // 着いている分は対象外(未着だけ)
-            const base=normCode_(r[cCode]); if(!base) return;
             const q=cQty>=0? (Number(r[cQty])||0):1;
             未着供給[base]=(未着供給[base]||0)+q;
           });
@@ -189,14 +204,17 @@ function 棚卸箱の下書きを生成本体_(){
   }catch(e){ /* 発注共有が読めない時は未着差引きなし(棚卸箱が大きめに出る=安全側ではないので注意書きを出す) */ }
 
   // --- 4) 棚卸箱数量 = max(0, 需要 - 未着供給)。待ち注文の確保分だけ(自由在庫はYahooが正) ---
+  //        EMSに載ったことが無い商品は自動計上しない(予約/未発注のゴースト防止。数量0で要確認)
   const today=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd');
   const 箱番号='棚卸'+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyyMMdd');
   const out=[];
+  let 要確認数=0;
   Object.keys(需要).sort().forEach(base=>{
     const a=a在庫[base]||0, d=需要[base]||0, m=未着供給[base]||0;
-    const qty=Math.max(0, d-m);
-    if(qty<=0) return;
-    out.push(['到着済', today, base, qty, 箱番号, a, d, m, 商品名[base]||'']);
+    const g=棚卸自動数量_(d, m, 実績確認可? EMS実績.has(base) : true);
+    if(g.qty<=0 && !g.注意) return;
+    if(g.注意) 要確認数++;
+    out.push(['到着済', today, base, g.qty, 箱番号, a, d, m, 商品名[base]||'', g.注意]);
   });
 
   // --- 5) 出力 ---
@@ -204,9 +222,10 @@ function 棚卸箱の下書きを生成本体_(){
   rep.clearContents();
   rep.getRange(1,1).setValue('棚卸箱下書き: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
     +' / CSV: '+y.fileName+' / '+out.length+'コード'
+    +(要確認数? ' ／ ⚠️EMS到着実績なし(数量0) '+要確認数+'件=現物があれば数量を手入力':'')
     +' ｜ 数量 = max(0, 未出荷取り寄せ - 未着入荷予定)＝待ち注文の確保分のみ(自由在庫はYahooが正)。'
     +'内容を確認して発注共有「EMSリスト」へ貼る(②はEMSリストしか読まない)');
-  const HDR=['ステータス列','EMS到着日','商品コード','数量','EMS番号','(内訳)即納a在庫','(内訳)未出荷取り寄せ','(内訳)未着入荷予定','商品名'];
+  const HDR=['ステータス列','EMS到着日','商品コード','数量','EMS番号','(内訳)即納a在庫','(内訳)未出荷取り寄せ','(内訳)未着入荷予定','商品名','(注意)'];
   rep.getRange(2,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
   rep.setFrozenRows(2);
   if(out.length){
@@ -221,11 +240,13 @@ function 棚卸箱の下書きを生成本体_(){
   ss.setActiveSheet(rep);
   ui.alert('棚卸箱下書き 完成',
     out.length+'コードを出力しました（CSV: '+y.fileName+'）。\n'+
-    (解析スキップ? '※解析できず読み飛ばした行: '+解析スキップ+'行\n':'')+'\n'+
+    (解析スキップ? '※解析できず読み飛ばした行: '+解析スキップ+'行\n':'')+
+    (要確認数? '⚠️EMS到着実績なしのため数量0にした商品: '+要確認数+'件\n'+
+      '　(予約/未発注の可能性。現物が本当にあるものだけ数量を手入力してください)\n':'')+'\n'+
     '数量は「待ち注文の確保分」だけです（自由在庫はYahoo在庫DBが正なので持ち込みません）。\n\n'+
     '次の手順:\n'+
     '1) 一覧を確認（⚠️整合チェックの数量超過に出た商品は現物と突き合わせて数量を直す）\n'+
-    '2) A〜E列を発注共有の「EMSリスト」へ「棚卸箱」として貼る（②はEMSリストしか読みません）\n'+
+    '2) 📦 棚卸箱をEMSリストへ追記（数量0の行は貼られません）\n'+
     '3) ②引き当て実行 → 🔎整合チェックで検証',
     ui.ButtonSet.OK);
 }
