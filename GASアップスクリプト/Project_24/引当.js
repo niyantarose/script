@@ -959,12 +959,12 @@ function 希望日未来_(v){
   const t=new Date(); t.setHours(0,0,0,0);
   return d.getTime() > t.getTime();
 }
-// 入荷日が今日(=②引当を実行する日)か。今日の着済を「今回分」として扱うため
+// 入荷日が今日(=②引当を実行する日)か。今日の着済を「今回分」として扱うため。
+// 手入力の「26/07/09(木)」のような2桁年・曜日付きは new Date が読めず今日扱いにならない
+// (=当日入荷なのにラベンダー)ので、ymd_ で正規化してから比べる
 function 入荷日今日_(v){
-  const s=String(v||'').trim(); if(!s) return false;
-  const d=new Date(s); if(isNaN(d.getTime())) return false;
-  const t=new Date();
-  return d.getFullYear()===t.getFullYear() && d.getMonth()===t.getMonth() && d.getDate()===t.getDate();
+  const s=ymd_(v); if(!s) return false;
+  return s===ymd_(new Date());
 }
 // 日付を yyyy-MM-dd 文字列に正規化(Date/文字列どちらでも)。入荷日と到着日の一致判定用。
 // 手入力の「26/07/09(木)」のような2桁年・曜日付きも読む。パースできない文字列はそのまま返す
@@ -1126,11 +1126,16 @@ function 引当実行_本体_(){
   const 出荷済行=消込台帳_出荷済み行_().filter(l=> !履歴カバー_(l));
   // 出荷済み(発送済みで受注明細から消えた注文)を今回の在庫から差し引いてよいか。
   //  ・入荷日あり → その日付が今回の到着日と一致する分だけ(別便で処理済みが今回の箱を食わない)
-  //  ・入荷日なし → 土日等にGoQで発送・入荷日未入力の分。台帳の有効日数(60日)で最近のものに限られているので、
-  //    コード一致でそのまま差し引く(でないと発送済み品が在庫に残り、月曜の②が二重引当=売り越しになる)
+  //  ・入荷日なし → 土日等にGoQで発送・入荷日未入力の分。「発送日以前に到着していた箱」がある時だけ差し引く。
+  //    発送より後に着いた箱はその発送の出どころではあり得ないので食わせない(かつてコード一致で無条件に
+  //    差し引いていたら、60日分の発送済みが新しく着いた箱を食い尽くし、本物の注文が宙=要確認に
+  //    押し出されて毎回⚠️が出続けた)。発送日が読めない時は従来通り差し引く(売り越し防止を優先)
   const 出荷済消費OK_=l=>{ if(到着日不明_) return true; const k=keyInStock(l); if(k==null) return false;
-    const d=ymd_(l.入荷日); if(!d) return true; // 入荷日なし=最近の発送=コード一致で差し引く
-    const set=到着日SetByCode[k]; return !!(set && set.has(d)); };
+    const set=到着日SetByCode[k];
+    const d=ymd_(l.入荷日);
+    if(d) return !!(set && set.has(d));
+    const ship=ymd_(l.基準日); if(!ship) return true; // 発送日不明=従来通りコード一致で差し引く
+    return !!(set && Array.from(set).some(d0=> d0<=ship)); };
   // 出荷済み(発送済みで受注明細から消えた分)を在庫から差し引く(発送済み品が余り=日本在庫に二重計上されるのを防ぐ)。内訳は「発送済み」シートで見る
   出荷済行.forEach(l=>{ if(!出荷済消費OK_(l)) return; const k=keyInStock(l); if(k!=null) stock[k]=Math.max(0,(stock[k]||0)-l.qty); });
   // 各注文が実際に持つ商品キー(別名込み)。下の救済(コード不一致引き当て)で、同じ注文の
@@ -1392,7 +1397,7 @@ function 引当実行_本体_(){
   const part=partRows.length? new Set(partRows.map(r=>r.ban)).size:0;
   const mp=Object.keys(paidOrder).filter(b=>!paidOrder[b]).length;
   // 【入荷日を自動記入】EMS在庫で引き当たった未着の注文へ、その商品のEMS到着日を入荷日として書く(空欄のみ・手入力は上書きしない)
-  let 自動入荷=0;
+  let 自動入荷=0, 入荷表示統一=0;
   if(M.入荷>=0){
     const rs=受注hdr+1, rl=recv.getLastRow();
     if(rl>=rs){
@@ -1406,7 +1411,18 @@ function 引当実行_本体_(){
           入荷col[idx][0]=code到着[l.matchedKey]; 自動入荷++;
         }
       });
-      if(自動入荷){ recv.getRange(rs,M.入荷+1,入荷col.length,1).setValues(入荷col).setNumberFormat('yyyy-mm-dd'); }
+      // 【表示ゆれの正規化】手入力の「26/07/09(木)」等の文字列日付を日付値に直し、列全体を yyyy-MM-dd 表示に統一する
+      // (自動記入は日付値・手入力は文字列で形がバラバラになるため。日付らしい文字列だけ触り、読めないメモ等はそのまま)
+      for(let idx=0; idx<入荷col.length; idx++){
+        const v=入荷col[idx][0];
+        if(v==='' || v==null || v instanceof Date) continue;
+        const t=String(v).trim();
+        if(!/^(?:20\d{2}|\d{2})[\/\-.]\d{1,2}[\/\-.]\d{1,2}/.test(t)) continue;
+        const s=ymd_(t); if(!/^20\d{2}-\d{2}-\d{2}$/.test(s)) continue;
+        const dd=new Date(s+'T00:00:00'); if(isNaN(dd.getTime())) continue;
+        入荷col[idx][0]=dd; 入荷表示統一++;
+      }
+      if(自動入荷||入荷表示統一){ recv.getRange(rs,M.入荷+1,入荷col.length,1).setValues(入荷col).setNumberFormat('yyyy-mm-dd'); }
     }
   }
 
@@ -1432,7 +1448,7 @@ function 引当実行_本体_(){
     const ui=SpreadsheetApp.getUi();
     // 要確認(宙)だけを目立たせ、正常な出荷済み消込は件数だけ(詳細は発送済みシート)にして情報過多を避ける
     const 突合行= 突合宙.length
-      ? '⚠️ 要確認：箱と合わない割当 '+突合宙.length+'件（各1個ずつ、二重引当/誤入荷日の疑い）\n'
+      ? '⚠️ 要確認：箱と合わない割当 '+突合宙.length+'件（二重引当/誤入荷日の疑い）\n'
         +突合宙.slice(0,15).join('\n')+(突合宙.length>15? '\n…他'+(突合宙.length-15)+'件':'')
         +'\n→ 気になる分だけ 🔎商品診断 で1個単位で確認（急ぎでなければ後回しでOK）'
       : '✅ 整合OK 『'+突合式+'』';
@@ -1440,7 +1456,7 @@ function 引当実行_本体_(){
     ui.alert(ok? '✅ 引当完了（整合OK）' : '⚠️ 引当完了（要確認 '+突合宙.length+'件）',
       '■ 突合せ（引当＋在庫 と EMS到着済）\n'+突合行
       +'\n\n■ 注文の分類\n出荷可能 '+ship+' ／ 出荷GO未入金 '+keep+' ／ 希望日待ち '+hold+' ／ 部分在庫 '+part+' ／ 引当待ち '+(ord-ship-keep-hold-part)+'（うち入金待ち '+mp+'）'
-      +'\n\n■ 処理内容\n入荷日自動記入 '+自動入荷+'件 ／ P列確定 '+確定行数+'行 ／ 発送済み消込 '+出荷済行.length+'件（内訳は「発送済み」シート）'
+      +'\n\n■ 処理内容\n入荷日自動記入 '+自動入荷+'件'+(入荷表示統一?'（表示をyyyy-MM-ddに統一 '+入荷表示統一+'件）':'')+' ／ P列確定 '+確定行数+'行 ／ 発送済み消込 '+出荷済行.length+'件（内訳は「発送済み」シート）'
       +(隠れ? '\n\n⚠️ '+隠れ+'：行が隠れています（🔻フィルタ確認/解除で全解除）':''),
       ui.ButtonSet.OK);
   }

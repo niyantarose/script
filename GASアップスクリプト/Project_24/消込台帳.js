@@ -89,11 +89,12 @@ function 消込台帳更新_(){
   return {新規, 新規出荷済, 復活};
 }
 
-// 引き当てで在庫から差し引くべき「出荷済み」行を返す → [{ban,code,sku,qty,入荷日}]
+// 引き当てで在庫から差し引くべき「出荷済み」行を返す → [{ban,code,sku,qty,入荷日,基準日}]
 // 状態が「出荷済み」で始まる行(自動の「出荷済み?」/手動確定の「出荷済み」どちらも)。
 // 入荷日(なければ消滅日)が有効日数より古いものは、もう今の在庫とは無関係なので除外。
 // 入荷日=その注文が実際に受けた箱の到着日。呼び出し側は「入荷日=箱の到着日」が一致する箱だけに紐付けること
 // (一致しない出荷済みは別の箱/即納在庫から出た分なので、新しく着いた箱を食わせない)。
+// 基準日=発送日の目安(消滅日→なければ初回記録)。入荷日なし行を「発送日以前に到着した箱」だけに食わせる判定用。
 function 消込台帳_出荷済み行_(){
   const ss=SpreadsheetApp.getActive(), cfg=KESHIKOMI_CFG;
   const sh=ss.getSheetByName(cfg.シート);
@@ -107,7 +108,7 @@ function 消込台帳_出荷済み行_(){
     const base=r[4]||r[7]; // 入荷日→なければ消滅日
     const d= base instanceof Date? base : new Date(String(base||''));
     if(!isNaN(d.getTime()) && d.getTime()<limit.getTime()) return;
-    out.push({ban:String(r[0]||'').trim(), code:String(r[1]||'').trim(), sku:String(r[2]||'').trim(), qty, 入荷日:r[4]});
+    out.push({ban:String(r[0]||'').trim(), code:String(r[1]||'').trim(), sku:String(r[2]||'').trim(), qty, 入荷日:r[4], 基準日:r[7]||r[6]});
   });
   return out;
 }
