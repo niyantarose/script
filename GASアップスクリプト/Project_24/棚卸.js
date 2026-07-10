@@ -28,15 +28,39 @@ function 棚卸箱の下書きを生成本体_(){
   if(!newest){ ui.alert('フォルダ「'+TANAOROSHI_CFG.フォルダ名+'」にCSVがありません'); return; }
 
   const text=newest.getBlob().getDataAsString('Shift_JIS');
-  const rows=Utilities.parseCsv(text);
-  if(!rows.length){ ui.alert('CSVが空です: '+newest.getName()); return; }
+  // Utilities.parseCsv は商品名内の不正な引用符などで全体が「テキストを解析できませんでした」に
+  // なるため使わない。1行ずつ寛容に分解し、壊れた行はスキップして続行する。
+  const lines=text.split(/\r?\n/);
+  if(lines.length<2){ ui.alert('CSVが空です: '+newest.getName()); return; }
+
+  // "a","b","c" 形式の1行をフィールド配列へ(引用符の "" エスケープ対応)
+  function 行分解_(line){
+    const out=[]; let cur=''; let inQ=false;
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      if(inQ){
+        if(ch==='"'){ if(line[i+1]==='"'){ cur+='"'; i++; } else { inQ=false; } }
+        else cur+=ch;
+      } else {
+        if(ch==='"') inQ=true;
+        else if(ch===','){ out.push(cur); cur=''; }
+        else cur+=ch;
+      }
+    }
+    out.push(cur);
+    return out;
+  }
 
   // 列: code,name,sub-code,quantity,...(先頭行がヘッダー)
   const a在庫={};   // 基底コード -> 即納aの在庫数(自由在庫)
   const 商品名={};  // 基底コード -> 商品名
   const subなし=[]; // sub-code無しで在庫>0(a/b運用外。要確認)
-  for(let i=1;i<rows.length;i++){
-    const r=rows[i]; if(!r || r.length<4) continue;
+  let 解析スキップ=0;
+  for(let i=1;i<lines.length;i++){
+    const line=lines[i]; if(!line || !line.trim()) continue;
+    let r;
+    try{ r=行分解_(line); }catch(e){ 解析スキップ++; continue; }
+    if(!r || r.length<4){ 解析スキップ++; continue; }
     const code=String(r[0]||'').trim(), name=String(r[1]||'').trim();
     const sub=String(r[2]||'').trim(), qty=Number(r[3])||0;
     if(!sub){ if(qty>0 && subなし.length<50) subなし.push(code+' x'+qty); continue; }
@@ -128,7 +152,8 @@ function 棚卸箱の下書きを生成本体_(){
   }
   ss.setActiveSheet(rep);
   ui.alert('棚卸箱下書き 完成',
-    out.length+'コードを出力しました（CSV: '+newest.getName()+'）。\n\n'+
+    out.length+'コードを出力しました（CSV: '+newest.getName()+'）。\n'+
+    (解析スキップ? '※解析できず読み飛ばした行: '+解析スキップ+'行\n':'')+'\n'+
     '次の手順:\n'+
     '1) 一覧を確認（⚠️整合チェックの数量超過に出た商品は現物と突き合わせて数量を直す）\n'+
     '2) A〜E列を発注共有のEMSリストへ「棚卸箱」として貼る\n'+
