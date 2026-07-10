@@ -86,6 +86,12 @@ function 台湾_日本語タイトルを照会() {
         try {
           jp = 台湾照会_MUで日本語題_(クエリ候補[q]);
           if (jp) 供給元 = 'MangaUpdates';
+        } catch (e) { /* 続行してBangumiへ */ }
+      }
+      if (!jp) {
+        try {
+          jp = 台湾照会_Bangumiで日本語題_(クエリ候補[q]);
+          if (jp) 供給元 = 'Bangumi';
         } catch (e) { /* 次の候補へ */ }
       }
     }
@@ -166,6 +172,61 @@ function 台湾照会_aniListで日本語題_(query) {
     for (let c = 0; c < 候補.length; c += 1) {
       if (台湾照会_かな有_(候補[c])) return String(候補[c]).trim();
     }
+  }
+  return '';
+}
+
+/** 漢字（CJK統合漢字）だけを重複なしで集める */
+function 台湾照会_漢字集合_(v) {
+  const out = {};
+  const s = String(v || '');
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i];
+    if (/[㐀-䶿一-鿿]/.test(c)) out[c] = true;
+  }
+  return out;
+}
+
+/**
+ * Bangumi (bgm.tv): 中華圏ACGデータベース。「中文名⇔日本語原名」ペアを人手登録しており、
+ * aniList/MUに無い日本原作（BL・マイナー作品）に強い（例: 伏魔師祓清 → 悪祓士のキヨシくん、
+ * 男孩子氣的女友超級可愛 → ボーイッシュ彼女が可愛すぎる）。
+ * 検証: 中文名とクエリの漢字重なり（簡繁字体差があるため共通漢字数で判定）＋原名かな入り必須。
+ */
+function 台湾照会_Bangumiで日本語題_(query) {
+  const q = String(query || '').trim();
+  if (!q) return '';
+  const qHan = 台湾照会_漢字集合_(q);
+  const qHanCount = Object.keys(qHan).length;
+  if (!qHanCount) return '';
+
+  const res = UrlFetchApp.fetch(
+    'https://api.bgm.tv/search/subject/' + encodeURIComponent(q) + '?type=1&responseGroup=small&max_results=6',
+    { muteHttpExceptions: true }
+  );
+  if (res.getResponseCode() !== 200) return '';
+  let data;
+  try { data = JSON.parse(res.getContentText()); } catch (e) { return ''; }
+  const list = data && Array.isArray(data.list) ? data.list : [];
+
+  const 必要重なり = Math.max(2, Math.ceil(qHanCount * 0.5));
+  for (let i = 0; i < list.length; i += 1) {
+    const item = list[i] || {};
+    const 原名 = String(item.name || '').trim();
+    const 中文名 = String(item.name_cn || '').trim();
+    if (!原名 || !中文名) continue; // 中文名が無い項目（巻分エントリ等）は検証不能なのでスキップ
+    if (!台湾照会_かな有_(原名)) continue; // 日本語原名（かな入り）のみ。ハングル・中文名は不採用
+    // 簡体字/繁体字の字体差があっても共通の漢字は多く残る（伏魔師祓清⇔伏魔师祓清→4字共通）
+    const cnHan = 台湾照会_漢字集合_(中文名);
+    let 共通 = 0;
+    for (const c in qHan) {
+      if (Object.prototype.hasOwnProperty.call(cnHan, c)) 共通 += 1;
+    }
+    if (共通 < 必要重なり) continue;
+    // 末尾の巻数・上下表記を除去して作品名として返す（例: 后宮のオメガ (上) → 后宮のオメガ）
+    return 原名
+      .replace(/\s*[（(]\s*(?:\d{1,3}|上|下|前編|後編)\s*[)）]\s*$/u, '')
+      .trim();
   }
   return '';
 }
