@@ -97,4 +97,12 @@ test('在庫反映済み履歴だけの行はラベンダーを維持する', ()
   assert.strictEqual(context.引当行状態_(line, cfg, () => false).color, 'lavender');
 });
 
+test('ymd_はGoogleシリアル日(46212)を46212-01-01に誤読しない', () => {
+  assert.strictEqual(context.ymd_(46212), '2026-07-09');
+  assert.strictEqual(context.ymd_('46212'), '2026-07-09');
+  assert.strictEqual(context.ymd_(46214), '2026-07-11');
+  assert.strictEqual(context.ymd_('2026-07-09'), '2026-07-09');
+  assert.strictEqual(context.ymd_('26/07/09(木)'), '2026-07-09');
+});
+
 if (failures) process.exit(1);
