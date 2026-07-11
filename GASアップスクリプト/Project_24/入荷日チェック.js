@@ -1,3 +1,67 @@
+// ===== 旧棚卸割当だけを解除して実EMSで再引当 =====
+// 在庫反映済みの実EMS割当・実EMS番号・履歴は保持し、旧「棚卸...」由来だけを除去する。
+function 旧棚卸割当だけを解除して再引当(){ 直列_(旧棚卸割当だけを解除して再引当本体_); }
+function 旧棚卸割当だけを解除して再引当本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const recv=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!recv){ ui.alert('「'+HIKIATE_CFG.受注+'」タブがありません'); return; }
+  const M=列マップ_(recv), head=recv.getRange(M.hr,1,1,recv.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
+  const cE=head.indexOf('EMS番号');
+  if(M.入荷<0 || cE<0){ ui.alert('受注明細に「入荷日」または「EMS番号」列がありません'); return; }
+
+  const R=recv.getDataRange().getValues(), n=R.length-M.hr;
+  const 対象=[];
+  for(let i=M.hr;i<R.length;i++) if(/^棚卸/i.test(String(R[i][cE]||'').trim())) 対象.push(i-M.hr);
+  if(!対象.length){ ui.alert('旧棚卸EMS番号の付いた受注明細はありません。'); return; }
+
+  const a=ui.alert('旧棚卸割当だけを解除',
+    '旧「棚卸...」由来の '+対象.length+' 明細だけ、EMS番号と韓国取り寄せの入荷日を解除します。\n\n'+
+    '在庫反映済みを含む実EMS番号・実EMSの入荷日・実EMS履歴は保持します。\n'+
+    '実行前に引当ファイル全体を自動バックアップし、その後②を自動実行します。\n\n続行しますか？', ui.ButtonSet.OK_CANCEL);
+  if(a!==ui.Button.OK) return;
+  const b=ui.prompt('最終確認','「棚卸だけ」と入力してください',ui.ButtonSet.OK_CANCEL);
+  if(b.getSelectedButton()!==ui.Button.OK || String(b.getResponseText()||'').trim()!=='棚卸だけ'){
+    ui.alert('中止しました(何も変更していません)'); return;
+  }
+
+  let backup='';
+  try{
+    const file=DriveApp.getFileById(ss.getId()), parents=file.getParents();
+    backup='引当ファイル_旧棚卸解除前_'+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyyMMdd_HHmmss');
+    const copy=parents.hasNext()?file.makeCopy(backup,parents.next()):file.makeCopy(backup);
+    if(!copy || !copy.getId()) throw new Error('コピーのIDが取得できません');
+  }catch(e){ ui.alert('バックアップ作成に失敗したため中止しました。\n\n'+e.message); return; }
+
+  const er=recv.getRange(M.hr+1,cE+1,n,1), ev=er.getValues();
+  const ir=recv.getRange(M.hr+1,M.入荷+1,n,1), iv=ir.getValues();
+  let 入荷クリア=0;
+  対象.forEach(idx=>{
+    ev[idx][0]='';
+    const row=R[M.hr+idx];
+    const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
+    if(!別ルート && String(iv[idx][0]||'').trim()!==''){ iv[idx][0]=''; 入荷クリア++; }
+  });
+  er.setValues(ev); ir.setValues(iv);
+
+  // 旧棚卸由来の履歴だけを消し、実EMS履歴は残す。
+  let 履歴クリア=0;
+  try{
+    const hsh=ss.getSheetByName(HIKIATE_HISTORY_CFG.シート);
+    if(hsh && hsh.getLastRow()>1){
+      const hv=hsh.getDataRange().getValues(), hh=hv[0].map(v=>String(v||'').trim()), he=hh.indexOf('EMS番号');
+      if(he>=0){
+        const a1=[];
+        for(let i=1;i<hv.length;i++) if(/^棚卸/i.test(String(hv[i][he]||'').trim())){ a1.push((i+1)+':'+(i+1)); 履歴クリア++; }
+        if(a1.length) hsh.getRangeList(a1).clearContent();
+      }
+    }
+  }catch(e){}
+
+  SpreadsheetApp.flush();
+  ss.toast('旧棚卸割当 '+対象.length+'明細を解除（入荷日 '+入荷クリア+'／履歴 '+履歴クリア+'）。②を実EMSだけで再実行します。','🧹棚卸解除',8);
+  引当実行_本体_();
+}
+
 // ===== 引当データの全リセット(再構築用) =====
 // 入荷日スタンプと引当履歴に過去の誤り(幽霊スタンプ・締めの早すぎ等)が堆積したとき、
 // 現在の事実(EMSリストの箱・P列名指し・消込台帳・現物)だけからやり直すための機能。

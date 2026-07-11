@@ -67,7 +67,7 @@ function onOpen(){
     .addItem('🔎 商品診断(商品コードで調べる)', '商品診断')
     .addItem('🔎 入荷日の整合チェック(誤記入の検出)', '入荷日整合チェック')
     .addItem('🧹 チェック一覧の入荷日をクリア', '入荷日チェック_一覧をクリア')
-    .addItem('🔄 引当データの全リセット(入荷日+履歴を消して再構築)', '引当データの全リセット')
+    .addItem('🧹 旧棚卸割当だけを解除して実EMSで再引当', '旧棚卸割当だけを解除して再引当')
     .addItem('🧮 全件検算レポート(EMS×台帳×受注×Yahooの突き合わせ)', '全件検算レポート')
     .addItem('🔍 在庫照合レポート', '在庫照合レポート')
     .addToUi();
@@ -293,6 +293,14 @@ function 取込_ダニエルEMS(){
 function 実EMS番号_(v){
   const s=String(v==null?'':v).trim();
   return !!s && !/^棚卸/i.test(s);
+}
+
+// 受注明細のEMS番号を書き戻す時、在庫反映済みなど過去の実EMS割当は保持する。
+// 未割当行と旧棚卸番号は消し、今回の実EMSが決まった行だけ新しい番号へ置き換える。
+function EMS番号書戻し値_(現在値, line){
+  if(line && 実EMS番号_(line.箱EMS)) return String(line.箱EMS).trim();
+  if(line && (line.入荷 || line.履歴成立) && 実EMS番号_(現在値)) return String(現在値).trim();
+  return '';
 }
 
 // EMS在庫の生データを返す(1行ヘッダーがあれば除外)。offset=データ先頭のシート行番号(1始)
@@ -1497,8 +1505,8 @@ function 引当実行_本体_(){
     if(rl>=rs){
       const emsC=EMS番号列を用意_(recv); // 個数の隣。無ければ作る(1始まり)
       const col=recv.getRange(rs,emsC,rl-rs+1,1).getValues();
-      for(let idx=0;idx<col.length;idx++) col[idx][0]=''; // 一旦クリア(前回の割当が残らないように)
-      lines.forEach(l=>{ const idx=l.i-受注hdr; if(idx>=0 && idx<col.length && l.箱EMS) col[idx][0]=l.箱EMS; });
+      const byIdx={}; lines.forEach(l=>byIdx[l.i-受注hdr]=l);
+      for(let idx=0;idx<col.length;idx++) col[idx][0]=EMS番号書戻し値_(col[idx][0], byIdx[idx]);
       recv.getRange(rs,emsC,col.length,1).setValues(col);
     }
   }
