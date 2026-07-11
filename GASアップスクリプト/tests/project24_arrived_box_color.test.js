@@ -5,7 +5,8 @@ const vm = require('vm');
 const headers = ['ステータス列', 'EMS到着日', '商品コード', '数量', 'EMS番号', '注文番号'];
 const rows = [
   ['到着済', '2026-07-10', 'MOFUN-AS-04', '4', 'EG049624664KR', '10117178:1'],
-  ['在庫反映済み', '2026-07-09', 'TAROT10', '1', 'EG049624465KR', '10117173']
+  ['在庫反映済み', '2026-07-09', 'TAROT10', '1', 'EG049624465KR', '10117173'],
+  ['到着済', '2026-07-10', 'FAKE-01', '9', '棚卸20260710', '10117179']
 ];
 
 const range = (values, displayValues = values) => ({
@@ -13,7 +14,7 @@ const range = (values, displayValues = values) => ({
   getDisplayValues: () => displayValues
 });
 const sheet = {
-  getLastRow: () => 8,
+  getLastRow: () => 9,
   getLastColumn: () => headers.length,
   getRange: row => row === 6 ? range([headers]) : range(rows)
 };
@@ -47,6 +48,24 @@ test('到着済P列確定マップは実到着日とEMS番号を保持する', (
   assert.strictEqual(entry.arrival, '2026-07-10');
   assert.strictEqual(entry.ems, 'EG049624664KR');
   assert.strictEqual(context.P列確定マップ_()['10117173'], undefined);
+  assert.strictEqual(context.P列確定マップ_()['10117179'], undefined);
+});
+
+test('EMS明細は実EMSだけを供給にし、棚卸と番号空欄は数量0にする', () => {
+  const values = [
+    ['状態', '到着日', '商品コード', '数量', 'EMS番号'],
+    ['到着済', '2026-07-10', 'REAL-01', 2, 'EG049624664KR'],
+    ['到着済', '2026-07-10', 'FAKE-01', 9, '棚卸20260710'],
+    ['到着済', '2026-07-10', 'NOEMS-01', 4, '']
+  ];
+  const emv = { getDataRange: () => range(values) };
+  const r = context.EMS明細_(emv);
+  assert.strictEqual(r.rows.length, 3); // シート行との対応は維持する
+  assert.strictEqual(r.rows[0][r.cols.コード], 'REAL-01');
+  assert.strictEqual(r.rows[1][r.cols.コード], '');
+  assert.strictEqual(r.rows[1][r.cols.数量], 0);
+  assert.strictEqual(r.rows[2][r.cols.コード], '');
+  assert.strictEqual(r.除外, 2);
 });
 
 test('古い入荷日でも到着済P列で確定した行は今回便になる', () => {
@@ -72,4 +91,3 @@ test('在庫反映済み履歴だけの行はラベンダーを維持する', ()
 });
 
 if (failures) process.exit(1);
-

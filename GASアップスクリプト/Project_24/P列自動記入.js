@@ -169,6 +169,7 @@ function 発注共有P列記入_(){
   const colC=(eh.indexOf('商品コード')>=0? eh.indexOf('商品コード'):8)+1;
   const colQ=(eh.indexOf('数量')>=0? eh.indexOf('数量'):9)+1;
   const colA=(eh.indexOf('EMS到着日')>=0? eh.indexOf('EMS到着日') : (eh.indexOf('到着日')>=0? eh.indexOf('到着日') : 4))+1; // E列既定
+  const colE=eh.indexOf('EMS番号')+1;
   if(colP===0) return {error:'EMSリストの'+hr+'行目に「注文番号」見出しがありません'};
 
   const n=last-hr;
@@ -177,8 +178,10 @@ function 発注共有P列記入_(){
   const qy=ems.getRange(hr+1,colQ,n,1).getValues();
   const pv=ems.getRange(hr+1,colP,n,1).getDisplayValues();
   const av=ems.getRange(hr+1,colA,n,1).getDisplayValues();
+  const ev=colE>0? ems.getRange(hr+1,colE,n,1).getDisplayValues() : null;
   const rows=[];
   for(let i=0;i<n;i++){
+    if(!ev || !実EMS番号_(ev[i][0])) continue; // 実EMS番号が無い行・棚卸箱へP列を書かない
     const pno=String(pu[i][0]||'').trim(), code=String(cd[i][0]||'').trim();
     if(!pno||!code) continue;
     const m=pno.match(/^(\d{4})(\d{2})(\d{2})/); if(!m) continue; // 購入No.先頭8桁=発注日

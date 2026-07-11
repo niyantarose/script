@@ -116,6 +116,23 @@ test('全件検算_集計_: 箱の個数以上の消費は⚠️超過消費', (
   assert.strictEqual(r.counts['⚠️超過消費'], 1);
 });
 
+test('全件検算_集計_: 棚卸箱は供給に数えず実EMSだけを使う', () => {
+  const r = context.全件検算_集計_({
+    ems: [
+      { code: 'TEST-REAL', st: '到着済', qty: 2, arrival: '2026-07-10', ems: 'EG049624664KR' },
+      { code: 'TEST-REAL', st: '到着済', qty: 9, arrival: '2026-07-10', ems: '棚卸20260710' },
+      { code: 'TEST-REAL', st: '到着済', qty: 4, arrival: '2026-07-10', ems: '' }
+    ],
+    出荷済: [],
+    受注: [{ code: 'TEST-REAL', sku: '', qty: 3, 選択肢: '取り寄せ', 商品名: '', 入荷日: '' }],
+    a在庫: null
+  });
+  const a = row(r, 'TEST-REAL');
+  assert.strictEqual(a.到着済, 2);
+  assert.strictEqual(a.待ち, 3);
+  assert.strictEqual(a.判定, '📦供給不足');
+});
+
 test('全件検算_集計_: どの箱とも一致しない入荷日は⚠️入荷日ズレ', () => {
   const r = context.全件検算_集計_({
     ems: [{ code: 'TEST-01', st: '到着済', qty: 5, arrival: '2026-07-01' }],

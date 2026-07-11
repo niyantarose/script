@@ -60,7 +60,7 @@ function onOpen(){
     .addItem('☑ EMS番号罫線ボタンを設置', '在庫EMS番号罫線ボタンを設置')
     .addSeparator()
     .addItem('① 前段階チェック(即納に水色＋罫線)', '前段階チェック_即納')
-    .addItem('② 引き当て実行(EMS在庫・入荷日で判定)', '引当実行')
+    .addItem('② 引き当て実行(実EMSリストのみ)', '引当実行')
     .addItem('📦 到着済を在庫反映済みへ(便の締め)', '到着済を在庫反映済みへ')
     .addItem('⚖️ この便の引当をやり直す(到着日指定)', '便の引当をやり直す')
     .addItem('🔎 引当診断(受注番号で調べる)', '引当診断')
@@ -68,8 +68,6 @@ function onOpen(){
     .addItem('🔎 入荷日の整合チェック(誤記入の検出)', '入荷日整合チェック')
     .addItem('🧹 チェック一覧の入荷日をクリア', '入荷日チェック_一覧をクリア')
     .addItem('🔄 引当データの全リセット(入荷日+履歴を消して再構築)', '引当データの全リセット')
-    .addItem('📦 棚卸箱の下書きを生成(Yahoo在庫CSV×未出荷注文)', '棚卸箱の下書きを生成')
-    .addItem('📦 棚卸箱をEMSリストへ追記(下書き確認後に)', '棚卸箱をEMSリストへ追記')
     .addItem('🧮 全件検算レポート(EMS×台帳×受注×Yahooの突き合わせ)', '全件検算レポート')
     .addItem('🔍 在庫照合レポート', '在庫照合レポート')
     .addToUi();
@@ -289,7 +287,16 @@ function 取込_ダニエルEMS(){
   ss.toast('ダニエルEMS取込完了：'+rows.length+'件 / 発送日'+dates.join(',')+'（'+latest.getName()+'）','📦ダニエルEMS',6);
 }
 
+// 実在するEMS番号だけを供給として認める。
+// 「棚卸...」は待ち需要から作った机上数量で、実物のEMS入荷ではないため必ず除外する。
+// EMS番号空欄も出どころを追えないので、引当には使わない。
+function 実EMS番号_(v){
+  const s=String(v==null?'':v).trim();
+  return !!s && !/^棚卸/i.test(s);
+}
+
 // EMS在庫の生データを返す(1行ヘッダーがあれば除外)。offset=データ先頭のシート行番号(1始)
+// 行位置は色付け用に維持しつつ、実EMSでない行はコード空欄・数量0にして全引当処理から無効化する。
 function EMS明細_(emv){
   const all=emv.getDataRange().getValues();
   let s=0, cols={コード:1, 数量:2, EMS番号:3, 到着:-1}; // 既定(ヘッダー無し時の固定位置)
@@ -300,7 +307,16 @@ function EMS明細_(emv){
       cols={ コード: ci>=0?ci:1, 数量: qi>=0?qi:2, EMS番号: ei>=0?ei:3, 到着: ai };
     }
   }
-  return { rows: all.slice(s), offset: s+1, cols };
+  let 除外=0;
+  const rows=all.slice(s).map(row=>{
+    if(実EMS番号_(row[cols.EMS番号])) return row;
+    const copy=row.slice();
+    if(cols.コード>=0) copy[cols.コード]='';
+    if(cols.数量>=0) copy[cols.数量]=0;
+    if(String(row[cols.コード]||'').trim() || (Number(row[cols.数量])||0)) 除外++;
+    return copy;
+  });
+  return { rows, offset: s+1, cols, 除外 };
 }
 
 // 受注明細の各列の位置を「見出し名」から特定する(列の並び替え・追加に強くする)
@@ -1529,6 +1545,7 @@ function 引当実行_本体_(){
       +(P入荷日訂正? ' ／ 🔧P列確定の入荷日訂正 '+P入荷日訂正+'件':'')
       +(ズレ修復? ' ／ 🔧入荷日ズレ修復 '+ズレ修復+'件（P列に無い注文を箱の到着日に貼り直し）':'')
       +' ／ P列確定 '+確定行数+'行 ／ 発送済み消込 '+出荷済行.length+'件（内訳は「発送済み」シート）'
+      +(emsD.除外? ' ／ 🚫棚卸・EMS番号なしを供給除外 '+emsD.除外+'行':'')
       +(隠れ? '\n\n⚠️ '+隠れ+'：行が隠れています（🔻フィルタ確認/解除で全解除）':''),
       ui.ButtonSet.OK);
   }

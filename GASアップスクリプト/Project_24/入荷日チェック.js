@@ -43,7 +43,7 @@ function 引当データの全リセット本体_(){
   }
 
   const lock=LockService.getDocumentLock(); lock.waitLock(30000);
-  let cleared=0, kept=0, histCleared=0;
+  let cleared=0, kept=0, histCleared=0, 棚卸EMSクリア=0;
   try{
     const R=recv.getDataRange().getValues();
     const n=R.length-M.hr;
@@ -61,6 +61,16 @@ function 引当データの全リセット本体_(){
         cleared++;
       }
       colRange.setValues(colVals);
+      // 旧棚卸箱のEMS番号も実EMSではないため同時に除去する。実EMS番号は保持する。
+      const h=recv.getRange(M.hr,1,1,recv.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
+      const cE=h.indexOf('EMS番号');
+      if(cE>=0){
+        const er=recv.getRange(M.hr+1,cE+1,n,1), ev=er.getValues();
+        for(let i=0;i<ev.length;i++){
+          if(/^棚卸/i.test(String(ev[i][0]||'').trim())){ ev[i][0]=''; 棚卸EMSクリア++; }
+        }
+        er.setValues(ev);
+      }
       // 行の背景色(黄/ラベンダー等)は②が管理しているので一括クリア。②再実行で正しい色が貼り直される
       recv.getRange(M.hr+1, 1, n, recv.getLastColumn()).setBackground(null);
     }
@@ -78,6 +88,7 @@ function 引当データの全リセット本体_(){
 
   ui.alert('リセット完了',
     '入荷日クリア: '+cleared+'行（台湾/中国ルート保持: '+kept+'行）\n'+
+    '旧棚卸EMS番号クリア: '+棚卸EMSクリア+'行\n'+
     '引当履歴クリア: '+histCleared+'行\n'+
     'バックアップ: '+バックアップ名+'（元ファイルと同じフォルダ）\n\n'+
     '次の手順:\n'+
