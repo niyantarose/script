@@ -21,6 +21,7 @@ function 棚卸箱をEMSリストへ追記(){
   SpreadsheetApp.getUi().alert('この機能は停止しました。\n\n棚卸数量は実EMS入荷ではないため、EMSリストへ供給として追加しません。');
 }
 function 棚卸箱をEMSリストへ追記本体_(){
+  SpreadsheetApp.getUi().alert('この機能は停止しました。棚卸数量をEMS供給へ追加しません。'); return;
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
   const rep=ss.getSheetByName(TANAOROSHI_CFG.出力シート);
   if(!rep || rep.getLastRow()<3){ ui.alert('「'+TANAOROSHI_CFG.出力シート+'」がありません。先に 📦 棚卸箱の下書きを生成 を実行してください。'); return; }
@@ -152,6 +153,7 @@ function 棚卸箱の下書きを生成(){
   SpreadsheetApp.getUi().alert('この機能は停止しました。\n\n引当の供給源は発注共有の実EMSリストだけです。Yahoo在庫CSVは全件検算の比較材料にのみ使います。');
 }
 function 棚卸箱の下書きを生成本体_(){
+  SpreadsheetApp.getUi().alert('この機能は停止しました。引当供給は実EMSリストだけです。'); return;
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
 
   // --- 1) Yahoo在庫CSV(フォルダ内で最新のもの)を読む ---

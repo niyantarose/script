@@ -202,6 +202,7 @@ function 入荷日整合_スキャン_(){
   const cSt=f('ステータス列');
   const cQ=f('数量','個数');
   const cP=f('注文番号');
+  const cE=f('EMS番号');
   if(cC<0) return {error:'EMSリストの'+hr+'行目に「商品コード」見出しがありません'};
   const vals=sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getValues();
   // ②の引当は「到着済」の箱しか見ない(EMS在庫タブのQUERYと同じ)ので、照合もステータスで分ける。
@@ -211,6 +212,7 @@ function 入荷日整合_スキャン_(){
   const 反映済み供給={}; // ymd -> {元コード: 個数}。締め済み(在庫反映済み)箱の中身。幽霊スタンプ検出用
   const 反映済み名指し={}; // ymd -> {元コード: Set(P列の注文番号)}。実物の持ち主の証拠
   vals.forEach(r=>{
+    if(cE<0 || !実EMS番号_(r[cE])) return; // 棚卸箱・EMS番号空欄は到着実績として扱わない
     const code=normCode_(r[cC]); if(!code) return;
     const d=ymd_(r[cA]); if(!d) return;
     const st=cSt>=0? String(r[cSt]||'').trim() : '到着済'; // ステータス列が無い古い形式は従来通り全行を到着済扱い
