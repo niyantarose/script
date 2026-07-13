@@ -1,5 +1,14 @@
 // ===== 旧棚卸割当だけを解除して実EMSで再引当 =====
 // 在庫反映済みの実EMS割当・実EMS番号・履歴は保持し、旧「棚卸...」由来だけを除去する。
+function 旧棚卸割当解除値_(ems番号, 入荷日, 別ルート){
+  const ems=String(ems番号==null?'':ems番号).trim();
+  const 対象=/^棚卸/i.test(ems);
+  return {
+    対象:対象,
+    EMS番号:対象?'':ems,
+    入荷日:対象 && !別ルート ? '' : 入荷日
+  };
+}
 function 旧棚卸割当だけを解除して再引当(){ 直列_(旧棚卸割当だけを解除して再引当本体_); }
 function 旧棚卸割当だけを解除して再引当本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
@@ -36,10 +45,15 @@ function 旧棚卸割当だけを解除して再引当本体_(){
   const ir=recv.getRange(M.hr+1,M.入荷+1,n,1), iv=ir.getValues();
   let 入荷クリア=0;
   対象.forEach(idx=>{
-    ev[idx][0]='';
     const row=R[M.hr+idx];
-    const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
-    if(!別ルート && String(iv[idx][0]||'').trim()!==''){ iv[idx][0]=''; 入荷クリア++; }
+    const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) ||
+      (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
+    const next=旧棚卸割当解除値_(ev[idx][0], iv[idx][0], 別ルート);
+    ev[idx][0]=next.EMS番号;
+    if(next.入荷日!==iv[idx][0]){
+      iv[idx][0]=next.入荷日;
+      入荷クリア++;
+    }
   });
   er.setValues(ev); ir.setValues(iv);
 
