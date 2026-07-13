@@ -42,7 +42,11 @@ function showSidebar() {
   SpreadsheetApp.getUi().showSidebar(html);
 }
 
-function onOpen() {
+// ※ここに onOpen() を定義しないでください。
+//   onOpen は【統合】onOpen管理.js に一本化されています。同名関数を定義すると
+//   そちらを上書きしてしまい、手動運用・EMS自社用などのメニューが全部消えます。
+//   （この関数は統合onOpenから呼ばれます）
+function インボイスメニューを追加_() {
   SpreadsheetApp.getUi()
     .createMenu('インボイス作成')
     .addItem('📦 積荷NOW 転記サイドバー', 'showSidebar')
