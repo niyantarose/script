@@ -158,4 +158,23 @@ test('旧棚卸解除後はP列書き直しから手動で進める', () => {
   assert.strictEqual(body.includes('引当実行_本体_();'), false);
 });
 
+test('OFWの待ち需要が残存する実EMS供給と同数なら供給不足にしない', () => {
+  const result = context.全件検算_集計_({
+    ems: [
+      { code: 'OFW304-1', st: '到着済', qty: 2, arrival: '2026-07-10', ems: 'EG000000003KR' },
+      { code: 'OFW304-1', st: '到着済', qty: 5, arrival: '2026-07-10', ems: '棚卸20260710' },
+      { code: 'OFW304-1', st: '到着済', qty: 7, arrival: '2026-07-10', ems: '' }
+    ],
+    出荷済: [],
+    受注: [
+      { code: 'OFW304-1', sku: '', qty: 2, 選択肢: '韓国取り寄せ', 商品名: '', 入荷日: '' }
+    ],
+    a在庫: null
+  });
+  const ofw = result.rows.find(row => row.code === 'OFW304-1');
+  assert.strictEqual(ofw.到着済, 2);
+  assert.strictEqual(ofw.待ち, 2);
+  assert.strictEqual(ofw.判定, 'OK');
+});
+
 if (failures) process.exit(1);
