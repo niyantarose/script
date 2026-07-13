@@ -71,5 +71,15 @@ test('在庫反映済み履歴だけの行はラベンダーを維持する', ()
   assert.strictEqual(context.引当行状態_(line, cfg, () => false).color, 'lavender');
 });
 
-if (failures) process.exit(1);
+test('旧処理が作った西暦46213年の入荷日をシリアル46213として2026-07-10へ戻す', () => {
+  const broken = new Date(0);
+  broken.setFullYear(46213, 0, 1);
+  broken.setHours(0, 0, 0, 0);
 
+  assert.strictEqual(context.ymd_(broken), '2026-07-10');
+  const corrected = context.入荷日シート値補正_(broken);
+  assert.ok(corrected instanceof Date);
+  assert.strictEqual(context.ymd_(corrected), '2026-07-10');
+});
+
+if (failures) process.exit(1);

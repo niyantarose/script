@@ -1007,11 +1007,26 @@ function ymdFromSheetSerial_(serial){
   const p=n=>('0'+n).slice(-2);
   return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate());
 }
+// 旧処理がシリアル値 46213 を new Date("46213") と解釈して作った
+// 「西暦46213年1月1日」のDateを、元のシリアル日(2026-07-10)へ戻す。
+function 旧シリアル年Date補正日_(v){
+  if(!(v instanceof Date) || isNaN(v.getTime()) || v.getMonth()!==0 || v.getDate()!==1) return '';
+  const s=ymdFromSheetSerial_(v.getFullYear());
+  return /^20\d{2}-\d{2}-\d{2}$/.test(s)? s : '';
+}
+function 入荷日シート値補正_(v){
+  const s=旧シリアル年Date補正日_(v);
+  return s? new Date(s+'T00:00:00') : null;
+}
 // 日付を yyyy-MM-dd 文字列に正規化(Date/文字列どちらでも)。入荷日と到着日の一致判定用。
 // 手入力の「26/07/09(木)」のような2桁年・曜日付きも読む。パースできない文字列はそのまま返す
 function ymd_(v){
   const p=n=>('0'+n).slice(-2);
-  if(v instanceof Date){ if(isNaN(v.getTime())) return ''; return v.getFullYear()+'-'+p(v.getMonth()+1)+'-'+p(v.getDate()); }
+  if(v instanceof Date){
+    if(isNaN(v.getTime())) return '';
+    const recovered=旧シリアル年Date補正日_(v); if(recovered) return recovered;
+    return v.getFullYear()+'-'+p(v.getMonth()+1)+'-'+p(v.getDate());
+  }
   if(typeof v==='number' && isFinite(v)){
     const fromSerial=ymdFromSheetSerial_(v);
     if(fromSerial) return fromSerial;
@@ -1514,7 +1529,10 @@ function 引当実行_本体_(){
       // (自動記入は日付値・手入力は文字列で形がバラバラになるため。日付らしい文字列だけ触り、読めないメモ等はそのまま)
       for(let idx=0; idx<入荷col.length; idx++){
         const v=入荷col[idx][0];
-        if(v==='' || v==null || v instanceof Date) continue;
+        if(v==='' || v==null) continue;
+        const corrected=入荷日シート値補正_(v);
+        if(corrected){ 入荷col[idx][0]=corrected; 入荷表示統一++; continue; }
+        if(v instanceof Date) continue;
         const t=String(v).trim();
         if(!/^(?:20\d{2}|\d{2})[\/\-.]\d{1,2}[\/\-.]\d{1,2}/.test(t)) continue;
         const s=ymd_(t); if(!/^20\d{2}-\d{2}-\d{2}$/.test(s)) continue;
