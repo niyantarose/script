@@ -7,19 +7,51 @@
 const ZENKEN_CFG = { シート: '全件検算' };
 
 // 純粋集計(Nodeテスト対象)。src:
-//   ems:    [{code, st, qty, arrival, ems}]       EMSリストの行(素の値。実EMS番号だけ供給扱い)
+//   ems:    [{code, p, st, qty, arrival, ems}]    EMSリストの行(素の値。実EMS番号だけ供給扱い)
 //   出荷済: [{ban, code, sku, qty, 入荷日}]        消込台帳_出荷済み行_()の戻り(重複排除前)
-//   受注:   [{code, sku, qty, 選択肢, 商品名, 入荷日}] 受注明細の行(素の値)
+//   受注:   [{ban, code, sku, qty, 選択肢, 商品名, 入荷日}] 受注明細の行(素の値)
 //   a在庫:  {基底コード:数量} YahooCSV集計_の結果。null=Yahoo照合なし
 //   商品名: {基底コード:商品名} Yahoo側の商品名(任意)
 // 戻り: {rows:[{code,名,判定,到着済,反映済,未着,出荷到着,出荷過去,出荷不明,確保到着,確保過去,確保ズレ,待ち,残,yahooA}], counts:{判定:件数}}
+function 全件検算_受注基底マップ_(src){
+  const map={};
+  (src.出荷済||[]).concat(src.受注||[]).forEach(r=>{
+    const ban=String(r.ban||'').trim(), base=受注基底コード_(r.sku,r.code);
+    if(ban && base){
+      if(!map[ban]) map[ban]=new Set();
+      map[ban].add(base);
+    }
+  });
+  return map;
+}
+
+function 全件検算_EMS集計コード_(r, baseByBan){
+  const raw=normCode_(r.code); if(!raw) return '';
+  if(/^\d{5,}$/.test(raw)) return raw; // 中古・名指し商品の注文専用キー
+  const bans=String(r.p||'').match(/\d{5,}/g)||[];
+  const bases=[]; let unresolved=false;
+  bans.forEach(b=>{
+    const set=baseByBan[b]; if(!set){ unresolved=true; return; }
+    set.forEach(base=>{ if(bases.indexOf(base)<0) bases.push(base); });
+  });
+  return !unresolved && bases.length===1? bases[0] : raw;
+}
+
+function 全件検算_需要集計コード_(r, orderSupply){
+  const ban=String(r.ban||'').trim();
+  if(ban && orderSupply[ban]) return ban;
+  return 受注基底コード_(r.sku,r.code);
+}
+
 function 全件検算_集計_(src){
   // --- EMSリストを 供給(コード -> 数量とステータス別の到着日集合) へ ---
-  const 供給={};
+  const 供給={}, orderSupply={};
   const 供給を=c=>供給[c]||(供給[c]={到着済:0,反映済:0,未着:0,到着日:new Set(),反映日:new Set()});
+  const baseByBan=全件検算_受注基底マップ_(src);
   (src.ems||[]).forEach(r=>{
     if(r.ems!==undefined && !実EMS番号_(r.ems)) return;
-    const code=normCode_(r.code); if(!code) return;
+    const code=全件検算_EMS集計コード_(r,baseByBan); if(!code) return;
+    if(/^\d{5,}$/.test(code)) orderSupply[code]=1;
     const qty=Number(r.qty)||0, st=String(r.st||'').trim(), d=ymd_(r.arrival);
     const e=供給を(code);
     if(st==='到着済'){ e.到着済+=qty; if(d) e.到着日.add(d); }
@@ -32,7 +64,7 @@ function 全件検算_集計_(src){
 
   // --- 台帳の出荷済みを箱の到着日で分類(重複排除してから) ---
   出荷済み重複排除_(src.出荷済||[]).forEach(r=>{
-    const base=受注基底コード_(r.sku, r.code); if(!base) return;
+    const base=全件検算_需要集計コード_(r,orderSupply); if(!base) return;
     const qty=Number(r.qty)||0; if(qty<=0) return;
     const e=供給[base], d=ymd_(r.入荷日), a=集を(base);
     if(e && d && e.到着日.has(d)) a.出荷到着+=qty;
@@ -45,7 +77,7 @@ function 全件検算_集計_(src){
     if(区分_(r.選択肢)!=='取り寄せ') return;
     if(/台湾|中国/.test(String(r.選択肢||'')) || /台湾|中国/.test(String(r.商品名||''))) return;
     const qty=Number(r.qty)||0; if(qty<=0) return;
-    const base=受注基底コード_(r.sku, r.code); if(!base) return;
+    const base=全件検算_需要集計コード_(r,orderSupply); if(!base) return;
     if(!名[base] && String(r.商品名||'').trim()) 名[base]=String(r.商品名).trim();
     const a=集を(base);
     if(String(r.入荷日==null?'':r.入荷日).trim()===''){ a.待ち+=qty; return; }
@@ -98,11 +130,11 @@ function 全件検算レポート本体_(){
   if(last<=hr){ ui.alert('EMSリストにデータがありません'); return; }
   const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
   const f=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
-  const cSt=f('ステータス列'), cC=f('商品コード'), cQ=f('数量','個数'), cE=f('EMS番号');
+  const cSt=f('ステータス列'), cC=f('商品コード'), cQ=f('数量','個数'), cE=f('EMS番号'), cP=f('注文番号');
   let cA=f('EMS到着日','到着日','到着'); if(cA<0) cA=4; // 既定E列(🔎整合チェックと同じ)
   if(cC<0){ ui.alert('EMSリストの'+hr+'行目に「商品コード」見出しがありません'); return; }
   const ems=sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getValues().map(r=>({
-    code:r[cC], st:cSt>=0? r[cSt]:'到着済', qty:cQ>=0? r[cQ]:1, arrival:r[cA], ems:cE>=0?r[cE]:''}));
+    code:r[cC], p:cP>=0? r[cP]:'', st:cSt>=0? r[cSt]:'到着済', qty:cQ>=0? r[cQ]:1, arrival:r[cA], ems:cE>=0?r[cE]:''}));
 
   // --- 受注明細(読み取りのみ) ---
   const recv=ss.getSheetByName(HIKIATE_CFG.受注);
@@ -113,7 +145,7 @@ function 全件検算レポート本体_(){
   for(let i=M.hr;i<R.length;i++){
     const row=R[i];
     if(!String(row[M.番号]||'').trim()) continue;
-    受注.push({code:row[M.コード], sku:M.SKU>=0? row[M.SKU]:'', qty:row[M.個数],
+    受注.push({ban:row[M.番号], code:row[M.コード], sku:M.SKU>=0? row[M.SKU]:'', qty:row[M.個数],
       選択肢:row[M.選択肢], 商品名:M.商品名>=0? row[M.商品名]:'', 入荷日:M.入荷>=0? row[M.入荷]:''});
   }
 

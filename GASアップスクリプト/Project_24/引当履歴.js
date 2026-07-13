@@ -267,6 +267,13 @@ function 引当履歴_キャンセル_(rec, cancelQty){
 // 使いどころ: その便の出荷作業が終わったとき。図形ボタンに「到着済を在庫反映済みへ」を割り当てて使う。
 // やること: ①今のP列を履歴に記録(最新化) → ②指定EMS番号(空欄=到着済ぜんぶ)の行を在庫反映済みへ
 //          → ③履歴を過去取込に昇格(以後、②やP列書き直しの需要差引きが効く) → ④EMS在庫を最新化
+function EMS番号入力分割_(input){
+  return String(input==null?'':input)
+    .split(/[,、\s\/／\.．]+/)
+    .map(s=>s.trim())
+    .filter(Boolean);
+}
+
 function 到着済を在庫反映済みへ(){ 直列_(到着済を在庫反映済みへ本体_); }
 function 到着済を在庫反映済みへ本体_(){
   const ui=SpreadsheetApp.getUi(), cfg=P_KAKUTEI_CFG;
@@ -307,11 +314,11 @@ function 到着済を在庫反映済みへ本体_(){
   if(!list.length){ ui.alert('「到着済」の行がありません。'); return; }
   const resp=ui.prompt('到着済を在庫反映済みへ(便の締め)',
     '今「到着済」の箱:\n'+list.map(e=>'・'+e+'（'+counts[e]+'行）').join('\n')+
-    '\n\n在庫反映済みにするEMS番号を入力\n（複数はカンマ区切り／空欄でOK=全部）',
+    '\n\n在庫反映済みにするEMS番号を入力\n（複数はカンマ・/・.・空白区切り／空欄でOK=全部）',
     ui.ButtonSet.OK_CANCEL);
   if(resp.getSelectedButton()!==ui.Button.OK) return;
   const input=String(resp.getResponseText()||'').trim();
-  const targets= input? input.split(/[,、\s]+/).map(s=>s.trim()).filter(Boolean) : list.slice();
+  const targets=input?EMS番号入力分割_(input):list.slice();
   const bad=targets.filter(t=>!counts[t]);
   if(bad.length){ ui.alert('到着済に無いEMS番号があります: '+bad.join(', ')+'\n入力し直してください。'); return; }
 
