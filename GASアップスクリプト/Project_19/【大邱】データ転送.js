@@ -838,30 +838,75 @@ function EMSリスト_転送ズレを修復() {
       ui.ButtonSet.YES_NO);
     if (res !== ui.Button.YES) { ui.alert('やめました。'); return; }
 
-    // セル更新 → 行削除（下から）の順で適用する
-    plan.pnoFixes.forEach(p => dst.getRange(p.row, 6).setValue(p.value));
-
-    const COPY_COLS = [2, 3, 5, 9, 10, 11, 13]; // B入荷日 C発送日 E到着予定 I商品コード J数量 K品目 M EMS番号
-    const FILL_COLS = [4, 7, 8, 12, 14];        // D矢印 Gステータス H備考 L仕入れ区分 N BoxNo（空欄だけ埋める）
-    plan.collapses.forEach(c => {
-      if (!c.mergeIntoRow) return;
-      const from = dVals[c.deleteRow - 1];
-      const into = dVals[c.mergeIntoRow - 1];
-      COPY_COLS.forEach(col => dst.getRange(c.mergeIntoRow, col).setValue(from[col - 1]));
-      FILL_COLS.forEach(col => {
-        if (isBlank_(into[col - 1]) && !isBlank_(from[col - 1])) {
-          dst.getRange(c.mergeIntoRow, col).setValue(from[col - 1]);
-        }
-      });
-    });
-
-    plan.collapses.map(c => c.deleteRow).sort((a, b) => b - a).forEach(row => dst.deleteRow(row));
-
-    SpreadsheetApp.flush();
-    if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
-      発注_EMS発送数数式を一括修正();
-    }
+    EMS_転送ズレ修復適用_(dst, dVals, plan);
     ss.toast(`転送ズレ修復: 重複統合 ${plan.collapses.length}件 / 購入No更新 ${plan.pnoFixes.length}件 / 未解決 ${plan.unresolved.length}件`);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 修復計画をシートへ適用する（セル更新 → 行削除（下から）の順）
+function EMS_転送ズレ修復適用_(dst, dVals, plan) {
+  plan.pnoFixes.forEach(p => dst.getRange(p.row, 6).setValue(p.value));
+
+  const COPY_COLS = [2, 3, 5, 9, 10, 11, 13]; // B入荷日 C発送日 E到着予定 I商品コード J数量 K品目 M EMS番号
+  const FILL_COLS = [4, 7, 8, 12, 14];        // D矢印 Gステータス H備考 L仕入れ区分 N BoxNo（空欄だけ埋める）
+  plan.collapses.forEach(c => {
+    if (!c.mergeIntoRow) return;
+    const from = dVals[c.deleteRow - 1];
+    const into = dVals[c.mergeIntoRow - 1];
+    COPY_COLS.forEach(col => dst.getRange(c.mergeIntoRow, col).setValue(from[col - 1]));
+    FILL_COLS.forEach(col => {
+      if (isBlank_(into[col - 1]) && !isBlank_(from[col - 1])) {
+        dst.getRange(c.mergeIntoRow, col).setValue(from[col - 1]);
+      }
+    });
+  });
+
+  plan.collapses.map(c => c.deleteRow).sort((a, b) => b - a).forEach(row => dst.deleteRow(row));
+
+  SpreadsheetApp.flush();
+  if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
+    発注_EMS発送数数式を一括修正();
+  }
+}
+
+// エディタ（getUiが使えない文脈）から実行する修復。
+// 計画をログに出し、未解決の孤児がある場合は何も変更せず中止する。
+function EMSリスト_転送ズレを修復_エディタ実行() {
+  const ss = SpreadsheetApp.getActive();
+  const src = ss.getSheetByName(DAEGU_CFG.EMS_SRC);
+  const dst = ss.getSheetByName(DAEGU_CFG.EMS_DST);
+  if (!src || !dst) { Logger.log('シートが見つかりません。'); return; }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(2000)) { Logger.log('他の処理が実行中のため中止しました。'); return; }
+  try {
+    const dVals = dst.getDataRange().getValues();
+    const plan = EMS_転送ズレ修復計画_(
+      EMS_修復元一覧_(src.getDataRange().getValues()),
+      EMS_修復先一覧_(dVals)
+    );
+
+    Logger.log('計画: 重複統合 %s件 / 購入No更新 %s件 / 未解決 %s件',
+      plan.collapses.length, plan.pnoFixes.length, plan.unresolved.length);
+    plan.collapses.forEach(c => Logger.log(c.mergeIntoRow
+      ? `統合: 行${c.mergeIntoRow}（${c.orphan.pno} / ${c.orphan.track} / ${c.orphan.code}）← 行${c.deleteRow}（${c.twin.track} / ${c.twin.code}）を統合して削除`
+      : `削除: 行${c.deleteRow}（${c.orphan.pno} / ${c.orphan.track} / ${c.orphan.code}） 正=行${c.twin.row}`));
+    plan.pnoFixes.forEach(p => Logger.log(`F更新: 行${p.row} 購入No ${p.oldValue} -> ${p.value}`));
+    plan.unresolved.forEach(d => Logger.log(`未解決: 行${d.row} ${d.pno} / ${d.track} / ${d.code} x${d.qty}`));
+
+    if (plan.unresolved.length > 0) {
+      Logger.log('未解決の孤児行があるため中止しました（変更なし）。メニューの「EMSリスト：転送ズレ（重複/旧番号）を修復」で内容を確認してください。');
+      return;
+    }
+    if (!plan.collapses.length && !plan.pnoFixes.length) {
+      Logger.log('修復対象はありません。');
+      return;
+    }
+
+    EMS_転送ズレ修復適用_(dst, dVals, plan);
+    Logger.log('適用完了: 重複統合 %s件 / 購入No更新 %s件', plan.collapses.length, plan.pnoFixes.length);
   } finally {
     lock.releaseLock();
   }
