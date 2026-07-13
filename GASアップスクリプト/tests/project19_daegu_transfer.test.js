@@ -107,40 +107,55 @@ test('完全一致（日付も同じ）は追記・修正・日付更新なし',
   assert.strictEqual(plan.dateUpdates.length, 0);
 });
 
-test('EMS番号の後変更: 追記せず既存行のM列を更新（★コピペ実例）', () => {
+test('EMS番号の後変更: 重複追記も上書きもせず差分として報告のみ（★コピペ実例）', () => {
   const plan = makePlan(
     [srcRow('20260627_05_3', 'EG049579302KR', '★コピペ', 3, '26/07/03', '26/07/03')],
     [dstHeader(), dstRow(577, '26/07/03', '26/07/06', '20260627_05_3', '★コピペ', 3, 'EG049624465KR')]
   );
   assert.strictEqual(plan.appends.length, 0, '重複追記しない');
-  const fix = plan.fixes.find(f => f.col === 13);
-  assert.ok(fix, 'M列の修正がある');
-  assert.strictEqual(fix.row, 2);
-  assert.strictEqual(fix.value, 'EG049579302KR');
-  // 発送日も 07/06 -> 07/03 に追随する
-  assert.ok(plan.dateUpdates.some(u => u.col === 3), '発送日更新がある');
+  assert.strictEqual(plan.fixes.length, 0, '既存行は上書きしない');
+  assert.strictEqual(plan.dateUpdates.length, 0, '差分行の日付も触らない');
+  const diff = plan.diffs.find(d => d.label === 'EMS番号');
+  assert.ok(diff, 'EMS番号の差分として報告される');
+  assert.strictEqual(diff.row, 2);
+  assert.strictEqual(diff.value, 'EG049579302KR');
 });
 
-test('商品コードの後修正: 追記せず既存行のI列を更新（DPHOTO09→DPHOTO09P実例）', () => {
+test('商品コードの後修正: 重複追記せず差分として報告のみ（DPHOTO09→DPHOTO09P実例）', () => {
   const plan = makePlan(
     [srcRow('20260702_02_1', 'EG049624664KR', 'DPHOTO09P', 1, '26/07/05', '26/07/06')],
     [dstHeader(), dstRow(624, '26/07/05', '26/07/06', '20260702_02_1', 'DPHOTO09', 1, 'EG049624664KR')]
   );
   assert.strictEqual(plan.appends.length, 0, '重複追記しない');
-  const fix = plan.fixes.find(f => f.col === 9);
-  assert.ok(fix, 'I列の修正がある');
-  assert.strictEqual(fix.value, 'DPHOTO09P');
+  assert.strictEqual(plan.fixes.length, 0, '既存行は上書きしない');
+  const diff = plan.diffs.find(d => d.label === '商品コード');
+  assert.ok(diff, '商品コードの差分として報告される');
+  assert.strictEqual(diff.value, 'DPHOTO09P');
 });
 
-test('数量の後変更: 追記せず既存行のJ列を更新', () => {
+test('数量の後変更: 重複追記せず差分として報告のみ', () => {
   const plan = makePlan(
     [srcRow('20260706_11_1', 'EG049827401KR', 'JPSJCM42-02-EX', 2, '26/07/09', '26/07/09')],
     [dstHeader(), dstRow(772, '26/07/09', '26/07/09', '20260706_11_1', 'JPSJCM42-02-EX', 1, 'EG049827401KR')]
   );
   assert.strictEqual(plan.appends.length, 0);
-  const fix = plan.fixes.find(f => f.col === 10);
-  assert.ok(fix, 'J列の修正がある');
-  assert.strictEqual(String(fix.value), '2');
+  assert.strictEqual(plan.fixes.length, 0, '既存行は上書きしない');
+  const diff = plan.diffs.find(d => d.label === '数量');
+  assert.ok(diff, '数量の差分として報告される');
+  assert.strictEqual(String(diff.value), '2');
+});
+
+test('EMSリスト側の後編集は転送で上書きされない（何度実行しても不変）', () => {
+  // 日本側がEMSリストのI列を実コードに直したが、大邱側はまだ★コピペのまま
+  const src = [srcRow('20260707_10_2', 'EG049827401KR', '★コピペ', 2, '26/07/09', '26/07/09')];
+  const dst = [dstHeader(), dstRow(700, '26/07/09', '26/07/09', '20260707_10_2', 'POSTER-REAL01', 2, 'EG049827401KR')];
+  for (let run = 1; run <= 2; run++) {
+    const plan = makePlan(src, dst);
+    assert.strictEqual(plan.appends.length, 0, `run${run}: 重複追記しない`);
+    assert.strictEqual(plan.fixes.length, 0, `run${run}: 上書きしない`);
+    assert.strictEqual(plan.dateUpdates.length, 0, `run${run}: 日付も触らない`);
+    assert.strictEqual(plan.diffs.length, 1, `run${run}: 差分報告は1件`);
+  }
 });
 
 test('発注NO振り直し: looseで既存行に一致し、F列を現行番号へ更新（20260614_07→08実例）', () => {

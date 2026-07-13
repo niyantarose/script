@@ -483,18 +483,21 @@ function EMS_フィックス取得_(map, keys, srcCounts) {
 
 /**
  * 転送候補と既存EMSリストの照合計画（純粋ロジック）。
- * 転送済み行が大邱側で後編集された場合（EMS番号の箱移動・商品コード修正・数量変更・
- * 発注NO振り直し）、最下部への重複追記ではなく既存行の修正として計画する。
- * 対応行を1件に絞れない曖昧なケースだけ従来どおり追記する。
+ * 転送済み行が片側だけ編集された場合（EMS番号の箱移動・商品コード修正・数量変更）は
+ * 「同じ行」と認識して最下部への重複追記を抑止するが、EMSリスト側を後から手で
+ * 直す運用があるため、既存行の値は上書きせず差分（diffs）として報告だけする。
+ * 差分を大邱の値で反映したいときは「EMSリスト：転送ズレ（重複/旧番号）を修復」を使う。
+ * 例外: 発注NO振り直し（既存行の購入Noが現大邱に存在しない番号）だけはF列を追随更新する。
+ * 対応行を1件に絞れない曖昧なケースは従来どおり追記する。
  */
 function EMS_転送照合計画_(candidates, existing, stats) {
   const appends = [];
   const dateUpdates = [];
   const fixes = [];
-  const fix = (item, o, col, label, oldValue, value) => {
-    fixes.push({ row: item.row, col: col, label: label, oldValue: oldValue, value: value,
+  const diffs = [];
+  const diff = (item, o, label, oldValue, value) => {
+    diffs.push({ row: item.row, label: label, oldValue: oldValue, value: value,
       srcRow: o.row, purchaseNo: o.purchaseNo });
-    EMS_既存行日付更新候補_(dateUpdates, item, o);
   };
   candidates.forEach(o => {
     const exactItem = o.purchaseNo ? 枝番_map取得_([existing.exact], [o.exactKeys]) : null;
@@ -505,13 +508,15 @@ function EMS_転送照合計画_(candidates, existing, stats) {
 
     const looseItem = 枝番_map取得_([existing.loose], [o.looseKeys]);
     if (looseItem) {
-      // 発注NO修復などで振り直された購入Noに追随する（現大邱に存在しない番号だけ）
+      // 発注NO修復などで振り直された購入Noに追随する（現大邱に存在しない番号だけ）。
+      // 手で正しい番号に直したものは pnoSet に存在するので対象外＝上書きしない。
       if (o.purchaseNo && looseItem.purchaseNo &&
           looseItem.purchaseNo !== o.purchaseNo && !stats.pnoSet[looseItem.purchaseNo]) {
-        fix(looseItem, o, 6, '購入No', looseItem.purchaseNo, o.purchaseNo);
-      } else {
-        EMS_既存行日付更新候補_(dateUpdates, looseItem, o);
+        fixes.push({ row: looseItem.row, col: 6, label: '購入No',
+          oldValue: looseItem.purchaseNo, value: o.purchaseNo,
+          srcRow: o.row, purchaseNo: o.purchaseNo });
       }
+      EMS_既存行日付更新候補_(dateUpdates, looseItem, o);
       return;
     }
 
@@ -522,7 +527,7 @@ function EMS_転送照合計画_(candidates, existing, stats) {
       let hit = EMS_フィックス取得_(existing.trackFix,
         codeKeys.map(c => [o.purchaseNo, c, q].join('|')), stats.trackFix);
       if (hit) {
-        if (hit.track !== o.track) fix(hit, o, 13, 'EMS番号', hit.track, o.track);
+        if (hit.track !== o.track) diff(hit, o, 'EMS番号', hit.track, o.track);
         else EMS_既存行日付更新候補_(dateUpdates, hit, o);
         return;
       }
@@ -530,7 +535,7 @@ function EMS_転送照合計画_(candidates, existing, stats) {
       hit = EMS_フィックス取得_(existing.codeFix,
         [[o.purchaseNo, o.track, q].join('|')], stats.codeFix);
       if (hit) {
-        if (hit.code !== o.code) fix(hit, o, 9, '商品コード', hit.code, o.code);
+        if (hit.code !== o.code) diff(hit, o, '商品コード', hit.code, o.code);
         else EMS_既存行日付更新候補_(dateUpdates, hit, o);
         return;
       }
@@ -538,7 +543,7 @@ function EMS_転送照合計画_(candidates, existing, stats) {
       hit = EMS_フィックス取得_(existing.qtyFix,
         codeKeys.map(c => [o.purchaseNo, o.track, c].join('|')), stats.qtyFix);
       if (hit) {
-        if (hit.qty !== q) fix(hit, o, 10, '数量', hit.qty, o.qty);
+        if (hit.qty !== q) diff(hit, o, '数量', hit.qty, o.qty);
         else EMS_既存行日付更新候補_(dateUpdates, hit, o);
         return;
       }
@@ -549,7 +554,7 @@ function EMS_転送照合計画_(candidates, existing, stats) {
     EMS_キー一覧を追加_(existing.loose, o.looseKeys, newItem);
     appends.push(o);
   });
-  return { appends: appends, dateUpdates: dateUpdates, fixes: fixes };
+  return { appends: appends, dateUpdates: dateUpdates, fixes: fixes, diffs: diffs };
 }
 
 function 大邱_EMSリストへ転送() {
@@ -578,8 +583,9 @@ function 大邱_EMSリストへ転送() {
     const rows = plan.appends;
     const dateUpdates = plan.dateUpdates;
     const fixes = plan.fixes;
+    const diffs = plan.diffs;
 
-    if (rows.length === 0 && dateUpdates.length === 0 && fixes.length === 0) {
+    if (rows.length === 0 && dateUpdates.length === 0 && fixes.length === 0 && diffs.length === 0) {
       ss.toast('追記/更新対象なし（D列EMS番号入りで未登録または更新が必要な行なし）。');
       return;
     }
@@ -607,14 +613,19 @@ function 大邱_EMSリストへ転送() {
     const fixPreview = fixes.slice(0, 10)
       .map(o => `EMSリスト${o.row}行 ${o.label}: ${o.oldValue || '(空)'} -> ${o.value}（大邱${o.srcRow}行）`)
       .join('\n');
+    const diffPreview = diffs.slice(0, 10)
+      .map(o => `EMSリスト${o.row}行 ${o.label}: ${o.oldValue || '(空)'} ≠ 大邱${o.srcRow}行 ${o.value}`)
+      .join('\n');
     const datePreview = dateUpdates.slice(0, 10)
       .map(o => `EMSリスト${o.row}行 ${o.label} -> ${EMS_日付キー_(o.value)}`)
       .join('\n');
     const res = ui.alert('EMSリストへ追記 (デバッグ情報付き)',
-      `${rows.length}件をEMSリストの最終行の下へ追記し、既存行の修正 ${fixes.length}件・日付 ${dateUpdates.length}件を更新します。\n\n【追記プレビュー】\n${preview || 'なし'}` +
+      `${rows.length}件をEMSリストの最終行の下へ追記し、購入Noの振り直し追随 ${fixes.length}件・日付 ${dateUpdates.length}件を更新します。\n\n【追記プレビュー】\n${preview || 'なし'}` +
       (rows.length > 10 ? '\n…ほか' : '') +
-      `\n\n【既存行の修正（大邱側の後編集に追随）】\n${fixPreview || 'なし'}` +
+      `\n\n【購入No更新（振り直し追随のみ）】\n${fixPreview || 'なし'}` +
       (fixes.length > 10 ? '\n…ほか' : '') +
+      `\n\n【大邱と差分あり ${diffs.length}件（上書きしません。反映するなら「転送ズレ修復」）】\n${diffPreview || 'なし'}` +
+      (diffs.length > 10 ? '\n…ほか' : '') +
       `\n\n【日付更新】\n${datePreview || 'なし'}` +
       (dateUpdates.length > 10 ? '\n…ほか' : '') +
       `\n\n【デバッグ照合情報】\n(EMSリスト内の登録状況)${debugMsg}\n\n実行する！`,
@@ -652,7 +663,7 @@ function 大邱_EMSリストへ転送() {
     if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
       発注_EMS発送数数式を一括修正();
     }
-    ss.toast(`EMSリストへ追記 ${rows.length}件 / 既存行修正 ${fixes.length}件 / 日付更新 ${updatedDates}件 / 購入No補完 ${filled}件`);
+    ss.toast(`EMSリストへ追記 ${rows.length}件 / 購入No更新 ${fixes.length}件 / 日付更新 ${updatedDates}件 / 購入No補完 ${filled}件 / 大邱と差分 ${diffs.length}件（未反映）`);
   } finally {
     lock.releaseLock();
   }
@@ -826,7 +837,8 @@ function EMSリスト_転送ズレを修復() {
       .join('\n');
 
     const res = ui.alert('EMSリスト転送ズレの修復',
-      `大邱側の後編集で生じた重複ペア ${plan.collapses.length}件を統合し、` +
+      `【EMS大邱作業データを正】としてEMSリストを合わせます（EMSリスト側の値は大邱の値で上書き）。\n` +
+      `重複ペア ${plan.collapses.length}件を統合し、` +
       `発注NO振り直し ${plan.pnoFixes.length}件のF列（購入No）を更新します。\n\n` +
       `【重複ペア】\n${colPreview || 'なし'}` +
       (plan.collapses.length > 20 ? '\n…ほか' : '') +
