@@ -60,16 +60,14 @@ function onOpen(){
     .addItem('☑ EMS番号罫線ボタンを設置', '在庫EMS番号罫線ボタンを設置')
     .addSeparator()
     .addItem('① 前段階チェック(即納に水色＋罫線)', '前段階チェック_即納')
-    .addItem('② 引き当て実行(EMS在庫・入荷日で判定)', '引当実行')
+    .addItem('② 引き当て実行(実EMSリストのみ)', '引当実行')
     .addItem('📦 到着済を在庫反映済みへ(便の締め)', '到着済を在庫反映済みへ')
-    .addItem('⚖️ この便の引当をやり直す(到着日指定)', '便の引当をやり直す')
+    .addItem('⚖️ この便の引当をやり直す(到着日指定・複数可)', '便の引当をやり直す')
     .addItem('🔎 引当診断(受注番号で調べる)', '引当診断')
     .addItem('🔎 商品診断(商品コードで調べる)', '商品診断')
     .addItem('🔎 入荷日の整合チェック(誤記入の検出)', '入荷日整合チェック')
     .addItem('🧹 チェック一覧の入荷日をクリア', '入荷日チェック_一覧をクリア')
-    .addItem('🔄 引当データの全リセット(入荷日+履歴を消して再構築)', '引当データの全リセット')
-    .addItem('📦 棚卸箱の下書きを生成(Yahoo在庫CSV×未出荷注文)', '棚卸箱の下書きを生成')
-    .addItem('📦 棚卸箱をEMSリストへ追記(下書き確認後に)', '棚卸箱をEMSリストへ追記')
+    .addItem('🧹 旧棚卸割当だけを解除して実EMSで再引当', '旧棚卸割当だけを解除して再引当')
     .addItem('🧮 全件検算レポート(EMS×台帳×受注×Yahooの突き合わせ)', '全件検算レポート')
     .addItem('🔍 在庫照合レポート', '在庫照合レポート')
     .addToUi();
@@ -289,7 +287,24 @@ function 取込_ダニエルEMS(){
   ss.toast('ダニエルEMS取込完了：'+rows.length+'件 / 発送日'+dates.join(',')+'（'+latest.getName()+'）','📦ダニエルEMS',6);
 }
 
+// 実在するEMS番号だけを供給として認める。
+// 「棚卸...」は待ち需要から作った机上数量で、実物のEMS入荷ではないため必ず除外する。
+// EMS番号空欄も出どころを追えないので、引当には使わない。
+function 実EMS番号_(v){
+  const s=String(v==null?'':v).trim();
+  return !!s && !/^棚卸/i.test(s);
+}
+
+// 受注明細のEMS番号を書き戻す時、在庫反映済みなど過去の実EMS割当は保持する。
+// 未割当行と旧棚卸番号は消し、今回の実EMSが決まった行だけ新しい番号へ置き換える。
+function EMS番号書戻し値_(現在値, line){
+  if(line && 実EMS番号_(line.箱EMS)) return String(line.箱EMS).trim();
+  if(line && (line.入荷 || line.履歴成立) && 実EMS番号_(現在値)) return String(現在値).trim();
+  return '';
+}
+
 // EMS在庫の生データを返す(1行ヘッダーがあれば除外)。offset=データ先頭のシート行番号(1始)
+// 行位置は色付け用に維持しつつ、実EMSでない行はコード空欄・数量0にして全引当処理から無効化する。
 function EMS明細_(emv){
   const all=emv.getDataRange().getValues();
   let s=0, cols={コード:1, 数量:2, EMS番号:3, 到着:-1}; // 既定(ヘッダー無し時の固定位置)
@@ -300,7 +315,16 @@ function EMS明細_(emv){
       cols={ コード: ci>=0?ci:1, 数量: qi>=0?qi:2, EMS番号: ei>=0?ei:3, 到着: ai };
     }
   }
-  return { rows: all.slice(s), offset: s+1, cols };
+  let 除外=0;
+  const rows=all.slice(s).map(row=>{
+    if(実EMS番号_(row[cols.EMS番号])) return row;
+    const copy=row.slice();
+    if(cols.コード>=0) copy[cols.コード]='';
+    if(cols.数量>=0) copy[cols.数量]=0;
+    if(String(row[cols.コード]||'').trim() || (Number(row[cols.数量])||0)) 除外++;
+    return copy;
+  });
+  return { rows, offset: s+1, cols, 除外 };
 }
 
 // 受注明細の各列の位置を「見出し名」から特定する(列の並び替え・追加に強くする)
@@ -942,7 +966,12 @@ function codeKeys_(code){
 // 商品ページのルール「ご注文月の翌月号をお届け」に合わせて、
 // 月号付き在庫(-YYMM/-YYYYMM)は「注文月+1＝その号」の注文にだけ引き当てる(号ズレ防止)。
 // 月号なしの在庫・注文日時が読めない行は無制限(従来通り)。P列の名指しは人の判断なので月号チェックを通さない。
-function 日付値_(v){ if(v instanceof Date) return isNaN(v.getTime())?null:v; const s=String(v||'').trim(); if(!s) return null; const d=new Date(s.replace(/\//g,'-')); return isNaN(d.getTime())?null:d; }
+function 日付値_(v){
+  if(v instanceof Date) return isNaN(v.getTime())?null:v;
+  const s=ymd_(v);
+  if(/^20\d{2}-\d{2}-\d{2}$/.test(s)) return new Date(s+'T00:00:00');
+  return null;
+}
 function 月号_(code){ const m=String(code||'').match(/-(?:20)?(2\d)(0[1-9]|1[0-2])$/); return m? m[1]+m[2] : null; }   // 'EBS1504B-2607'→'2607'
 function 期待号_(d){ if(!d) return null; let y=d.getFullYear()%100, mo=d.getMonth()+2; if(mo>12){ mo-=12; y++; } return String(y)+('0'+mo).slice(-2); } // 注文月の翌月
 function 月号OK_(l, stockCode){ const g=月号_(stockCode); if(!g) return true; const e=期待号_(l.日時); return !e || e===g; }
@@ -970,18 +999,37 @@ function 入荷日今日_(v){
   const s=ymd_(v); if(!s) return false;
   return s===ymd_(new Date());
 }
+// Google/Excelシリアル日(46212等)を yyyy-MM-dd に。QUERY/IMPORTRANGEが数値で返す到着日用。
+function ymdFromSheetSerial_(serial){
+  if(typeof serial!=='number' || !isFinite(serial) || serial<20000 || serial>500000) return '';
+  const d=new Date(Math.round((serial-25569)*86400000));
+  if(isNaN(d.getTime())) return '';
+  const p=n=>('0'+n).slice(-2);
+  return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate());
+}
 // 日付を yyyy-MM-dd 文字列に正規化(Date/文字列どちらでも)。入荷日と到着日の一致判定用。
 // 手入力の「26/07/09(木)」のような2桁年・曜日付きも読む。パースできない文字列はそのまま返す
 function ymd_(v){
   const p=n=>('0'+n).slice(-2);
   if(v instanceof Date){ if(isNaN(v.getTime())) return ''; return v.getFullYear()+'-'+p(v.getMonth()+1)+'-'+p(v.getDate()); }
+  if(typeof v==='number' && isFinite(v)){
+    const fromSerial=ymdFromSheetSerial_(v);
+    if(fromSerial) return fromSerial;
+  }
   const s=String(v||'').trim(); if(!s) return '';
-  const d=new Date(s.replace(/\//g,'-'));
-  if(!isNaN(d.getTime())) return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
+  // 46212 のようなシリアル数値文字列を new Date("46212")→46212-01-01 と誤読しない
+  if(/^\d{1,6}(\.\d+)?$/.test(s)){
+    const fromSerial=ymdFromSheetSerial_(parseFloat(s));
+    if(fromSerial) return fromSerial;
+  }
   let m=s.match(/(20\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
   if(m) return m[1]+'-'+p(+m[2])+'-'+p(+m[3]);
   m=s.match(/(\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
   if(m) return '20'+m[1]+'-'+p(+m[2])+'-'+p(+m[3]);
+  if(/[-\/.]/.test(s)){
+    const d=new Date(s.replace(/\//g,'-'));
+    if(!isNaN(d.getTime())) return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
+  }
   return s;
 }
 
@@ -1061,9 +1109,11 @@ function 引当実行_本体_(){
   const emv=ss.getSheetByName(cfg.EMS在庫);
   const emsD= emv? EMS明細_(emv) : {rows:[], cols:{コード:1,数量:2,EMS番号:3,到着:-1}};
   const E= emsD.rows, EC=emsD.cols; // EC=EMS在庫の列位置(見出し名で特定。到着日を挿入して列がズレてもOK)
-  const 到着_=row=>{ if(EC.到着<0) return ''; const v=row[EC.到着]; // EMS到着日(発注共有ファイルE列)。日付として扱い yyyy-mm-dd 表示
-    if(v instanceof Date) return v;
-    const s=String(v||'').trim(); if(!s) return ''; const d=new Date(s); return isNaN(d.getTime())? s : d; };
+  const 到着_=row=>{ if(EC.到着<0) return ''; const v=row[EC.到着]; // EMS到着日。QUERYがシリアル数値で返す場合あり
+    if(v instanceof Date) return isNaN(v.getTime())? '' : v;
+    const s=ymd_(v);
+    if(/^20\d{2}-\d{2}-\d{2}$/.test(s)) return new Date(s+'T00:00:00');
+    return String(v||'').trim(); };
   const stock={};
   for(let i=0;i<E.length;i++){ const c=normCode_(E[i][EC.コード]); if(!c) continue; stock[c]=(stock[c]||0)+(Number(E[i][EC.数量])||0); }
   // 商品コード→EMS到着日(入荷日の自動記入用。同コードは最初の到着日を代表に)
@@ -1481,8 +1531,8 @@ function 引当実行_本体_(){
     if(rl>=rs){
       const emsC=EMS番号列を用意_(recv); // 個数の隣。無ければ作る(1始まり)
       const col=recv.getRange(rs,emsC,rl-rs+1,1).getValues();
-      for(let idx=0;idx<col.length;idx++) col[idx][0]=''; // 一旦クリア(前回の割当が残らないように)
-      lines.forEach(l=>{ const idx=l.i-受注hdr; if(idx>=0 && idx<col.length && l.箱EMS) col[idx][0]=l.箱EMS; });
+      const byIdx={}; lines.forEach(l=>byIdx[l.i-受注hdr]=l);
+      for(let idx=0;idx<col.length;idx++) col[idx][0]=EMS番号書戻し値_(col[idx][0], byIdx[idx]);
       recv.getRange(rs,emsC,col.length,1).setValues(col);
     }
   }
@@ -1529,6 +1579,7 @@ function 引当実行_本体_(){
       +(P入荷日訂正? ' ／ 🔧P列確定の入荷日訂正 '+P入荷日訂正+'件':'')
       +(ズレ修復? ' ／ 🔧入荷日ズレ修復 '+ズレ修復+'件（P列に無い注文を箱の到着日に貼り直し）':'')
       +' ／ P列確定 '+確定行数+'行 ／ 発送済み消込 '+出荷済行.length+'件（内訳は「発送済み」シート）'
+      +(emsD.除外? ' ／ 🚫棚卸・EMS番号なしを供給除外 '+emsD.除外+'行':'')
       +(隠れ? '\n\n⚠️ '+隠れ+'：行が隠れています（🔻フィルタ確認/解除で全解除）':''),
       ui.ButtonSet.OK);
   }

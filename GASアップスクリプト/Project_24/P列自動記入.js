@@ -66,7 +66,21 @@ function P列書き直し実行_(){
 // ⚖️ 便の引当をやり直す: 指定した到着日の入荷日を白紙に→P列書き直し→②まで一括実行。
 // バグ時代に「新しい注文が先に確定」してしまった便を、古い注文順で公平に引き直すためのリセット。
 // 台湾/中国ルートの行は触らない。手入力の同日付スタンプも消える(②が正しい順で貼り直す)。
+// 到着日は1日でも、カンマ区切りで複数日(例 2026-07-09, 2026-07-10)でも指定可。
 function 便の引当をやり直す(){ 直列_(便の引当をやり直す本体_); }
+function 便の引当をやり直す_日付解析_(text){
+  const raw=String(text||'').trim(); if(!raw) return {error:'日付が空です'};
+  const dates=[], bad=[];
+  raw.split(/[,、\s]+/).map(s=>s.trim()).filter(Boolean).forEach(tok=>{
+    const d=ymd_(tok);
+    if(!d || !/^20\d{2}-\d{2}-\d{2}$/.test(d)) bad.push(tok);
+    else if(dates.indexOf(d)<0) dates.push(d);
+  });
+  if(bad.length) return {error:'日付が読めません: '+bad.join(', ')};
+  if(!dates.length) return {error:'有効な到着日がありません'};
+  dates.sort();
+  return {dates:dates};
+}
 function 便の引当をやり直す本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
   const recv=ss.getSheetByName(HIKIATE_CFG.受注);
@@ -74,27 +88,34 @@ function 便の引当をやり直す本体_(){
   const M=列マップ_(recv);
   if(M.入荷<0){ ui.alert('受注明細に「入荷日」列がありません'); return; }
   const resp=ui.prompt('⚖️ 便の引当をやり直す',
-    'やり直す便の到着日を入力してください(例 2026-07-09)。\n\n'+
-    'この日付の入荷日(取り寄せ行・台湾/中国ルートは除く)を全部白紙にし、\n'+
+    'やり直す便の到着日を入力してください。\n'+
+    '例: 2026-07-09\n'+
+    '複数便: 2026-07-09, 2026-07-10（カンマ・スペース区切り）\n\n'+
+    '指定した日付の入荷日(取り寄せ行・台湾/中国ルートは除く)を全部白紙にし、\n'+
     'P列を書き直して、②引き当て実行まで自動で回します。\n'+
     '→ 古い注文から順に引き当て直されます。',
     ui.ButtonSet.OK_CANCEL);
   if(resp.getSelectedButton()!==ui.Button.OK) return;
-  const d=ymd_(String(resp.getResponseText()||'').trim());
-  if(!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)){ ui.alert('日付が読めません: '+resp.getResponseText()); return; }
+  const parsed=便の引当をやり直す_日付解析_(resp.getResponseText());
+  if(parsed.error){ ui.alert('日付が読めません:\n'+parsed.error); return; }
+  const dateSet={}; parsed.dates.forEach(d=>{ dateSet[d]=1; });
   const R=recv.getDataRange().getValues();
-  const a1=[];
+  const a1=[], perDate={};
+  parsed.dates.forEach(d=>{ perDate[d]=0; });
   for(let i=M.hr;i<R.length;i++){
     const row=R[i];
     if(区分_(row[M.選択肢])!=='取り寄せ') continue;
-    if(ymd_(row[M.入荷])!==d) continue;
+    const d=ymd_(row[M.入荷]); if(!dateSet[d]) continue;
     const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
     if(別ルート) continue;
     a1.push(recv.getRange(i+1, M.入荷+1).getA1Notation());
+    perDate[d]++;
   }
-  if(!a1.length){ ui.alert('入荷日が '+d+' の取り寄せ行はありません。'); return; }
+  if(!a1.length){ ui.alert('入荷日が '+parsed.dates.join(' / ')+' の取り寄せ行はありません。'); return; }
+  const 内訳=parsed.dates.map(d=> d+' '+perDate[d]+'行').join('、');
   const ans=ui.alert('確認',
-    d+' の入荷日 '+a1.length+' 行を白紙にして、古い注文順で引き直します。\n(P列書き直し→②引き当て実行まで自動で回ります) ええ？',
+    parsed.dates.length+'日分・計 '+a1.length+' 行の入荷日を白紙にして、古い注文順で引き直します。\n'+
+    '（'+内訳+'）\n\nP列書き直し→②引き当て実行まで自動で回ります。 ええ？',
     ui.ButtonSet.OK_CANCEL);
   if(ans!==ui.Button.OK) return;
   recv.getRangeList(a1).clearContent();
@@ -169,6 +190,7 @@ function 発注共有P列記入_(){
   const colC=(eh.indexOf('商品コード')>=0? eh.indexOf('商品コード'):8)+1;
   const colQ=(eh.indexOf('数量')>=0? eh.indexOf('数量'):9)+1;
   const colA=(eh.indexOf('EMS到着日')>=0? eh.indexOf('EMS到着日') : (eh.indexOf('到着日')>=0? eh.indexOf('到着日') : 4))+1; // E列既定
+  const colE=eh.indexOf('EMS番号')+1;
   if(colP===0) return {error:'EMSリストの'+hr+'行目に「注文番号」見出しがありません'};
 
   const n=last-hr;
@@ -177,8 +199,10 @@ function 発注共有P列記入_(){
   const qy=ems.getRange(hr+1,colQ,n,1).getValues();
   const pv=ems.getRange(hr+1,colP,n,1).getDisplayValues();
   const av=ems.getRange(hr+1,colA,n,1).getDisplayValues();
+  const ev=colE>0? ems.getRange(hr+1,colE,n,1).getDisplayValues() : null;
   const rows=[];
   for(let i=0;i<n;i++){
+    if(!ev || !実EMS番号_(ev[i][0])) continue; // 実EMS番号が無い行・棚卸箱へP列を書かない
     const pno=String(pu[i][0]||'').trim(), code=String(cd[i][0]||'').trim();
     if(!pno||!code) continue;
     const m=pno.match(/^(\d{4})(\d{2})(\d{2})/); if(!m) continue; // 購入No.先頭8桁=発注日

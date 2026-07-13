@@ -150,6 +150,7 @@ function 引当履歴_EMSリストから記録_(statuses, kind){
   data.forEach((r,i)=>{
     const 状態=String(r[c.状態]||'').trim();
     if(!targetStatus[状態]) return;
+    if(!実EMS番号_(r[c.EMS番号])) return; // 棚卸箱・EMS番号空欄を履歴へ固定しない
     const 注文番号=String(r[c.注文番号]||'').trim();
     if(!注文番号) return;
     const 商品コード=String(r[c.商品コード]||'').trim();

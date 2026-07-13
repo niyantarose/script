@@ -17,8 +17,11 @@ const TANAOROSHI_CFG = {
 // EMSリストは見出しが6行目で列順も下書きと異なるため、手貼りは事故りやすい。
 // 見出し名(ステータス列/商品コード/数量/EMS到着日/EMS番号)で列を探して末尾に追記する。
 // 他の列(No./照合キー/注文番号/数式列など)には一切書き込まない。
-function 棚卸箱をEMSリストへ追記(){ 直列_(棚卸箱をEMSリストへ追記本体_); }
+function 棚卸箱をEMSリストへ追記(){
+  SpreadsheetApp.getUi().alert('この機能は停止しました。\n\n棚卸数量は実EMS入荷ではないため、EMSリストへ供給として追加しません。');
+}
 function 棚卸箱をEMSリストへ追記本体_(){
+  SpreadsheetApp.getUi().alert('この機能は停止しました。棚卸数量をEMS供給へ追加しません。'); return;
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
   const rep=ss.getSheetByName(TANAOROSHI_CFG.出力シート);
   if(!rep || rep.getLastRow()<3){ ui.alert('「'+TANAOROSHI_CFG.出力シート+'」がありません。先に 📦 棚卸箱の下書きを生成 を実行してください。'); return; }
@@ -146,8 +149,11 @@ function 棚卸自動数量_(需要数, 供給数, EMS実績あり){
   return {qty:qty, 注意:''};
 }
 
-function 棚卸箱の下書きを生成(){ 直列_(棚卸箱の下書きを生成本体_); }
+function 棚卸箱の下書きを生成(){
+  SpreadsheetApp.getUi().alert('この機能は停止しました。\n\n引当の供給源は発注共有の実EMSリストだけです。Yahoo在庫CSVは全件検算の比較材料にのみ使います。');
+}
 function 棚卸箱の下書きを生成本体_(){
+  SpreadsheetApp.getUi().alert('この機能は停止しました。引当供給は実EMSリストだけです。'); return;
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
 
   // --- 1) Yahoo在庫CSV(フォルダ内で最新のもの)を読む ---

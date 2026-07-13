@@ -36,6 +36,7 @@ function P列確定マップ_(){
   const map={};
   vals.forEach(r=>{
     if(cSt>=0 && String(r[cSt]||'').trim()!=='到着済') return; // 実際に届いている分だけが引き当て対象
+    if(cEms<0 || !実EMS番号_(r[cEms])) return; // 棚卸箱・EMS番号空欄は実物の供給ではない
     const p=String(r[cP]||'').trim(); if(!p) return;
     const key=normCode_(r[cCode]); if(!key) return;
     const rowQty= cQty>=0? (Number(String(r[cQty]||'').replace(/[^\d.]/g,''))||0) : 0;

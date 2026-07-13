@@ -7,7 +7,7 @@
 const ZENKEN_CFG = { シート: '全件検算' };
 
 // 純粋集計(Nodeテスト対象)。src:
-//   ems:    [{code, st, qty, arrival}]            EMSリストの行(素の値)
+//   ems:    [{code, st, qty, arrival, ems}]       EMSリストの行(素の値。実EMS番号だけ供給扱い)
 //   出荷済: [{ban, code, sku, qty, 入荷日}]        消込台帳_出荷済み行_()の戻り(重複排除前)
 //   受注:   [{code, sku, qty, 選択肢, 商品名, 入荷日}] 受注明細の行(素の値)
 //   a在庫:  {基底コード:数量} YahooCSV集計_の結果。null=Yahoo照合なし
@@ -18,6 +18,7 @@ function 全件検算_集計_(src){
   const 供給={};
   const 供給を=c=>供給[c]||(供給[c]={到着済:0,反映済:0,未着:0,到着日:new Set(),反映日:new Set()});
   (src.ems||[]).forEach(r=>{
+    if(r.ems!==undefined && !実EMS番号_(r.ems)) return;
     const code=normCode_(r.code); if(!code) return;
     const qty=Number(r.qty)||0, st=String(r.st||'').trim(), d=ymd_(r.arrival);
     const e=供給を(code);
@@ -97,11 +98,11 @@ function 全件検算レポート本体_(){
   if(last<=hr){ ui.alert('EMSリストにデータがありません'); return; }
   const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
   const f=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
-  const cSt=f('ステータス列'), cC=f('商品コード'), cQ=f('数量','個数');
+  const cSt=f('ステータス列'), cC=f('商品コード'), cQ=f('数量','個数'), cE=f('EMS番号');
   let cA=f('EMS到着日','到着日','到着'); if(cA<0) cA=4; // 既定E列(🔎整合チェックと同じ)
   if(cC<0){ ui.alert('EMSリストの'+hr+'行目に「商品コード」見出しがありません'); return; }
   const ems=sh.getRange(hr+1,1,last-hr,sh.getLastColumn()).getValues().map(r=>({
-    code:r[cC], st:cSt>=0? r[cSt]:'到着済', qty:cQ>=0? r[cQ]:1, arrival:r[cA]}));
+    code:r[cC], st:cSt>=0? r[cSt]:'到着済', qty:cQ>=0? r[cQ]:1, arrival:r[cA], ems:cE>=0?r[cE]:''}));
 
   // --- 受注明細(読み取りのみ) ---
   const recv=ss.getSheetByName(HIKIATE_CFG.受注);
@@ -152,10 +153,10 @@ function 全件検算レポート本体_(){
   const 凡例=[
     '⚠️超過消費: 到着済の箱の個数以上に消費扱い(幽霊スタンプ/記録漏れの疑い) → 🔎整合チェックで行単位を確認',
     '⚠️入荷日ズレ: 入荷日がどの箱の到着日とも一致しない → 🔎整合チェックで確認(手入力の正しい日付もある)',
-    '📦供給不足: 待ち注文が見えている供給(EMS未着+到着済残)を超える → 現物があるなら📦棚卸箱の候補',
+    '📦供給不足: 待ち注文が見えている実EMS供給(EMS未着+到着済残)を超える。棚卸数量やYahoo即納数で補わず、EMSリストを確認',
     'ℹ️箱残>Yahoo: 締め前の便なら正常(箱の余りは締めでYahooへ反映される)。締めたはずの商品なら未記録出荷の疑い',
     'ℹ️EMS外在庫: Yahoo自由在庫がEMS由来より多い(免税店買付などがあれば正常)',
-    '※ このレポートは何も書き換えない。到着済残 = EMS到着済 − 出荷済(到着箱) − 確保済(到着箱)。即納はYahooが正なので対象外'
+    '※ このレポートは何も書き換えない。棚卸・EMS番号空欄は供給対象外。Yahoo即納数は比較だけで引当には使わない'
   ];
   rep.getRange(cur,1,凡例.length,1).setValues(凡例.map(s=>[s])).setFontSize(HIKIATE_CFG.字);
   ss.setActiveSheet(rep);

@@ -196,7 +196,7 @@ function 個別対応_EMSリスト_(){
     BoxNo: String(r[c.BoxNo]||'').trim(),
     照合キー: String(r[c.照合キー]||'').trim(),
     注文番号: String(r[c.注文番号]||'').trim()
-  }));
+  })).filter(r=>実EMS番号_(r.EMS番号));
   return {sh, c, rows};
 }
 
