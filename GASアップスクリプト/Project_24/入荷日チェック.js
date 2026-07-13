@@ -9,6 +9,9 @@ function 旧棚卸割当解除値_(ems番号, 入荷日, 別ルート){
     入荷日:対象 && !別ルート ? '' : 入荷日
   };
 }
+function 旧棚卸解除後手順_(){
+  return ['P列を書き直す', 'EMS在庫を更新', '②引き当て実行', '全件検算レポート'];
+}
 function 旧棚卸割当だけを解除して再引当(){ 直列_(旧棚卸割当だけを解除して再引当本体_); }
 function 旧棚卸割当だけを解除して再引当本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
@@ -26,7 +29,8 @@ function 旧棚卸割当だけを解除して再引当本体_(){
   const a=ui.alert('旧棚卸割当だけを解除',
     '旧「棚卸...」由来の '+対象.length+' 明細だけ、EMS番号と韓国取り寄せの入荷日を解除します。\n\n'+
     '在庫反映済みを含む実EMS番号・実EMSの入荷日・実EMS履歴は保持します。\n'+
-    '実行前に引当ファイル全体を自動バックアップし、その後②を自動実行します。\n\n続行しますか？', ui.ButtonSet.OK_CANCEL);
+    '実行前に引当ファイル全体を自動バックアップします。\n'+
+    '解除後は、P列書き直し→EMS在庫更新→②→全件検算の順で確認します。\n\n続行しますか？', ui.ButtonSet.OK_CANCEL);
   if(a!==ui.Button.OK) return;
   const b=ui.prompt('最終確認','「棚卸だけ」と入力してください',ui.ButtonSet.OK_CANCEL);
   if(b.getSelectedButton()!==ui.Button.OK || String(b.getResponseText()||'').trim()!=='棚卸だけ'){
@@ -72,8 +76,21 @@ function 旧棚卸割当だけを解除して再引当本体_(){
   }catch(e){}
 
   SpreadsheetApp.flush();
-  ss.toast('旧棚卸割当 '+対象.length+'明細を解除（入荷日 '+入荷クリア+'／履歴 '+履歴クリア+'）。②を実EMSだけで再実行します。','🧹棚卸解除',8);
-  引当実行_本体_();
+  const 手順=旧棚卸解除後手順_();
+  ss.toast(
+    '旧棚卸割当 '+対象.length+'明細を解除（入荷日 '+入荷クリア+'／履歴 '+履歴クリア+'）',
+    '🧹棚卸解除',
+    8
+  );
+  ui.alert(
+    '旧棚卸割当の解除完了',
+    'バックアップ: '+backup+'\n'+
+    '解除明細: '+対象.length+'\n'+
+    '入荷日クリア: '+入荷クリア+'\n'+
+    '履歴クリア: '+履歴クリア+'\n\n'+
+    '次の手順:\n'+手順.map((s,i)=>(i+1)+') '+s).join('\n'),
+    ui.ButtonSet.OK
+  );
 }
 
 // ===== 引当データの全リセット(再構築用) =====
