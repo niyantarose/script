@@ -343,9 +343,13 @@ function EMS_キー一覧に含む_(set, keys) {
 /** EMSリストの既存行から重複判定情報を作る */
 function EMS_既存キー情報_(sourceExactKeys) {
   const dst = SpreadsheetApp.getActive().getSheetByName(DAEGU_CFG.EMS_DST);
-  const info = { exact: {}, loose: {} };
-  if (!dst) return info;
-  const vals = dst.getDataRange().getValues();
+  if (!dst) return EMS_既存キー情報構築_([], sourceExactKeys);
+  return EMS_既存キー情報構築_(dst.getDataRange().getValues(), sourceExactKeys);
+}
+
+/** 純粋ロジック本体（valsはEMSリストのgetDataRange().getValues()） */
+function EMS_既存キー情報構築_(vals, sourceExactKeys) {
+  const info = { exact: {}, loose: {}, trackFix: {}, codeFix: {}, qtyFix: {} };
   let h = -1;
   for (let i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === 'No.') { h = i; break; }
   if (h < 0) return info;
@@ -367,7 +371,15 @@ function EMS_既存キー情報_(sourceExactKeys) {
       arrival: vals[i][1], // B 入荷日
       ship: vals[i][2]     // C EMS発送日
     };
-    if (no) EMS_キー一覧を追加_(info.exact, exactKeys, item);
+    if (no) {
+      EMS_キー一覧を追加_(info.exact, exactKeys, item);
+      // 大邱側で転送後に1項目だけ編集された行を、追記でなく修正で拾うための索引
+      EMS_転送コードキー一覧_(code).forEach(c => {
+        枝番_map追加_(info.trackFix, [no, c, qty].join('|'), item);
+        枝番_map追加_(info.qtyFix, [no, track, c].join('|'), item);
+      });
+      枝番_map追加_(info.codeFix, [no, track, qty].join('|'), item);
+    }
 
     // 旧データや購入No未補完の既存行は、EMS番号+商品コード+数量の件数として消費する。
     // 今回の大邱データに購入Noまで一致する既存行は exact 側で判定する。
@@ -419,6 +431,127 @@ function EMS_日付更新を適用_(dst, updates) {
   return updates.length;
 }
 
+/** EMS大邱作業データの1行を転送候補にする（対象外はnull） */
+function EMS_転送候補_(r, rowNo) {
+  const track = EMS_表示追跡番号_(r[3]);         // D EMS番号（空白や記号は吸収）
+  const codeRaw = 大邱_表示コード_(r[7]);         // H 商品コード
+  if (!track || !codeRaw) return null;
+  if (/Tracking|追跡|tracking #/i.test(track)) return null; // ヘッダー除外
+  const qty = EMS_転送数量キー_(r[8]);            // I 数量
+  const purchaseNo = EMS_転送購入Noキー_(r[19]);  // T 購入No
+  return {
+    row: rowNo,
+    purchaseNo: purchaseNo,
+    arrival: r[0],
+    ship: r[1],
+    track: track,
+    code: codeRaw,
+    qty: EMS_表示数量_(r[8]),
+    item: r[10],
+    exactKeys: EMS_転送キー一覧_(purchaseNo, track, codeRaw, qty),
+    looseKeys: EMS_転送三点キー一覧_(track, codeRaw, qty)
+  };
+}
+
+/** 転送候補側の部分キー件数と購入No集合（両側1件のときだけ既存行修正に使う） */
+function EMS_転送統計_(candidates) {
+  const stats = { pnoSet: {}, trackFix: {}, codeFix: {}, qtyFix: {} };
+  const add = (map, key) => { map[key] = (map[key] || 0) + 1; };
+  candidates.forEach(o => {
+    if (!o.purchaseNo) return;
+    stats.pnoSet[o.purchaseNo] = true;
+    const q = EMS_転送数量キー_(o.qty);
+    EMS_転送コードキー一覧_(o.code).forEach(c => {
+      add(stats.trackFix, [o.purchaseNo, c, q].join('|'));
+      add(stats.qtyFix, [o.purchaseNo, o.track, c].join('|'));
+    });
+    add(stats.codeFix, [o.purchaseNo, o.track, q].join('|'));
+  });
+  return stats;
+}
+
+/** 部分キーが大邱側・EMSリスト側とも1件のときだけ既存行を取り出す（曖昧なら触らない） */
+function EMS_フィックス取得_(map, keys, srcCounts) {
+  for (let i = 0; i < keys.length; i++) {
+    if ((srcCounts[keys[i]] || 0) !== 1) continue;
+    const queue = map[keys[i]] || [];
+    const avail = queue.filter(item => !item.used);
+    if (avail.length === 1) { avail[0].used = true; return avail[0]; }
+  }
+  return null;
+}
+
+/**
+ * 転送候補と既存EMSリストの照合計画（純粋ロジック）。
+ * 転送済み行が大邱側で後編集された場合（EMS番号の箱移動・商品コード修正・数量変更・
+ * 発注NO振り直し）、最下部への重複追記ではなく既存行の修正として計画する。
+ * 対応行を1件に絞れない曖昧なケースだけ従来どおり追記する。
+ */
+function EMS_転送照合計画_(candidates, existing, stats) {
+  const appends = [];
+  const dateUpdates = [];
+  const fixes = [];
+  const fix = (item, o, col, label, oldValue, value) => {
+    fixes.push({ row: item.row, col: col, label: label, oldValue: oldValue, value: value,
+      srcRow: o.row, purchaseNo: o.purchaseNo });
+    EMS_既存行日付更新候補_(dateUpdates, item, o);
+  };
+  candidates.forEach(o => {
+    const exactItem = o.purchaseNo ? 枝番_map取得_([existing.exact], [o.exactKeys]) : null;
+    if (exactItem) {
+      EMS_既存行日付更新候補_(dateUpdates, exactItem, o);
+      return;
+    }
+
+    const looseItem = 枝番_map取得_([existing.loose], [o.looseKeys]);
+    if (looseItem) {
+      // 発注NO修復などで振り直された購入Noに追随する（現大邱に存在しない番号だけ）
+      if (o.purchaseNo && looseItem.purchaseNo &&
+          looseItem.purchaseNo !== o.purchaseNo && !stats.pnoSet[looseItem.purchaseNo]) {
+        fix(looseItem, o, 6, '購入No', looseItem.purchaseNo, o.purchaseNo);
+      } else {
+        EMS_既存行日付更新候補_(dateUpdates, looseItem, o);
+      }
+      return;
+    }
+
+    if (o.purchaseNo) {
+      const q = EMS_転送数量キー_(o.qty);
+      const codeKeys = EMS_転送コードキー一覧_(o.code);
+
+      let hit = EMS_フィックス取得_(existing.trackFix,
+        codeKeys.map(c => [o.purchaseNo, c, q].join('|')), stats.trackFix);
+      if (hit) {
+        if (hit.track !== o.track) fix(hit, o, 13, 'EMS番号', hit.track, o.track);
+        else EMS_既存行日付更新候補_(dateUpdates, hit, o);
+        return;
+      }
+
+      hit = EMS_フィックス取得_(existing.codeFix,
+        [[o.purchaseNo, o.track, q].join('|')], stats.codeFix);
+      if (hit) {
+        if (hit.code !== o.code) fix(hit, o, 9, '商品コード', hit.code, o.code);
+        else EMS_既存行日付更新候補_(dateUpdates, hit, o);
+        return;
+      }
+
+      hit = EMS_フィックス取得_(existing.qtyFix,
+        codeKeys.map(c => [o.purchaseNo, o.track, c].join('|')), stats.qtyFix);
+      if (hit) {
+        if (hit.qty !== q) fix(hit, o, 10, '数量', hit.qty, o.qty);
+        else EMS_既存行日付更新候補_(dateUpdates, hit, o);
+        return;
+      }
+    }
+
+    const newItem = { used: false };
+    if (o.purchaseNo) EMS_キー一覧を追加_(existing.exact, o.exactKeys, newItem);
+    EMS_キー一覧を追加_(existing.loose, o.looseKeys, newItem);
+    appends.push(o);
+  });
+  return { appends: appends, dateUpdates: dateUpdates, fixes: fixes };
+}
+
 function 大邱_EMSリストへ転送() {
   const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
@@ -434,57 +567,20 @@ function 大邱_EMSリストへ転送() {
     const candidates = [];
     const sourceExactKeys = new Set();
     for (let i = 0; i < sVals.length; i++) {
-      const r = sVals[i];
-      const track = EMS_表示追跡番号_(r[3]);      // D EMS番号（空白や記号は吸収）
-      const codeRaw = 大邱_表示コード_(r[7]);      // H 商品コード
-      if (!track || !codeRaw) continue;
-      if (/Tracking|追跡|tracking #/i.test(track)) continue; // ヘッダー除外
-      const code = codeRaw;
-      const qty = EMS_転送数量キー_(r[8]);         // I 数量
-      const purchaseNo = EMS_転送購入Noキー_(r[19]); // T 購入No
-      const exactKeys = EMS_転送キー一覧_(purchaseNo, track, code, qty);
-      const looseKeys = EMS_転送三点キー一覧_(track, code, qty);
-      const item = {
-        row: i + 1,
-        purchaseNo: purchaseNo,
-        arrival: r[0],
-        ship: r[1],
-        track: track,
-        code: code,
-        qty: EMS_表示数量_(r[8]),
-        item: r[10],
-        exactKeys: exactKeys,
-        looseKeys: looseKeys
-      };
-      candidates.push(item);
-      if (purchaseNo) exactKeys.forEach(key => sourceExactKeys.add(key));
+      const o = EMS_転送候補_(sVals[i], i + 1);
+      if (!o) continue;
+      candidates.push(o);
+      if (o.purchaseNo) o.exactKeys.forEach(key => sourceExactKeys.add(key));
     }
 
     const existing = EMS_既存キー情報_(sourceExactKeys);
-    const rows = [];
-    const dateUpdates = [];
-    candidates.forEach(o => {
-      const exactItem = o.purchaseNo ? 枝番_map取得_([existing.exact], [o.exactKeys]) : null;
-      if (exactItem) {
-        EMS_既存行日付更新候補_(dateUpdates, exactItem, o);
-        return;
-      }
-      const looseItem = 枝番_map取得_([existing.loose], [o.looseKeys]);
-      if (looseItem) {
-        EMS_既存行日付更新候補_(dateUpdates, looseItem, o);
-        return;
-      }
+    const plan = EMS_転送照合計画_(candidates, existing, EMS_転送統計_(candidates));
+    const rows = plan.appends;
+    const dateUpdates = plan.dateUpdates;
+    const fixes = plan.fixes;
 
-      const newItem = { used: false };
-      if (o.purchaseNo) {
-        EMS_キー一覧を追加_(existing.exact, o.exactKeys, newItem);
-      }
-      EMS_キー一覧を追加_(existing.loose, o.looseKeys, newItem);
-      rows.push(o);
-    });
-
-    if (rows.length === 0 && dateUpdates.length === 0) {
-      ss.toast('追記/更新対象なし（D列EMS番号入りで未登録または日付更新が必要な行なし）。');
+    if (rows.length === 0 && dateUpdates.length === 0 && fixes.length === 0) {
+      ss.toast('追記/更新対象なし（D列EMS番号入りで未登録または更新が必要な行なし）。');
       return;
     }
 
@@ -508,18 +604,24 @@ function 大邱_EMSリストへ転送() {
 
     const preview = rows.slice(0, 10)
       .map(o => `${o.purchaseNo || '(購入No空)'} / ${o.track} / ${o.code} / ${o.qty}`).join('\n');
+    const fixPreview = fixes.slice(0, 10)
+      .map(o => `EMSリスト${o.row}行 ${o.label}: ${o.oldValue || '(空)'} -> ${o.value}（大邱${o.srcRow}行）`)
+      .join('\n');
     const datePreview = dateUpdates.slice(0, 10)
       .map(o => `EMSリスト${o.row}行 ${o.label} -> ${EMS_日付キー_(o.value)}`)
       .join('\n');
     const res = ui.alert('EMSリストへ追記 (デバッグ情報付き)',
-      `${rows.length}件をEMSリストの最終行の下へ追記し、既存行の日付 ${dateUpdates.length}件を更新します。\n\n【追記プレビュー】\n${preview || 'なし'}` +
+      `${rows.length}件をEMSリストの最終行の下へ追記し、既存行の修正 ${fixes.length}件・日付 ${dateUpdates.length}件を更新します。\n\n【追記プレビュー】\n${preview || 'なし'}` +
       (rows.length > 10 ? '\n…ほか' : '') +
+      `\n\n【既存行の修正（大邱側の後編集に追随）】\n${fixPreview || 'なし'}` +
+      (fixes.length > 10 ? '\n…ほか' : '') +
       `\n\n【日付更新】\n${datePreview || 'なし'}` +
       (dateUpdates.length > 10 ? '\n…ほか' : '') +
       `\n\n【デバッグ照合情報】\n(EMSリスト内の登録状況)${debugMsg}\n\n実行する！`,
       ui.ButtonSet.YES_NO);
     if (res !== ui.Button.YES) { ui.alert('やめました。'); return; }
 
+    fixes.forEach(f => dst.getRange(f.row, f.col).setValue(f.value));
     const updatedDates = EMS_日付更新を適用_(dst, dateUpdates);
 
     if (rows.length > 0) {
@@ -550,7 +652,216 @@ function 大邱_EMSリストへ転送() {
     if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
       発注_EMS発送数数式を一括修正();
     }
-    ss.toast(`EMSリストへ追記 ${rows.length}件 / 日付更新 ${updatedDates}件 / 購入No補完 ${filled}件`);
+    ss.toast(`EMSリストへ追記 ${rows.length}件 / 既存行修正 ${fixes.length}件 / 日付更新 ${updatedDates}件 / 購入No補完 ${filled}件`);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ============================================================
+// 機能: 転送ズレの修復（大邱側の後編集で生じた重複行・旧発注NOを直す）
+//   転送済み行が大邱側で編集されると、旧転送行が孤児として残り、
+//   編集後の行が最下部へ重複追記される（＝勝手に場所が変わったように見える）。
+//   ・重複ペア → 上の行に現行データを統合し、下の重複行を削除
+//   ・発注NO振り直し → F列を現行番号へ更新
+//   ・確定できない行 → 報告のみ（削除しない）
+// ============================================================
+
+function EMS_修復正規化_(pno, track, code, qty) {
+  return {
+    pno: EMS_転送購入Noキー_(pno),
+    track: EMS_表示追跡番号_(track),
+    code: 大邱_表示コード_(code),
+    ncode: normCode_(code),
+    qty: EMS_転送数量キー_(qty)
+  };
+}
+
+/** EMS大邱作業データの照合対象行一覧（純粋） */
+function EMS_修復元一覧_(sVals) {
+  const list = [];
+  for (let i = 0; i < sVals.length; i++) {
+    const r = sVals[i];
+    if (/Tracking|Trakking|追跡/i.test(String(r[3] || ''))) continue;
+    const n = EMS_修復正規化_(r[19], r[3], r[7], r[8]); // T購入No / D EMS番号 / H商品コード / I数量
+    if (!n.pno || !n.track || !n.ncode || !n.qty) continue;
+    list.push({ row: i + 1, pno: n.pno, track: n.track, code: n.code, ncode: n.ncode, qty: n.qty });
+  }
+  return list;
+}
+
+/** EMSリストの照合対象行一覧（純粋・見出しNo.以降のみ） */
+function EMS_修復先一覧_(dVals) {
+  const list = [];
+  let h = -1;
+  for (let i = 0; i < dVals.length; i++) if (String(dVals[i][0]).trim() === 'No.') { h = i; break; }
+  if (h < 0) return list;
+  for (let i = h + 1; i < dVals.length; i++) {
+    const r = dVals[i];
+    const n = EMS_修復正規化_(r[5], r[12], r[8], r[9]); // F購入No / M EMS番号 / I商品コード / J数量
+    if (!n.pno || !n.track || !n.ncode || !n.qty) continue;
+    list.push({ row: i + 1, no: r[0], pno: n.pno, track: n.track, code: n.code, ncode: n.ncode, qty: n.qty });
+  }
+  return list;
+}
+
+function EMS_修復完全キー_(item) {
+  return [item.pno, item.track, item.ncode, item.qty].join('|');
+}
+
+/**
+ * 転送ズレ修復計画（純粋ロジック）
+ *  1) 大邱に完全一致しないEMSリスト行＝孤児を洗い出す
+ *  2) 同じ購入Noで大邱と完全一致する行（twin）があれば重複ペア
+ *     → 孤児が上なら現行データを孤児行へ統合してtwin行を削除、孤児が下なら孤児行を削除
+ *  3) twinが無く、大邱の未対応行と EMS番号+コード+数量 が一致すれば発注NO振り直し → F列更新
+ *  4) 残りは unresolved（報告のみ）
+ */
+function EMS_転送ズレ修復計画_(srcList, dstList) {
+  const srcCount = {};
+  const srcPnoSet = {};
+  srcList.forEach(s => {
+    const k = EMS_修復完全キー_(s);
+    srcCount[k] = (srcCount[k] || 0) + 1;
+    srcPnoSet[s.pno] = true;
+  });
+
+  const matched = [];
+  const orphans = [];
+  const remain = Object.assign({}, srcCount);
+  dstList.forEach(d => {
+    const k = EMS_修復完全キー_(d);
+    if (remain[k] > 0) { remain[k]--; matched.push(d); }
+    else orphans.push(d);
+  });
+
+  // 大邱側の未対応行（どのEMSリスト行とも完全一致しなかった行）
+  const srcUnmatched = [];
+  const remain2 = Object.assign({}, remain);
+  srcList.forEach(s => {
+    const k = EMS_修復完全キー_(s);
+    if (remain2[k] > 0) { remain2[k]--; srcUnmatched.push(s); }
+  });
+
+  const looseSrc = {};
+  srcUnmatched.forEach(s => {
+    const k = [s.track, s.ncode, s.qty].join('|');
+    (looseSrc[k] = looseSrc[k] || []).push(s);
+  });
+  const looseOrphanCount = {};
+  orphans.forEach(d => {
+    const k = [d.track, d.ncode, d.qty].join('|');
+    looseOrphanCount[k] = (looseOrphanCount[k] || 0) + 1;
+  });
+
+  const collapses = [];
+  const pnoFixes = [];
+  const unresolved = [];
+  const twinUsed = {};
+
+  orphans.forEach(d => {
+    // 2) 重複ペア: 同じ購入Noで、track/ncode/qty のうち2つ以上が一致するtwinが1件だけ
+    const twins = matched.filter(m => {
+      if (twinUsed[m.row] || m.pno !== d.pno) return false;
+      const same = (m.track === d.track ? 1 : 0) + (m.ncode === d.ncode ? 1 : 0) + (m.qty === d.qty ? 1 : 0);
+      return same >= 2;
+    });
+    if (twins.length === 1) {
+      const t = twins[0];
+      twinUsed[t.row] = true;
+      if (d.row < t.row) {
+        collapses.push({ mergeIntoRow: d.row, deleteRow: t.row, orphan: d, twin: t });
+      } else {
+        collapses.push({ deleteRow: d.row, orphan: d, twin: t });
+      }
+      return;
+    }
+    if (twins.length > 1) { unresolved.push(d); return; }
+
+    // 3) 発注NO振り直し追随（両側とも1件で、孤児の購入Noが現大邱に無い場合だけ）
+    const k = [d.track, d.ncode, d.qty].join('|');
+    const cands = looseSrc[k] || [];
+    if (cands.length === 1 && looseOrphanCount[k] === 1 && !srcPnoSet[d.pno]) {
+      pnoFixes.push({ row: d.row, no: d.no, oldValue: d.pno, value: cands[0].pno, srcRow: cands[0].row });
+      return;
+    }
+    unresolved.push(d);
+  });
+
+  return { collapses: collapses, pnoFixes: pnoFixes, unresolved: unresolved };
+}
+
+function EMSリスト_転送ズレを修復() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const src = ss.getSheetByName(DAEGU_CFG.EMS_SRC);
+  const dst = ss.getSheetByName(DAEGU_CFG.EMS_DST);
+  if (!src || !dst) { ui.alert('「' + DAEGU_CFG.EMS_SRC + '」か「' + DAEGU_CFG.EMS_DST + '」が見つかりません。'); return; }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(2000)) { ss.toast('他の処理が実行中です。'); return; }
+  try {
+    const dVals = dst.getDataRange().getValues();
+    const plan = EMS_転送ズレ修復計画_(
+      EMS_修復元一覧_(src.getDataRange().getValues()),
+      EMS_修復先一覧_(dVals)
+    );
+
+    if (!plan.collapses.length && !plan.pnoFixes.length && !plan.unresolved.length) {
+      ui.alert('転送ズレ（重複ペア・旧発注NO）は見つかりませんでした。');
+      return;
+    }
+
+    const fmt = d => `${d.pno} / ${d.track} / ${d.code} x${d.qty}`;
+    const colPreview = plan.collapses.slice(0, 20)
+      .map(c => c.mergeIntoRow
+        ? `行${c.mergeIntoRow}（${fmt(c.orphan)}）へ行${c.deleteRow}（${fmt(c.twin)}）の内容を統合し、行${c.deleteRow}を削除`
+        : `行${c.deleteRow}（${fmt(c.orphan)}）を削除（行${c.twin.row}が現行データ）`)
+      .join('\n');
+    const pnoPreview = plan.pnoFixes.slice(0, 20)
+      .map(p => `行${p.row}: 購入No ${p.oldValue} -> ${p.value}（大邱${p.srcRow}行）`)
+      .join('\n');
+    const unresolvedPreview = plan.unresolved.slice(0, 20)
+      .map(d => `行${d.row}: ${fmt(d)}`)
+      .join('\n');
+
+    const res = ui.alert('EMSリスト転送ズレの修復',
+      `大邱側の後編集で生じた重複ペア ${plan.collapses.length}件を統合し、` +
+      `発注NO振り直し ${plan.pnoFixes.length}件のF列（購入No）を更新します。\n\n` +
+      `【重複ペア】\n${colPreview || 'なし'}` +
+      (plan.collapses.length > 20 ? '\n…ほか' : '') +
+      `\n\n【購入No更新】\n${pnoPreview || 'なし'}` +
+      (plan.pnoFixes.length > 20 ? '\n…ほか' : '') +
+      `\n\n【自動修復できない行（大邱に対応なし・手動確認）】\n${unresolvedPreview || 'なし'}` +
+      (plan.unresolved.length > 20 ? '\n…ほか' : '') +
+      '\n\n実行する？',
+      ui.ButtonSet.YES_NO);
+    if (res !== ui.Button.YES) { ui.alert('やめました。'); return; }
+
+    // セル更新 → 行削除（下から）の順で適用する
+    plan.pnoFixes.forEach(p => dst.getRange(p.row, 6).setValue(p.value));
+
+    const COPY_COLS = [2, 3, 5, 9, 10, 11, 13]; // B入荷日 C発送日 E到着予定 I商品コード J数量 K品目 M EMS番号
+    const FILL_COLS = [4, 7, 8, 12, 14];        // D矢印 Gステータス H備考 L仕入れ区分 N BoxNo（空欄だけ埋める）
+    plan.collapses.forEach(c => {
+      if (!c.mergeIntoRow) return;
+      const from = dVals[c.deleteRow - 1];
+      const into = dVals[c.mergeIntoRow - 1];
+      COPY_COLS.forEach(col => dst.getRange(c.mergeIntoRow, col).setValue(from[col - 1]));
+      FILL_COLS.forEach(col => {
+        if (isBlank_(into[col - 1]) && !isBlank_(from[col - 1])) {
+          dst.getRange(c.mergeIntoRow, col).setValue(from[col - 1]);
+        }
+      });
+    });
+
+    plan.collapses.map(c => c.deleteRow).sort((a, b) => b - a).forEach(row => dst.deleteRow(row));
+
+    SpreadsheetApp.flush();
+    if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
+      発注_EMS発送数数式を一括修正();
+    }
+    ss.toast(`転送ズレ修復: 重複統合 ${plan.collapses.length}件 / 購入No更新 ${plan.pnoFixes.length}件 / 未解決 ${plan.unresolved.length}件`);
   } finally {
     lock.releaseLock();
   }
