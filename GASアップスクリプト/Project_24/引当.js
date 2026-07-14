@@ -76,6 +76,9 @@ function onOpen(){
   ui.createMenu('🚚 ダニエル引当(サブ)')
     .addItem('📦 ダニエルEMS取込', '取込_ダニエルEMS')
     .addItem('📦 ダニエルEMS引当', 'ダニエルEMS引当')
+    .addItem('🧮 ダニエル余りを計算(便の余り推定)', 'ダニエル余りを計算')
+    .addItem('🧾 ダニエル入荷記録を現タブから初期化(初回用)', 'ダニエル入荷記録_現タブから初期化')
+    .addItem('📝 受注明細に取り置きメモ列を用意(初回用)', '受注明細_取り置きメモ列を用意')
     .addItem('🔬 ダニエルファイル診断', 'ダニエルファイル診断')
     .addToUi();
 
@@ -284,6 +287,9 @@ function 取込_ダニエルEMS(){
       .setVerticalAlignment('middle').setFontSize(HIKIATE_CFG.字).setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
     sh.setRowHeights(startRow, rows.length, HIKIATE_CFG.行高);
   }
+  // 便の入荷を積み上げ台帳へ(EMS番号単位で洗い替え)→余り推定を更新(失敗しても取込は成立)
+  try{ ダニエル入荷記録へ追記_(rows); }catch(e){}
+  try{ ダニエル余りを計算(); }catch(e){}
   ss.toast('ダニエルEMS取込完了：'+rows.length+'件 / 発送日'+dates.join(',')+'（'+latest.getName()+'）','📦ダニエルEMS',6);
 }
 
@@ -357,8 +363,26 @@ function 列マップ_(sh){
     選択肢: find('項目・選択肢','項目選択肢'),
     個数: find('個数'),
     入金: find('入金日'),
-    入荷: find('入荷日')
+    入荷: find('入荷日'),
+    EMS: find('EMS番号'),
+    メモ: find('取り置きメモ')
   };
+}
+
+// 受注明細の末尾に「取り置きメモ」列を用意する(あれば何もしない)。
+// GoQ取込は取り込みのたびにこの列を退避→貼り直しするので、書いたメモは消えない。
+// エディタからも実行できるようUIは使わない。
+function 受注明細_取り置きメモ列を用意(){
+  const ss=SpreadsheetApp.getActive();
+  const sh=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!sh){ Logger.log('受注明細タブがありません'); return; }
+  const hr=受注ヘッダー行_(sh);
+  const head=sh.getRange(hr,1,1,Math.max(sh.getLastColumn(),1)).getValues()[0].map(v=>String(v||'').trim());
+  if(head.indexOf('取り置きメモ')>=0){ Logger.log('取り置きメモ列は既にあります'); ss.toast('取り置きメモ列は既にあります'); return; }
+  const col=sh.getLastColumn()+1;
+  sh.getRange(hr,col).setValue('取り置きメモ').setFontWeight('bold');
+  Logger.log('取り置きメモ列を'+col+'列目に作成しました');
+  ss.toast('受注明細に「取り置きメモ」列を作成しました');
 }
 
 // GoQの最新CSV(更新日時が一番新しいもの)を受注明細へ丸ごと入れ替え
@@ -441,13 +465,16 @@ function 取込_実行_(latest){
   { const h0=sh.getRange(hdrRow,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
     const e=h0.indexOf('EMS番号'); if(e>=0) sh.deleteColumn(e+1); }
   // 【入荷日を引き継ぐ】上書き前に、今の入荷日を 受注番号+商品コード+SKU をキーに退避(取込で消えないように)
-  const 退避入荷={};
+  // 【取り置きメモも引き継ぐ】同じキーで退避→取込後に貼り直す(手書きメモが取込で消えないように)
+  const 退避入荷={}; const 退避メモ={}; let メモ列あり=false;
   { const M0=列マップ_(sh);
-    if(M0.入荷>=0 && sh.getLastRow()>=startRow){
+    メモ列あり = M0.メモ>=0;
+    if((M0.入荷>=0 || M0.メモ>=0) && sh.getLastRow()>=startRow){
       const old=sh.getRange(startRow,1,sh.getLastRow()-startRow+1,sh.getLastColumn()).getValues();
       old.forEach(r=>{ const ban=String(r[M0.番号]||'').trim(), code=String(r[M0.コード]||'').trim();
-        const sku=M0.SKU>=0?String(r[M0.SKU]||'').trim():''; const v=r[M0.入荷];
-        if(ban && v!=='' && v!=null) 退避入荷[ban+'|'+code+'|'+sku]=v; });
+        const sku=M0.SKU>=0?String(r[M0.SKU]||'').trim():''; const key=ban+'|'+code+'|'+sku;
+        if(M0.入荷>=0){ const v=r[M0.入荷]; if(ban && v!=='' && v!=null) 退避入荷[key]=v; }
+        if(M0.メモ>=0){ const m=String(r[M0.メモ]==null?'':r[M0.メモ]).trim(); if(ban && m!=='') 退避メモ[key]=m; } });
     } }
   // ヘッダーより下を全リセット(値・背景色・罫線を消す)→ 前回の引当色や罫線が残らないように
   // ※ヘッダー行(例6行目)と上は触らないので書式は維持される
@@ -486,6 +513,21 @@ function 取込_実行_(latest){
   }
   EMS番号列を用意_(sh); // 個数の隣に「EMS番号」列を作り直す(中身は②が書く)。取込のたびに個数の隣に固定される
 
+  // 【取り置きメモを引き継ぐ】メモ列があった場合は列を末尾に確保し直して、同じキーの行へ貼り直す
+  let メモ引継=0;
+  if(body.length && (メモ列あり || Object.keys(退避メモ).length)){
+    const M2=列マップ_(sh);
+    let メモC=M2.メモ;
+    if(メモC<0){ メモC=sh.getLastColumn(); sh.getRange(hdrRow,メモC+1).setValue('取り置きメモ').setFontWeight('bold'); }
+    if(Object.keys(退避メモ).length){
+      const cur2=sh.getRange(startRow,1,body.length,sh.getLastColumn()).getValues();
+      const out2=cur2.map(r=>{ const ban=String(r[M2.番号]||'').trim(), code=String(r[M2.コード]||'').trim();
+        const sku=M2.SKU>=0?String(r[M2.SKU]||'').trim():''; const m=退避メモ[ban+'|'+code+'|'+sku];
+        if(m!==undefined) メモ引継++; return [ m!==undefined ? m : '' ]; });
+      sh.getRange(startRow, メモC+1, out2.length, 1).setValues(out2);
+    }
+  }
+
   // 消込台帳を更新: 前回いて今回消えた注文=発送済み(他の人が発送した分)を検知
   const 台帳=消込台帳更新_();
 
@@ -518,6 +560,7 @@ function 取込_実行_(latest){
   const 処理ms=Date.now()-開始ms, 処理秒=Math.round(処理ms/1000);
   console.log('①受注明細更新 処理時間ms='+処理ms);
   ss.toast('取込完了：'+latest.getName()+' / 受注'+body.length+'行（更新 '+upd+' / 入荷日引継 '+引継+'件'
+    +(メモ引継? ' / メモ引継 '+メモ引継+'件':'')
     +(台帳.新規出荷済? ' / 🧾消えた注文の出荷済み検知'+台帳.新規出荷済+'件':'')
     +(処理済結果&&処理済結果.追加? ' / 📦処理済を確定登録'+処理済結果.追加+'件':'')
     +(キャンセル番号.length? ' / 🚫キャンセル'+キャンセル番号.length+'件(新規'+新規キャンセル.length+'件)':'')
@@ -1238,6 +1281,7 @@ function 引当実行_本体_(){
       氏名:row[M.氏名], 届:row[M.届], 商品名:row[M.商品名],
       code, sku:String(row[M.SKU]||'').trim(), qty, kbn,
       日時: c日時>=0? 日付値_(row[c日時]) : null,
+      メモ: M.メモ>=0? String(row[M.メモ]==null?'':row[M.メモ]).trim() : '',
       paid:入金済み_(row[M.入金]), 入荷, 入荷日値, 着, alloc:0, 引当成立:false, キャンセル:qty<=0 });
   }
 
@@ -1480,8 +1524,10 @@ function 引当実行_本体_(){
   const 発送可否_=ban=> 発送可否判定_(byOrder[ban], paidOrder[ban]);
 
   // 出力(行の色=到着状況。未入金は受注番号セルだけ赤)
+  // 取り置きメモ(受注明細の手書き列)は各出力の末尾に転記する(毎回作り直しても消えない見せ方)
   const HDR=['受注番号','氏名','お届け日','商品コード','商品名','個数','区分','入荷日','入金','状態','EMS番号'];
-  const HDR_待=HDR.concat(['発送可否']); // 引当待ちだけK列に発送可否を足す
+  const HDR_共=HDR.concat(['取り置きメモ']);
+  const HDR_待=HDR.concat(['発送可否','取り置きメモ']); // 引当待ちだけK列に発送可否を足す
   const seen=new Set(), seq=[]; lines.forEach(l=>{ if(!seen.has(l.ban)){ seen.add(l.ban); seq.push(l.ban);} });
   const waitRows=[], partRows=[], keepRows=[], holdRows=[], shipRows=[];
   seq.forEach(ban=>{
@@ -1496,15 +1542,16 @@ function 引当実行_本体_(){
       const 表示コード=注文一覧表示コード_(l, l.kbn==='取り寄せ' && l.入荷 && 入荷消費OK_(l), stockKey);
       const vals=[ban,l.氏名,l.届,表示コード,l.商品名,l.qty,l.kbn,l.入荷日値,paid?'済':'未',st,l.箱EMS||''];
       if(b==='wait') vals.push(可否);
+      vals.push(l.メモ||'');
       target.push({ vals, color, ban, paid, qty:l.qty });
     });
   });
 
   書き出し_(ss, cfg.待ち, HDR_待, waitRows, 受注hdr);
-  書き出し_(ss, cfg.部分, HDR, partRows, 受注hdr);
-  書き出し_(ss, cfg.取置, HDR, keepRows, 受注hdr);
-  書き出し_(ss, cfg.希望, HDR, holdRows, 受注hdr);
-  書き出し_(ss, cfg.出荷, HDR, shipRows, 受注hdr);
+  書き出し_(ss, cfg.部分, HDR_共, partRows, 受注hdr);
+  書き出し_(ss, cfg.取置, HDR_共, keepRows, 受注hdr);
+  書き出し_(ss, cfg.希望, HDR_共, holdRows, 受注hdr);
+  書き出し_(ss, cfg.出荷, HDR_共, shipRows, 受注hdr);
 
   // ===== 受注明細の色分け: 行=到着色(即納=水/到着=黄/未着=白/指定なし=橙)、未入金は受注番号セルを赤 =====
   const recvStart=受注hdr+1, recvLast=recv.getLastRow();
@@ -2192,6 +2239,7 @@ function danielHikiateRun(emsList){
 
   const 注文数=new Set(rows.map(r=>r.ban)).size;
   抽出フラグ更新_(); // 受注明細の「抽出」列(ダニエルのピンクも色ありに反映)
+  try{ ダニエル余りを計算(); }catch(e){} // 引当が変わったので余り推定を更新(失敗しても引当は成立)
   ss.toast('ダニエル引当 完了：EMS番号'+sel.size+'件で '+注文数+'注文。選んでないEMS番号は「対象外」表示', '📦 ダニエル', 6);
 }
 
