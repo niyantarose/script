@@ -134,10 +134,14 @@ function 消込台帳_出荷済み行_(){
     const base=r[4]||r[7]; // 入荷日→なければ消滅日
     const d= base instanceof Date? base : new Date(String(base||''));
     if(!isNaN(d.getTime()) && d.getTime()<limit.getTime()) return;
-    out.push({ban:String(r[0]||'').trim(), code:String(r[1]||'').trim(), sku:String(r[2]||'').trim(), qty, 入荷日:r[4], 基準日:r[7]||r[6]});
+    out.push({ban:String(r[0]||'').trim(), code:String(r[1]||'').trim(), sku:String(r[2]||'').trim(), qty, 入荷日:r[4], 基準日:r[7]||r[6], メモ:String(r[8]||'').trim()});
   });
   return out;
 }
+
+// 台帳のメモ列に「取り置き」と書かれた出荷済み行か。
+// 開始前の取り置き在庫（EMS箱の外）から出荷した分は、今回の箱を消費させないための人為マーク。
+function 取り置き出荷_(l){ return /取り?置き|取置/.test(String(l&&l.メモ||'')); }
 
 // ===== 移行用: 発送済み注文CSVを消込台帳へ一括登録 =====
 // GoQで「出荷日を期間指定」して出力した発送済みCSVを、いつものドライブフォルダに入れてから実行。

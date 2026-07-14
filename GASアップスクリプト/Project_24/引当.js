@@ -365,8 +365,16 @@ function 列マップ_(sh){
     入金: find('入金日'),
     入荷: find('入荷日'),
     EMS: find('EMS番号'),
-    メモ: find('取り置きメモ')
+    メモ: find('取り置きメモ'),
+    取置数: find('取り置き数','既存取り置き数')
   };
+}
+
+// この注文行が今回の箱からあと何個必要か。
+// 取り置き数(開始前の手元在庫で確保済みの個数)を差し引くので、
+// 取り置きで足りている注文は今回便から引き当てない(棚の実物と引当先が一致する)。
+function 残必要計算_(l){
+  return Math.max(0, (Number(l.qty)||0)-(l.alloc||0)-(l.履歴Alloc||0)-(Number(l.取り置き数)||0));
 }
 
 // 受注明細の末尾に「取り置きメモ」列を用意する(あれば何もしない)。
@@ -377,12 +385,17 @@ function 受注明細_取り置きメモ列を用意(){
   const sh=ss.getSheetByName(HIKIATE_CFG.受注);
   if(!sh){ Logger.log('受注明細タブがありません'); return; }
   const hr=受注ヘッダー行_(sh);
-  const head=sh.getRange(hr,1,1,Math.max(sh.getLastColumn(),1)).getValues()[0].map(v=>String(v||'').trim());
-  if(head.indexOf('取り置きメモ')>=0){ Logger.log('取り置きメモ列は既にあります'); ss.toast('取り置きメモ列は既にあります'); return; }
-  const col=sh.getLastColumn()+1;
-  sh.getRange(hr,col).setValue('取り置きメモ').setFontWeight('bold');
-  Logger.log('取り置きメモ列を'+col+'列目に作成しました');
-  ss.toast('受注明細に「取り置きメモ」列を作成しました');
+  const made=[];
+  ['取り置き数','取り置きメモ'].forEach(name=>{
+    const head=sh.getRange(hr,1,1,Math.max(sh.getLastColumn(),1)).getValues()[0].map(v=>String(v||'').trim());
+    if(head.indexOf(name)>=0) return;
+    const col=sh.getLastColumn()+1;
+    sh.getRange(hr,col).setValue(name).setFontWeight('bold');
+    made.push(name+'('+col+'列目)');
+  });
+  const msg = made.length? '作成: '+made.join(' / ') : '取り置き数・取り置きメモ列は既にあります';
+  Logger.log(msg);
+  ss.toast(msg);
 }
 
 // GoQの最新CSV(更新日時が一番新しいもの)を受注明細へ丸ごと入れ替え
@@ -466,15 +479,16 @@ function 取込_実行_(latest){
     const e=h0.indexOf('EMS番号'); if(e>=0) sh.deleteColumn(e+1); }
   // 【入荷日を引き継ぐ】上書き前に、今の入荷日を 受注番号+商品コード+SKU をキーに退避(取込で消えないように)
   // 【取り置きメモも引き継ぐ】同じキーで退避→取込後に貼り直す(手書きメモが取込で消えないように)
-  const 退避入荷={}; const 退避メモ={}; let メモ列あり=false;
+  const 退避入荷={}; const 退避メモ={}; const 退避取置={}; let メモ列あり=false; let 取置列あり=false;
   { const M0=列マップ_(sh);
-    メモ列あり = M0.メモ>=0;
-    if((M0.入荷>=0 || M0.メモ>=0) && sh.getLastRow()>=startRow){
+    メモ列あり = M0.メモ>=0; 取置列あり = M0.取置数>=0;
+    if((M0.入荷>=0 || M0.メモ>=0 || M0.取置数>=0) && sh.getLastRow()>=startRow){
       const old=sh.getRange(startRow,1,sh.getLastRow()-startRow+1,sh.getLastColumn()).getValues();
       old.forEach(r=>{ const ban=String(r[M0.番号]||'').trim(), code=String(r[M0.コード]||'').trim();
         const sku=M0.SKU>=0?String(r[M0.SKU]||'').trim():''; const key=ban+'|'+code+'|'+sku;
         if(M0.入荷>=0){ const v=r[M0.入荷]; if(ban && v!=='' && v!=null) 退避入荷[key]=v; }
-        if(M0.メモ>=0){ const m=String(r[M0.メモ]==null?'':r[M0.メモ]).trim(); if(ban && m!=='') 退避メモ[key]=m; } });
+        if(M0.メモ>=0){ const m=String(r[M0.メモ]==null?'':r[M0.メモ]).trim(); if(ban && m!=='') 退避メモ[key]=m; }
+        if(M0.取置数>=0){ const n=Number(r[M0.取置数])||0; if(ban && n>0) 退避取置[key]=n; } });
     } }
   // ヘッダーより下を全リセット(値・背景色・罫線を消す)→ 前回の引当色や罫線が残らないように
   // ※ヘッダー行(例6行目)と上は触らないので書式は維持される
@@ -513,8 +527,20 @@ function 取込_実行_(latest){
   }
   EMS番号列を用意_(sh); // 個数の隣に「EMS番号」列を作り直す(中身は②が書く)。取込のたびに個数の隣に固定される
 
-  // 【取り置きメモを引き継ぐ】メモ列があった場合は列を末尾に確保し直して、同じキーの行へ貼り直す
+  // 【取り置き数・取り置きメモを引き継ぐ】列を末尾に確保し直して、同じキーの行へ貼り直す
   let メモ引継=0;
+  if(body.length && (取置列あり || Object.keys(退避取置).length)){
+    const M2=列マップ_(sh);
+    let 取C=M2.取置数;
+    if(取C<0){ 取C=sh.getLastColumn(); sh.getRange(hdrRow,取C+1).setValue('取り置き数').setFontWeight('bold'); }
+    if(Object.keys(退避取置).length){
+      const cur2=sh.getRange(startRow,1,body.length,sh.getLastColumn()).getValues();
+      const out2=cur2.map(r=>{ const ban=String(r[M2.番号]||'').trim(), code=String(r[M2.コード]||'').trim();
+        const sku=M2.SKU>=0?String(r[M2.SKU]||'').trim():''; const n=退避取置[ban+'|'+code+'|'+sku];
+        if(n!==undefined) メモ引継++; return [ n!==undefined ? n : '' ]; });
+      sh.getRange(startRow, 取C+1, out2.length, 1).setValues(out2);
+    }
+  }
   if(body.length && (メモ列あり || Object.keys(退避メモ).length)){
     const M2=列マップ_(sh);
     let メモC=M2.メモ;
@@ -1285,6 +1311,7 @@ function 引当実行_本体_(){
       code, sku:String(row[M.SKU]||'').trim(), qty, kbn,
       日時: c日時>=0? 日付値_(row[c日時]) : null,
       メモ: M.メモ>=0? String(row[M.メモ]==null?'':row[M.メモ]).trim() : '',
+      取り置き数: M.取置数>=0? (Number(row[M.取置数])||0) : 0,
       paid:入金済み_(row[M.入金]), 入荷, 入荷日値, 着, alloc:0, 引当成立:false, キャンセル:qty<=0 });
   }
 
@@ -1318,7 +1345,7 @@ function 引当実行_本体_(){
   const keyInStock=l=>{ for(const k of candKeys(l)){ if(k in stock && 月号OK_(l,k)) return k; if(aliasMap[k] && aliasMap[k] in stock && 月号OK_(l,aliasMap[k])) return aliasMap[k]; } return null; };
   const findAvail=l=>{ for(const k of candKeys(l)){ if(stock[k]>0 && 月号OK_(l,k)) return k; if(aliasMap[k]&&stock[aliasMap[k]]>0&&月号OK_(l,aliasMap[k])) return aliasMap[k]; } return null; };
   const 履歴一致_= (l,e)=> candKeys(l).some(k=> k===e.key || aliasMap[k]===e.key || codeKeys_(e.key).indexOf(k)>=0);
-  const 残必要_=l=> Math.max(0, l.qty-(l.alloc||0)-(l.履歴Alloc||0));
+  const 残必要_=l=> 残必要計算_(l); // 取り置き数(手元確保分)も差し引く。定義は残必要計算_を参照
   // 商品コードそのものが現役の受注番号なら、そのEMS行はその注文専用。
   // 受注行の個数では切らず、EMS行数量を全数割り当てて通常FIFO在庫から外す。
   const 注文番号指定=注文番号指定割当一覧_(E.map((row,index)=>({
@@ -1417,7 +1444,9 @@ function 引当実行_本体_(){
   //    発送より後に着いた箱はその発送の出どころではあり得ないので食わせない(かつてコード一致で無条件に
   //    差し引いていたら、60日分の発送済みが新しく着いた箱を食い尽くし、本物の注文が宙=要確認に
   //    押し出されて毎回⚠️が出続けた)。発送日が読めない時は従来通り差し引く(売り越し防止を優先)
-  const 出荷済消費OK_=l=>{ if(到着日不明_) return true; const k=keyInStock(l); if(k==null) return false;
+  const 出荷済消費OK_=l=>{
+    if(取り置き出荷_(l)) return false; // 台帳メモ「取り置き」=開始前在庫から出荷した分。箱を食わせない(人為オーバーライド)
+    if(到着日不明_) return true; const k=keyInStock(l); if(k==null) return false;
     const set=到着日SetByCode[k];
     const d=ymd_(l.入荷日);
     if(d) return !!(set && set.has(d));
@@ -1529,8 +1558,8 @@ function 引当実行_本体_(){
   // 出力(行の色=到着状況。未入金は受注番号セルだけ赤)
   // 取り置きメモ(受注明細の手書き列)は各出力の末尾に転記する(毎回作り直しても消えない見せ方)
   const HDR=['受注番号','氏名','お届け日','商品コード','商品名','個数','区分','入荷日','入金','状態','EMS番号'];
-  const HDR_共=HDR.concat(['取り置きメモ']);
-  const HDR_待=HDR.concat(['発送可否','取り置きメモ']); // 引当待ちだけK列に発送可否を足す
+  const HDR_共=HDR.concat(['取り置き数','取り置きメモ']);
+  const HDR_待=HDR.concat(['発送可否','取り置き数','取り置きメモ']); // 引当待ちだけK列に発送可否を足す
   const seen=new Set(), seq=[]; lines.forEach(l=>{ if(!seen.has(l.ban)){ seen.add(l.ban); seq.push(l.ban);} });
   const waitRows=[], partRows=[], keepRows=[], holdRows=[], shipRows=[];
   seq.forEach(ban=>{
@@ -1545,6 +1574,7 @@ function 引当実行_本体_(){
       const 表示コード=注文一覧表示コード_(l, l.kbn==='取り寄せ' && l.入荷 && 入荷消費OK_(l), stockKey);
       const vals=[ban,l.氏名,l.届,表示コード,l.商品名,l.qty,l.kbn,l.入荷日値,paid?'済':'未',st,l.箱EMS||''];
       if(b==='wait') vals.push(可否);
+      vals.push(l.取り置き数||'');
       vals.push(l.メモ||'');
       target.push({ vals, color, ban, paid, qty:l.qty });
     });

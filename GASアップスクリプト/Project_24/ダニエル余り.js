@@ -50,6 +50,7 @@ function ダニエル余り集計_(src){
   出荷済み重複排除_(src.出荷済||[]).forEach(r=>{
     const base=受注基底コード_(r.sku, r.code); if(!base || !(base in 供給)) return;
     const qty=Number(r.qty)||0; if(qty<=0) return;
+    if(取り置き出荷_(r)) return; // 台帳メモ「取り置き」=開始前在庫から出荷。ダニエル便も消費しない
     const d=ymd_(r.入荷日);
     if(d && 大邱日[base] && 大邱日[base].has(d)) return; // 大邱の箱から出た分
     出荷[base]=(出荷[base]||0)+qty;
