@@ -119,7 +119,8 @@ function ダニエル入荷記録_現タブから初期化(){
 
 // ---- 余り推定レポート ----
 // UIを使わない(メニュー・エディタ・取込後フックのどこからでも実行できる)
-function ダニエル余りを計算(){
+// quiet=true のときは「記録が空」の案内を出さない(GoQ取込フックが毎回鳴らないように)
+function ダニエル余りを計算(quiet){
   const ss=SpreadsheetApp.getActive();
 
   // 記録(供給)
@@ -130,7 +131,7 @@ function ダニエル余りを計算(){
         if(String(r[2]||'').trim()) 記録.push({ems:r[2], code:r[3], qty:r[4]});
       });
     } }
-  if(!記録.length){ ss.toast('ダニエル入荷記録が空です（先に📦取込するか、初期化を実行）','ダニエル余り',6); return; }
+  if(!記録.length){ if(quiet!==true) ss.toast('ダニエル入荷記録が空です（先に📦取込するか、初期化を実行）','ダニエル余り',6); return; }
 
   // 大邱EMSリスト(読み取りのみ。読めなくても続行=大邱由来の除外が効かないだけ)
   let 大邱ems=[];
