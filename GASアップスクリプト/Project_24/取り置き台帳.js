@@ -16,8 +16,9 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now){
   const errors=[], targets={}, inputIds=new Set();
   (inputRows||[]).forEach((r,index)=>{
     inputIds.add(String(r.取置ID||''));
-    const entered=Number(r.現物取り置き数量)||0, ordered=Number(r.注文数量)||0;
-    if(entered<0 || !Number.isInteger(entered)) errors.push('初期登録'+(index+2)+'行: 数量は0以上の整数');
+    const raw=r.現物取り置き数量, blank=raw==null || raw==='', entered=blank?0:Number(raw), ordered=Number(r.注文数量)||0;
+    if(!blank && (!String(raw).trim() || !Number.isFinite(entered))) errors.push('初期登録'+(index+2)+'行 / 受注'+r.受注番号+': 数量は数値で入力');
+    else if(entered<0 || !Number.isInteger(entered)) errors.push('初期登録'+(index+2)+'行: 数量は0以上の整数');
     if(entered>ordered) errors.push('受注'+r.受注番号+': 現物'+entered+'が注文'+ordered+'を超過');
     if(entered>0) targets[r.取置ID]=Object.assign({},r,{取り置き数量:entered});
   });

@@ -63,6 +63,15 @@ test('同じINITキーは追加せず目標数量へ洗い替える', () => {
   assert.strictEqual(result.rows[0].取り置き数量,2);
 });
 
+test('初回入力の非数値は既存INIT行を消さず保存全体を止める', () => {
+  const existing=[{取置ID:'INIT|101|AAA|AAAB',状態:'取り置き中',受注番号:'101',商品コード:'AAA',SKU:'AAAb',取り置き数量:1,取置元種別:'開始前在庫'}];
+  const result=context.取り置き_初期確定計画_([
+    {取置ID:'INIT|101|AAA|AAAB',受注番号:'101',商品コード:'AAA',SKU:'AAAb',注文数量:2,現物取り置き数量:'abc'}
+  ],existing,'2026-07-15 10:00:00');
+  assert.ok(result.errors.some(e=>/初期登録2行|受注101/.test(e)));
+  assert.strictEqual(result.rows.length,0, '非数値が1件でもあれば保存対象を返さない');
+});
+
 test('台帳I/Oと初回登録の公開入口を提供する', () => {
   [
     '取り置き台帳_読む_',
