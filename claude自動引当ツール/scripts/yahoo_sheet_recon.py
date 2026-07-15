@@ -209,6 +209,13 @@ def write_report(buckets: dict, out_dir: Path) -> Path:
 
 
 def main() -> int:
+    # Windowsのcp932コンソールでも中国語タイトル等で落ちないようにする
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser(description='台湾CNシート×Yahoo実店舗の商品コード照合（読み取り専用）')
     ap.add_argument('--max-wait', type=int, default=600,
                     help='Yahoo CSV生成のポーリング上限秒（10万件規模向けに既定600秒）')
