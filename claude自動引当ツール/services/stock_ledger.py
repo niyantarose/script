@@ -152,3 +152,31 @@ def sync_cancel_returns():
             )
             returned += 1 if created else 0
     return {'returned': returned, 'alerted': alerted}
+
+
+def verify_cache_integrity():
+    """台帳合計と即納Inventoryキャッシュの一致を検証し、不一致は修正+アラート。"""
+    mismatches = []
+    codes = [row[0] for row in
+             db.session.query(StockTransaction.product_code).distinct().all()]
+    for code in codes:
+        expected = get_balance(code)
+        inv = Inventory.query.filter_by(
+            product_code=code, inventory_type='即納').first()
+        actual = inv.quantity if inv else None
+        if inv is not None and actual == expected:
+            continue
+        mismatches.append({'product_code': code,
+                           'expected': expected, 'actual': actual})
+        recalc_inventory(code)
+        exists = Alert.query.filter_by(
+            alert_type='ledger_mismatch', product_code=code,
+            resolved_flag=False).first()
+        if not exists:
+            db.session.add(Alert(
+                alert_type='ledger_mismatch',
+                product_code=code,
+                message=(f'{code}: 台帳合計 {expected} に対しキャッシュが {actual} '
+                         f'でした。自動修正済み。台帳を通さない在庫変更が疑われます。'),
+            ))
+    return mismatches

@@ -853,7 +853,17 @@ def import_all():
         results['daniel_ems'] = {'status': 'error', 'message': str(e)}
 
     results['yahoo'] = {'status': 'ok', 'message': 'API設定後に有効化'}
-    return jsonify({'status': 'ok', 'results': results})
+
+    # ─── 台帳整合性チェック ────────────────────────────────────────
+    try:
+        from services.stock_ledger import verify_cache_integrity
+        mismatches = verify_cache_integrity()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        mismatches = []
+
+    return jsonify({'status': 'ok', 'results': results, 'ledger_mismatch_fixed': len(mismatches)})
 
 
 # ─── 内部ヘルパー ─────────────────────────────────────────────────────────────
@@ -1248,3 +1258,14 @@ def run_all_imports_job(app):
                     app.logger.error(f'Folder import EMS error [{fname}]: {e}')
         except Exception as e:
             app.logger.error(f'Auto import folder error: {e}')
+
+        # ─── 台帳整合性チェック ────────────────────────────────────────
+        try:
+            from services.stock_ledger import verify_cache_integrity
+            mismatches = verify_cache_integrity()
+            db.session.commit()
+            if mismatches:
+                app.logger.warning(f'Ledger integrity: {len(mismatches)} 件修正 {mismatches}')
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f'Ledger integrity check error: {e}')
