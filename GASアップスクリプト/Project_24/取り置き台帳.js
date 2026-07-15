@@ -5,6 +5,8 @@ const TORIOKI_CFG = Object.freeze({
   要確認HDR:['取置ID','受注番号','商品コード','理由'],
   移動HDR:['処理ID','EMS番号','商品コード','数量','移動先','処理日時']
 });
+const 戻しHDR=['取置ID','受注番号','商品コード','数量','元EMS番号','現物確認','メモ'];
+const Yahoo候補HDR=['取置ID','商品コード','数量','元EMS番号','処理ID','確認'];
 
 function CSV行を受注行オブジェクトへ_(header, rows){
   const head=(header||[]).map(v=>String(v||'').trim()), index=name=>head.indexOf(name);
@@ -74,6 +76,18 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now){
   return {rows:kept,errors:[]};
 }
 
+function 取り置き_戻し確認計画_(inputs, ledger, now){
+  const byId={}; (inputs||[]).forEach(r=>byId[String(r.取置ID||'')]=String(r.現物確認||'').trim());
+  const errors=[];
+  Object.keys(byId).forEach(id=>{ if(byId[id] && byId[id]!=='現物あり' && byId[id]!=='在庫なし') errors.push(id+': 現物確認は「現物あり」か「在庫なし」'); });
+  if(errors.length) return {rows:[],errors};
+  return {rows:(ledger||[]).map(r=>{
+    const choice=byId[String(r.取置ID||'')]; if(!choice) return Object.assign({},r);
+    if(r.状態!=='キャンセル戻し' || r.戻し処理結果!=='未確認'){ errors.push(r.取置ID+': 未確認のキャンセル戻しではない'); return Object.assign({},r); }
+    return Object.assign({},r,{戻し処理結果:choice,更新日時:now});
+  }),errors};
+}
+
 function 取り置き_表を読む_(sheetName, headers){
   const sh=SpreadsheetApp.getActive().getSheetByName(sheetName);
   if(!sh || sh.getLastRow()<2) return [];
@@ -132,4 +146,44 @@ function 取り置き初期登録を確定(){
   if(answer!==ui.Button.OK) return;
   取り置き台帳_保存_(plan.rows);
   SpreadsheetApp.getActive().toast('初期取り置き '+selected.length+'行 / '+qty+'個を確定しました','取り置き台帳',7);
+}
+
+function キャンセル戻し確認を更新(){
+  const rows=取り置き台帳_読む_().filter(r=>r.状態==='キャンセル戻し'&&r.戻し処理結果==='未確認').map(r=>({
+    取置ID:r.取置ID,受注番号:r.受注番号,商品コード:r.商品コード,数量:r.取り置き数量,元EMS番号:r.元EMS番号,現物確認:'',メモ:r['終了理由・メモ']||''
+  }));
+  取り置き_表を保存_(TORIOKI_CFG.戻し,戻しHDR,rows);
+  const sh=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.戻し);
+  if(rows.length) sh.getRange(2,6,rows.length,1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['現物あり','在庫なし'],true).setAllowInvalid(false).build());
+  SpreadsheetApp.getActive().toast('未確認のキャンセル戻し '+rows.length+'件','取り置き台帳',6);
+}
+
+function キャンセル戻し確認を確定(){
+  const ui=SpreadsheetApp.getUi(), inputs=取り置き_表を読む_(TORIOKI_CFG.戻し,戻しHDR);
+  const plan=取り置き_戻し確認計画_(inputs,取り置き台帳_読む_(),new Date());
+  if(plan.errors.length){ ui.alert('キャンセル戻しを確定できません',plan.errors.join('\n'),ui.ButtonSet.OK); return; }
+  const answer=ui.alert('現物確認を確定します','入力済み'+inputs.filter(r=>r.現物確認).length+'件を台帳へ反映します。',ui.ButtonSet.OK_CANCEL);
+  if(answer!==ui.Button.OK) return;
+  取り置き台帳_保存_(plan.rows); キャンセル戻し確認を更新(); Yahoo戻し候補を更新_();
+}
+
+function Yahoo戻し候補を更新_(){
+  const rows=取り置き台帳_読む_().filter(r=>r.状態==='キャンセル戻し'&&r.戻し処理結果==='現物あり').map(r=>({
+    取置ID:r.取置ID,商品コード:r.商品コード,数量:r.取り置き数量,元EMS番号:r.元EMS番号,処理ID:'YAHOO|RETURN|'+r.取置ID,確認:''
+  }));
+  取り置き_表を保存_(TORIOKI_CFG.Yahoo候補,Yahoo候補HDR,rows);
+  const sh=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.Yahoo候補);
+  if(rows.length) sh.getRange(2,6,rows.length,1).insertCheckboxes();
+}
+
+function 選択した取り置きを手動解除(){
+  const ss=SpreadsheetApp.getActive(), sh=ss.getActiveSheet(), ui=SpreadsheetApp.getUi(), row=sh.getActiveRange().getRow();
+  if(sh.getName()!==TORIOKI_CFG.台帳 || row<2){ ui.alert('取り置き台帳の解除する行を選択してください'); return; }
+  const ledger=取り置き台帳_読む_(), target=ledger[row-2];
+  if(!target || target.状態!=='取り置き中'){ ui.alert('取り置き中の行だけ手動解除できます'); return; }
+  const response=ui.prompt('手動解除の理由','登録間違い、現物不足などの理由を入力してください。',ui.ButtonSet.OK_CANCEL);
+  if(response.getSelectedButton()!==ui.Button.OK) return;
+  const reason=String(response.getResponseText()||'').trim(); if(!reason){ ui.alert('解除理由は必須です'); return; }
+  ledger[row-2]=Object.assign({},target,{状態:'手動解除','終了理由・メモ':reason,更新日時:new Date()});
+  取り置き台帳_保存_(ledger);
 }
