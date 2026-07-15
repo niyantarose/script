@@ -239,8 +239,9 @@ function 注文をキャンセル扱い本体_(){
 }
 
 // キャンセル処理の本体(受注番号の配列を受け取る。ダイアログなし)。取込のキャンセル自動仕分けからも使う。
+// CSV取込は行単位の台帳遷移を先に保存済みなので、options.取り置き台帳を更新=false で注文単位の再遷移だけ止める。
 //  ①消込台帳を「キャンセル」へ ②EMSリストP列から名指し除去 ③引当履歴キャンセル ④今回入荷EMSの在庫を連動更新
-function キャンセル処理_(bans){
+function キャンセル処理_(bans, options){
   const ss=SpreadsheetApp.getActive();
   const results=[]; let 台帳更新=0, P除去=0;
 
@@ -287,14 +288,16 @@ function キャンセル処理_(bans){
     }
   }catch(e){ results.push('P列: エラーでスキップ('+e.message+')'); }
 
-  const ledger=取り置き台帳_読む_();
-  const now=new Date(); let 取り置き更新=0;
-  const rows=ledger.map(r=>{
-    if(r.状態!=='取り置き中' || bans.indexOf(String(r.受注番号))<0) return r;
-    取り置き更新++;
-    return Object.assign({},r,{状態:'キャンセル戻し',戻し処理結果:'未確認',更新日時:now});
-  });
-  if(取り置き更新) 取り置き台帳_保存_(rows);
+  if(!options || options.取り置き台帳を更新!==false){
+    const ledger=取り置き台帳_読む_();
+    const now=new Date(); let 取り置き更新=0;
+    const rows=ledger.map(r=>{
+      if(r.状態!=='取り置き中' || bans.indexOf(String(r.受注番号))<0) return r;
+      取り置き更新++;
+      return Object.assign({},r,{状態:'キャンセル戻し',戻し処理結果:'未確認',更新日時:now});
+    });
+    if(取り置き更新) 取り置き台帳_保存_(rows);
+  }
 
   return {results, 台帳更新, P除去};
 }

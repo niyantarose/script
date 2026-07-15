@@ -586,7 +586,7 @@ function 取込_実行_(latest){
       const 新規行=キャンセル行.filter(r=>新規キャンセル.indexOf(String(r[banCol]||'').trim())>=0);
       try{ 仕分け証跡シートへ_(ss, 'キャンセル', data[0], 新規行, latest.getName()); }catch(e){}
     }
-    try{ キャンセル結果=キャンセル処理_(キャンセル番号); }catch(e){}
+    try{ キャンセル結果=キャンセル処理_(キャンセル番号,{取り置き台帳を更新:false}); }catch(e){}
     // 今回CSVに載っていた番号だけ覚える(CSVの期間から外れた古い番号は自然に忘れる→肥大化しない)
     try{ props.setProperty('処理済キャンセル番号', JSON.stringify(キャンセル番号)); }catch(e){}
   }
