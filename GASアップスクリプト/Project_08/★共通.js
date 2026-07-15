@@ -708,6 +708,8 @@ const クレジット種別 = 取得(cn.クレジット種別);
           } else {
             作品データ.maxId++;
             作品ID = String(作品データ.maxId).padStart(4, '0');
+            // 発行した瞬間にハイウォーターを永続化（行削除後の同ID再発行を根絶）
+            採番ハイウォーター更新(cfg, 作品データ.maxId);
 
             作品データ.keyToId[worksKey] = 作品ID;
             作品データ.keyToRow[worksKey] = null;
@@ -1275,6 +1277,71 @@ function 作品シートを確保(ss, cfg) {
   return sh;
 }
 
+/* ============================================================
+ * 作品ID採番ハイウォーターマーク
+ *
+ * 従来の採番は「Works走査のmaxId + 1」だけで、Works行を削除すると
+ * 同じIDが別作品に再発行される欠陥があった（台湾側で実際に発生した事故と同型）。
+ * DocumentProperties と スプレッドシート上の「採番管理」シート（Worksシート名ごと
+ * に1行）に発行済み最大値を永続化し、走査maxと合成する。欠番は永久欠番。
+ * セル側は複数プロジェクト（例: グッズ=Project_06 と 書籍系=Project_05）から
+ * 見える共有ストア、props側はセルが壊れた場合の縮退用。
+ * ============================================================ */
+function 採番ハイウォーターセル_(cfg) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('採番管理');
+  if (!sh) {
+    try {
+      sh = ss.insertSheet('採番管理');
+      sh.getRange(1, 1).setValue('Worksシート名（削除・編集禁止。作品ID採番のハイウォーター）');
+      sh.getRange(1, 2).setValue('発行済み最大値');
+      sh.hideSheet();
+    } catch (e) {
+      sh = ss.getSheetByName('採番管理');
+    }
+  }
+  if (!sh) return null;
+  const 最終行 = sh.getLastRow();
+  if (最終行 >= 2) {
+    const 名前一覧 = sh.getRange(2, 1, 最終行 - 1, 1).getDisplayValues();
+    for (let i = 0; i < 名前一覧.length; i++) {
+      if (String(名前一覧[i][0]).trim() === cfg.作品シート名) return sh.getRange(i + 2, 2);
+    }
+  }
+  const 行 = Math.max(最終行 + 1, 2);
+  sh.getRange(行, 1).setValue(cfg.作品シート名);
+  return sh.getRange(行, 2);
+}
+
+function 採番ハイウォーター読取(cfg) {
+  let props値 = 0;
+  try {
+    props値 = parseInt(
+      PropertiesService.getDocumentProperties()
+        .getProperty('作品ID_ハイウォーター_' + cfg.作品シート名) || '0', 10) || 0;
+  } catch (e) {}
+  let セル値 = 0;
+  try {
+    const range = 採番ハイウォーターセル_(cfg);
+    if (range) セル値 = parseInt(String(range.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+  } catch (e) {}
+  return Math.max(props値, セル値);
+}
+
+function 採番ハイウォーター更新(cfg, 値) {
+  try {
+    PropertiesService.getDocumentProperties()
+      .setProperty('作品ID_ハイウォーター_' + cfg.作品シート名, String(値));
+  } catch (e) {}
+  try {
+    const range = 採番ハイウォーターセル_(cfg);
+    if (range) {
+      range.setValue(値);
+      SpreadsheetApp.flush();
+    }
+  } catch (e) {}
+}
+
 function 全作品データを読み込み(作品シート, cfg) {
   const result = {
     keyToId: {},
@@ -1287,6 +1354,10 @@ function 全作品データを読み込み(作品シート, cfg) {
     keyUpdates: [],
     titleToKey: {}
   };
+
+  // 発行済みハイウォーターを合成（Works行が削除・全消去されてもIDを再発行しない）
+  const 保存最大 = 採番ハイウォーター読取(cfg);
+  if (保存最大 > result.maxId) result.maxId = 保存最大;
 
   const 最終行 = 作品シート.getLastRow();
   if (最終行 < 2) return result;
@@ -1605,6 +1676,8 @@ if (行既存作品ID候補) {
         } else {
           作品データ.maxId++;
           作品ID = String(作品データ.maxId).padStart(4, '0');
+          // 発行した瞬間にハイウォーターを永続化（行削除後の同ID再発行を根絶）
+          採番ハイウォーター更新(cfg, 作品データ.maxId);
 
           作品データ.keyToId[worksKey] = 作品ID;
           作品データ.keyToData[worksKey] = {
@@ -1966,6 +2039,8 @@ let 原題 = 取得(cn.原題) || 商品タイトル;
   } else {
     作品データ.maxId++;
     作品ID = String(作品データ.maxId).padStart(4, '0');
+    // 発行した瞬間にハイウォーターを永続化（行削除後の同ID再発行を根絶）
+    採番ハイウォーター更新(cfg, 作品データ.maxId);
 
     作品データ.keyToId[worksKey] = 作品ID;
     作品データ.keyToData[worksKey] = {

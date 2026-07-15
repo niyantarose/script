@@ -511,6 +511,34 @@ function 韓国グッズ_Worksシートを確保_(ss) {
   return sh;
 }
 
+/**
+ * 韓国グッズWorksの新IDを採番する。
+ * 旧実装は getLastRow ベースで、Works行を削除すると既存IDと同じ番号を
+ * 別作品に発行する欠陥があった。既存IDの最大値と、ライブラリ共通の
+ * ハイウォーター（採番管理シート + DocumentProperties）の大きい方 +1 に変更。
+ * 欠番は永久欠番。
+ */
+function 韓国グッズ_次のWorksID_(Worksシート) {
+  let 最大 = 0;
+  if (Worksシート.getLastRow() >= 2) {
+    Worksシート.getRange(2, 2, Worksシート.getLastRow() - 1, 1).getDisplayValues()
+      .forEach(([v]) => {
+        const m = String(v || '').match(/(\d+)\s*$/);
+        const n = m ? parseInt(m[1], 10) : NaN;
+        if (!isNaN(n) && n > 最大) 最大 = n;
+      });
+  }
+  let 保存最大 = 0;
+  try {
+    保存最大 = _kyoutuu.採番ハイウォーター読取(設定_韓国グッズ);
+  } catch (e) {}
+  const 次 = Math.max(最大, 保存最大) + 1;
+  try {
+    _kyoutuu.採番ハイウォーター更新(設定_韓国グッズ, 次);
+  } catch (e) {}
+  return 'KR-W-' + String(次).padStart(4, '0');
+}
+
 function 韓国グッズ_Worksを更新_(Worksシート, Works更新Map) {
   const 既存Map = {};
   if (Worksシート.getLastRow() >= 2) {
@@ -527,7 +555,7 @@ function 韓国グッズ_Worksを更新_(Worksシート, Works更新Map) {
       Worksシート.getRange(行, 5).setValue(info.件数);
       Worksシート.getRange(行, 6).setValue(new Date());
     } else {
-      const 新ID = 'KR-W-' + String(Worksシート.getLastRow()).padStart(4, '0');
+      const 新ID = 韓国グッズ_次のWorksID_(Worksシート);
       Worksシート.appendRow([WorksKey, 新ID, 作品名, info.略称, info.件数, new Date()]);
       既存Map[作品名] = Worksシート.getLastRow();
     }
