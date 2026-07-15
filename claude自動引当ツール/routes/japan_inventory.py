@@ -8,7 +8,6 @@ from models.ems_item import EmsItem
 from models.order_item import OrderItem
 from models.order import Order
 from models.allocation import Allocation
-from models.inventory import Inventory
 from datetime import datetime
 
 bp = Blueprint('japan_inventory', __name__, url_prefix='/japan')
@@ -149,29 +148,20 @@ def assign_order():
 @bp.route('/reflect', methods=['POST'])
 def reflect_to_yahoo():
     """日本在庫をYahoo在庫に反映"""
+    from services.stock_ledger import record_transaction
+
     targets = JapanInventoryStaging.query.filter_by(status='to_japan_stock').all()
     reflected_count = 0
 
     for jis in targets:
-        # 在庫テーブルを更新（実際のYahoo API呼び出しは別途実装）
-        inv = Inventory.query.filter_by(
-            product_code=jis.product_code,
-            inventory_type='即納'
-        ).first()
-
-        if inv:
-            inv.quantity += jis.quantity
-            inv.available_qty += jis.quantity
-        else:
-            inv = Inventory(
-                product_code=jis.product_code,
-                product_sub_code=jis.product_sub_code,
-                inventory_type='即納',
-                quantity=jis.quantity,
-                reserved_qty=0,
-                available_qty=jis.quantity,
-            )
-            db.session.add(inv)
+        # 台帳に入庫を記録（即納Inventoryのquantityはrecalcが更新する）
+        record_transaction(
+            jis.product_code, 'receive', jis.quantity,
+            f'japan_staging:{jis.id}',
+            product_sub_code=jis.product_sub_code,
+            ref_type='japan_staging', ref_id=jis.id,
+            reason='日本到着反映',
+        )
 
         jis.status = 'reflected'
         jis.reflected_at = datetime.now()
