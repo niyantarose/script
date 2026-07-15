@@ -21,7 +21,8 @@ vm.createContext(context);
   'Project_24/引当.js',
   'Project_24/取り置き計算.js',
   'Project_24/取り置き台帳.js',
-  'Project_24/消込台帳.js'
+  'Project_24/消込台帳.js',
+  'Project_24/P列自動記入.js'
 ].filter(fs.existsSync).forEach(f => vm.runInContext(fs.readFileSync(f, 'utf8'), context));
 
 let failures = 0;
@@ -267,6 +268,121 @@ test('手動解除は空の理由で台帳を保存しない', () => {
 
   assert.strictEqual(writes,0);
   assert.ok(alerts.includes('解除理由は必須です'));
+});
+
+test('P列計画は同じEMSの取り置き中を固定し、残数だけ新規FIFOへ回す', () => {
+  const rows=[{ems:'EG1',code:'AAA',qty:3,pOriginal:'101',arrival:'2026-07-12'}];
+  const orders=[
+    {ban:'101',code:'AAA',sku:'AAAb',qty:1,need:0,date:new Date('2026-07-01'),keys:['AAA']},
+    {ban:'102',code:'AAA',sku:'AAAb',qty:2,need:2,date:new Date('2026-07-02'),keys:['AAA']}
+  ];
+  const fixed={'EG1|AAA':[{ban:'101',qty:1}]};
+  const usage={'EG1|AAA':{取り置き中:1,発送済み:0,戻し未処理:0,在庫なし確定:0,Yahoo移動済み:0}};
+  const result=context.P列計画_純計算_(rows,orders,fixed,usage);
+  assert.strictEqual(result.rows[0].nextP,'101:1, 102:2');
+  assert.strictEqual(result.rows[0].left,0);
+});
+
+test('発送済みと戻し未処理は供給を塞ぐがP列の現役注文表示には出さない', () => {
+  const rows=[{ems:'EG1',code:'AAA',qty:3,pOriginal:'',arrival:'2026-07-12'}];
+  const orders=[{ban:'102',code:'AAA',sku:'AAAb',qty:2,need:2,date:new Date('2026-07-02'),keys:['AAA']}];
+  const usage={'EG1|AAA':{取り置き中:0,発送済み:1,戻し未処理:1,在庫なし確定:0,Yahoo移動済み:0}};
+  const result=context.P列計画_純計算_(rows,orders,{},usage);
+  assert.strictEqual(result.rows[0].nextP,'102:1');
+  assert.strictEqual(result.rows[0].entries[0].qty,1);
+  assert.strictEqual(orders[0].need,2,'入力注文を変更しない');
+});
+
+test('同一供給キーの複数EMS行で固定と使用数を二重計上しない', () => {
+  const rows=[
+    {ems:'EG1',code:'AAA',qty:1,pOriginal:'',arrival:'2026-07-12'},
+    {ems:'EG1',code:'AAA',qty:2,pOriginal:'',arrival:'2026-07-12'}
+  ];
+  const orders=[{ban:'102',code:'AAA',sku:'AAAb',qty:1,need:1,date:new Date('2026-07-02'),keys:['AAA']}];
+  const fixed={'EG1|AAA':[{ban:'101',qty:1}]};
+  const usage={'EG1|AAA':{取り置き中:1,発送済み:1,戻し未処理:0,在庫なし確定:0,Yahoo移動済み:0}};
+  const result=context.P列計画_純計算_(rows,orders,fixed,usage);
+  assert.strictEqual(result.rows[0].nextP,'101');
+  assert.strictEqual(result.rows[1].nextP,'102:1');
+  assert.strictEqual(result.rows[1].left,0);
+});
+
+test('P列計画を作っただけではsetValuesを呼ばない', () => {
+  let writes=0;
+  const plan={sheet:{getRange:()=>({setValues:()=>{writes++;},setBackground:()=>{}})},startRow:7,colP:16,rowCount:1,values:[['101']],backgrounds:[],writes:[0],summary:{}};
+  assert.strictEqual(writes,0);
+  context.発注共有P列計画を反映_(plan);
+  assert.strictEqual(writes,1);
+});
+
+function P列シートモック_(pValue){
+  const recvHead=['受注番号','注文日時','商品コード','商品SKU','項目・選択肢','個数','入荷日'];
+  const recvRows=[recvHead,['102',new Date('2026-07-02'),'AAA','AAAb','取り寄せ',2,'']];
+  const recv={
+    getLastRow:()=>recvRows.length,
+    getLastColumn:()=>recvHead.length,
+    getDataRange:()=>({getValues:()=>recvRows}),
+    getRange:(row,col,numRows,numCols)=>({getValues:()=>recvRows.slice(row-1,row-1+numRows).map(r=>r.slice(col-1,col-1+numCols))})
+  };
+  const emsHead=['ステータス列','購入No.','商品コード','数量','注文番号','EMS到着日','EMS番号'];
+  const emsRows=[['到着済','20260701_01_01','AAA',3,pValue,'2026-07-12','EG1']];
+  const state={setValues:0,setBackground:0,values:null};
+  const ems={
+    getLastRow:()=>7,
+    getLastColumn:()=>emsHead.length,
+    getRange:(row,col,numRows,numCols)=>({
+      getValues:()=>row===6?[emsHead.slice(col-1,col-1+numCols)]:emsRows.slice(row-7,row-7+numRows).map(r=>r.slice(col-1,col-1+numCols)),
+      getDisplayValues:()=>row===6?[emsHead.slice(col-1,col-1+numCols)]:emsRows.slice(row-7,row-7+numRows).map(r=>r.slice(col-1,col-1+numCols)),
+      setValues:values=>{ state.setValues++; state.values=values; },
+      setBackground:()=>{ state.setBackground++; }
+    })
+  };
+  return {recv,ems,state};
+}
+
+test('シートからP列計画を作る間は書込みミューテータを呼ばない', () => {
+  const mock=P列シートモック_('OLD');
+  context.P_KAKUTEI_CFG={シート:'EMSリスト',ヘッダー行:6};
+  context.SpreadsheetApp.getActive=()=>({getSheetByName:()=>mock.recv});
+  context.発注共有を開く_=()=>({getSheetByName:()=>mock.ems});
+  context.取り置き台帳_読む_=()=>[{
+    取置ID:'A',状態:'取り置き中',受注番号:'101',商品コード:'AAA',SKU:'AAAb',取り置き数量:1,
+    取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'
+  }];
+  context.EMS在庫移動台帳_読む_=()=>[];
+
+  const plan=context.発注共有P列計画_({currentP:[['']]});
+
+  assert.strictEqual(plan.error,'');
+  assert.strictEqual(plan.values[0][0],'101:1, 102:2');
+  assert.strictEqual(mock.state.setValues,0);
+  assert.strictEqual(mock.state.setBackground,0);
+});
+
+test('P列書き直しはメモリ上でクリアした計画をP列へ1回だけ書く', () => {
+  const mock=P列シートモック_('OLD');
+  context.P_KAKUTEI_CFG={シート:'EMSリスト',ヘッダー行:6};
+  context.SpreadsheetApp.getActive=()=>({getSheetByName:()=>mock.recv});
+  context.発注共有を開く_=()=>({getSheetByName:()=>mock.ems});
+  context.取り置き台帳_読む_=()=>[];
+  context.EMS在庫移動台帳_読む_=()=>[];
+
+  const result=context.P列書き直し実行_();
+
+  assert.strictEqual(result.error,undefined);
+  assert.strictEqual(mock.state.setValues,1);
+  assert.strictEqual(mock.state.values[0][0],'102:2');
+});
+
+test('P列計画の表示エントリを確定割当へ展開する', () => {
+  const result=context.P列計画_確定割当_({rows:[
+    {ems:'EG1',code:'AAA',entries:[{ban:'101',qty:1},{ban:'102',qty:2}]},
+    {ems:'EG2',code:'BBB',entries:[]}
+  ]});
+  assert.strictEqual(JSON.stringify(result),JSON.stringify([
+    {ems:'EG1',code:'AAA',ban:'101',qty:1},
+    {ems:'EG1',code:'AAA',ban:'102',qty:2}
+  ]));
 });
 
 test('受注共通メニューに初回登録の作成と確定を追加する', () => {

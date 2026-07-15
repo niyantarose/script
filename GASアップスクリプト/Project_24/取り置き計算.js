@@ -88,6 +88,51 @@ function 取り置き_使用合計_(usage){
     .reduce((sum,key)=>sum+(Number(usage&&usage[key])||0),0);
 }
 
+function P列計画_純計算_(emsRows, inputOrders, fixedBySupply, usageBySupply){
+  const orders=(inputOrders||[]).map(o=>Object.assign({},o));
+  const rows=(emsRows||[]).map(r=>Object.assign({},r,{entries:[],left:0,nextP:''}));
+  const fixedRemaining={}, usageRemaining={};
+  Object.keys(fixedBySupply||{}).forEach(key=>{
+    fixedRemaining[key]=(fixedBySupply[key]||[]).map(e=>Object.assign({},e));
+  });
+  Object.keys(usageBySupply||{}).forEach(key=>{
+    usageRemaining[key]=取り置き_使用合計_(usageBySupply[key]);
+  });
+  const takeFixed=(key,limit)=>{
+    const out=[], queue=fixedRemaining[key]||[]; let left=limit;
+    while(left>0 && queue.length){
+      const take=Math.min(left,Number(queue[0].qty)||0);
+      if(take>0) out.push({ban:String(queue[0].ban),qty:take,explicit:false});
+      queue[0].qty-=take; left-=take;
+      if(queue[0].qty<=0) queue.shift();
+    }
+    return out;
+  };
+  const fifo=orders.slice().sort((a,b)=>a.date-b.date||(a.seq||0)-(b.seq||0));
+  rows.forEach(r=>{
+    const key=取り置き_供給キー_(r.ems,r.code), qty=Math.max(0,Number(r.qty)||0);
+    const fixed=takeFixed(key,qty);
+    const fixedQty=fixed.reduce((sum,e)=>sum+(Number(e.qty)||0),0);
+    usageRemaining[key]=Math.max(0,(usageRemaining[key]||0)-fixedQty);
+    const nonDisplayUsed=Math.min(qty-fixedQty,usageRemaining[key]||0);
+    usageRemaining[key]=Math.max(0,(usageRemaining[key]||0)-nonDisplayUsed);
+    let capacity=Math.max(0,qty-fixedQty-nonDisplayUsed);
+    r.entries=fixed;
+    for(const order of fifo){
+      if(capacity<=0) break;
+      const keys=order.keys instanceof Set?Array.from(order.keys):(order.keys||[]);
+      if(keys.indexOf(normCode_(r.code))<0 || !(order.need>0)) continue;
+      const take=Math.min(capacity,order.need); capacity-=take; order.need-=take;
+      const prev=r.entries.find(e=>String(e.ban)===String(order.ban));
+      if(prev) prev.qty+=take;
+      else r.entries.push({ban:String(order.ban),qty:take,explicit:false});
+    }
+    r.left=capacity;
+    r.nextP=P列指定文字列_(r.entries,qty);
+  });
+  return {rows,orders};
+}
+
 function 取り置き_割当計算_(input){
   const summary=取り置き_集計_(input.ledger||[],input.movements||[]);
   const orders=(input.orders||[]).map(o=>Object.assign({},o,{need:取り置き_今回必要数_(o,summary)}))
