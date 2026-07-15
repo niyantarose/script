@@ -6,7 +6,7 @@ record_transaction / 各同期関数は commit しない（呼び出し側で co
 """
 from sqlalchemy import func
 
-from models import db, Inventory, StockTransaction
+from models import db, Alert, Inventory, Order, OrderItem, StockTransaction
 
 # tx_type ごとの符号ルール
 _POSITIVE_TYPES = {'receive', 'cancel_return', 'manual_in'}
@@ -76,3 +76,77 @@ def recalc_inventory(product_code, product_sub_code=None):
     inv.quantity = balance
     inv.available_qty = max(0, balance - (inv.reserved_qty or 0))
     return inv
+
+
+def apply_order_out(item_ids):
+    """新規取込された注文明細の出庫を台帳に記録する。
+
+    対象は item_ids で渡された明細のみ（過去注文を遡って引かない）。
+    キャンセル済み・出荷済みの注文はスキップ。
+    """
+    recorded = 0
+    for item_id in item_ids or []:
+        item = OrderItem.query.get(item_id)
+        if not item:
+            continue
+        order = Order.query.get(item.order_id)
+        if not order:
+            continue
+        if order.yahoo_order_status == '4':          # キャンセル済み
+            continue
+        if order.yahoo_ship_status in ('2', '3'):    # 出荷処理中・出荷済み
+            continue
+        _, created = record_transaction(
+            item.product_code, 'order_out', -item.quantity,
+            f'yahoo:{order.yahoo_order_id}:{item.id}:out',
+            product_sub_code=item.product_sub_code,
+            ref_type='order_item', ref_id=item.id,
+        )
+        recorded += 1 if created else 0
+    return recorded
+
+
+def sync_cancel_returns():
+    """キャンセル注文の在庫戻しを台帳に記録する。
+
+    - 台帳に out 記録がある明細だけが対象（導入前の古いキャンセルは無視）
+    - 出荷済みキャンセルは自動で戻さず shipped_cancel アラートを1件作成
+    """
+    returned = alerted = 0
+    cancelled_orders = Order.query.filter_by(yahoo_order_status='4').all()
+    for order in cancelled_orders:
+        for item in order.items:
+            out_key = f'yahoo:{order.yahoo_order_id}:{item.id}:out'
+            ret_key = f'yahoo:{order.yahoo_order_id}:{item.id}:return'
+            has_out = StockTransaction.query.filter_by(source_key=out_key).first()
+            if not has_out:
+                continue
+            has_return = StockTransaction.query.filter_by(source_key=ret_key).first()
+            if has_return:
+                continue
+
+            if order.yahoo_ship_status in ('2', '3'):
+                # 出荷済みキャンセル: 自動で戻さずアラート（重複作成しない）
+                exists = Alert.query.filter_by(
+                    alert_type='shipped_cancel', order_item_id=item.id).first()
+                if not exists:
+                    db.session.add(Alert(
+                        alert_type='shipped_cancel',
+                        order_id=order.id,
+                        order_item_id=item.id,
+                        product_code=item.product_code,
+                        message=(f'注文 {order.yahoo_order_id} は出荷済みのまま'
+                                 f'キャンセルされました。返品到着後に手動入庫してください'
+                                 f'（{item.product_code} × {item.quantity}）。'),
+                    ))
+                    alerted += 1
+                continue
+
+            _, created = record_transaction(
+                item.product_code, 'cancel_return', item.quantity, ret_key,
+                product_sub_code=item.product_sub_code,
+                ref_type='order_item', ref_id=item.id,
+                reason=f'注文 {order.yahoo_order_id} キャンセル',
+            )
+            returned += 1 if created else 0
+    return {'returned': returned, 'alerted': alerted}

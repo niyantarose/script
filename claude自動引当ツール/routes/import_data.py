@@ -59,16 +59,25 @@ def import_yahoo_orders():
             alloc_stats = run_auto_allocation(item_ids=new_item_ids)
             db.session.commit()
 
+        # ── 在庫台帳: 注文出庫・キャンセル戻しを記録 ──────────────────
+        from services.stock_ledger import apply_order_out, sync_cancel_returns
+        ledger_out = apply_order_out(new_item_ids)
+        ledger_ret = sync_cancel_returns()
+        db.session.commit()
+
         return jsonify({
             'status':          'ok',
             'imported_orders': imported_orders,
             'imported_items':  imported_items,
             'alloc':           alloc_stats,
+            'ledger_out':      ledger_out,
+            'ledger_returns':  ledger_ret,
             'message': (f'{imported_orders}件の受注・{imported_items}件の明細を取込みました'
                         f' | 引当: 即納{alloc_stats["fully_allocated"]}件'
                         f' / 部分{alloc_stats["partial"]}件'
                         f' / お取り寄せ{alloc_stats["tori"]}件'
-                        f' / 不足{alloc_stats["shortage"]}件'),
+                        f' / 不足{alloc_stats["shortage"]}件'
+                        f' | 台帳: 出庫{ledger_out}件 / 戻し{ledger_ret["returned"]}件'),
         })
     except Exception as e:
         db.session.rollback()
