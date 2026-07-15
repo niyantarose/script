@@ -113,11 +113,14 @@ function 台湾書籍系_作品比較キー_(v) {
     .replace(/[上中下前後](?:[+＋・、][上中下前後])+/g, '')
     .replace(/(?:\d{1,3}|[０-９]{1,3})(?:[+＋](?:\d{1,3}|[０-９]{1,3}))+/g, '')
     .replace(/\s+/g, '')
-    .replace(/(?:\d{1,3}|[０-９]{1,3})\s*(?:巻|册|集|部|話|期|號|号)?/gi, '')
+    .replace(/(?:第)?(?:\d{1,3}|[０-９]{1,3})\s*(?:巻|册|集|部|話|期|號|号)?/gi, '')
     .replace(/(?:特装版|特裝版|首刷限定版|初版限定版|初回限定版|限定版|通常版|首刷附錄版|附錄版|附录版|特典版)/gi, '')
     // 末尾の単独 上/下（巻）を除去（作品 上巻 / 作品下 等を束ねる）。
     // 「中」は道中・世界中・途中 等で誤爆するため対象外。
     .replace(/[上下](?:巻|卷|冊|册|集|部)?$/u, '')
+    // 末尾に残った媒体語を除去（「我獨自升級22漫畫」→巻数除去後の「…漫畫」を本題へ束ねる。
+    // 0033/0128 のような同一作品の二重Works発生源。中間の媒体語は残す）
+    .replace(/(?:漫畫|漫画|小說|小説|コミック)$/,'')
     .trim();
 }
 
@@ -2935,6 +2938,84 @@ function 台湾書籍系_ローカル一括更新_(シート名, 設定) {
   }
 }
 
+/**
+ * 確定発行プリフライト検査（純関数・Nodeテスト対象）。
+ * 確定をブロックすべき問題がある対象行だけ {row, 理由} を返す。
+ *
+ * 対象: [{row, code, sku, status, 作品ID列, 原題, 作者}]
+ * 全コード出現: {正規化コード: [行番号,...]}（シート全行の商品コード/SKUから）
+ * works: [{id, 原題, 作者}]（Worksシート全行）
+ */
+function 台湾書籍系_確定発行検査_(対象, 全コード出現, works) {
+  const 問題 = [];
+
+  // Works二重の事前計算: 比較キー+作者でグループ化し、同一作品に複数IDがあれば記録。
+  // 作者が明確に異なる同名タイトルは別作品として扱う（誤爆防止）。
+  const worksグループ = {};
+  (works || []).forEach(w => {
+    const key = 台湾書籍系_作品比較キー_(w.原題);
+    if (!key) return;
+    const author = 台湾書籍系_正規化文字列_(w.作者);
+    if (!worksグループ[key]) worksグループ[key] = [];
+    worksグループ[key].push({ id: 台湾書籍系_作品ID4桁を取得_(w.id), author });
+  });
+  const 二重ID = {}; // 作品ID → 相方IDリスト
+  Object.keys(worksグループ).forEach(key => {
+    const list = worksグループ[key];
+    if (list.length < 2) return;
+    list.forEach(a => {
+      const 相方 = list.filter(b =>
+        b.id !== a.id &&
+        (!a.author || !b.author || a.author === b.author) // 両方に作者があって違う場合のみ別作品扱い
+      ).map(b => b.id);
+      if (相方.length) 二重ID[a.id] = 相方;
+    });
+  });
+
+  (対象 || []).forEach(t => {
+    const 理由リスト = [];
+
+    // (a) onEditガード等が付けた ⚠️ステータスの持ち越し（従来は確定時に上書きして消えていた）
+    const status = 台湾書籍系_正規化文字列_(t.status);
+    if (status.indexOf('⚠️') >= 0) {
+      理由リスト.push(status);
+    }
+
+    // (b) 行内ID整合: コード/SKU/作品ID列から取れるIDが食い違っていないか
+    const ids = [
+      台湾書籍系_コードから作品ID4桁を取得_(t.code),
+      台湾書籍系_コードから作品ID4桁を取得_(t.sku),
+      台湾書籍系_作品ID4桁を取得_(t.作品ID列),
+    ].filter(Boolean);
+    const uniq = [...new Set(ids)];
+    if (uniq.length > 1) {
+      理由リスト.push(`行内ID不整合(${uniq.join('/')})`);
+    }
+
+    // (c) シート内コード重複（Yahooには同一コードを2つ置けない）
+    [t.code, t.sku].forEach(c => {
+      const key = 台湾書籍系_正規化文字列_(c).toUpperCase();
+      if (!key || !全コード出現[key]) return;
+      const 他行 = 全コード出現[key].filter(r => r !== t.row);
+      if (他行.length) {
+        理由リスト.push(`コード重複(${key} が行${他行.join(',')}にも存在)`);
+      }
+    });
+
+    // (d) Works二重（同一作品に複数ID: 0033/0128型）
+    const myId = uniq.length === 1 ? uniq[0] : 台湾書籍系_作品ID4桁を取得_(t.作品ID列);
+    if (myId && 二重ID[myId]) {
+      理由リスト.push(`Works二重の疑い(ID ${myId} と ${二重ID[myId].join(',')} が同一作品)`);
+    }
+
+    if (理由リスト.length) {
+      問題.push({ row: t.row, 理由: [...new Set(理由リスト)].join(' / ') });
+    }
+  });
+
+  return 問題;
+}
+
 /*
  * 台湾専用の「① 確定発行」（媒体対応・安全版）。
  *
@@ -3029,16 +3110,80 @@ function 台湾書籍系_ローカル確定発行_(シート名, 設定) {
     const colSKU = 実列名.SKU自動 ? 列[実列名.SKU自動] : 0;
     const col登録状況 = 実列名.登録状況 ? 列[実列名.登録状況] : 0;
     const colステータス = 実列名.コードステータス ? 列[実列名.コードステータス] : 0;
+    const 実列名作品ID = 台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)（自動）', '作品ID(W)(自動)', '作品(W)（自動）']);
+    const 実列名原題 = 台湾書籍系_実列名を取得_(列, [cn.原題, '原題タイトル']);
+    const col作品ID = 実列名作品ID ? 列[実列名作品ID] : 0;
+    const col原題 = 実列名原題 ? 列[実列名原題] : 0;
+    const col作者 = 列['作者'] || 0;
 
     const codeVals = col商品コード ? sh.getRange(2, col商品コード, numRows, 1).getValues() : null;
     const skuVals = colSKU ? sh.getRange(2, colSKU, numRows, 1).getValues() : null;
+    const statusVals = colステータス ? sh.getRange(2, colステータス, numRows, 1).getDisplayValues() : null;
+    const workIdVals = col作品ID ? sh.getRange(2, col作品ID, numRows, 1).getDisplayValues() : null;
+    const 原題Vals = col原題 ? sh.getRange(2, col原題, numRows, 1).getDisplayValues() : null;
+    const 作者Vals = col作者 ? sh.getRange(2, col作者, numRows, 1).getDisplayValues() : null;
 
-    // ③ コードが出た行だけ確定（登録済み＋発行済み確定）。失敗行はチェックを残す。
+    // ②' プリフライト検査の材料: シート全行のコード出現Map と Works一覧
+    const 全コード出現 = {};
+    for (let i = 0; i < numRows; i++) {
+      [codeVals && codeVals[i][0], skuVals && skuVals[i][0]].forEach(v => {
+        const key = 台湾書籍系_正規化文字列_(v).toUpperCase();
+        if (!key || key.startsWith('ERROR')) return;
+        if (!全コード出現[key]) 全コード出現[key] = [];
+        if (!全コード出現[key].includes(i + 2)) 全コード出現[key].push(i + 2);
+      });
+    }
+    const works = [];
+    try {
+      const wsh = ss.getSheetByName(設定.作品シート名);
+      if (wsh && wsh.getLastRow() >= 2) {
+        const wHeaders = wsh.getRange(1, 1, 1, wsh.getLastColumn()).getDisplayValues()[0]
+          .map(v => 台湾書籍系_正規化文字列_(v));
+        const wCol = {};
+        wHeaders.forEach((h, i) => { if (h) wCol[h] = i; });
+        const wData = wsh.getRange(2, 1, wsh.getLastRow() - 1, wsh.getLastColumn()).getDisplayValues();
+        wData.forEach(r => {
+          works.push({
+            id: wCol['作品ID'] != null ? r[wCol['作品ID']] : '',
+            原題: wCol['原題タイトル'] != null ? r[wCol['原題タイトル']] : '',
+            作者: wCol['作者'] != null ? r[wCol['作者']] : '',
+          });
+        });
+      }
+    } catch (e) {
+      Logger.log('確定発行プリフライト: Works読込失敗 ' + e);
+    }
+
+    const 検査対象 = 対象行.map(row => {
+      const i = row - 2;
+      return {
+        row,
+        code: codeVals ? 台湾書籍系_正規化文字列_(codeVals[i][0]) : '',
+        sku: skuVals ? 台湾書籍系_正規化文字列_(skuVals[i][0]) : '',
+        status: statusVals ? statusVals[i][0] : '',
+        作品ID列: workIdVals ? workIdVals[i][0] : '',
+        原題: 原題Vals ? 原題Vals[i][0] : '',
+        作者: 作者Vals ? 作者Vals[i][0] : '',
+      };
+    });
+    const 問題リスト = 台湾書籍系_確定発行検査_(検査対象, 全コード出現, works);
+    const 問題Map = {};
+    問題リスト.forEach(p => { 問題Map[p.row] = p.理由; });
+
+    // ③ コードが出て検査も通った行だけ確定（登録済み＋発行済み確定）。
+    //    検査で引っかかった行は確定せず、チェックを残して理由をステータスに書く。
+    let 保留数 = 0;
     対象行.forEach(row => {
       const i = row - 2;
       const code = codeVals ? 台湾書籍系_正規化文字列_(codeVals[i][0]) : '';
       const sku = skuVals ? 台湾書籍系_正規化文字列_(skuVals[i][0]) : '';
       const 成功 = !!(code || sku);
+
+      if (問題Map[row]) {
+        保留数++;
+        if (colステータス) sh.getRange(row, colステータス).setValue('⚠️確定保留: ' + 問題Map[row]);
+        return; // チェックは残す＝目に見える
+      }
 
       if (成功) {
         発行数++;
@@ -3052,10 +3197,22 @@ function 台湾書籍系_ローカル確定発行_(シート名, 設定) {
 
     ss.toast(
       `✅ ${シート名}：確定 ${発行数} 件` +
-        (失敗数 ? ` ／ 情報不足で未確定 ${失敗数} 件（チェックは残しました）` : ''),
+        (失敗数 ? ` ／ 情報不足で未確定 ${失敗数} 件（チェックは残しました）` : '') +
+        (保留数 ? ` ／ ⚠️検査で保留 ${保留数} 件` : ''),
       '確定発行 完了',
       6
     );
+
+    // 検査で保留した行は、その場で理由を見せる（後から気づく事故を防ぐ）
+    if (問題リスト.length) {
+      ui.alert(
+        '⚠️ 確定発行の保留',
+        `検査で問題が見つかった ${問題リスト.length} 行は確定していません。\n` +
+        `修正後にもう一度確定発行してください。\n\n` +
+        問題リスト.map(p => `行${p.row}: ${p.理由}`).join('\n'),
+        ui.ButtonSet.OK
+      );
+    }
   } finally {
     lock.releaseLock();
   }
