@@ -65,6 +65,15 @@ eq('③一致タイトルは出さない',
    any(x['code'] == 'TW0013-NV-01' for x in buckets['title_mismatch']), False)
 eq('④シート内重複', [x['code'] for x in buckets['dup_in_sheet']], ['TW0014-CM-01'])
 
+# ---- 差分検出（定期実行で「新規発生」だけを浮かせる）----
+rows_now = r.buckets_to_key_rows(buckets)
+prev_all = {(k, c) for k, c, _ in rows_now}
+eq('差分: 前回と同じなら新規なし', r.find_new_findings(prev_all, buckets), [])
+prev_minus = prev_all - {('②', 'TW9999-CM-01')}
+news = r.find_new_findings(prev_minus, buckets)
+eq('差分: 新規1件を検出', [(k, c) for k, c, _ in news], [('②', 'TW9999-CM-01')])
+eq('差分: 初回(前回なし)は全件baseline扱い', r.find_new_findings(None, buckets), [])
+
 # 大文字小文字・全角が違ってもコードは同一視される
 buckets2 = r.reconcile(
     [{'sheet': 's', 'row': 2, 'code': 'ＴＷ００２０－ＣＭ－０１', 'title': 'X', 'status': '登録済み'}],

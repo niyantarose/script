@@ -189,6 +189,67 @@ def reconcile(sheet_rows: list, yahoo_items: list) -> dict:
     return buckets
 
 
+def buckets_to_key_rows(buckets: dict) -> list:
+    """差分検出・履歴用に (区分記号, コード, 詳細) のフラットな一覧にする。"""
+    out = []
+    for x in buckets['sheet_only']:
+        out.append(('①', x['code'], f"{x['sheet']}:{x['row']} {x['title']}"))
+    for x in buckets['title_mismatch']:
+        out.append(('③', x['code'], f"{x['sheet_title']} ⇔ {x['yahoo_name']} (類似度{x['ratio']})"))
+    for x in buckets['dup_in_sheet']:
+        locs = ' / '.join(f"{s}:{row}" for s, row, _ in x['rows'])
+        out.append(('④', x['code'], locs))
+    for x in buckets['yahoo_only']:
+        out.append(('②', x['code'], x['yahoo_name']))
+    return out
+
+
+def find_new_findings(prev_keys, buckets: dict) -> list:
+    """前回レポートに無かった検出だけを返す。prev_keys=None（初回）は全件baseline扱いで空。"""
+    if prev_keys is None:
+        return []
+    return [t for t in buckets_to_key_rows(buckets) if (t[0], t[1]) not in prev_keys]
+
+
+def load_previous_keys(out_dir: Path):
+    """直近の recon_*.csv から (区分記号, コード) の集合を読む。無ければ None。"""
+    files = sorted(Path(out_dir).glob('recon_2*.csv'))
+    if not files:
+        return None
+    keys = set()
+    with open(files[-1], 'r', encoding='utf-8-sig', newline='') as f:
+        for row in csv.DictReader(f):
+            kubun = (row.get('区分') or '').strip()
+            code = (row.get('商品コード') or '').strip()
+            if kubun and code:
+                keys.add((kubun[:1], code))
+    return keys
+
+
+def append_history(out_dir: Path, buckets: dict, new_count: int, report_name: str):
+    """1行サマリーを recon_history.csv に追記（定期実行の推移確認用）。"""
+    path = out_dir / 'recon_history.csv'
+    is_new = not path.exists()
+    with open(path, 'a', encoding='utf-8-sig', newline='') as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow(['日時', '①シートのみ', '②Yahooのみ', '③タイトル不一致', '④シート内重複', '新規検出', 'レポート'])
+        w.writerow([f'{datetime.now():%Y-%m-%d %H:%M:%S}',
+                    len(buckets['sheet_only']), len(buckets['yahoo_only']),
+                    len(buckets['title_mismatch']), len(buckets['dup_in_sheet']),
+                    new_count, report_name])
+
+
+def write_new_findings(news: list, out_dir: Path) -> Path:
+    path = out_dir / f'recon_NEW_{datetime.now():%Y%m%d_%H%M%S}.csv'
+    with open(path, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['区分', '商品コード', '詳細'])
+        for kubun, code, detail in news:
+            w.writerow([kubun, code, detail])
+    return path
+
+
 def write_report(buckets: dict, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f'recon_{datetime.now():%Y%m%d_%H%M%S}.csv'
@@ -239,7 +300,19 @@ def main() -> int:
     print(f'  Yahoo商品: {len(yahoo_items)} 件')
 
     buckets = reconcile(sheet_rows, yahoo_items)
-    path = write_report(buckets, Path(args.out))
+    out_dir = Path(args.out)
+    prev_keys = load_previous_keys(out_dir)  # write_report より先に読む
+    path = write_report(buckets, out_dir)
+
+    news = find_new_findings(prev_keys, buckets)
+    append_history(out_dir, buckets, len(news), path.name)
+    if news:
+        new_path = write_new_findings(news, out_dir)
+        print(f'\n🚨 前回に無かった新規検出 {len(news)} 件 → {new_path.name}')
+        for kubun, code, detail in news[:20]:
+            print(f'  {kubun} {code} : {detail}')
+    elif prev_keys is not None:
+        print('\n✅ 前回からの新規検出はありません')
 
     print('\n===== 照合結果 =====')
     print(f"① シート登録済みなのにYahooに無い : {len(buckets['sheet_only'])} 件"
