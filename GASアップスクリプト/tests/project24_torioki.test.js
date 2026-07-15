@@ -32,24 +32,19 @@ function test(name, fn) {
   }
 }
 
-// ===== 残必要計算_: 取り置き数を差し引く =====
+// ===== 残必要計算_: 取り置き台帳と今回計画だけを差し引く =====
 
-test('取り置き数が注文数を満たす行は今回便からの必要数0', () => {
-  assert.strictEqual(context.残必要計算_({qty:1, 取り置き数:1}), 0);
+test('必要数は取り置き台帳数量と今回計画数量だけを差し引く', () => {
+  assert.strictEqual(context.残必要計算_({qty:3,取り置き中数量:1,alloc:0}),2);
+  assert.strictEqual(context.残必要計算_({qty:3,取り置き中数量:1,alloc:2}),0);
 });
 
-test('取り置き数が一部だけなら残りだけ必要', () => {
-  assert.strictEqual(context.残必要計算_({qty:3, 取り置き数:1}), 2);
+test('旧取り置き数・入荷日・履歴数量は必要数へ加えない', () => {
+  assert.strictEqual(context.残必要計算_({qty:3,取り置き数:3,入荷:true,履歴Alloc:3,取り置き中数量:0,alloc:0}),3);
 });
 
-test('取り置き数なし（列未入力）は従来どおり', () => {
-  assert.strictEqual(context.残必要計算_({qty:2}), 2);
-  assert.strictEqual(context.残必要計算_({qty:2, alloc:1}), 1);
-  assert.strictEqual(context.残必要計算_({qty:2, alloc:1, 履歴Alloc:1}), 0);
-});
-
-test('引当・履歴・取り置きの合計が注文数を超えても負にならない', () => {
-  assert.strictEqual(context.残必要計算_({qty:1, alloc:1, 取り置き数:1}), 0);
+test('取り置き中で全数確保された取り寄せ行は出荷準備OK', () => {
+  assert.strictEqual(context.注文出荷準備OK_([{kbn:'取り寄せ',qty:2,取り置き中数量:2,alloc:0,キャンセル:false}]),true);
 });
 
 // ===== 取り置き出荷_: 台帳メモによる人為オーバーライド =====

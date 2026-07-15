@@ -114,6 +114,30 @@ function 取り置き台帳_保存_(rows){ 取り置き_表を保存_(TORIOKI_CF
 function EMS在庫移動台帳_読む_(){ return 取り置き_表を読む_(TORIOKI_CFG.移動,TORIOKI_CFG.移動HDR); }
 function EMS在庫移動台帳_保存_(rows){ 取り置き_表を保存_(TORIOKI_CFG.移動,TORIOKI_CFG.移動HDR,rows); }
 
+function 取り置き台帳_割当計画後行_(plan,existingRows,now){
+  const rows=(existingRows||[]).map(r=>Object.assign({},r)), byId={};
+  rows.forEach((r,index)=>byId[String(r.取置ID||'')]=index);
+  (plan&&plan.returnUpdates||[]).forEach(update=>{
+    const id=String(update.取置ID||''),index=byId[id]; if(index===undefined) return;
+    rows[index]=Object.assign({},rows[index],update,{登録日時:rows[index].登録日時,更新日時:now});
+  });
+  (plan&&plan.newRows||[]).forEach(row=>{
+    const id=String(row.取置ID||''),index=byId[id];
+    if(index===undefined){
+      const added=Object.assign({},row,{登録日時:now,更新日時:now}); byId[id]=rows.length; rows.push(added);
+    }else{
+      rows[index]=Object.assign({},rows[index],row,{登録日時:rows[index].登録日時,更新日時:now});
+    }
+  });
+  return rows;
+}
+
+function 取り置き台帳_割当計画を反映_(plan,existingRows,now){
+  const rows=取り置き台帳_割当計画後行_(plan,existingRows,now);
+  取り置き台帳_保存_(rows);
+  return rows;
+}
+
 function 取り置き_受注番号集合_(sheetName){
   const sh=SpreadsheetApp.getActive().getSheetByName(sheetName), out=new Set();
   if(!sh || sh.getLastRow()<2) return out;
