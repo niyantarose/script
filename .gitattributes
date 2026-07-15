@@ -1,6 +1,10 @@
 # Normalize line endings: repository stores LF, Windows checkouts get CRLF
 * text=auto eol=lf
 
+# Windows batch / VBScript はCRLF必須（LFのみの.batはcmdが行をぶつ切りに誤解釈する）
+*.bat text eol=crlf
+*.vbs text eol=crlf
+
 # Explicitly binary files - no line ending conversion
 *.png binary
 *.jpg binary
