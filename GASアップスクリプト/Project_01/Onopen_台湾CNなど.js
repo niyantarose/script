@@ -52,6 +52,7 @@ function onOpen() {
     .addItem('📁 フォルダをSKUにリネーム', '全シート_フォルダをSKUにリネーム')
     .addItem('🔍 次の空き作品IDを確認', '作品ID_次の空き番号を確認')
     .addItem('⚡ トリガー再設定（onEdit+onChange）', 'トリガーを設定')
+    .addItem('🔘 このシートに確定発行ボタンを設置', '台湾CN_確定発行ボタンを設置')
 
     .addSubMenu(
       ui.createMenu('台湾グッズ')
