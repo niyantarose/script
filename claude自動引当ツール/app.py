@@ -28,6 +28,7 @@ def create_app():
     from routes.order_search import bp as order_search_bp
     from routes.oauth import bp as oauth_bp
     from routes.stock import bp as stock_bp
+    from routes.ledger import bp as ledger_bp
 
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(orders_bp)
@@ -38,6 +39,7 @@ def create_app():
     app.register_blueprint(order_search_bp)
     app.register_blueprint(oauth_bp)
     app.register_blueprint(stock_bp)
+    app.register_blueprint(ledger_bp)
 
     # テンプレートにnowを渡す
     @app.context_processor
