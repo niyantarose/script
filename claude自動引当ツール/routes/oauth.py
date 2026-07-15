@@ -33,6 +33,27 @@ def oauth_start():
     return redirect(auth_url)
 
 
+# ─── SMSなし再認証 ─────────────────────────────────────────────
+@bp.route('/quiet')
+def oauth_quiet():
+    """prompt=none でサイレント再認証する。
+    ブラウザにYahooのログインセッションが残っていれば、ログイン画面もSMS確認も
+    出さずにコールバックまで進む。セッションが無い場合は login_required エラーに
+    なるので、その時は /oauth/start（通常認証）を使う。"""
+    client_id = os.getenv('YAHOO_CLIENT_ID', '')
+    if not client_id:
+        return '<h2>❌ YAHOO_CLIENT_ID が .env に設定されていません</h2>', 500
+
+    params = {
+        'response_type': 'code',
+        'client_id':     client_id,
+        'redirect_uri':  CALLBACK_URL,
+        'scope':         SCOPES,
+        'prompt':        'none',
+    }
+    return redirect(YAHOO_AUTH_URL + '?' + urllib.parse.urlencode(params))
+
+
 # ─── コールバック受け取り ──────────────────────────────────────
 @bp.route('/callback')
 def oauth_callback():
