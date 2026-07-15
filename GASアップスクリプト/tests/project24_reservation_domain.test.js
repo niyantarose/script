@@ -145,5 +145,61 @@ test('同じ入力で再計算しても既存EMS確保を追加しない', () =>
   assert.strictEqual(second.surplus.length,0);
 });
 
+test('EMS FIFOは入力順でなく到着日の古い供給を先に使う', () => {
+  const result=context.取り置き_割当計算_({
+    orders:[{ban:'101',code:'AAA',sku:'AAAb',qty:1,sortKey:101,i:0,keys:['AAA']}],
+    ledger:[],movements:[],explicit:[],
+    supplies:[
+      {ems:'EG2',code:'AAA',qty:1,arrival:'2026-07-13'},
+      {ems:'EG9',code:'AAA',qty:1,arrival:'2026-07-12'}
+    ]
+  });
+  assert.strictEqual(result.newRows[0].元EMS番号,'EG9');
+  assert.strictEqual(result.surplus[0].ems,'EG2');
+});
+
+test('EMS FIFOは同じ到着日ならEMS番号で決定する', () => {
+  const result=context.取り置き_割当計算_({
+    orders:[{ban:'101',code:'AAA',sku:'AAAb',qty:1,sortKey:101,i:0,keys:['AAA']}],
+    ledger:[],movements:[],explicit:[],
+    supplies:[
+      {ems:'EG2',code:'AAA',qty:1,arrival:'2026-07-12'},
+      {ems:'EG1',code:'AAA',qty:1,arrival:'2026-07-12'}
+    ]
+  });
+  assert.strictEqual(result.newRows[0].元EMS番号,'EG1');
+});
+
+test('P列1個確定後に同じEMSから残り2個を割り当てても同じIDを1行へ集約する', () => {
+  const result=context.取り置き_割当計算_({
+    orders:[{ban:'101',code:'AAA',sku:'AAAb',qty:3,sortKey:101,i:0,keys:['AAA']}],
+    ledger:[],movements:[],
+    supplies:[{ems:'EG1',code:'AAA',qty:3,arrival:'2026-07-12'}],
+    explicit:[{ems:'EG1',code:'AAA',ban:'101',qty:1}]
+  });
+  assert.strictEqual(result.newRows.length,1);
+  assert.strictEqual(result.newRows[0].取り置き数量,3);
+  assert.strictEqual(new Set(result.newRows.map(r=>r.取置ID)).size,1);
+  assert.strictEqual(JSON.stringify(result.errors),'[]');
+});
+
+test('P列確定数量を注文必要数まで割り当てられなければエラーにする', () => {
+  const result=context.取り置き_割当計算_({
+    orders:[{ban:'101',code:'AAA',sku:'AAAb',qty:1,sortKey:101,i:0,keys:['AAA']}],
+    ledger:[],movements:[],
+    supplies:[{ems:'EG1',code:'AAA',qty:2,arrival:'2026-07-12'}],
+    explicit:[{ems:'EG1',code:'AAA',ban:'101',qty:2}]
+  });
+  assert.ok(result.errors.some(e=>/P列確定数量を満たせない/.test(e)));
+});
+
+test('既存台帳エラーは割当計算結果で重複しない', () => {
+  const result=context.取り置き_割当計算_({
+    orders:[],movements:[],supplies:[],explicit:[],
+    ledger:[{取置ID:'',状態:'取り置き中',受注番号:'101',商品コード:'AAA',SKU:'AAAb',取り置き数量:0}]
+  });
+  assert.strictEqual(result.errors.length,new Set(result.errors).size);
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');

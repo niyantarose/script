@@ -92,14 +92,19 @@ function 取り置き_割当計算_(input){
   const summary=取り置き_集計_(input.ledger||[],input.movements||[]);
   const orders=(input.orders||[]).map(o=>Object.assign({},o,{need:取り置き_今回必要数_(o,summary)}))
     .sort((a,b)=>(a.sortKey||0)-(b.sortKey||0)||(a.i||0)-(b.i||0));
-  const newRows=[], returnUpdates=[], errors=summary.errors.slice();
+  const newRows=[], newRowById=Object.create(null), returnUpdates=[], errors=summary.errors.slice();
+  const addNewRow=row=>{
+    const id=String(row.取置ID||''), existing=newRowById[id];
+    if(existing) existing.取り置き数量+=row.取り置き数量;
+    else { newRowById[id]=row; newRows.push(row); }
+  };
   const matches=(order,code)=> (order.keys||[]).indexOf(normCode_(code))>=0 || 取り置き_商品コード_(order.sku,order.code)===normCode_(code);
   summary.confirmedReturns.slice().sort((a,b)=>String(a.登録日時||'').localeCompare(String(b.登録日時||''))).forEach(source=>{
     const originalQty=取り置き_整数_(source.取り置き数量); let left=originalQty;
     for(const order of orders){
       if(!left || !order.need || !matches(order,source.商品コード)) continue;
       const take=Math.min(left,order.need); order.need-=take; left-=take;
-      newRows.push(取り置き_新規行_(order,take,'キャンセル再引当',source.元EMS番号,source.取置ID,source.元EMS商品コード||source.商品コード));
+      addNewRow(取り置き_新規行_(order,take,'キャンセル再引当',source.元EMS番号,source.取置ID,source.元EMS商品コード||source.商品コード));
     }
     if(left<originalQty) returnUpdates.push(left===0
       ? {取置ID:source.取置ID,戻し処理結果:TORIOKI_RETURN.REALLOCATED}
@@ -112,7 +117,10 @@ function 取り置き_割当計算_(input){
     supplyByKey[key].qty+=(Number(s.qty)||0);
     if(s.directBan) supplyByKey[key].directBan=String(s.directBan);
   });
-  const supplies=Object.keys(supplyByKey).map(key=>supplyByKey[key]);
+  const supplies=Object.keys(supplyByKey).map(key=>supplyByKey[key]).sort((a,b)=>
+    String(a.arrival||'').localeCompare(String(b.arrival||'')) ||
+    String(a.ems||'').localeCompare(String(b.ems||'')) ||
+    normCode_(a.code).localeCompare(normCode_(b.code)));
   const remainingBySupply={};
   supplies.forEach(s=>{
     const key=取り置き_供給キー_(s.ems,s.code), used=取り置き_使用合計_(summary.usageBySupply[key]);
@@ -122,7 +130,7 @@ function 取り置き_割当計算_(input){
     const key=取り置き_供給キー_(s.ems,s.code), take=Math.min(qty,order.need,remainingBySupply[key]||0);
     if(take<=0) return 0;
     remainingBySupply[key]-=take; order.need-=take;
-    newRows.push(取り置き_新規行_(order,take,source,s.ems,'',s.code));
+    addNewRow(取り置き_新規行_(order,take,source,s.ems,'',s.code));
     return take;
   };
   supplies.filter(s=>s.directBan).forEach(s=>{
@@ -134,7 +142,10 @@ function 取り置き_割当計算_(input){
     const order=orders.find(o=>String(o.ban)===String(e.ban) && matches(o,e.code));
     const supply=supplies.find(s=>String(s.ems)===String(e.ems) && normCode_(s.code)===normCode_(e.code));
     if(!order || !supply) errors.push('P列確定を特定できない: '+e.ban+' '+e.code);
-    else takeSupply(supply,order,Number(e.qty)||0,'EMS');
+    else {
+      const requested=Number(e.qty)||0, taken=takeSupply(supply,order,requested,'EMS');
+      if(taken!==requested) errors.push('P列確定数量を満たせない: '+e.ban+' '+e.code+' 指定'+requested+' / 割当'+taken);
+    }
   });
   supplies.filter(s=>!s.directBan).forEach(s=>{
     for(const order of orders){
@@ -146,7 +157,7 @@ function 取り置き_割当計算_(input){
   const surplus=supplies.map(s=>({ems:s.ems,code:normCode_(s.code),qty:remainingBySupply[取り置き_供給キー_(s.ems,s.code)]||0,arrival:s.arrival}))
     .filter(s=>s.qty>0);
   const plan={orders,newRows,returnUpdates,remainingBySupply,surplus,errors};
-  plan.errors=plan.errors.concat(取り置き_割当検証_(plan,input,summary));
+  plan.errors=Array.from(new Set(plan.errors.concat(取り置き_割当検証_(plan,input,summary))));
   return plan;
 }
 
