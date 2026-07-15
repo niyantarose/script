@@ -68,3 +68,122 @@ function 取り置き_今回必要数_(order, summary){
   const qty=Math.max(0,Number(order&&order.qty)||0);
   return Math.max(0,qty-Number(summary&&summary.activeByKey[取り置き_行キー_(order)]||0));
 }
+
+function 取り置き_決定ID_(source, ems, sourceCode, key, originId){
+  return [source,String(ems||''),normCode_(sourceCode),String(originId||''),key].join('|');
+}
+
+function 取り置き_新規行_(order, qty, source, ems, originId, sourceCode){
+  const key=取り置き_行キー_(order);
+  return {
+    取置ID:取り置き_決定ID_(source,ems,sourceCode||order.code,key,originId), 状態:TORIOKI_STATUS.ACTIVE,
+    受注番号:String(order.ban), 商品コード:取り置き_商品コード_(order.sku,order.code), SKU:String(order.sku||''),
+    取り置き数量:qty, 取置元種別:source, 元EMS番号:String(ems||''), 元EMS商品コード:normCode_(sourceCode||order.code), 元取置ID:String(originId||''),
+    戻し処理結果:'', 終了理由・メモ:''
+  };
+}
+
+function 取り置き_使用合計_(usage){
+  return ['取り置き中','発送済み','戻し未処理','在庫なし確定','Yahoo移動済み']
+    .reduce((sum,key)=>sum+(Number(usage&&usage[key])||0),0);
+}
+
+function 取り置き_割当計算_(input){
+  const summary=取り置き_集計_(input.ledger||[],input.movements||[]);
+  const orders=(input.orders||[]).map(o=>Object.assign({},o,{need:取り置き_今回必要数_(o,summary)}))
+    .sort((a,b)=>(a.sortKey||0)-(b.sortKey||0)||(a.i||0)-(b.i||0));
+  const newRows=[], returnUpdates=[], errors=summary.errors.slice();
+  const matches=(order,code)=> (order.keys||[]).indexOf(normCode_(code))>=0 || 取り置き_商品コード_(order.sku,order.code)===normCode_(code);
+  summary.confirmedReturns.slice().sort((a,b)=>String(a.登録日時||'').localeCompare(String(b.登録日時||''))).forEach(source=>{
+    const originalQty=取り置き_整数_(source.取り置き数量); let left=originalQty;
+    for(const order of orders){
+      if(!left || !order.need || !matches(order,source.商品コード)) continue;
+      const take=Math.min(left,order.need); order.need-=take; left-=take;
+      newRows.push(取り置き_新規行_(order,take,'キャンセル再引当',source.元EMS番号,source.取置ID,source.元EMS商品コード||source.商品コード));
+    }
+    if(left<originalQty) returnUpdates.push(left===0
+      ? {取置ID:source.取置ID,戻し処理結果:TORIOKI_RETURN.REALLOCATED}
+      : {取置ID:source.取置ID,戻し処理結果:TORIOKI_RETURN.PRESENT,取り置き数量:left,終了理由・メモ:(originalQty-left)+'個を再引当済み'});
+  });
+  const supplyByKey={};
+  (input.supplies||[]).forEach(s=>{
+    const key=取り置き_供給キー_(s.ems,s.code);
+    if(!supplyByKey[key]) supplyByKey[key]=Object.assign({},s,{qty:0});
+    supplyByKey[key].qty+=(Number(s.qty)||0);
+    if(s.directBan) supplyByKey[key].directBan=String(s.directBan);
+  });
+  const supplies=Object.keys(supplyByKey).map(key=>supplyByKey[key]);
+  const remainingBySupply={};
+  supplies.forEach(s=>{
+    const key=取り置き_供給キー_(s.ems,s.code), used=取り置き_使用合計_(summary.usageBySupply[key]);
+    remainingBySupply[key]=Math.max(0,(Number(s.qty)||0)-used);
+  });
+  const takeSupply=(s,order,qty,source)=>{
+    const key=取り置き_供給キー_(s.ems,s.code), take=Math.min(qty,order.need,remainingBySupply[key]||0);
+    if(take<=0) return 0;
+    remainingBySupply[key]-=take; order.need-=take;
+    newRows.push(取り置き_新規行_(order,take,source,s.ems,'',s.code));
+    return take;
+  };
+  supplies.filter(s=>s.directBan).forEach(s=>{
+    const order=orders.find(o=>String(o.ban)===String(s.directBan));
+    if(!order) errors.push('注文番号指定の対象なし: '+s.directBan);
+    else if(takeSupply(s,order,Number(s.qty)||0,'EMS')!==(Number(s.qty)||0)) errors.push('注文番号指定が注文数または供給数を超過: '+s.directBan);
+  });
+  (input.explicit||[]).forEach(e=>{
+    const order=orders.find(o=>String(o.ban)===String(e.ban) && matches(o,e.code));
+    const supply=supplies.find(s=>String(s.ems)===String(e.ems) && normCode_(s.code)===normCode_(e.code));
+    if(!order || !supply) errors.push('P列確定を特定できない: '+e.ban+' '+e.code);
+    else takeSupply(supply,order,Number(e.qty)||0,'EMS');
+  });
+  supplies.filter(s=>!s.directBan).forEach(s=>{
+    for(const order of orders){
+      if(!(remainingBySupply[取り置き_供給キー_(s.ems,s.code)]>0)) break;
+      if(!order.need) continue;
+      if(matches(order,s.code)) takeSupply(s,order,order.need,'EMS');
+    }
+  });
+  const surplus=supplies.map(s=>({ems:s.ems,code:normCode_(s.code),qty:remainingBySupply[取り置き_供給キー_(s.ems,s.code)]||0,arrival:s.arrival}))
+    .filter(s=>s.qty>0);
+  const plan={orders,newRows,returnUpdates,remainingBySupply,surplus,errors};
+  plan.errors=plan.errors.concat(取り置き_割当検証_(plan,input,summary));
+  return plan;
+}
+
+function 取り置き_割当検証_(plan,input){
+  const projected=(input.ledger||[]).map(r=>Object.assign({},r));
+  const byId={}; projected.forEach((r,index)=>byId[String(r.取置ID||'')]=index);
+  (plan.returnUpdates||[]).forEach(update=>{
+    const index=byId[String(update.取置ID||'')];
+    if(index!==undefined) projected[index]=Object.assign({},projected[index],update);
+  });
+  (plan.newRows||[]).forEach(row=>{
+    const id=String(row.取置ID||''), index=byId[id];
+    if(index===undefined){ byId[id]=projected.length; projected.push(Object.assign({},row)); }
+    else projected[index]=Object.assign({},projected[index],row);
+  });
+  const projectedSummary=取り置き_集計_(projected,input.movements||[]), errors=projectedSummary.errors.slice();
+  const orderQty={};
+  (input.orders||[]).forEach(order=>{
+    const key=取り置き_行キー_(order); orderQty[key]=(orderQty[key]||0)+(Number(order.qty)||0);
+  });
+  Object.keys(projectedSummary.activeByKey).forEach(key=>{
+    if(!(key in orderQty)) errors.push('取り置き中の対象注文なし: '+key);
+    else if(projectedSummary.activeByKey[key]>orderQty[key]) errors.push('注文数量超過: '+key+' 取り置き'+projectedSummary.activeByKey[key]+' / 注文'+orderQty[key]);
+  });
+  const supplyQty={};
+  (input.supplies||[]).forEach(s=>{
+    const key=取り置き_供給キー_(s.ems,s.code); supplyQty[key]=(supplyQty[key]||0)+(Number(s.qty)||0);
+  });
+  Object.keys(projectedSummary.usageBySupply).forEach(key=>{
+    if(!(key in supplyQty)) return; // 締め済み過去EMSは全件検算で確認し、現在④の供給上限には使わない
+    const used=取り置き_使用合計_(projectedSummary.usageBySupply[key]), supplied=supplyQty[key]||0;
+    if(used>supplied) errors.push('EMS供給超過: '+key+' 使用'+used+' / 供給'+supplied);
+  });
+  (plan.newRows||[]).forEach(row=>{
+    if(!取り置き_整数_(row.取り置き数量)) errors.push('新規取り置き数量が正の整数でない: '+row.取置ID);
+    const order=(input.orders||[]).find(o=>取り置き_行キー_(o)===取り置き_行キー_(row));
+    if(order && 取り置き_商品コード_(order.sku,order.code)!==normCode_(row.商品コード)) errors.push('数値枝番または商品コード不一致: '+row.取置ID);
+  });
+  return Array.from(new Set(errors));
+}

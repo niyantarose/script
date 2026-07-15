@@ -80,5 +80,70 @@ test('重複ID・非整数・注文数量超過をエラーにする', () => {
   assert.ok(summary.errors.some(e => /正の整数/.test(e)));
 });
 
+test('現物ありキャンセル戻しを今回EMSより先に最古注文へ再引当する', () => {
+  const result = context.取り置き_割当計算_({
+    orders:[
+      {ban:'100',code:'AAA',sku:'AAAb',qty:1,sortKey:100,i:0,keys:['AAA']},
+      {ban:'200',code:'AAA',sku:'AAAb',qty:1,sortKey:200,i:1,keys:['AAA']}
+    ],
+    ledger:[{取置ID:'OLD',状態:'キャンセル戻し',受注番号:'050',商品コード:'AAA',SKU:'AAAb',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EG0',戻し処理結果:'現物あり'}],
+    movements:[],
+    supplies:[{ems:'EG1',code:'AAA',qty:1,arrival:'2026-07-12'}],
+    explicit:[]
+  });
+  assert.strictEqual(result.newRows[0].受注番号, '100');
+  assert.strictEqual(result.newRows[0].取置元種別, 'キャンセル再引当');
+  assert.strictEqual(result.newRows[0].元取置ID, 'OLD');
+  assert.strictEqual(result.newRows[1].受注番号, '200');
+  assert.strictEqual(result.newRows[1].元EMS番号, 'EG1');
+});
+
+test('YMNGD09は3個供給・1個確保なら余り2個', () => {
+  const result = context.取り置き_割当計算_({
+    orders:[{ban:'101',code:'YMNGD09',sku:'YMNGD09b',qty:1,sortKey:101,i:0,keys:['YMNGD09']}],
+    ledger:[], movements:[],
+    supplies:[{ems:'EG049827401KR',code:'YMNGD09',qty:3,arrival:'2026-07-12'}], explicit:[]
+  });
+  assert.strictEqual(result.newRows.reduce((s,r)=>s+r.取り置き数量,0),1);
+  assert.strictEqual(result.surplus[0].qty,2);
+});
+
+test('JMEE167の10個を既存7個と新規3個に分けても超過しない', () => {
+  const result = context.取り置き_割当計算_({
+    orders:[
+      {ban:'10117284',code:'JMEE167',sku:'JMEE167b',qty:7,sortKey:10117284,i:0,keys:['JMEE167']},
+      {ban:'10117602',code:'JMEE167',sku:'JMEE167b',qty:3,sortKey:10117602,i:1,keys:['JMEE167']}
+    ],
+    ledger:[{取置ID:'EMS|EG1|10117284',状態:'取り置き中',受注番号:'10117284',商品コード:'JMEE167',SKU:'JMEE167b',取り置き数量:7,取置元種別:'EMS',元EMS番号:'EG1'}],
+    movements:[], supplies:[{ems:'EG1',code:'JMEE167',qty:10,arrival:'2026-07-12'}], explicit:[]
+  });
+  assert.strictEqual(result.newRows.length,1);
+  assert.strictEqual(result.newRows[0].受注番号,'10117602');
+  assert.strictEqual(result.newRows[0].取り置き数量,3);
+  assert.strictEqual(JSON.stringify(result.errors),'[]');
+});
+
+test('注文番号在庫10117375の2個を指定注文だけへ割り当てる', () => {
+  const result = context.取り置き_割当計算_({
+    orders:[{ban:'10117375',code:'KAGURA08W-PG',sku:'KAGURA08W-PGb',qty:2,sortKey:10117375,i:0,keys:['KAGURA08W-PG']}],
+    ledger:[], movements:[],
+    supplies:[{ems:'EG1',code:'10117375',qty:2,arrival:'2026-07-12',directBan:'10117375'}], explicit:[]
+  });
+  assert.strictEqual(result.newRows.length,1);
+  assert.strictEqual(result.newRows[0].受注番号,'10117375');
+  assert.strictEqual(result.newRows[0].取り置き数量,2);
+  assert.strictEqual(result.newRows[0].商品コード,'KAGURA08W-PG');
+  assert.strictEqual(result.newRows[0].元EMS商品コード,'10117375');
+});
+
+test('同じ入力で再計算しても既存EMS確保を追加しない', () => {
+  const input={orders:[{ban:'101',code:'AAA',sku:'AAAb',qty:1,sortKey:101,i:0,keys:['AAA']}],movements:[],supplies:[{ems:'EG1',code:'AAA',qty:1,arrival:'2026-07-12'}],explicit:[]};
+  const first=context.取り置き_割当計算_(Object.assign({ledger:[]},input));
+  const second=context.取り置き_割当計算_(Object.assign({ledger:first.newRows},input));
+  assert.strictEqual(first.newRows.length,1);
+  assert.strictEqual(second.newRows.length,0);
+  assert.strictEqual(second.surplus.length,0);
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');
