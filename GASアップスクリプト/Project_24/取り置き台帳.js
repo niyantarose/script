@@ -1,9 +1,50 @@
 const TORIOKI_CFG = Object.freeze({
-  台帳:'取り置き台帳', 初期:'取り置き初期登録', 戻し:'キャンセル戻し確認', Yahoo候補:'Yahoo戻し候補', 移動:'EMS在庫移動台帳',
+  台帳:'取り置き台帳', 初期:'取り置き初期登録', 要確認:'取り置き要確認', 戻し:'キャンセル戻し確認', Yahoo候補:'Yahoo戻し候補', 移動:'EMS在庫移動台帳',
   台帳HDR:['取置ID','状態','受注番号','商品コード','SKU','取り置き数量','取置元種別','元EMS番号','元EMS商品コード','元取置ID','登録日時','更新日時','戻し処理結果','終了理由・メモ'],
   初期HDR:['取置ID','受注番号','商品コード','SKU','注文数量','現物取り置き数量','メモ','判定'],
+  要確認HDR:['取置ID','受注番号','商品コード','理由'],
   移動HDR:['処理ID','EMS番号','商品コード','数量','移動先','処理日時']
 });
+
+function CSV行を受注行オブジェクトへ_(header, rows){
+  const head=(header||[]).map(v=>String(v||'').trim()), index=name=>head.indexOf(name);
+  const cBan=index('受注番号'), cStatus=index('受注ステータス'), cCode=index('商品コード'), cQty=index('個数');
+  const cSku=index('商品SKU')>=0?index('商品SKU'):index('SKU');
+  const missing=[];
+  if(cBan<0) missing.push('受注番号'); if(cStatus<0) missing.push('受注ステータス');
+  if(cCode<0) missing.push('商品コード'); if(cQty<0) missing.push('個数'); if(cSku<0) missing.push('商品SKU/SKU');
+  if(missing.length) throw new Error('全ステータスCSVの見出し不足: '+missing.join(','));
+  return (rows||[]).map(row=>({受注番号:String(row[cBan]||'').replace(/^niyantarose-/i,''),受注ステータス:String(row[cStatus]||''),
+    商品コード:String(row[cCode]||''),SKU:String(row[cSku]||''),個数:Number(row[cQty])||0}));
+}
+
+function 取り置き_CSV遷移計画_(csvRows, ledgerRows, now){
+  const statuses={}, errors=[], review=[];
+  (csvRows||[]).forEach(r=>{
+    const ban=String(r.受注番号||'').replace(/^niyantarose-/i,'').trim();
+    const key=取り置き_行キー_({ban,code:r.商品コード,sku:r.SKU});
+    if(!ban || !取り置き_商品コード_(r.SKU,r.商品コード)) return;
+    const next=/キャンセル/.test(String(r.受注ステータス||''))?'キャンセル':/処理済|発送済|出荷済/.test(String(r.受注ステータス||''))?'発送済み':'継続';
+    if(statuses[key] && statuses[key]!==next) errors.push('同じ受注行にステータス競合: '+key);
+    statuses[key]=next;
+  });
+  if(errors.length) return {rows:[],review,errors};
+  const rows=(ledgerRows||[]).map(r=>{
+    const copy=Object.assign({},r); if(copy.状態!==TORIOKI_STATUS.ACTIVE) return copy;
+    const key=取り置き_行キー_(copy), next=statuses[key];
+    if(next==='発送済み'){ copy.状態=TORIOKI_STATUS.SHIPPED; copy.更新日時=now; }
+    else if(next==='キャンセル'){ copy.状態=TORIOKI_STATUS.RETURN; copy.戻し処理結果=TORIOKI_RETURN.UNCHECKED; copy.更新日時=now; }
+    else if(!next) review.push({取置ID:copy.取置ID,受注番号:copy.受注番号,商品コード:copy.商品コード,理由:'最新CSVに受注行なし'});
+    return copy;
+  });
+  return {rows,review,errors:[]};
+}
+
+function 取り置き_CSV遷移を反映_(plan){
+  if(plan.errors && plan.errors.length) throw new Error(plan.errors.join('\n'));
+  取り置き台帳_保存_(plan.rows||[]);
+  取り置き_表を保存_(TORIOKI_CFG.要確認,TORIOKI_CFG.要確認HDR,plan.review||[]);
+}
 
 function 取り置き_初期候補_(orders, partialBans, holdBans){
   return (orders||[]).filter(o=>partialBans.has(String(o.ban))||holdBans.has(String(o.ban))).map(o=>{

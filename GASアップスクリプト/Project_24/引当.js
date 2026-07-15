@@ -368,7 +368,8 @@ function 列マップ_(sh){
     入荷: find('入荷日'),
     EMS: find('EMS番号'),
     メモ: find('取り置きメモ'),
-    取置数: find('取り置き数','既存取り置き数')
+    旧取置数: find('取り置き数','既存取り置き数'),
+    取置数: -1 // 旧列は表示用に残すが、移行後の引当計算では読まない
   };
 }
 
@@ -450,6 +451,20 @@ function 取込_実行_(latest){
   const banCol = data.length? data[0].indexOf('受注番号') : -1;
   if(banCol>=0) for(let r=1;r<data.length;r++){ data[r][banCol]=String(data[r][banCol]||'').replace(/^niyantarose-/i,''); }
 
+  // 受注明細へ書く前に、全ステータスCSVと現在台帳から遷移を検証する。
+  // 行の消滅だけでは発送済みにせず、取り置き要確認へ残す。
+  let 取り置き遷移;
+  try{
+    取り置き遷移=取り置き_CSV遷移計画_(CSV行を受注行オブジェクトへ_(data[0],data.slice(1)),取り置き台帳_読む_(),new Date());
+  }catch(e){
+    ui.alert('取り置き台帳の更新を中止しました',e.message,ui.ButtonSet.OK);
+    return;
+  }
+  if(取り置き遷移.errors.length){
+    ui.alert('取り置き台帳の更新を中止しました',取り置き遷移.errors.join('\n'),ui.ButtonSet.OK);
+    return;
+  }
+
   // 【キャンセルの自動仕分け】CSVに「キャンセル」の受注ステータス行が含まれていたら、受注明細には入れず
   // (需要に化けるのを防ぐ)、受注番号だけ拾ってあとで一括キャンセル処理する。全件CSV運用で、
   // 誰がキャンセルしても取込だけで自動反映される(手で番号を聞かなくてよい)。
@@ -481,16 +496,15 @@ function 取込_実行_(latest){
     const e=h0.indexOf('EMS番号'); if(e>=0) sh.deleteColumn(e+1); }
   // 【入荷日を引き継ぐ】上書き前に、今の入荷日を 受注番号+商品コード+SKU をキーに退避(取込で消えないように)
   // 【取り置きメモも引き継ぐ】同じキーで退避→取込後に貼り直す(手書きメモが取込で消えないように)
-  const 退避入荷={}; const 退避メモ={}; const 退避取置={}; let メモ列あり=false; let 取置列あり=false;
+  const 退避入荷={}; const 退避メモ={}; let メモ列あり=false;
   { const M0=列マップ_(sh);
-    メモ列あり = M0.メモ>=0; 取置列あり = M0.取置数>=0;
-    if((M0.入荷>=0 || M0.メモ>=0 || M0.取置数>=0) && sh.getLastRow()>=startRow){
+    メモ列あり = M0.メモ>=0;
+    if((M0.入荷>=0 || M0.メモ>=0) && sh.getLastRow()>=startRow){
       const old=sh.getRange(startRow,1,sh.getLastRow()-startRow+1,sh.getLastColumn()).getValues();
       old.forEach(r=>{ const ban=String(r[M0.番号]||'').trim(), code=String(r[M0.コード]||'').trim();
         const sku=M0.SKU>=0?String(r[M0.SKU]||'').trim():''; const key=ban+'|'+code+'|'+sku;
         if(M0.入荷>=0){ const v=r[M0.入荷]; if(ban && v!=='' && v!=null) 退避入荷[key]=v; }
-        if(M0.メモ>=0){ const m=String(r[M0.メモ]==null?'':r[M0.メモ]).trim(); if(ban && m!=='') 退避メモ[key]=m; }
-        if(M0.取置数>=0){ const n=Number(r[M0.取置数])||0; if(ban && n>0) 退避取置[key]=n; } });
+        if(M0.メモ>=0){ const m=String(r[M0.メモ]==null?'':r[M0.メモ]).trim(); if(ban && m!=='') 退避メモ[key]=m; } });
     } }
   // ヘッダーより下を全リセット(値・背景色・罫線を消す)→ 前回の引当色や罫線が残らないように
   // ※ヘッダー行(例6行目)と上は触らないので書式は維持される
@@ -514,6 +528,7 @@ function 取込_実行_(latest){
     sh.setRowHeights(startRow, body.length, HIKIATE_CFG.行高);
     注文罫線_(sh, startRow, banCol); // 取込時点でも注文ごとに太線を引く(更新だけで罫線が出るように)
   }
+  取り置き_CSV遷移を反映_(取り置き遷移);
 
   // 【入荷日を引き継ぐ】退避した入荷日を、同じ 受注番号+商品コード+SKU の行へ貼り直す(取込しても到着状態が消えない)
   let 引継=0;
@@ -529,20 +544,8 @@ function 取込_実行_(latest){
   }
   EMS番号列を用意_(sh); // 個数の隣に「EMS番号」列を作り直す(中身は②が書く)。取込のたびに個数の隣に固定される
 
-  // 【取り置き数・取り置きメモを引き継ぐ】列を末尾に確保し直して、同じキーの行へ貼り直す
+  // 【取り置きメモを引き継ぐ】列を末尾に確保し直して、同じキーの行へ貼り直す
   let メモ引継=0;
-  if(body.length && (取置列あり || Object.keys(退避取置).length)){
-    const M2=列マップ_(sh);
-    let 取C=M2.取置数;
-    if(取C<0){ 取C=sh.getLastColumn(); sh.getRange(hdrRow,取C+1).setValue('取り置き数').setFontWeight('bold'); }
-    if(Object.keys(退避取置).length){
-      const cur2=sh.getRange(startRow,1,body.length,sh.getLastColumn()).getValues();
-      const out2=cur2.map(r=>{ const ban=String(r[M2.番号]||'').trim(), code=String(r[M2.コード]||'').trim();
-        const sku=M2.SKU>=0?String(r[M2.SKU]||'').trim():''; const n=退避取置[ban+'|'+code+'|'+sku];
-        if(n!==undefined) メモ引継++; return [ n!==undefined ? n : '' ]; });
-      sh.getRange(startRow, 取C+1, out2.length, 1).setValues(out2);
-    }
-  }
   if(body.length && (メモ列あり || Object.keys(退避メモ).length)){
     const M2=列マップ_(sh);
     let メモC=M2.メモ;
