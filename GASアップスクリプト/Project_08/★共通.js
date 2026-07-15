@@ -1486,6 +1486,23 @@ function 確定発行を実行(cfg) {
       }
     }
 
+    // 【確定発行プリフライト】シート内で既に使われている商品コード/SKU → 行番号。
+    // Yahoo等の店舗には同一コードを2つ置けないため、別の行と同じコードを
+    // 発行しそうな行は確定せず保留にする（台湾側と同じ検査の韓国版）。
+    const コード正規化_ = (v) => String(v == null ? '' : v).normalize('NFKC')
+      .replace(/[\s　]+/g, '').toUpperCase();
+    const 使用中コード行 = {};
+    for (let i = 0; i < 全データ.length; i++) {
+      const r = 全データ[i];
+      [値取得_(r, 列マップ, cn.商品コード), 値取得_(r, 列マップ, cn.SKU自動)].forEach(v => {
+        const key = コード正規化_(v);
+        if (!key || key.indexOf('ERROR') === 0) return;
+        if (!使用中コード行[key]) 使用中コード行[key] = [];
+        if (使用中コード行[key].indexOf(i + 2) < 0) 使用中コード行[key].push(i + 2);
+      });
+    }
+    const 確定保留リスト = [];
+
     function 列をまとめて書き込む(colNum, valueMap) {
       if (!colNum) return;
 
@@ -1750,6 +1767,21 @@ if (行既存作品ID候補) {
         クレジット種別
       );
 
+      // 【確定発行プリフライト】生成したSKUが他の行のコードと重複するなら確定しない。
+      // チェックは残し、ステータスに理由を書いて後のダイアログで一覧表示する。
+      const SKUキー = コード正規化_(SKU);
+      if (SKUキー) {
+        const 他行 = (使用中コード行[SKUキー] || []).filter(row => row !== sheetRow);
+        if (他行.length) {
+          確定保留リスト.push({ 行: sheetRow, SKU: SKU, 相手: 他行.join(',') });
+          if (colステータス) 変更mapステータス[sheetRow] = `⚠️確定保留: コード重複(${SKU} が行${他行.join(',')}にも存在)`;
+          continue;
+        }
+        // 同一実行内で後続の行が同じSKUを生成した場合も検出できるよう予約
+        if (!使用中コード行[SKUキー]) 使用中コード行[SKUキー] = [];
+        使用中コード行[SKUキー].push(sheetRow);
+      }
+
       if (col作品ID) 変更map作品ID[sheetRow] = 作品ID;
       if (colSKU自動) 変更mapSKU自動[sheetRow] = SKU;
       if (col商品コード) 変更map商品コード[sheetRow] = SKU;
@@ -1774,11 +1806,24 @@ if (行既存作品ID候補) {
     作品データを更新_確定(作品シート, 作品データ, cfg);
 
     if (col発行チェック) {
-      const 解除 = Array(最終行 - 1).fill([false]);
+      // 保留行のチェックは残す（目に見える形で「未確定」を伝える）
+      const 保留行集合 = {};
+      確定保留リスト.forEach(p => { 保留行集合[p.行] = true; });
+      const 現況 = sh.getRange(2, col発行チェック, 最終行 - 1, 1).getValues();
+      const 解除 = 現況.map((v, idx) => [保留行集合[idx + 2] ? v[0] : false]);
       sh.getRange(2, col発行チェック, 最終行 - 1, 1).setValues(解除);
     }
 
-    ui.alert(`✅ 確定発行完了: ${発行数}件`);
+    if (確定保留リスト.length) {
+      ui.alert(
+        '⚠️ 確定発行の保留',
+        `コード重複のため ${確定保留リスト.length} 行は確定していません（チェックは残っています）。\n` +
+        '重複を解消してからもう一度確定発行してください。\n\n' +
+        確定保留リスト.map(p => `行${p.行}: ${p.SKU} ⇔ 行${p.相手}`).join('\n'),
+        ui.ButtonSet.OK
+      );
+    }
+    ui.alert(`✅ 確定発行完了: ${発行数}件` + (確定保留リスト.length ? `\n⚠️ コード重複で保留: ${確定保留リスト.length}件` : ''));
   } finally {
     lock.releaseLock();
   }
