@@ -60,10 +60,16 @@ def import_yahoo_orders():
             db.session.commit()
 
         # ── 在庫台帳: 注文出庫・キャンセル戻しを記録 ──────────────────
-        from services.stock_ledger import apply_order_out, sync_cancel_returns
-        ledger_out = apply_order_out(new_item_ids)
-        ledger_ret = sync_cancel_returns()
-        db.session.commit()
+        ledger_out = 0
+        ledger_ret = {'returned': 0, 'alerted': 0}
+        try:
+            from services.stock_ledger import apply_order_out, sync_cancel_returns
+            ledger_out = apply_order_out(new_item_ids)
+            ledger_ret = sync_cancel_returns()
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(f'Ledger hook error: {e}')
 
         return jsonify({
             'status':          'ok',

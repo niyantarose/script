@@ -96,6 +96,8 @@ def apply_order_out(item_ids):
             continue
         if order.yahoo_ship_status in ('2', '3'):    # 出荷処理中・出荷済み
             continue
+        if (item.quantity or 0) <= 0:                # 数量0以下は引くものがない
+            continue
         _, created = record_transaction(
             item.product_code, 'order_out', -item.quantity,
             f'yahoo:{order.yahoo_order_id}:{item.id}:out',

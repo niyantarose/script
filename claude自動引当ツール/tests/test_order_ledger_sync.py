@@ -91,6 +91,16 @@ def test_shipped_cancel_alerts_instead_of_return(app):
     assert Alert.query.filter_by(alert_type='shipped_cancel').count() == 1
 
 
+def test_zero_quantity_item_is_skipped(app):
+    record_transaction('P-001', 'adjust', 10, 'seed:P-001', reason='期首')
+    o = _make_order('order-6')
+    oi = _make_item(o, qty=0)
+    db.session.commit()
+    assert apply_order_out([oi.id]) == 0
+    db.session.commit()
+    assert get_balance('P-001') == 10
+
+
 def test_cancel_without_out_does_nothing(app):
     # 台帳導入前の古いキャンセル注文（out記録なし）には何もしない
     o = _make_order('order-5', order_status='4')
