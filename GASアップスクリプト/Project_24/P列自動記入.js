@@ -55,7 +55,8 @@ function P列書き直し実行_(){
   }
   const plan=発注共有P列計画_({currentP:clearedValues});
   if(plan.error) return {error:plan.error};
-  if(plan.sheet!==sh || plan.startRow!==hr+1 || plan.colP!==cP+1 || plan.rowCount!==n ||
+  const sheetIdentity=P列シート識別子_(sh), planSheetIdentity=P列シート識別子_(plan.sheet);
+  if(!sheetIdentity || planSheetIdentity!==sheetIdentity || plan.startRow!==hr+1 || plan.colP!==cP+1 || plan.rowCount!==n ||
       !Array.isArray(plan.values) || plan.values.length!==n){
     return {error:'P列書き直し計画の範囲がEMSリストと一致しません'};
   }
@@ -265,6 +266,16 @@ function P列セルA1_(row,col){
   let n=Math.max(1,Number(col)||1), letters='';
   while(n>0){ n--; letters=String.fromCharCode(65+n%26)+letters; n=Math.floor(n/26); }
   return letters+String(row);
+}
+
+function P列シート識別子_(sheet){
+  try{
+    if(!sheet || typeof sheet.getSheetId!=='function' || typeof sheet.getParent!=='function') return '';
+    const parent=sheet.getParent();
+    if(!parent || typeof parent.getId!=='function') return '';
+    const spreadsheetId=String(parent.getId()||'').trim(), sheetId=sheet.getSheetId();
+    return spreadsheetId && sheetId!=null?spreadsheetId+'|'+String(sheetId):'';
+  }catch(e){ return ''; }
 }
 
 function 発注共有P列計画を反映_(plan){
