@@ -60,7 +60,11 @@ def oauth_callback():
     error = request.args.get('error')
     if error:
         desc = request.args.get('error_description', '')
-        return _html('❌ 認証エラー', f'<p><b>{error}</b>: {desc}</p>', ok=False)
+        extra = ''
+        if error == 'login_required':
+            extra = ('<p>ブラウザにYahooのログインセッションが無いため、サイレント再認証できませんでした。<br>'
+                     '<a href="/oauth/start"><b>→ 通常認証はこちら</b></a>（ログイン画面が開きます）</p>')
+        return _html('❌ 認証エラー', f'<p><b>{error}</b>: {desc}</p>{extra}', ok=False)
 
     code = request.args.get('code')
     if not code:

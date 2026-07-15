@@ -50,6 +50,7 @@
         {% else %}
           <span style="color:#666;">Yahoo認証期限: 未確認</span>
           <a href="/oauth/quiet?next={{ request.full_path|urlencode }}" style="margin-left:8px;">SMSなし再認証</a>
+          <a href="/oauth/start?next={{ request.full_path|urlencode }}" style="margin-left:6px;">通常認証</a>
         {% endif %}
       </div>
       {% block content %}{% endblock %}
