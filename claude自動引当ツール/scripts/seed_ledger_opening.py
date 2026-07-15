@@ -10,8 +10,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import db, Inventory, MallSku
-from services.stock_ledger import record_transaction
+from models import db, Inventory, MallSku, OrderItem
+from services.stock_ledger import record_transaction, apply_order_out
 
 
 def seed_opening_balances():
@@ -54,10 +54,22 @@ def seed_yahoo_mall_skus():
     return {'created': created, 'skipped': skipped}
 
 
+def backfill_order_out():
+    """切替時点の既存注文明細の出庫を台帳に記録する。
+
+    apply_order_out がキャンセル済み・出荷済み・数量0以下を内部でスキップするため、
+    全明細IDを渡せば「未出荷・未キャンセルの明細」だけが出庫記録される。冪等。
+    """
+    item_ids = [row[0] for row in db.session.query(OrderItem.id).all()]
+    recorded = apply_order_out(item_ids)
+    return {'recorded': recorded, 'checked': len(item_ids)}
+
+
 if __name__ == '__main__':
     from app import app
     with app.app_context():
         r1 = seed_opening_balances()
-        r2 = seed_yahoo_mall_skus()
+        r2 = backfill_order_out()
+        r3 = seed_yahoo_mall_skus()
         db.session.commit()
-        print(f'期首残高: {r1} / YahooモールSKU: {r2}')
+        print(f'期首残高: {r1} / 出庫バックフィル: {r2} / YahooモールSKU: {r3}')

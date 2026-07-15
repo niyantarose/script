@@ -9,6 +9,7 @@ from models.ems import Ems
 from models.ems_item import EmsItem
 from models.inventory import Inventory
 from models.import_log import ImportLog
+from models.alert import Alert
 from datetime import datetime, timedelta
 
 bp = Blueprint('import_data', __name__, url_prefix='/import')
@@ -912,6 +913,14 @@ def _upsert_yahoo_order(order_raw: dict):
                 ordered_at=ordered_at,
                 status='shipped',
             ))
+            # 初見で既に出荷済み: 台帳出庫が記録されないためアラート(取込停止期間の検知用)
+            if ordered_at and (datetime.now() - ordered_at).days <= 35:
+                db.session.add(Alert(
+                    alert_type='ledger_out_missing',
+                    product_code=None,
+                    message=(f'注文 {order_id_str} は初回取込時点で既に出荷済みのため、'
+                             f'台帳の出庫記録がありません。必要なら手動出庫してください。'),
+                ))
         return 0, 0, []
 
     new_order = 0
