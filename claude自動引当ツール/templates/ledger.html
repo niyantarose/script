@@ -90,8 +90,8 @@ async function loadBalances() {
       <td style="text-align:right;">${it.available_qty}</td>
       <td>${esc(it.location)}</td>
       <td>
-        <button class="btn btn-sm" onclick="openTxModal('${esc(it.product_code)}')">±</button>
-        <button class="btn btn-sm" onclick="openHistory('${esc(it.product_code)}')">履歴</button>
+        <button class="btn btn-sm" data-action="tx" data-code="${esc(it.product_code)}">±</button>
+        <button class="btn btn-sm" data-action="hist" data-code="${esc(it.product_code)}">履歴</button>
       </td>
     </tr>`).join('');
 }
@@ -144,6 +144,13 @@ async function openHistory(code) {
     </tr>`).join('') || '<tr><td colspan="4">履歴なし</td></tr>';
   document.getElementById('hist-modal').style.display = 'block';
 }
+
+document.getElementById('rows').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'tx') openTxModal(btn.dataset.code);
+  if (btn.dataset.action === 'hist') openHistory(btn.dataset.code);
+});
 
 loadBalances();
 </script>
