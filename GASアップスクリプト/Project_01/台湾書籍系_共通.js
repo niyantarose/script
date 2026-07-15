@@ -4097,6 +4097,29 @@ function 台湾書籍系_使用済みIDキャッシュ取得_() {
   return _台湾書籍系_使用済みIDキャッシュ_;
 }
 
+/**
+ * 【採番一元化】共有ハイウォーターマークの管理セル（採番管理!B1）。
+ * DocumentProperties はこのプロジェクト専用ストアで、Webアプリ（Project_02、
+ * ScriptProperties使用）とは分裂している。片方だけが発行した最上位IDの行が
+ * 削除されると、もう片方がそのIDを再発行しうるため、スプレッドシート上の
+ * 管理セルを両系統の共有ストアとする。Properties はセル破損時の縮退用に残す。
+ */
+function 台湾書籍系_共有ハイウォーターセル_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('採番管理');
+  if (!sh) {
+    try {
+      sh = ss.insertSheet('採番管理');
+      sh.getRange('A1').setValue('台湾書籍系_作品ID_ハイウォーター（削除・編集禁止。シート側とWebアプリの採番が共有）');
+      sh.hideSheet();
+    } catch (e) {
+      // 同時作成の競合などは取得し直す
+      sh = ss.getSheetByName('採番管理');
+    }
+  }
+  return sh ? sh.getRange('B1') : null;
+}
+
 function 台湾書籍系_次の未使用作品ID_() {
   // 実行内キャッシュを使用（全シート走査を実行ごとに1回へ削減）
   const used = 台湾書籍系_使用済みIDキャッシュ取得_();
@@ -4119,9 +4142,23 @@ function 台湾書籍系_次の未使用作品ID_() {
     props = null;
   }
 
-  const 次 = Math.max(最大, 保存最大) + 1;
+  // 共有ハイウォーター（Webアプリ側 Project_02 の採番もここに反映される）
+  let 共有最大 = 0;
+  let 共有セル = null;
+  try {
+    共有セル = 台湾書籍系_共有ハイウォーターセル_();
+    if (共有セル) 共有最大 = parseInt(String(共有セル.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+  } catch (e) {
+    共有セル = null;
+  }
+
+  const 次 = Math.max(最大, 保存最大, 共有最大) + 1;
   if (次 >= 10000) throw new Error('使用可能な作品IDがありません');
 
+  if (共有セル) {
+    // 他系統から少しでも早く見えるよう即フラッシュ（採番は新規作品時のみで頻度は低い）
+    try { 共有セル.setValue(次); SpreadsheetApp.flush(); } catch (e) {}
+  }
   if (props) {
     try { props.setProperty('台湾書籍系_作品ID_ハイウォーター', String(次)); } catch (e) {}
   }

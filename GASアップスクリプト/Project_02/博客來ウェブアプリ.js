@@ -3237,6 +3237,28 @@ function bookCodeGetUsedIds_(ss, runtime) {
   return used;
 }
 
+/**
+ * 【採番一元化】共有ハイウォーターマークの管理セル（採番管理!B1）。
+ * ScriptProperties はこのWebアプリ専用ストアで、シート側（Project_01、
+ * DocumentProperties使用）とは分裂している。片方だけが発行した最上位IDの行が
+ * 削除されると、もう片方がそのIDを再発行しうるため、スプレッドシート上の
+ * 管理セルを両系統の共有ストアとする。Properties はセル破損時の縮退用に残す。
+ */
+function bookCodeSharedHighWaterCell_(ss) {
+  let sheet = ss.getSheetByName('採番管理');
+  if (!sheet) {
+    try {
+      sheet = ss.insertSheet('採番管理');
+      sheet.getRange('A1').setValue('台湾書籍系_作品ID_ハイウォーター（削除・編集禁止。シート側とWebアプリの採番が共有）');
+      sheet.hideSheet();
+    } catch (e) {
+      // 同時作成の競合などは取得し直す
+      sheet = ss.getSheetByName('採番管理');
+    }
+  }
+  return sheet ? sheet.getRange('B1') : null;
+}
+
 function bookCodeNextUnusedWorkId_(ss, runtime) {
   const used = bookCodeGetUsedIds_(ss, runtime);
   // 旧実装は 1 から順に「空き番」を探して再利用していた。
@@ -3258,8 +3280,22 @@ function bookCodeNextUnusedWorkId_(ss, runtime) {
     props = null;
   }
 
-  const next = Math.max(max, savedMax) + 1;
+  // 共有ハイウォーター（シート側 Project_01 の採番もここに反映される）
+  let sharedMax = 0;
+  let sharedCell = null;
+  try {
+    sharedCell = bookCodeSharedHighWaterCell_(ss);
+    if (sharedCell) sharedMax = parseInt(String(sharedCell.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+  } catch (e) {
+    sharedCell = null;
+  }
+
+  const next = Math.max(max, savedMax, sharedMax) + 1;
   if (next >= 10000) throw new Error('使用可能な作品IDがありません');
+  if (sharedCell) {
+    // 他系統から少しでも早く見えるよう即フラッシュ（採番は新規作品時のみで頻度は低い）
+    try { sharedCell.setValue(next); SpreadsheetApp.flush(); } catch (e) {}
+  }
   if (props) {
     try { props.setProperty('台湾書籍系_作品ID_ハイウォーター', String(next)); } catch (e) {}
   }
