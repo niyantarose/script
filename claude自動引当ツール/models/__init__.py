@@ -12,3 +12,5 @@ from models.allocation import Allocation
 from models.alert import Alert
 from models.japan_inventory import JapanInventoryStaging
 from models.import_log import ImportLog
+from models.stock_transaction import StockTransaction
+from models.mall_sku import MallSku
