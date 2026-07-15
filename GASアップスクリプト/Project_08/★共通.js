@@ -1159,26 +1159,13 @@ function WorksKey再正規化を実行(作品シート, cfg) {
  * WorksID振り直し
  * ============================================================ */
 function WorksID振り直しを実行(作品シート, cfg) {
-  const result = { 変更数: 0, 旧新マップ: {} };
-  if (!作品シート || 作品シート.getLastRow() < 2) return result;
-
-  const データ = 作品シート.getRange(2, 1, 作品シート.getLastRow() - 1, cfg.作品列数).getValues();
-  const 行リスト = データ.map(r => ({ 旧ID: parseInt(String(r[1] || '0'), 10), データ: r }));
-  行リスト.sort((a, b) => a.旧ID - b.旧ID);
-
-  const 新データ = 行リスト.map((item, i) => {
-    const r = item.データ.slice();
-    const 新ID = String(i + 1).padStart(4, '0');
-    if (String(item.旧ID).padStart(4, '0') !== 新ID) {
-      result.旧新マップ[String(item.旧ID).padStart(4, '0')] = 新ID;
-      result.変更数++;
-    }
-    r[1] = 新ID;
-    return r;
-  });
-
-  作品シート.getRange(2, 1, 新データ.length, cfg.作品列数).setValues(新データ);
-  return result;
+  // 【封印 2026-07-15】作品IDは永久ID。1から連番に詰め直すと、登録済み商品行や
+  // Yahoo等の外部に出たコードは古いIDのまま残り、同じIDが別作品を指す
+  // 「作品IDずれ」になる（一括更新が毎回これを呼んでいたのが再発源だった）。
+  // 現在の採番は max+1+ハイウォーター方式のため、欠番はそのままで問題ない。
+  // 振り直しがどうしても必要な場合は、商品行・外部コードの一括書き換えと
+  // セットで別途設計すること。
+  return { 変更数: 0, 旧新マップ: {} };
 }
 
 /* ============================================================
@@ -1832,7 +1819,7 @@ function 削除を実行(cfg) {
  * ============================================================ */
 function 一括更新を実行(cfg) {
   const ui = SpreadsheetApp.getUi();
-  if (ui.alert('確認', '未登録行を再生成します（Works重複整理+ID振り直し含む）。続行？', ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
+  if (ui.alert('確認', '未登録行を再生成します（Works重複整理含む。作品IDの振り直しはしません＝永久ID）。続行？', ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
 
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName(cfg.マスターシート名);

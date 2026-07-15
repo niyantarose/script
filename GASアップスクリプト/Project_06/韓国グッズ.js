@@ -599,14 +599,15 @@ function 韓国グッズ_重複チェック() {
  * Works初期化
  * ============================================================ */
 function 韓国グッズ_Works初期化() {
-  const ui = SpreadsheetApp.getUi();
-  if (ui.alert('警告', 'Works（韓国グッズ）を全削除します。続行？', ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
-  const ss = SpreadsheetApp.getActive();
-  let sh = ss.getSheetByName(設定_韓国グッズ.作品シート名);
-  if (sh) { const last = sh.getLastRow(); if (last > 1) sh.deleteRows(2, last - 1); }
-  else { sh = ss.insertSheet(設定_韓国グッズ.作品シート名); }
-  sh.getRange(1, 1, 1, 設定_韓国グッズ.作品列数).setValues([設定_韓国グッズ.作品ヘッダー]);
-  ui.alert('✅ Works初期化完了（韓国グッズ）');
+  // 【封印 2026-07-15】Works全削除は、商品行に残る作品ID・SKUを宙に浮かせる破壊操作のため停止
+  // （台湾側と同じ運用。採番はハイウォーターで安全に継続する）。
+  SpreadsheetApp.getUi().alert(
+    '🔒 この操作は封印されています',
+    '「Works初期化（全削除）」は作品IDずれ事故の原因になるため、2026-07-15に停止しました。\n\n' +
+    '・作品IDは永久ID（欠番はそのまま。採番はハイウォーターで安全に継続します）\n' +
+    '・どうしても必要な場合は管理者に相談してください',
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
 }
 
 /* ============================================================
