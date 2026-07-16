@@ -1394,7 +1394,8 @@ function 引当切替差分_純計算_(plannedRows,currentRows){
 
 function 引当切替_計画行_(lines){
   return (lines||[]).filter(l=>l&&!l.キャンセル).map(l=>({
-    ban:String(l.ban||''),code:注文一覧表示コード_(l,false,null),sku:String(l.sku||''),qty:Number(l.qty)||0,
+    ban:String(l.ban||''),氏名:String(l.氏名||''),code:注文一覧表示コード_(l,false,null),sku:String(l.sku||''),
+    商品名:String(l.商品名||''),qty:Number(l.qty)||0,
     state:引当行状態_(l,HIKIATE_CFG).st,ems:String(l.箱EMS||'')
   }));
 }
@@ -1407,10 +1408,11 @@ function 引当切替_現行出力行_(ss,plannedRows){
     const values=sh.getDataRange().getValues(),hr=values.findIndex(row=>row.map(v=>String(v||'').trim()).indexOf('受注番号')>=0);
     if(hr<0) return;
     const head=values[hr].map(v=>String(v||'').trim()),col=n=>head.indexOf(n);
-    const cBan=col('受注番号'),cCode=col('商品コード'),cSku=col('SKU'),cQty=col('個数'),cState=col('状態'),cEms=col('EMS番号');
+    const cBan=col('受注番号'),cName=col('氏名'),cCode=col('商品コード'),cItem=col('商品名'),cSku=col('SKU'),cQty=col('個数'),cState=col('状態'),cEms=col('EMS番号');
     values.slice(hr+1).forEach(row=>{
       const ban=String(row[cBan]||'').trim(),code=String(row[cCode]||'').trim(); if(!ban||!code) return;
       const qty=cQty>=0?Number(row[cQty])||0:0,state=cState>=0?String(row[cState]||''):'',ems=cEms>=0?String(row[cEms]||''):'';
+      const 氏名=cName>=0?String(row[cName]||'').trim():'',商品名=cItem>=0?String(row[cItem]||'').trim():'';
       const planKey=ban+'|'+normCode_(code),cand=byBanCode[planKey]||[],used=usedByBanCode[planKey]||(usedByBanCode[planKey]=new Set());
       let sku=cSku>=0?String(row[cSku]||'').trim():'';
       let index=-1;
@@ -1422,7 +1424,7 @@ function 引当切替_現行出力行_(ss,plannedRows){
         if(index>=0) sku=String(cand[index].sku||'');
       }
       if(index>=0) used.add(index);
-      out.push({ban,code,sku,qty,state,ems});
+      out.push({ban,氏名,code,sku,商品名,qty,state,ems});
     });
   });
   return out;
@@ -1434,8 +1436,11 @@ function 引当切替差分を作成(){
   const current=引当切替_現行出力行_(ss,planned),diff=引当切替差分_純計算_(planned,current);
   let sh=ss.getSheetByName('引当切替差分'); if(!sh) sh=ss.insertSheet('引当切替差分');
   const clear=sh.getRange(1,1,Math.max(1,sh.getMaxRows()),Math.max(1,sh.getMaxColumns())); if(clear&&typeof clear.clearContent==='function') clear.clearContent();
-  const values=[['変更','キー','現行状態','計画状態','現行数量','計画数量','現行EMS','計画EMS']]
-    .concat(diff.map(r=>[r.change,r.key,r.before?r.before.state:'',r.after?r.after.state:'',r.before?r.before.qty:'',r.after?r.after.qty:'',r.before?r.before.ems:'',r.after?r.after.ems:'']));
+  // 初期登録と同じ調子で読めるよう、キーは受注番号/氏名/商品コード/SKU/商品名へ分解して出す
+  const fieldOf=(r,name)=>String((r.after&&r.after[name]!=null&&r.after[name]!==''?r.after[name]:(r.before?r.before[name]:''))||'');
+  const values=[['変更','受注番号','氏名','商品コード','SKU','商品名','現行状態','計画状態','現行数量','計画数量','現行EMS','計画EMS']]
+    .concat(diff.map(r=>[r.change,fieldOf(r,'ban'),fieldOf(r,'氏名'),fieldOf(r,'code'),fieldOf(r,'sku'),fieldOf(r,'商品名'),
+      r.before?r.before.state:'',r.after?r.after.state:'',r.before?r.before.qty:'',r.after?r.after.qty:'',r.before?r.before.ems:'',r.after?r.after.ems:'']));
   sh.getRange(1,1,values.length,values[0].length).setValues(values);
   sh.getRange(1,1,1,values[0].length).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
   sh.setFrozenRows(1);
