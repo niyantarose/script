@@ -63,6 +63,21 @@ test('初期候補は氏名を受注番号の隣に載せる', () => {
   assert.strictEqual(rows[0].氏名,'西野 瑠璃');
 });
 
+test('どの一覧にも無い着済スタンプ注文も候補に出る(引当待ちに埋もれた着済の取りこぼし防止)', () => {
+  const orders=[
+    {ban:'10116494',氏名:'金木 あずみ',code:'JMEE-SPKZ-06',sku:'JMEE-SPKZ-06b',qty:2,kbn:'取り寄せ',入荷日:'2026-06-25',EMS:'EG049108127KR'},
+    {ban:'10119999',code:'ZZZ',sku:'ZZZb',qty:1,kbn:'取り寄せ'} // スタンプなし・一覧にも無し=候補外
+  ];
+  const rows=context.取り置き_初期候補_(orders,[
+    {状態:'部分在庫',bans:new Set([])},
+    {状態:'着済スタンプ(要棚確認)',bans:new Set(['10116494'])}
+  ]);
+  assert.strictEqual(rows.length,1);
+  assert.strictEqual(rows[0].受注番号,'10116494');
+  assert.strictEqual(rows[0].現在の状態,'着済スタンプ(要棚確認)');
+  assert.strictEqual(rows[0].旧入荷日,'2026-06-25');
+});
+
 test('初期候補は旧帳簿の入荷日とEMS番号を目印として載せる', () => {
   const rows=context.取り置き_初期候補_(
     [{ban:'101',氏名:'中村 唯',code:'MRBLUE40',sku:'MRBLUE40-7b',qty:2,kbn:'取り寄せ',入荷日:'2026-06-25',EMS:'EG049618607KR'}],
