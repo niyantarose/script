@@ -140,8 +140,14 @@ function 取り置き_表を保存_(sheetName, headers, rows){
   if(sh.getMaxColumns()<headers.length) sh.insertColumnsAfter(sh.getMaxColumns(),headers.length-sh.getMaxColumns());
   if(sh.getMaxRows()<rows.length+1) sh.insertRowsAfter(sh.getMaxRows(),rows.length+1-sh.getMaxRows());
   sh.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
-  if(sh.getMaxRows()>1) sh.getRange(2,1,sh.getMaxRows()-1,sh.getMaxColumns()).clearContent();
-  if(rows.length) sh.getRange(2,1,rows.length,headers.length).setValues(rows.map(r=>headers.map(h=>r[h]==null?'':r[h])));
+  const dataRows=Math.max(rows.length,Math.max(0,sh.getLastRow()-1)), dataCols=headers.length;
+  if(dataRows>0){
+    const values=Array.from({length:dataRows},(_,rowIndex)=>{
+      const source=rows[rowIndex];
+      return headers.map(header=>source&&source[header]!=null?source[header]:'');
+    });
+    sh.getRange(2,1,dataRows,dataCols).setValues(values);
+  }
   sh.setFrozenRows(1);
 }
 
@@ -229,7 +235,7 @@ function キャンセル戻し確認を確定(){
 
 function Yahoo戻し候補を更新_(){
   const rows=取り置き台帳_読む_().filter(r=>r.状態==='キャンセル戻し'&&r.戻し処理結果==='現物あり').map(r=>({
-    取置ID:r.取置ID,商品コード:r.商品コード,数量:r.取り置き数量,元EMS番号:r.元EMS番号,処理ID:'YAHOO|RETURN|'+r.取置ID,確認:''
+    取置ID:r.取置ID,商品コード:String(r.元EMS商品コード||r.商品コード||'').trim(),数量:r.取り置き数量,元EMS番号:r.元EMS番号,処理ID:'YAHOO|RETURN|'+r.取置ID,確認:''
   }));
   取り置き_表を保存_(TORIOKI_CFG.Yahoo候補,Yahoo候補HDR,rows);
   const sh=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.Yahoo候補);
@@ -241,21 +247,43 @@ function キャンセル戻しをYahoo反映済みにする(){
   if(!candidates.length){ ui.alert('Yahoo戻し候補にチェックがありません'); return; }
   const answer=ui.alert('Yahoo戻しの最終確認','Yahoo在庫へ実際に加算済みの'+candidates.length+'件だけを確定します。',ui.ButtonSet.OK_CANCEL);
   if(answer!==ui.Button.OK) return;
+  const checkedIdCounts={};
+  candidates.forEach(r=>{ const id=String(r.取置ID||''); checkedIdCounts[id]=(checkedIdCounts[id]||0)+1; });
+  const duplicateChecked=Object.keys(checkedIdCounts).filter(id=>!id || checkedIdCounts[id]!==1);
+  if(duplicateChecked.length){ ui.alert('Yahoo戻し候補が重複またはIDなしのため中止しました',duplicateChecked.join('\n'),ui.ButtonSet.OK); return; }
   const ledger=取り置き台帳_読む_(), selectedIds=new Set(candidates.map(r=>String(r.取置ID)));
   const ledgerIdCounts={};
   ledger.forEach(r=>{ const id=String(r.取置ID||''); ledgerIdCounts[id]=(ledgerIdCounts[id]||0)+1; });
   const unresolved=Array.from(selectedIds).filter(id=>!id || ledgerIdCounts[id]!==1);
   if(unresolved.length){ ui.alert('Yahoo戻し候補が現在の取り置き台帳と一致しないため中止しました',unresolved.join('\n'),ui.ButtonSet.OK); return; }
   const returns=ledger.filter(r=>selectedIds.has(String(r.取置ID)));
+  const candidateById={}; candidates.forEach(r=>candidateById[String(r.取置ID)]=r);
+  const tampered=returns.filter(r=>{
+    const id=String(r.取置ID), candidate=candidateById[id];
+    const sourceCode=String(r.元EMS商品コード||r.商品コード||'').trim();
+    return String(candidate.商品コード||'').trim()!==sourceCode ||
+      取り置き_整数_(candidate.数量)!==取り置き_整数_(r.取り置き数量) ||
+      String(candidate.元EMS番号||'').trim()!==String(r.元EMS番号||'').trim() ||
+      String(candidate.処理ID||'').trim()!=='YAHOO|RETURN|'+id;
+  });
+  if(tampered.length){ ui.alert('Yahoo戻し候補が現在の取り置き台帳と一致しないため中止しました',tampered.map(r=>r.取置ID).join('\n'),ui.ButtonSet.OK); return; }
   if(returns.some(r=>r.状態!=='キャンセル戻し'||r.戻し処理結果!=='現物あり')){ ui.alert('現物ありでない候補が含まれるため中止しました'); return; }
   const existingMoves=EMS在庫移動台帳_読む_(), plan=EMS在庫移動_戻し計画_(returns,existingMoves,new Date());
   if(plan.errors.length){ ui.alert('Yahoo移動を中止しました',plan.errors.join('\n'),ui.ButtonSet.OK); return; }
   const updatedLedger=ledger.map(r=>selectedIds.has(String(r.取置ID))?Object.assign({},r,{戻し処理結果:'Yahoo反映済み',更新日時:new Date()}):r);
-  try{
-    EMS在庫移動台帳_保存_(plan.rows);
-    try{ 取り置き台帳_保存_(updatedLedger); }
-    catch(error){ EMS在庫移動台帳_保存_(existingMoves); throw error; }
-  }catch(error){ ui.alert('Yahoo戻し記録に失敗したため台帳を元へ戻しました',error.message,ui.ButtonSet.OK); return; }
+  try{ EMS在庫移動台帳_保存_(plan.rows); }
+  catch(error){ ui.alert('Yahoo移動台帳の保存に失敗しました',error.message,ui.ButtonSet.OK); return; }
+  try{ 取り置き台帳_保存_(updatedLedger); }
+  catch(ledgerError){
+    try{ EMS在庫移動台帳_保存_(existingMoves); }
+    catch(rollbackError){
+      ui.alert('取り置き台帳の保存とYahoo移動台帳の復旧に失敗しました',
+        '取り置き台帳: '+ledgerError.message+'\nYahoo移動台帳: '+rollbackError.message,ui.ButtonSet.OK);
+      return;
+    }
+    ui.alert('取り置き台帳の保存に失敗したためYahoo移動台帳を元へ戻しました',ledgerError.message,ui.ButtonSet.OK);
+    return;
+  }
   Yahoo戻し候補を更新_();
 }
 

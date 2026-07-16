@@ -282,9 +282,15 @@ function 到着済を在庫反映済みへ本体_(){
     const raw=PropertiesService.getDocumentProperties().getProperty('引当_整合状態');
     consistency=raw?JSON.parse(raw):null;
   }catch(error){ consistencyError=error.message; }
-  const stale=!consistency || (Date.now()-(consistency.ts||0))>6*60*60*1000;
-  if(consistencyError || stale || consistency.要確認!==0 || consistency.台帳版!=='v1'){
+  const now=Date.now(), ts=consistency&&consistency.ts;
+  const invalidTs=!Number.isFinite(ts)||ts<=0;
+  const future=!invalidTs&&ts>now;
+  const stale=!invalidTs&&!future&&(now-ts)>6*60*60*1000;
+  if(consistencyError || !consistency || invalidTs || future || stale || consistency.要確認!==0 || consistency.台帳版!=='v1'){
     const reason=consistencyError?'整合状態を読み取れません: '+consistencyError
+      :!consistency?'引当結果がありません'
+      :invalidTs?'引当結果の時刻が不正です'
+      :future?'引当結果の時刻が未来です'
       :stale?'直近6時間以内の引当結果がありません'
       :consistency.要確認!==0?'要確認が'+String(consistency.要確認)+'件残っています'
       :'台帳版がv1ではありません';
