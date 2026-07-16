@@ -107,5 +107,19 @@ fakeSS.getSheetByName = () => { throw new Error('boom'); };
 eq('セル例外: props最大+1に縮退', ctx.台湾書籍系_次の未使用作品ID_(), '0171');
 fakeSS.getSheetByName = origGetSheet;
 
+// ケース5: 巻き戻し運用 — セルに正の値があればpropsより低くてもセルを正とする
+// （「採番を巻き戻す」メニューがセルとpropsを下げた後、片方のprops残骸で戻りが無効化されない）
+seedUsed(['0005', '0165']);
+docProps['台湾書籍系_作品ID_ハイウォーター'] = '170';
+sheetExists = true;
+sharedCellValue = '167';
+eq('巻き戻し: セル(167)がprops(170)より優先', ctx.台湾書籍系_次の未使用作品ID_(), '0168');
+
+// ケース6: セルを走査max未満まで下げても、シート上の使用中IDは絶対に越えない
+seedUsed(['0005', '0165']);
+docProps['台湾書籍系_作品ID_ハイウォーター'] = '0';
+sharedCellValue = '100';
+eq('巻き戻し: 走査max(165)が下限', ctx.台湾書籍系_次の未使用作品ID_(), '0166');
+
 process.exitCode = failed ? 1 : 0;
 console.log(failed ? `\n${failed} failed` : '\nall passed');

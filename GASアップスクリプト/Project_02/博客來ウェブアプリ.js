@@ -3333,7 +3333,11 @@ function bookCodeNextUnusedWorkId_(ss, runtime) {
     sharedCell = null;
   }
 
-  const next = Math.max(max, savedMax, sharedMax) + 1;
+  // セルに正の値があるときはセルを正とする（シート側の「採番を巻き戻す」メニューで
+  // 下げた値に、このWebアプリのScriptProperties残骸が勝って巻き戻しが無効化される
+  // のを防ぐ）。走査maxが常に下限なので、セルが低くても使用中IDは越えない。
+  const baseMax = (sharedCell && sharedMax > 0) ? sharedMax : savedMax;
+  const next = Math.max(max, baseMax) + 1;
   if (next >= 10000) throw new Error('使用可能な作品IDがありません');
   if (sharedCell) {
     // 他系統から少しでも早く見えるよう即フラッシュ（採番は新規作品時のみで頻度は低い）

@@ -4309,7 +4309,11 @@ function 台湾書籍系_次の未使用作品ID_() {
     共有セル = null;
   }
 
-  const 次 = Math.max(最大, 保存最大, 共有最大) + 1;
+  // セルに正の値があるときはセルを正とする（「採番を巻き戻す」メニューで下げた値に
+  // props残骸が勝って巻き戻しが無効化されるのを防ぐ）。走査maxが常に下限なので
+  // セルをいくら下げても使用中IDを越えることはない。セル空/破損時のみpropsに縮退。
+  const 基準最大 = (共有セル && 共有最大 > 0) ? 共有最大 : 保存最大;
+  const 次 = Math.max(最大, 基準最大) + 1;
   if (次 >= 10000) throw new Error('使用可能な作品IDがありません');
 
   if (共有セル) {
@@ -4323,6 +4327,84 @@ function 台湾書籍系_次の未使用作品ID_() {
   const id = String(次).padStart(4, '0');
   used.add(id); // 同一実行内で次の採番に同じIDを返さないよう予約（衝突防止）
   return id;
+}
+
+/**
+ * 【採番の巻き戻し】どこにも使われていない末尾の番号をハイウォーターから解放し、
+ * 次回の採番で再利用できるようにする（テスト登録→削除で番号だけ進んだ場合の回収用）。
+ * Works・台湾まんが・台湾書籍その他のID列/コード列すべてを走査し、実際に使われている
+ * 最大番号までしか下げないため、使用中IDとの衝突は起こらない。
+ * 注意: 「Yahooへ送信済みなのにシートからは行ごと消した」番号は走査で見えないので、
+ * その心当たりがある場合は巻き戻さないこと（確認ダイアログでも明示している）。
+ */
+function 台湾書籍系_採番を巻き戻す_() {
+  const ui = SpreadsheetApp.getUi();
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    台湾書籍系_使用済みIDキャッシュ無効化_();
+    const used = 台湾書籍系_使用済み作品IDセット_();
+    let 実使用最大 = 0;
+    used.forEach(function (id) {
+      const n = parseInt(String(id).replace(/\D/g, ''), 10);
+      if (Number.isFinite(n) && n > 実使用最大) 実使用最大 = n;
+    });
+
+    let 保存最大 = 0;
+    let props = null;
+    try {
+      props = PropertiesService.getDocumentProperties();
+      保存最大 = parseInt(props.getProperty('台湾書籍系_作品ID_ハイウォーター') || '0', 10) || 0;
+    } catch (e) {
+      props = null;
+    }
+    let セル最大 = 0;
+    let セル = null;
+    try {
+      セル = 台湾書籍系_共有ハイウォーターセル_();
+      if (セル) セル最大 = parseInt(String(セル.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+    } catch (e) {
+      セル = null;
+    }
+
+    const 現在HW = Math.max(保存最大, セル最大);
+    if (現在HW <= 実使用最大) {
+      ui.alert(
+        '巻き戻せる番号はありません。\n\n' +
+        '発行済み最大: ' + String(現在HW).padStart(4, '0') + '\n' +
+        'シート上の使用最大: ' + String(実使用最大).padStart(4, '0')
+      );
+      return;
+    }
+
+    const 解放開始 = String(実使用最大 + 1).padStart(4, '0');
+    const 解放終了 = String(現在HW).padStart(4, '0');
+    if (
+      ui.alert(
+        '採番の巻き戻し',
+        '未使用の末尾番号 ' + 解放開始 + '〜' + 解放終了 + ' を解放し、次回の採番から再利用します。\n\n' +
+        '⚠️ この範囲に「Yahooへ送信済み・出品済みなのにシートからは消した」番号が含まれる場合、\n' +
+        '再利用するとYahoo側と衝突します。心当たりが無ければOKを押してください。',
+        ui.ButtonSet.OK_CANCEL
+      ) !== ui.Button.OK
+    ) {
+      return;
+    }
+
+    if (セル) {
+      try { セル.setValue(実使用最大); SpreadsheetApp.flush(); } catch (e) {}
+    }
+    if (props) {
+      try { props.setProperty('台湾書籍系_作品ID_ハイウォーター', String(実使用最大)); } catch (e) {}
+    }
+
+    ui.alert(
+      '✅ 巻き戻しました。次の新規作品IDは ' + String(実使用最大 + 1).padStart(4, '0') + ' です。\n\n' +
+      '（拡張機能=Webアプリ側の採番も共有セル経由で自動追従します）'
+    );
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function 台湾書籍系_作品ID衝突チェック_() {

@@ -51,6 +51,7 @@ function onOpen() {
     .addSeparator()
     .addItem('📁 フォルダをSKUにリネーム', '全シート_フォルダをSKUにリネーム')
     .addItem('🔍 次の空き作品IDを確認', '作品ID_次の空き番号を確認')
+    .addItem('🔙 採番を巻き戻す（未使用の末尾番号を解放）', '台湾書籍系_採番を巻き戻す_')
     .addItem('⚡ トリガー再設定（onEdit+onChange）', 'トリガーを設定')
     .addItem('🔘 このシートに確定発行ボタンを設置', '台湾CN_確定発行ボタンを設置')
 
