@@ -4330,10 +4330,72 @@ function 台湾書籍系_次の未使用作品ID_() {
 }
 
 /**
+ * 指定の作品ID(4桁)がどこで使われているかを探し、表示用の説明文を返す。
+ * 巻き戻しダイアログで「どのタイトルが下限になっているか」を見せるために使う。
+ */
+function 台湾書籍系_ID使用箇所の説明_(id4) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Works（書籍専用）: 作品ID列
+  try {
+    const wsh = ss.getSheetByName('Works（書籍専用）');
+    if (wsh && wsh.getLastRow() >= 2) {
+      const headers = wsh.getRange(1, 1, 1, wsh.getLastColumn()).getDisplayValues()[0]
+        .map(v => 台湾書籍系_正規化文字列_(v));
+      const col = {};
+      headers.forEach((h, i) => { if (h) col[h] = i; });
+      if (col['作品ID'] != null) {
+        const data = wsh.getRange(2, 1, wsh.getLastRow() - 1, wsh.getLastColumn()).getDisplayValues();
+        for (let i = 0; i < data.length; i++) {
+          if (台湾書籍系_作品ID4桁を取得_(data[i][col['作品ID']]) !== id4) continue;
+          const title = (col['日本語タイトル'] != null ? data[i][col['日本語タイトル']] : '') ||
+                        (col['原題タイトル'] != null ? data[i][col['原題タイトル']] : '');
+          return '「' + (title || '(タイトル不明)') + '」(Works ' + (i + 2) + '行目)';
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 商品シート: 作品ID列とコード列
+  const 商品シート一覧 = ['台湾まんが', '台湾書籍その他'];
+  for (let s = 0; s < 商品シート一覧.length; s++) {
+    try {
+      const sh = ss.getSheetByName(商品シート一覧[s]);
+      if (!sh || sh.getLastRow() < 2) continue;
+      const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0]
+        .map(v => 台湾書籍系_正規化文字列_(v));
+      const col = {};
+      headers.forEach((h, i) => { if (h) col[h] = i; });
+      const id列候補 = ['作品ID(W)（自動）', '作品ID(W)(自動)', '作品(W)（自動）'];
+      const code列候補 = ['親コード', '商品コード(SKU)', '商品コード（SKU）', 'SKU（自動）', 'SKU(自動)'];
+      const data = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getDisplayValues();
+      for (let i = 0; i < data.length; i++) {
+        let hit = false;
+        for (let c = 0; c < id列候補.length && !hit; c++) {
+          if (col[id列候補[c]] != null &&
+              台湾書籍系_作品ID4桁を取得_(data[i][col[id列候補[c]]]) === id4) hit = true;
+        }
+        for (let c = 0; c < code列候補.length && !hit; c++) {
+          if (col[code列候補[c]] != null &&
+              台湾書籍系_コードから作品ID4桁を取得_(data[i][col[code列候補[c]]]) === id4) hit = true;
+        }
+        if (!hit) continue;
+        const title = (col['日本語タイトル'] != null ? data[i][col['日本語タイトル']] : '') ||
+                      (col['タイトル'] != null ? data[i][col['タイトル']] : '');
+        return '「' + (title || '(タイトル不明)') + '」(' + 商品シート一覧[s] + ' ' + (i + 2) + '行目)';
+      }
+    } catch (e) {}
+  }
+
+  return '';
+}
+
+/**
  * 【採番の巻き戻し】どこにも使われていない末尾の番号をハイウォーターから解放し、
  * 次回の採番で再利用できるようにする（テスト登録→削除で番号だけ進んだ場合の回収用）。
  * Works・台湾まんが・台湾書籍その他のID列/コード列すべてを走査し、実際に使われている
  * 最大番号までしか下げないため、使用中IDとの衝突は起こらない。
+ * 使用中の番号が下限になっている場合は、そのタイトルと場所を明示する。
  * 注意: 「Yahooへ送信済みなのにシートからは行ごと消した」番号は走査で見えないので、
  * その心当たりがある場合は巻き戻さないこと（確認ダイアログでも明示している）。
  */
@@ -4368,11 +4430,16 @@ function 台湾書籍系_採番を巻き戻す_() {
     }
 
     const 現在HW = Math.max(保存最大, セル最大);
+    const 下限説明 = 実使用最大 > 0
+      ? 台湾書籍系_ID使用箇所の説明_(String(実使用最大).padStart(4, '0'))
+      : '';
+
     if (現在HW <= 実使用最大) {
       ui.alert(
-        '巻き戻せる番号はありません。\n\n' +
-        '発行済み最大: ' + String(現在HW).padStart(4, '0') + '\n' +
-        'シート上の使用最大: ' + String(実使用最大).padStart(4, '0')
+        '❌ 巻き戻せる番号はありません。\n\n' +
+        '発行済み最大 ' + String(現在HW).padStart(4, '0') + ' は使用中です' +
+        (下限説明 ? ':\n' + 下限説明 : '。') + '\n\n' +
+        '（他のタイトルが使っている番号は解放できません）'
       );
       return;
     }
@@ -4383,6 +4450,9 @@ function 台湾書籍系_採番を巻き戻す_() {
       ui.alert(
         '採番の巻き戻し',
         '未使用の末尾番号 ' + 解放開始 + '〜' + 解放終了 + ' を解放し、次回の採番から再利用します。\n\n' +
+        (下限説明
+          ? 'これより下は戻せません: ' + String(実使用最大).padStart(4, '0') + ' を ' + 下限説明 + ' が使用中です。\n\n'
+          : '') +
         '⚠️ この範囲に「Yahooへ送信済み・出品済みなのにシートからは消した」番号が含まれる場合、\n' +
         '再利用するとYahoo側と衝突します。心当たりが無ければOKを押してください。',
         ui.ButtonSet.OK_CANCEL
