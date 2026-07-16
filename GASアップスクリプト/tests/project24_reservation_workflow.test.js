@@ -329,7 +329,7 @@ function 取り置き表保存モック_(options){
   options=options||{};
   const headers=['取置ID','状態','商品コード'];
   const original=[['OLD1','取り置き中','AAA'],['OLD2','発送済み','BBB'],['','','']];
-  const state={data:original.map(r=>r.slice()),dataSetValues:0,clearContent:0};
+  const state={data:original.map(r=>r.slice()),dataSetValues:0,clearContent:0,freezeCalls:0};
   const sheet={
     getMaxColumns:()=>headers.length,
     getMaxRows:()=>1+original.length,
@@ -354,7 +354,10 @@ function 取り置き表保存モック_(options){
       };
       return range;
     },
-    setFrozenRows:()=>{}
+    setFrozenRows:()=>{
+      state.freezeCalls++;
+      if(options.freezeFails) throw new Error('freeze failed');
+    }
   };
   context.SpreadsheetApp.getActive=()=>({getSheetByName:()=>sheet});
   state.headers=headers;
@@ -383,6 +386,17 @@ test('取り置き表のatomic setValues失敗は既存台帳を消さない', (
   );
   assert.strictEqual(state.clearContent,0);
   assert.strictEqual(state.dataSetValues,1);
+  assert.strictEqual(JSON.stringify(state.data),JSON.stringify(state.original));
+});
+
+test('取り置き表はsetFrozenRows失敗時にdata setValuesを試さず既存台帳を保つ', () => {
+  const state=取り置き表保存モック_({freezeFails:true});
+  assert.throws(
+    ()=>取り置き表保存実装_('取り置き台帳',state.headers,[{取置ID:'NEW1',状態:'取り置き中',商品コード:'CCC'}]),
+    /freeze failed/
+  );
+  assert.strictEqual(state.freezeCalls,1);
+  assert.strictEqual(state.dataSetValues,0);
   assert.strictEqual(JSON.stringify(state.data),JSON.stringify(state.original));
 });
 

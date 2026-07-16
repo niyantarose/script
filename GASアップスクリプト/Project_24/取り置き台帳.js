@@ -140,6 +140,7 @@ function 取り置き_表を保存_(sheetName, headers, rows){
   if(sh.getMaxColumns()<headers.length) sh.insertColumnsAfter(sh.getMaxColumns(),headers.length-sh.getMaxColumns());
   if(sh.getMaxRows()<rows.length+1) sh.insertRowsAfter(sh.getMaxRows(),rows.length+1-sh.getMaxRows());
   sh.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
+  sh.setFrozenRows(1);
   const dataRows=Math.max(rows.length,Math.max(0,sh.getLastRow()-1)), dataCols=headers.length;
   if(dataRows>0){
     const values=Array.from({length:dataRows},(_,rowIndex)=>{
@@ -148,7 +149,6 @@ function 取り置き_表を保存_(sheetName, headers, rows){
     });
     sh.getRange(2,1,dataRows,dataCols).setValues(values);
   }
-  sh.setFrozenRows(1);
 }
 
 function 取り置き台帳_読む_(){ return 取り置き_表を読む_(TORIOKI_CFG.台帳,TORIOKI_CFG.台帳HDR); }
