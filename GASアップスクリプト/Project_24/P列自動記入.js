@@ -184,65 +184,14 @@ function P列到着日一致_(orderArrival, emsArrival){
   return !!ems && order===ems;
 }
 
-function P列指定解析_(text, rowQty){
-  const src=String(text==null?'':text).trim();
-  if(!src) return {entries:[],invalid:false};
-  const entries=[]; let invalid=false;
-  src.split(/[,、]/).forEach(part=>{
-    const m=String(part).trim().match(/^(\d{5,})(?:[:：]\s*(\d+))?$/);
-    if(!m){ invalid=true; return; }
-    entries.push({
-      ban:m[1],
-      qty:m[2]?Number(m[2]):Math.max(0,Number(rowQty)||0),
-      explicit:!!m[2]
-    });
-  });
-  return {entries,invalid};
-}
-
 function P列指定文字列_(entries, rowQty){
   const a=(entries||[]).filter(e=>e && e.ban && Number(e.qty)>0);
   if(a.length===1 && Number(a[0].qty)===Number(rowQty) && !a[0].explicit) return a[0].ban;
   return a.map(e=>e.ban+':'+e.qty).join(', ');
 }
 
-function P列既存指定を再構成_(text, rowQty, consume){
-  const parsed=P列指定解析_(text,rowQty), q=Math.max(0,Number(rowQty)||0);
-  if(parsed.invalid){
-    let consumed=0;
-    parsed.entries.forEach(e=>{
-      const request=Math.max(0,Math.min(Number(e.qty)||0,q-consumed));
-      const accepted=Math.max(0,Math.min(request,Number(consume(e.ban,request))||0));
-      consumed+=accepted;
-    });
-    return {
-      text:String(text),entries:[],keptQty:q,removedQty:0,
-      blockedBans:Array.from(new Set(parsed.entries.map(e=>e.ban))),invalid:true
-    };
-  }
-  const kept=[]; let keptQty=0, removedQty=0;
-  parsed.entries.forEach(e=>{
-    const wanted=Math.max(0,Number(e.qty)||0);
-    const request=Math.max(0,Math.min(wanted,q-keptQty));
-    removedQty+=wanted-request;
-    const accepted=Math.max(0,Math.min(request,Number(consume(e.ban,request))||0));
-    if(accepted>0) kept.push({ban:e.ban,qty:accepted,explicit:e.explicit});
-    keptQty+=accepted; removedQty+=request-accepted;
-  });
-  return {
-    text:P列指定文字列_(kept,q),
-    entries:kept,
-    keptQty,
-    removedQty,
-    blockedBans:Array.from(new Set(parsed.entries.map(e=>e.ban))),
-    invalid:false
-  };
-}
-
-function P列FIFO候補_(candidates, blockedBans){
-  const blocked=new Set(blockedBans||[]);
-  return (candidates||[]).filter(line=>!blocked.has(String(line.ban||'')));
-}
+// (旧: P列指定解析_/P列既存指定を再構成_/P列FIFO候補_ は台帳基準化で呼び出し元が無くなり削除。
+//  P列の既存値は計画と一致すれば触らず、違えば計画で書き直す=個別の名指しは個別ボタンが台帳へ直接書く)
 
 // 末尾タグは従来どおり最優先。商品コードそのものが注文番号なら、
 // 現役の取り寄せ注文へ一意に結び付く場合だけP列へ同じ受注番号を書く。

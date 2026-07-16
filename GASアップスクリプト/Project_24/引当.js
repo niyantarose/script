@@ -1525,7 +1525,8 @@ function 引当実行_本体_(options){
   }
   // タグ異常(名指し不在・多め買付)と台帳外出荷の不一致。完走して完了ダイアログで知らせる
   const 割当警告=(allocationPlan.warnings||[])
-    .concat(出荷自動.review.map(r=>'台帳外出荷の要確認: '+r.受注番号+' '+r.商品コード+' '+r.理由));
+    .concat(出荷自動.review.map(r=>'台帳外出荷の要確認: '+r.受注番号+' '+r.商品コード+' '+r.理由))
+    .concat(E.length && !supplies.length? ['⚠️ EMS在庫に行はあるのに供給0件です(到着日列の欠落・日付形式を確認。全行が引当対象外になっています)'] : []);
 
   const now=new Date();
   const projectedLedger=取り置き台帳_割当計画後行_(allocationPlan,ledgerRowsForPlan,now);

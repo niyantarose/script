@@ -48,8 +48,11 @@ function 取り置き_CSV遷移を反映_(plan){
   取り置き_表を保存_(TORIOKI_CFG.要確認,TORIOKI_CFG.要確認HDR,plan.review||[]);
 }
 
-function 取り置き_初期候補_(orders, partialBans, holdBans){
-  return (orders||[]).filter(o=>partialBans.has(String(o.ban))||holdBans.has(String(o.ban))).map(o=>{
+// 第2引数以降に受注番号Setを何個でも渡せる(部分在庫・希望日待ち・出荷GO未入金・出荷可能)。
+// 未入金滞留中に同一商品の新箱が来ても二重引当にならないよう、棚に現物がある注文は全て候補にする。
+function 取り置き_初期候補_(orders){
+  const banSets=Array.prototype.slice.call(arguments,1).filter(s=>s && typeof s.has==='function');
+  return (orders||[]).filter(o=>banSets.some(s=>s.has(String(o.ban)))).map(o=>{
     const key=取り置き_行キー_(o);
     return {取置ID:'INIT|'+key,受注番号:String(o.ban),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),注文数量:Number(o.qty)||0,現物取り置き数量:'',メモ:'',判定:''};
   });
@@ -57,16 +60,19 @@ function 取り置き_初期候補_(orders, partialBans, holdBans){
 
 function 取り置き_初期確定計画_(inputRows, existingRows, now){
   const errors=[], targets={}, inputIds=new Set();
+  // 発送済み・解除済みになった開始前在庫行は履歴。再確定で復活も消滅もさせない(誤操作ガード)
+  const lockedIds=new Set((existingRows||[]).filter(r=>r.取置元種別==='開始前在庫' && r.状態!==TORIOKI_STATUS.ACTIVE).map(r=>String(r.取置ID||'')));
   (inputRows||[]).forEach((r,index)=>{
     inputIds.add(String(r.取置ID||''));
     const raw=r.現物取り置き数量, blank=raw==null || raw==='', entered=blank?0:Number(raw), ordered=Number(r.注文数量)||0;
     if(!blank && (!String(raw).trim() || !Number.isFinite(entered))) errors.push('初期登録'+(index+2)+'行 / 受注'+r.受注番号+': 数量は数値で入力');
     else if(entered<0 || !Number.isInteger(entered)) errors.push('初期登録'+(index+2)+'行: 数量は0以上の整数');
     if(entered>ordered) errors.push('受注'+r.受注番号+': 現物'+entered+'が注文'+ordered+'を超過');
+    if(entered>0 && lockedIds.has(String(r.取置ID||''))) errors.push('受注'+r.受注番号+': 既に発送済み/解除済みの初期登録行は変更できません');
     if(entered>0) targets[r.取置ID]=Object.assign({},r,{取り置き数量:entered});
   });
   if(errors.length) return {rows:[],errors};
-  const kept=(existingRows||[]).filter(r=>r.取置元種別!=='開始前在庫' || !inputIds.has(String(r.取置ID||'')));
+  const kept=(existingRows||[]).filter(r=>r.取置元種別!=='開始前在庫' || r.状態!==TORIOKI_STATUS.ACTIVE || !inputIds.has(String(r.取置ID||'')));
   Object.keys(targets).forEach(id=>{
     const r=targets[id];
     kept.push({取置ID:id,状態:TORIOKI_STATUS.ACTIVE,受注番号:r.受注番号,商品コード:r.商品コード,SKU:r.SKU,
@@ -89,12 +95,19 @@ function 取り置き_戻し確認計画_(inputs, ledger, now){
 }
 
 function EMS在庫移動_追加計画_(candidates, existing, now){
-  const ids=new Set((existing||[]).map(r=>String(r.処理ID||''))), added=[], errors=[];
+  const byId={}; (existing||[]).forEach(r=>{ byId[String(r.処理ID||'')]=r; });
+  const added=[], errors=[];
   (candidates||[]).forEach(c=>{
-    if(!c.処理ID || !取り置き_整数_(c.数量)) errors.push('Yahoo移動の処理IDまたは数量が不正: '+String(c.処理ID||''));
-    else if(!ids.has(c.処理ID)){
-      ids.add(c.処理ID);
-      added.push(Object.assign({},c,{移動先:'Yahoo即納',処理日時:now}));
+    const id=String(c.処理ID||'');
+    if(!c.処理ID || !取り置き_整数_(c.数量)) errors.push('Yahoo移動の処理IDまたは数量が不正: '+id);
+    else if(byId[id]){
+      // 同じ処理IDで数量が変わった=再締めで余りが増減した記録漏れの兆候。黙って捨てず締めを止める
+      if(取り置き_整数_(byId[id].数量)!==取り置き_整数_(c.数量))
+        errors.push('同じ処理IDで数量が一致しません(便の再締め/記録漏れの疑い): '+id+' 記録'+byId[id].数量+'／今回'+c.数量);
+    }
+    else {
+      const row=Object.assign({},c,{移動先:'Yahoo即納',処理日時:now});
+      byId[id]=row; added.push(row);
     }
   });
   return {rows:(existing||[]).map(r=>Object.assign({},r)).concat(added),added,errors};
@@ -189,21 +202,29 @@ function 取り置き_受注番号集合_(sheetName){
   return out;
 }
 
-function 取り置き初期登録を作成(){
+// 書き込み系ボタンは全て直列_(DocumentLock)で排他する(①〜④と同じ約束事)。
+// 内部からの再帰呼び出しは本体_を使う(DocumentLockは再入不可のため)。
+function 取り置き初期登録を作成(){ 直列_(取り置き初期登録を作成本体_); }
+function 取り置き初期登録を作成本体_(){
   const ss=SpreadsheetApp.getActive(), recv=ss.getSheetByName(HIKIATE_CFG.受注), ui=SpreadsheetApp.getUi();
   if(!recv){ ui.alert('受注明細がありません'); return; }
   const M=列マップ_(recv), values=recv.getDataRange().getValues(), orders=[];
   for(let i=M.hr;i<values.length;i++){
     const row=values[i], ban=String(row[M.番号]||'').trim(), qty=Number(row[M.個数])||0;
     if(!ban || qty<=0 || 区分_(row[M.選択肢])!=='取り寄せ') continue;
+    if(引当_別ルート判定_(row[M.選択肢], M.商品名>=0?row[M.商品名]:'')) continue; // 台湾・中国は台帳の対象外
     orders.push({ban,code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty});
   }
-  const candidates=取り置き_初期候補_(orders,取り置き_受注番号集合_(HIKIATE_CFG.部分),取り置き_受注番号集合_(HIKIATE_CFG.希望));
+  // 出荷GO未入金(未入金滞留)・出荷可能(発送前)も棚に現物がある=候補に含める(空欄なら未取り置き扱い)
+  const candidates=取り置き_初期候補_(orders,
+    取り置き_受注番号集合_(HIKIATE_CFG.部分),取り置き_受注番号集合_(HIKIATE_CFG.希望),
+    取り置き_受注番号集合_(HIKIATE_CFG.取置),取り置き_受注番号集合_(HIKIATE_CFG.出荷));
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
-  ui.alert('取り置き初期登録を作成しました','候補'+candidates.length+'行です。棚の現物を確認し「現物取り置き数量」だけ入力してください。',ui.ButtonSet.OK);
+  ui.alert('取り置き初期登録を作成しました','候補'+candidates.length+'行です(部分在庫・希望日待ち・出荷GO未入金・出荷可能)。\n棚の現物を確認し「現物取り置き数量」だけ入力してください(棚に無い行は空欄のまま)。',ui.ButtonSet.OK);
 }
 
-function 取り置き初期登録を確定(){
+function 取り置き初期登録を確定(){ 直列_(取り置き初期登録を確定本体_); }
+function 取り置き初期登録を確定本体_(){
   const ui=SpreadsheetApp.getUi(), inputs=取り置き_表を読む_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR);
   const plan=取り置き_初期確定計画_(inputs,取り置き台帳_読む_(),new Date());
   if(plan.errors.length){ ui.alert('初期登録を中止しました',plan.errors.join('\n'),ui.ButtonSet.OK); return; }
@@ -214,7 +235,8 @@ function 取り置き初期登録を確定(){
   SpreadsheetApp.getActive().toast('初期取り置き '+selected.length+'行 / '+qty+'個を確定しました','取り置き台帳',7);
 }
 
-function キャンセル戻し確認を更新(){
+function キャンセル戻し確認を更新(){ 直列_(キャンセル戻し確認を更新本体_); }
+function キャンセル戻し確認を更新本体_(){
   const rows=取り置き台帳_読む_().filter(r=>r.状態==='キャンセル戻し'&&r.戻し処理結果==='未確認').map(r=>({
     取置ID:r.取置ID,受注番号:r.受注番号,商品コード:r.商品コード,数量:r.取り置き数量,元EMS番号:r.元EMS番号,現物確認:'',メモ:r['終了理由・メモ']||''
   }));
@@ -224,13 +246,14 @@ function キャンセル戻し確認を更新(){
   SpreadsheetApp.getActive().toast('未確認のキャンセル戻し '+rows.length+'件','取り置き台帳',6);
 }
 
-function キャンセル戻し確認を確定(){
+function キャンセル戻し確認を確定(){ 直列_(キャンセル戻し確認を確定本体_); }
+function キャンセル戻し確認を確定本体_(){
   const ui=SpreadsheetApp.getUi(), inputs=取り置き_表を読む_(TORIOKI_CFG.戻し,戻しHDR);
   const plan=取り置き_戻し確認計画_(inputs,取り置き台帳_読む_(),new Date());
   if(plan.errors.length){ ui.alert('キャンセル戻しを確定できません',plan.errors.join('\n'),ui.ButtonSet.OK); return; }
   const answer=ui.alert('現物確認を確定します','入力済み'+inputs.filter(r=>r.現物確認).length+'件を台帳へ反映します。',ui.ButtonSet.OK_CANCEL);
   if(answer!==ui.Button.OK) return;
-  取り置き台帳_保存_(plan.rows); キャンセル戻し確認を更新(); Yahoo戻し候補を更新_();
+  取り置き台帳_保存_(plan.rows); キャンセル戻し確認を更新本体_(); Yahoo戻し候補を更新_();
 }
 
 function Yahoo戻し候補を更新_(){
@@ -242,7 +265,8 @@ function Yahoo戻し候補を更新_(){
   if(rows.length) sh.getRange(2,6,rows.length,1).insertCheckboxes();
 }
 
-function キャンセル戻しをYahoo反映済みにする(){
+function キャンセル戻しをYahoo反映済みにする(){ 直列_(キャンセル戻しをYahoo反映済みにする本体_); }
+function キャンセル戻しをYahoo反映済みにする本体_(){
   const ui=SpreadsheetApp.getUi(), candidates=取り置き_表を読む_(TORIOKI_CFG.Yahoo候補,Yahoo候補HDR).filter(r=>r.確認===true||String(r.確認).toUpperCase()==='TRUE');
   if(!candidates.length){ ui.alert('Yahoo戻し候補にチェックがありません'); return; }
   const answer=ui.alert('Yahoo戻しの最終確認','Yahoo在庫へ実際に加算済みの'+candidates.length+'件だけを確定します。',ui.ButtonSet.OK_CANCEL);
@@ -287,14 +311,20 @@ function キャンセル戻しをYahoo反映済みにする(){
   Yahoo戻し候補を更新_();
 }
 
-function 選択した取り置きを手動解除(){
+function 選択した取り置きを手動解除(){ 直列_(選択した取り置きを手動解除本体_); }
+function 選択した取り置きを手動解除本体_(){
   const ss=SpreadsheetApp.getActive(), sh=ss.getActiveSheet(), ui=SpreadsheetApp.getUi(), row=sh.getActiveRange().getRow();
   if(sh.getName()!==TORIOKI_CFG.台帳 || row<2){ ui.alert('取り置き台帳の解除する行を選択してください'); return; }
-  const ledger=取り置き台帳_読む_(), target=ledger[row-2];
-  if(!target || target.状態!=='取り置き中'){ ui.alert('取り置き中の行だけ手動解除できます'); return; }
+  // 行番号ではなく選択行の取置IDで台帳の対象を特定する(空行・手動の行操作でズレても別の行を解除しない)
+  const selectedId=String(sh.getRange(row,1).getDisplayValue()||'').trim();
+  if(!selectedId){ ui.alert('選択した行に取置IDがありません'); return; }
+  const ledger=取り置き台帳_読む_(), matches=ledger.filter(r=>String(r.取置ID||'')===selectedId);
+  if(matches.length!==1){ ui.alert('取置IDが台帳で一意に特定できません: '+selectedId); return; }
+  const target=matches[0];
+  if(target.状態!=='取り置き中'){ ui.alert('取り置き中の行だけ手動解除できます'); return; }
   const response=ui.prompt('手動解除の理由','登録間違い、現物不足などの理由を入力してください。',ui.ButtonSet.OK_CANCEL);
   if(response.getSelectedButton()!==ui.Button.OK) return;
   const reason=String(response.getResponseText()||'').trim(); if(!reason){ ui.alert('解除理由は必須です'); return; }
-  ledger[row-2]=Object.assign({},target,{状態:'手動解除','終了理由・メモ':reason,更新日時:new Date()});
-  取り置き台帳_保存_(ledger);
+  取り置き台帳_保存_(ledger.map(r=>String(r.取置ID||'')===selectedId
+    ? Object.assign({},r,{状態:'手動解除','終了理由・メモ':reason,更新日時:new Date()}) : r));
 }

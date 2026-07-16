@@ -13,6 +13,7 @@ const context = {
     openById: () => ({ getSheetByName: () => null }),
     getActive: () => activeSpreadsheet
   },
+  LockService: { getDocumentLock: () => ({ waitLock: () => {}, releaseLock: () => {} }) }, // 直列_用
   Utilities: { formatDate: () => '' },
   Logger: { log: () => {} }
 };
@@ -287,23 +288,34 @@ test('Yahoo戻し候補は現物ありだけを保存し確認列へ一括チェ
   assert.strictEqual(checkboxCalls,1);
 });
 
+// 手動解除は行番号ではなく選択行の取置IDで対象を特定する(空行・行操作のズレで別の行を解除しない)
+function 手動解除シートモック_(selectedRowId){
+  return {
+    getName:()=> '取り置き台帳',
+    getActiveRange:()=>({getRow:()=>2}),
+    getRange:()=>({getDisplayValue:()=>selectedRowId})
+  };
+}
+
 test('選択した取り置き中の行は理由付きで手動解除する', () => {
   let saved;
-  context.取り置き台帳_読む_=()=>[{取置ID:'A',状態:'取り置き中','終了理由・メモ':''}];
+  context.取り置き台帳_読む_=()=>[
+    {取置ID:'A',状態:'取り置き中','終了理由・メモ':''},
+    {取置ID:'B',状態:'取り置き中','終了理由・メモ':''}
+  ];
   context.取り置き台帳_保存_=rows=>{ saved=rows; };
   const ui={
     Button:{OK:'OK'}, ButtonSet:{OK_CANCEL:'OK_CANCEL'}, alert:()=>{},
     prompt:()=>({getSelectedButton:()=> 'OK',getResponseText:()=> '登録間違い'})
   };
   context.SpreadsheetApp.getUi=()=>ui;
-  context.SpreadsheetApp.getActive=()=>({
-    getActiveSheet:()=>({getName:()=> '取り置き台帳',getActiveRange:()=>({getRow:()=>2})})
-  });
+  context.SpreadsheetApp.getActive=()=>({ getActiveSheet:()=>手動解除シートモック_('A') });
 
   context.選択した取り置きを手動解除();
 
   assert.strictEqual(saved[0].状態,'手動解除');
   assert.strictEqual(saved[0]['終了理由・メモ'],'登録間違い');
+  assert.strictEqual(saved[1].状態,'取り置き中','選択していない行は触らない');
 });
 
 test('手動解除は空の理由で台帳を保存しない', () => {
@@ -315,14 +327,29 @@ test('手動解除は空の理由で台帳を保存しない', () => {
     prompt:()=>({getSelectedButton:()=> 'OK',getResponseText:()=> '   '})
   };
   context.SpreadsheetApp.getUi=()=>ui;
-  context.SpreadsheetApp.getActive=()=>({
-    getActiveSheet:()=>({getName:()=> '取り置き台帳',getActiveRange:()=>({getRow:()=>2})})
-  });
+  context.SpreadsheetApp.getActive=()=>({ getActiveSheet:()=>手動解除シートモック_('A') });
 
   context.選択した取り置きを手動解除();
 
   assert.strictEqual(writes,0);
   assert.ok(alerts.includes('解除理由は必須です'));
+});
+
+test('手動解除は取置IDが台帳と一致しないとき何も書かない', () => {
+  let writes=0, alerts=[];
+  context.取り置き台帳_読む_=()=>[{取置ID:'A',状態:'取り置き中','終了理由・メモ':''}];
+  context.取り置き台帳_保存_=()=>{ writes++; };
+  const ui={
+    Button:{OK:'OK'}, ButtonSet:{OK_CANCEL:'OK_CANCEL'}, alert:message=>{ alerts.push(message); },
+    prompt:()=>({getSelectedButton:()=> 'OK',getResponseText:()=> '理由'})
+  };
+  context.SpreadsheetApp.getUi=()=>ui;
+  context.SpreadsheetApp.getActive=()=>({ getActiveSheet:()=>手動解除シートモック_('ZZZ') });
+
+  context.選択した取り置きを手動解除();
+
+  assert.strictEqual(writes,0);
+  assert.ok(alerts.some(m=>String(m).indexOf('一意に特定できません')>=0));
 });
 
 function 取り置き表保存モック_(options){
@@ -853,6 +880,47 @@ test('受注共通メニューに初回登録の作成と確定を追加する',
   assert.ok(source.includes(".addItem('✅ キャンセル戻し確認を確定', 'キャンセル戻し確認を確定')"));
   assert.ok(source.includes(".addItem('🛒 Yahoo戻しを反映済みにする', 'キャンセル戻しをYahoo反映済みにする')"));
   assert.ok(source.includes(".addItem('🔓 選択した取り置きを手動解除', '選択した取り置きを手動解除')"));
+});
+
+// ===== 修正5: 初期候補の範囲拡大・初期確定の再実行ガード・移動台帳の数量不一致ガード =====
+
+test('初期候補は出荷GO未入金・出荷可能の受注も含められる(可変の集合)', () => {
+  const orders=[
+    {ban:'101',code:'AAA',sku:'AAAb',qty:2,kbn:'取り寄せ'},
+    {ban:'102',code:'BBB',sku:'BBBb',qty:1,kbn:'取り寄せ'},
+    {ban:'103',code:'CCC',sku:'CCCb',qty:1,kbn:'取り寄せ'},
+    {ban:'104',code:'DDD',sku:'DDDb',qty:1,kbn:'取り寄せ'},
+    {ban:'105',code:'EEE',sku:'EEEb',qty:1,kbn:'取り寄せ'}
+  ];
+  const rows=context.取り置き_初期候補_(orders,new Set(['101']),new Set(['102']),new Set(['103']),new Set(['104']));
+  assert.strictEqual(rows.length,4);
+  assert.ok(rows.every(r=>r.受注番号!=='105'));
+});
+
+test('発送済みになった開始前在庫行は初期確定の再実行で復活も消滅もしない', () => {
+  const existing=[{取置ID:'INIT|101|AAA|AAAB',状態:'発送済み',受注番号:'101',商品コード:'AAA',SKU:'AAAb',取り置き数量:1,取置元種別:'開始前在庫'}];
+  // 数量入りで再確定 → 復活させずエラー
+  const withQty=context.取り置き_初期確定計画_([
+    {取置ID:'INIT|101|AAA|AAAB',受注番号:'101',商品コード:'AAA',SKU:'AAAb',注文数量:2,現物取り置き数量:1}
+  ],existing,'2026-07-16 10:00:00');
+  assert.ok(withQty.errors.some(e=>/101/.test(e)),'発送済みの初期行の上書きはエラー: '+JSON.stringify(withQty.errors));
+  // 空欄で再確定 → 行を消さない
+  const blank=context.取り置き_初期確定計画_([
+    {取置ID:'INIT|101|AAA|AAAB',受注番号:'101',商品コード:'AAA',SKU:'AAAb',注文数量:2,現物取り置き数量:''}
+  ],existing,'2026-07-16 10:00:00');
+  assert.strictEqual(JSON.stringify(blank.errors),'[]');
+  assert.strictEqual(blank.rows.length,1,'発送済み行は保持される');
+  assert.strictEqual(blank.rows[0].状態,'発送済み');
+});
+
+test('同じ処理IDで数量が違うYahoo移動は黙って捨てずエラーにする', () => {
+  const existing=[{処理ID:'YAHOO|EMS|EG1|AAA',EMS番号:'EG1',商品コード:'AAA',数量:2,移動先:'Yahoo即納',処理日時:'2026-07-15 10:00:00'}];
+  const same=context.EMS在庫移動_追加計画_([{処理ID:'YAHOO|EMS|EG1|AAA',EMS番号:'EG1',商品コード:'AAA',数量:2}],existing,'2026-07-16 10:00:00');
+  assert.strictEqual(same.errors.length,0,'同数量の再実行は従来通りスキップ');
+  assert.strictEqual(same.added.length,0);
+  const diff=context.EMS在庫移動_追加計画_([{処理ID:'YAHOO|EMS|EG1|AAA',EMS番号:'EG1',商品コード:'AAA',数量:3}],existing,'2026-07-16 10:00:00');
+  assert.strictEqual(diff.errors.length,1,'数量が変わった同一処理IDは記録漏れの兆候としてエラー');
+  assert.ok(diff.errors[0].indexOf('数量')>=0);
 });
 
 process.exitCode = failures ? 1 : 0;
