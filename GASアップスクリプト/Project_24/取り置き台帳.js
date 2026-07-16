@@ -1,7 +1,7 @@
 const TORIOKI_CFG = Object.freeze({
   台帳:'取り置き台帳', 初期:'取り置き初期登録', 要確認:'取り置き要確認', 戻し:'キャンセル戻し確認', Yahoo候補:'Yahoo戻し候補', 移動:'EMS在庫移動台帳',
   台帳HDR:['取置ID','状態','受注番号','商品コード','SKU','取り置き数量','取置元種別','元EMS番号','元EMS商品コード','元取置ID','登録日時','更新日時','戻し処理結果','終了理由・メモ'],
-  初期HDR:['取置ID','受注番号','氏名','商品コード','SKU','注文数量','現在の状態','現物取り置き数量','メモ','判定'],
+  初期HDR:['取置ID','受注番号','氏名','商品コード','SKU','注文数量','現在の状態','旧入荷日','旧EMS','現物取り置き数量','メモ','判定'],
   要確認HDR:['取置ID','受注番号','商品コード','理由'],
   移動HDR:['処理ID','EMS番号','商品コード','数量','移動先','処理日時']
 });
@@ -59,8 +59,11 @@ function 取り置き_初期候補_(orders, sources){
   (orders||[]).forEach(o=>{
     const state=stateOf(o.ban); if(!state) return;
     const key=取り置き_行キー_(o);
-    if(!byKey[key]){ byKey[key]={o,qty:0,state}; keys.push(key); }
+    if(!byKey[key]){ byKey[key]={o,qty:0,state,入荷日:'',EMS:''}; keys.push(key); }
     byKey[key].qty+=Number(o.qty)||0;
+    // 旧帳簿の着済情報(入荷日スタンプ/EMS番号)。棚を確認すべき行の目印として表示する
+    if(!byKey[key].入荷日){ const d=ymd_(o.入荷日); if(d) byKey[key].入荷日=d; }
+    if(!byKey[key].EMS && String(o.EMS||'').trim()) byKey[key].EMS=String(o.EMS).trim();
   });
   const rank={}; list.forEach((s,i)=>{ rank[String(s.状態||'')]=i; });
   return keys
@@ -68,8 +71,22 @@ function 取り置き_初期候補_(orders, sources){
     .map(key=>{
       const c=byKey[key], o=c.o;
       return {取置ID:'INIT|'+key,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
-        注文数量:c.qty,現在の状態:c.state,現物取り置き数量:'',メモ:'',判定:''};
+        注文数量:c.qty,現在の状態:c.state,旧入荷日:c.入荷日,旧EMS:c.EMS,現物取り置き数量:'',メモ:'',判定:''};
     });
+}
+
+// 再作成しても確定済みの数量が消えないよう、台帳の開始前在庫(取り置き中)を候補へ差し込む
+function 取り置き_初期候補へ既存数量_(candidates, ledgerRows){
+  const qtyById={};
+  (ledgerRows||[]).forEach(r=>{
+    if(r.取置元種別!=='開始前在庫' || r.状態!==TORIOKI_STATUS.ACTIVE) return;
+    const id=String(r.取置ID||'');
+    qtyById[id]=(qtyById[id]||0)+取り置き_整数_(r.取り置き数量);
+  });
+  return (candidates||[]).map(c=>{
+    const id=String(c.取置ID||'');
+    return Object.assign({},c,{現物取り置き数量: qtyById[id]!=null? qtyById[id] : c.現物取り置き数量});
+  });
 }
 
 function 取り置き_初期確定計画_(inputRows, existingRows, now){
@@ -233,17 +250,24 @@ function 取り置き初期登録を作成本体_(){
     const row=values[i], ban=String(row[M.番号]||'').trim(), qty=Number(row[M.個数])||0;
     if(!ban || qty<=0 || 区分_(row[M.選択肢])!=='取り寄せ') continue;
     if(引当_別ルート判定_(row[M.選択肢], M.商品名>=0?row[M.商品名]:'')) continue; // 台湾・中国は台帳の対象外
-    orders.push({ban,氏名:M.氏名>=0?String(row[M.氏名]||''):'',code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty});
+    orders.push({ban,氏名:M.氏名>=0?String(row[M.氏名]||''):'',code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty,
+      入荷日:M.入荷>=0?row[M.入荷]:'',EMS:M.EMS>=0?String(row[M.EMS]||''):''});
   }
   // 出荷GO未入金(未入金滞留)・出荷可能(発送前)も棚に現物がある=候補に含める(空欄なら未取り置き扱い)
-  const candidates=取り置き_初期候補_(orders,[
+  let candidates=取り置き_初期候補_(orders,[
     {状態:'出荷可能',bans:取り置き_受注番号集合_(HIKIATE_CFG.出荷)},
     {状態:'出荷GO未入金',bans:取り置き_受注番号集合_(HIKIATE_CFG.取置)},
     {状態:'部分在庫',bans:取り置き_受注番号集合_(HIKIATE_CFG.部分)},
     {状態:'希望日待ち',bans:取り置き_受注番号集合_(HIKIATE_CFG.希望)}
   ]);
+  candidates=取り置き_初期候補へ既存数量_(candidates,取り置き台帳_読む_()); // 確定済みの数量は消さず表示
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
-  ui.alert('取り置き初期登録を作成しました','候補'+candidates.length+'行です(部分在庫・希望日待ち・出荷GO未入金・出荷可能)。\n棚の現物を確認し「現物取り置き数量」だけ入力してください(棚に無い行は空欄のまま)。',ui.ButtonSet.OK);
+  const 入力済=candidates.filter(c=>c.現物取り置き数量!=='').length;
+  ui.alert('取り置き初期登録を作成しました',
+    '候補'+candidates.length+'行です(出荷可能→出荷GO未入金→部分在庫→希望日待ちの順)。\n'
+    +(入力済? '確定済みの数量'+入力済+'行は入力済みで表示しています。\n':'')
+    +'「旧入荷日」がある行=旧帳簿では着済のはずの行です。棚を確認して\n'
+    +'「現物取り置き数量」だけ入力してください(棚に無い行は空欄のまま)。',ui.ButtonSet.OK);
 }
 
 function 取り置き初期登録を確定(){ 直列_(取り置き初期登録を確定本体_); }

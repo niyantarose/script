@@ -63,6 +63,24 @@ test('初期候補は氏名を受注番号の隣に載せる', () => {
   assert.strictEqual(rows[0].氏名,'西野 瑠璃');
 });
 
+test('初期候補は旧帳簿の入荷日とEMS番号を目印として載せる', () => {
+  const rows=context.取り置き_初期候補_(
+    [{ban:'101',氏名:'中村 唯',code:'MRBLUE40',sku:'MRBLUE40-7b',qty:2,kbn:'取り寄せ',入荷日:'2026-06-25',EMS:'EG049618607KR'}],
+    [{状態:'希望日待ち',bans:new Set(['101'])}]);
+  assert.strictEqual(rows[0].旧入荷日,'2026-06-25');
+  assert.strictEqual(rows[0].旧EMS,'EG049618607KR');
+});
+
+test('初期候補の再作成は確定済みの開始前在庫数量を入力済みで表示する', () => {
+  const candidates=context.取り置き_初期候補_(
+    [{ban:'101',code:'AAA',sku:'AAAb',qty:2,kbn:'取り寄せ'},{ban:'102',code:'BBB',sku:'BBBb',qty:1,kbn:'取り寄せ'}],
+    [{状態:'部分在庫',bans:new Set(['101','102'])}]);
+  const ledger=[{取置ID:candidates[0].取置ID,状態:'取り置き中',取置元種別:'開始前在庫',取り置き数量:2}];
+  const rows=context.取り置き_初期候補へ既存数量_(candidates,ledger);
+  assert.strictEqual(rows[0].現物取り置き数量,2,'確定済みは数量入り');
+  assert.strictEqual(rows[1].現物取り置き数量,'','未確定は空欄のまま');
+});
+
 test('同じ受注×商品の分割行は注文数量を合算して1候補にする', () => {
   const orders=[
     {ban:'201',code:'ANKI22b',sku:'ANKI22b',qty:2,kbn:'取り寄せ'},
