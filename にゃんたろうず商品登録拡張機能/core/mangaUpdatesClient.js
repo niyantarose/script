@@ -31,7 +31,9 @@
    *   不発の記憶が特に重要: 未登録作品は再スクレイプのたびに数十リクエスト浪費していた。
    */
   var _resultMemo = new Map();
-  var RESULT_CACHE_PREFIX = 'jpTitleLookupV1:';
+  // V2: 候補選定ロジック変更（部分一致中国語エコー除外）に伴い、V1時代の
+  // 誤採用キャッシュ（中国語タイトルをresolved扱い）を無効化するためバージョンを上げた
+  var RESULT_CACHE_PREFIX = 'jpTitleLookupV2:';
   var RESULT_TTL_RESOLVED_MS = 30 * 24 * 60 * 60 * 1000;
   var RESULT_TTL_MISS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -127,32 +129,49 @@
     return false;
   }
 
-  function pickPreferredJapaneseCandidate(candidates, echoQueries) {
-    var list = candidates || [];
-    if (!list.length) return '';
-    // 原語題（中文原題など）がクエリと一致してエコーされている場合は除外する。
-    // 例: 中華漫画の Associated に「中文原題 + 日本語ライセンス題」が並ぶケースで
-    // 中文原題ではなく日本語題を採用するため。來/来・當/当だけが異なる
-    // 原題エコーも除外する一方、語句自体が異なる日本語題は候補に残す。
-    var skip = {};
-    var skipCjkVariants = {};
+  function isPartialEchoKey(candidateKey, queryKey) {
+    if (!candidateKey || !queryKey) return false;
+    var shorter = candidateKey.length <= queryKey.length ? candidateKey : queryKey;
+    var longer = candidateKey.length <= queryKey.length ? queryKey : candidateKey;
+    if (shorter.length < 4) return false;
+    return longer.indexOf(shorter) >= 0;
+  }
+
+  function isChineseEchoOfQueries(candidate, echoQueries) {
+    // かな入りは日本語原題の可能性が高いのでエコー除外しない
+    if (hasKanaJapaneseSignal(candidate)) return false;
     var qs = Array.isArray(echoQueries) ? echoQueries : (echoQueries ? [echoQueries] : []);
+    var key = normalizeTitleKey(candidate);
+    var variantKey = normalizeCjkEchoKey(candidate);
     var i;
     for (i = 0; i < qs.length; i += 1) {
       var qk = normalizeTitleKey(qs[i]);
-      if (qk) skip[qk] = true;
       var qvk = normalizeCjkEchoKey(qs[i]);
-      if (qvk) skipCjkVariants[qvk] = true;
+      if (key && qk && (key === qk || isPartialEchoKey(key, qk))) return true;
+      if (variantKey && qvk && (variantKey === qvk || isPartialEchoKey(variantKey, qvk))) return true;
     }
+    return false;
+  }
+
+  function pickPreferredJapaneseCandidate(candidates, echoQueries) {
+    // 原語題（中文原題など）のクエリエコーを除外して日本語題を採用する。
+    // 完全一致だけでなく部分一致（披著狼皮的羊公主 ⊃ 披著狼皮的羊）も除外する。
+    // かな入り候補はエコー除外の対象外（日本語原題を誤って落とさない）。
+    // 全部エコーなら空文字（中国語を無理に「解決」として採用しない）。
+    // 採用順は MangaUpdates の Associated Names 表示順（先頭）を維持する。
+    // ※かな入りを常に最優先すると、K-9 のように「漢字正式題の後にカナ読み別名」が
+    //   並ぶ作品で正式題を差し置いてカナ別名を拾ってしまうため、順序は変えない。
+    var list = candidates || [];
+    if (!list.length) return '';
+
     var pool = [];
+    var i;
     for (i = 0; i < list.length; i += 1) {
-      var key = normalizeTitleKey(list[i]);
-      var variantKey = normalizeCjkEchoKey(list[i]);
-      if ((key && skip[key]) || (variantKey && skipCjkVariants[variantKey])) continue;
+      if (isChineseEchoOfQueries(list[i], echoQueries)) continue;
       pool.push(list[i]);
     }
-    if (!pool.length) pool = list;
-    // MangaUpdates の Associated Names 表示順（先頭）を尊重して採用する。
+    if (!pool.length) return '';
+
     return String(pool[0] || '').trim();
   }
 
