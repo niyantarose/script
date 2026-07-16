@@ -50,7 +50,7 @@
   <div class="box in"><div class="h">✎ 入力（黄色）</div><div id="inputs"></div></div>
   <div id="results"></div>
   <button class="refetch" onclick="loadRates()">↻ レートを再取得</button>
-  <div class="note">目標粗利率は原価帯で自動。韓国は重さ(g)を入力して計算します。</div>
+  <div class="note">目標粗利率は原価帯で自動。韓国は縦×横×厚(cm)で重さ自動（未入力時はg手入力）。</div>
 
   <script>
     var rates = { tw: 5.09, kr: 0.105, cn: 23.82, date: '', ok: false };
@@ -66,6 +66,7 @@
     }
 
     function krWeight(v) {
+      if (v.h > 0 && v.w > 0 && v.d > 0) return Math.round(v.h * v.w * v.d * 0.45);
       return Math.round(v.weight || 0);
     }
 
@@ -96,6 +97,9 @@
       kr: {
         fields: [
           ['price','本の価格','W',180900],
+          ['h','縦','cm',''],
+          ['w','横','cm',''],
+          ['d','厚さ','cm',''],
           ['weight','重さ手入力','g',300],
           ['rate','レート','円/W',null],
           ['ship','重量係数','',0.6],
