@@ -68,12 +68,13 @@ function 計算機_推奨うわのせ10_(cost, goal, feeTotal) {
 /** 原価帯参考テーブル行 */
 function 計算機_原価帯参考行_() {
   return [
-    ['── 原価帯別目標粗利率（参考）──', '', 'section'],
-    ['原価〜2,000円', 0.35, 'ref', '0%', '目標粗利率 35%'],
-    ['原価〜6,000円', 0.25, 'ref', '0%', '目標粗利率 25%'],
-    ['原価〜12,000円', 0.2, 'ref', '0%', '目標粗利率 20%'],
-    ['原価〜20,000円', 0.1, 'ref', '0%', '目標粗利率 10%'],
-    ['原価〜30,000円', 0.08, 'ref', '0%', '目標粗利率 8%'],
+    ['原価帯別目標粗利率（参考）', '', 'refTitle', '', '↑原価から自動で「適用目標粗利率」が決まります'],
+    ['原価帯', '目標粗利率', 'refHead', '@', ''],
+    ['〜 2,000円まで', 0.35, 'refRow', '0%', ''],
+    ['〜 6,000円まで', 0.25, 'refRow', '0%', ''],
+    ['〜 12,000円まで', 0.2, 'refRow', '0%', ''],
+    ['〜 20,000円まで', 0.1, 'refRow', '0%', ''],
+    ['〜 30,000円まで', 0.08, 'refRow', '0%', ''],
   ];
 }
 
@@ -173,35 +174,39 @@ function 計算機_きれいなシートを作成() {
     ['', '', 'blank'],
     ['── 入力（黄色）──', '', 'section'],
     ['本の価格(ウォン)', 180900, 'input', '#,##0', 'ウォン'],
-    ['重さ(g)', 300, 'input', '#,##0', 'グラムを直接入力'],
-    ['使用レート(円/ウォン)', '=IFERROR(B7,0.105)', 'input', '0.0000', '通常は自動。盛る時は数値で上書き'],
+    ['縦(cm)', '', 'input', '0.0', '3辺入力で重さ(g)を自動計算'],
+    ['横(cm)', '', 'input', '0.0', '3辺入力で重さ(g)を自動計算'],
+    ['厚さ(cm)', '', 'input', '0.0', '3辺入力で重さ(g)を自動計算'],
+    ['重さ(g)手入力', 300, 'input', '#,##0', '寸法未入力時はこちらを使用'],
+    ['使用レート(円/ウォン)', '=IFERROR(B10,0.105)', 'input', '0.0000', '通常は自動。盛る時は数値で上書き'],
     ['市場レート(自動)', '=IFERROR(GOOGLEFINANCE("CURRENCY:KRWJPY"),"取得不可")', 'auto', '0.0000', '自動取得'],
     ['重量係数(送料)', 0.6, 'input', '0.0', '送料(円)=重さ×係数'],
     ['モール手数料', 0.09, 'input', '0%', 'Yahoo等'],
     ['消費税', 0.1, 'input', '0%', '0.1=10%'],
     ['', '', 'blank'],
     ['── 自動計算 ──', '', 'section'],
-    ['手数料合計', '=B9+B10', 'auto', '0%', 'モール+消費税'],
-    ['原価(円)', '=ROUND(B4*B6+B5*B8,0)', 'auto', '¥#,##0', '価格×レート+重さ×係数'],
-    ['適用目標粗利率(自動)', 計算機_原価帯粗利率式_('B13'), 'auto', '0%', '原価帯で自動決定'],
+    ['使用する重さ(g)', '=IF(AND(B5>0,B6>0,B7>0),ROUND(B5*B6*B7*0.45,0),B8)', 'auto', '#,##0', '縦×横×厚×0.45 または手入力'],
+    ['手数料合計', '=B12+B13', 'auto', '0%', 'モール+消費税'],
+    ['原価(円)', '=ROUND(B4*B9+B16*B11,0)', 'auto', '¥#,##0', '価格×レート+重さ×係数'],
+    ['適用目標粗利率(自動)', 計算機_原価帯粗利率式_('B18'), 'auto', '0%', '原価帯で自動決定'],
     ['', '', 'blank'],
   ].concat(計算機_原価帯参考行_()).concat([
     ['', '', 'blank'],
     ['── おすすめ（目標粗利率から・緑）──', '', 'section'],
-    ['理論売値', '=ROUND(B13/(1-B14-B12),0)', 'result', '¥#,##0', '式: 原価÷(1-目標粗利率-手数料合計)'],
-    ['おすすめ売値(10円丸め)', '=ROUND(B25,-1)', 'result', '¥#,##0', '理論売値を10円単位に丸め'],
-    ['おすすめ売値(100円丸め)', '=ROUND(B25,-2)', 'result', '¥#,##0', '理論売値を100円単位に丸め'],
-    ['推奨うわのせ(10円丸め)', '=B26-B13', 'result', '¥#,##0', '式: おすすめ売値(10円)-原価'],
-    ['推奨うわのせ(100円丸め)', '=B27-B13', 'result', '¥#,##0', '式: おすすめ売値(100円)-原価'],
-    ['おすすめ時粗利額(10円丸め)', '=B26-B26*B12-B13', 'result', '¥#,##0', 'この売値なら手数料後にこれだけ残る'],
-    ['おすすめ時粗利額(100円丸め)', '=B27-B27*B12-B13', 'result', '¥#,##0', 'この売値なら手数料後にこれだけ残る'],
+    ['理論売値', '=ROUND(B18/(1-B19-B17),0)', 'result', '¥#,##0', '式: 原価÷(1-目標粗利率-手数料合計)'],
+    ['おすすめ売値(10円丸め)', '=ROUND(B29,-1)', 'result', '¥#,##0', '理論売値を10円単位に丸め'],
+    ['おすすめ売値(100円丸め)', '=ROUND(B29,-2)', 'result', '¥#,##0', '理論売値を100円単位に丸め'],
+    ['推奨うわのせ(10円丸め)', '=B30-B18', 'result', '¥#,##0', '式: おすすめ売値(10円)-原価'],
+    ['推奨うわのせ(100円丸め)', '=B31-B18', 'result', '¥#,##0', '式: おすすめ売値(100円)-原価'],
+    ['おすすめ時粗利額(10円丸め)', '=B30-B30*B17-B18', 'result', '¥#,##0', 'この売値なら手数料後にこれだけ残る'],
+    ['おすすめ時粗利額(100円丸め)', '=B31-B31*B17-B18', 'result', '¥#,##0', 'この売値なら手数料後にこれだけ残る'],
     ['', '', 'blank'],
     ['── 微調整（実際・青）──', '', 'section'],
     ['実際のうわのせ', krUwa, 'actual', '¥#,##0', '↑推奨をコピーして手で調整'],
-    ['実際売値', '=B13+B33', 'actual', '¥#,##0', '式: 原価(B13)+うわのせ(B33)'],
-    ['実質粗利額', '=B34-B34*B12-B13', 'actual', '¥#,##0', '式: 売値-売値×手数料合計-原価'],
-    ['実質粗利率', '=(B35)/B34', 'actual', '0%', '20%以上が目安'],
-    ['判定', '=IF(B36<0.2,"⚠ 20%割れ 注意","OK")', 'actual', '@', '微調整後の粗利率で判定'],
+    ['実際売値', '=B18+B37', 'actual', '¥#,##0', '式: 原価(B18)+うわのせ(B37)'],
+    ['実質粗利額', '=B38-B38*B17-B18', 'actual', '¥#,##0', '式: 売値-売値×手数料合計-原価'],
+    ['実質粗利率', '=(B39)/B38', 'actual', '0%', '20%以上が目安'],
+    ['判定', '=IF(B40<0.2,"⚠ 20%割れ 注意","OK")', 'actual', '@', '微調整後の粗利率で判定'],
   ]);
 
   計算機_buildSheet_(ss, '台湾計算機', 台湾);
@@ -232,9 +237,11 @@ function 計算機_buildSheet_(ss, name, rows) {
     auto: '#F1EFE8',
     result: '#D9EAD3',
     actual: '#D0E0F0',
-    ref: '#F3F3F3',
   };
   let profitA1 = null;
+  let refTableStart = null;
+  let refTableEnd = null;
+  let refRowToggle = false;
 
   rows.forEach(function (r, idx) {
     const row = idx + 1;
@@ -250,6 +257,34 @@ function 計算機_buildSheet_(ss, name, rows) {
       sh.getRange(row, 1).setValue(label).setFontWeight('bold').setFontColor('#6B6B6B');
       return;
     }
+    if (type === 'refTitle' || type === 'refHead' || type === 'refRow') {
+      if (refTableStart === null) refTableStart = row;
+      refTableEnd = row;
+      const a = sh.getRange(row, 1);
+      const b = sh.getRange(row, 2);
+      a.setValue(label);
+      if (type === 'refTitle') {
+        sh.getRange(row, 1, 1, 2).merge();
+        a.setFontWeight('bold').setFontSize(11).setFontColor('#202124')
+          .setBackground('#DADCE0').setHorizontalAlignment('center');
+        if (note) 計算機_setNote_(sh.getRange(row, 3), note);
+        return;
+      }
+      if (type === 'refHead') {
+        a.setFontWeight('bold').setFontSize(10).setFontColor('#3C4043').setBackground('#ECEFF1');
+        b.setValue(val).setFontWeight('bold').setFontSize(10).setFontColor('#3C4043')
+          .setBackground('#ECEFF1').setHorizontalAlignment('center');
+        return;
+      }
+      refRowToggle = !refRowToggle;
+      const rowBg = refRowToggle ? '#FFFFFF' : '#F8F9FA';
+      a.setFontSize(11).setFontColor('#202124').setBackground(rowBg);
+      b.setValue(val);
+      if (fmt) b.setNumberFormat(fmt);
+      b.setFontSize(12).setFontWeight('bold').setFontColor('#1A73E8')
+        .setBackground(rowBg).setHorizontalAlignment('center');
+      return;
+    }
     const a = sh.getRange(row, 1);
     const b = sh.getRange(row, 2);
     a.setValue(label);
@@ -260,10 +295,6 @@ function 計算機_buildSheet_(ss, name, rows) {
     if (BG[type]) {
       a.setBackground(BG[type]);
       b.setBackground(BG[type]);
-      if (type === 'ref') {
-        a.setFontColor('#888888');
-        b.setFontColor('#888888');
-      }
     }
     if (type === 'result' && (label.indexOf('おすすめ') >= 0 || label.indexOf('理論') >= 0)) {
       b.setFontSize(13).setFontWeight('bold');
@@ -274,6 +305,11 @@ function 計算機_buildSheet_(ss, name, rows) {
     if (note) 計算機_setNote_(sh.getRange(row, 3), note);
     if (label === '実質粗利率' && type === 'actual') profitA1 = b.getA1Notation();
   });
+
+  if (refTableStart && refTableEnd) {
+    const tbl = sh.getRange(refTableStart, 1, refTableEnd - refTableStart + 1, 2);
+    tbl.setBorder(true, true, true, true, true, true, '#BDC1C6', SpreadsheetApp.BorderStyle.SOLID);
+  }
 
   if (profitA1) {
     const rng = sh.getRange(profitA1);
