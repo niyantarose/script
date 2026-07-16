@@ -1359,8 +1359,9 @@ function 引当計画_行へ反映_(lines,ledgerSummary,projectedSummary,newRows
     l.引当成立=l.alloc>0&&残必要計算_(l)===0;
     const matched=added[0]||activeRows[0];
     if(matched){
-      const source=normCode_(matched.元EMS商品コード||'');
-      l.matchedKey=(注文番号在庫コード_(source)||タグ受注番号_(source))?normCode_(matched.商品コード):source||normCode_(matched.商品コード);
+      const rawSource=String(matched.元EMS商品コード||'').trim();
+      const source=normCode_(rawSource);
+      l.matchedKey=(注文番号在庫コード_(rawSource)||タグ受注番号_(rawSource))?normCode_(matched.商品コード):source||normCode_(matched.商品コード);
     }
     l.箱EMS=Array.from(new Set(activeRows.map(r=>String(r.元EMS番号||'').trim()).filter(v=>実EMS番号_(v)))).join(', ');
   });

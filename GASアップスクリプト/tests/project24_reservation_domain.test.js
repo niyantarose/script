@@ -306,6 +306,32 @@ test('行状態は既存activeと今回allocを二重控除せず、計画後数
   assert.strictEqual(line.引当成立,false);
 });
 
+test('タグ付きdirect供給は実際に一致した受注枝番を表示し元コードを変更しない', () => {
+  [
+    ['10116569','POEM65-1','POEM65-1b','POEM65（10116569）'],
+    ['10117126','RECIPE42-2','RECIPE42-2b','RECIPE42/10117126']
+  ].forEach(([ban,code,sku,sourceCode])=>{
+    const line={ban,code,sku,qty:1,kbn:'取り寄せ',キャンセル:false};
+    const originalCode=line.code;
+    const key=context.取り置き_行キー_(line);
+    const newRow={取置ID:'NEW',状態:'取り置き中',受注番号:ban,商品コード:code,SKU:sku,取り置き数量:1,元EMS番号:'EG1',元EMS商品コード:sourceCode};
+    context.引当計画_行へ反映_([line],{activeByKey:{},activeRowsByKey:{}},{activeByKey:{[key]:1},activeRowsByKey:{[key]:[newRow]}},[newRow]);
+    assert.strictEqual(line.matchedKey,code);
+    assert.strictEqual(context.注文一覧表示コード_(line,false,null),code);
+    assert.strictEqual(line.code,originalCode);
+  });
+});
+
+test('通常供給の表示はEMS照合コードを維持する', () => {
+  const line={ban:'10116569',code:'POEM65-1',sku:'POEM65-1b',qty:1,kbn:'取り寄せ',キャンセル:false};
+  const key=context.取り置き_行キー_(line);
+  const newRow={取置ID:'NEW',状態:'取り置き中',受注番号:line.ban,商品コード:line.code,SKU:line.sku,取り置き数量:1,元EMS番号:'EG1',元EMS商品コード:'POEM65'};
+  context.引当計画_行へ反映_([line],{activeByKey:{},activeRowsByKey:{}},{activeByKey:{[key]:1},activeRowsByKey:{[key]:[newRow]}},[newRow]);
+  assert.strictEqual(line.matchedKey,'POEM65');
+  assert.strictEqual(context.注文一覧表示コード_(line,false,null),'POEM65');
+  assert.strictEqual(line.code,'POEM65-1');
+});
+
 test('引当切替差分は受注番号・商品コード・SKUをキーに追加更新削除を出す', () => {
   const planned=[
     {ban:'101',code:'AAA',sku:'AAAb',qty:1,state:'取り置き中',ems:'EG1'},
