@@ -88,6 +88,42 @@ function 取り置き_戻し確認計画_(inputs, ledger, now){
   }),errors};
 }
 
+function EMS在庫移動_追加計画_(candidates, existing, now){
+  const ids=new Set((existing||[]).map(r=>String(r.処理ID||''))), added=[], errors=[];
+  (candidates||[]).forEach(c=>{
+    if(!c.処理ID || !取り置き_整数_(c.数量)) errors.push('Yahoo移動の処理IDまたは数量が不正: '+String(c.処理ID||''));
+    else if(!ids.has(c.処理ID)){
+      ids.add(c.処理ID);
+      added.push(Object.assign({},c,{移動先:'Yahoo即納',処理日時:now}));
+    }
+  });
+  return {rows:(existing||[]).map(r=>Object.assign({},r)).concat(added),added,errors};
+}
+
+function EMS在庫移動_箱計画_(surplus, existing, now){
+  const candidates=(surplus||[]).filter(s=>s.qty>0).map(s=>{
+    const ems=String(s.ems||'').trim(), sourceCode=String(s.sourceCode||s.code||'').trim();
+    const sourceIdentity=取り置き_供給キー_('',sourceCode).slice(1);
+    return {
+      処理ID:ems&&sourceIdentity?'YAHOO|EMS|'+ems+'|'+sourceIdentity:'',
+      EMS番号:ems,商品コード:sourceCode,数量:s.qty
+    };
+  });
+  return EMS在庫移動_追加計画_(candidates,existing,now);
+}
+
+function EMS在庫移動_戻し計画_(returns, existing, now){
+  const candidates=(returns||[])
+    .filter(r=>r.状態==='キャンセル戻し'&&r.戻し処理結果==='現物あり')
+    .map(r=>({
+      処理ID:r.取置ID?'YAHOO|RETURN|'+r.取置ID:'',
+      EMS番号:String(r.元EMS番号||''),
+      商品コード:String(r.元EMS商品コード||r.商品コード||'').trim(),
+      数量:r.取り置き数量
+    }));
+  return EMS在庫移動_追加計画_(candidates,existing,now);
+}
+
 function 取り置き_表を読む_(sheetName, headers){
   const sh=SpreadsheetApp.getActive().getSheetByName(sheetName);
   if(!sh || sh.getLastRow()<2) return [];
@@ -198,6 +234,29 @@ function Yahoo戻し候補を更新_(){
   取り置き_表を保存_(TORIOKI_CFG.Yahoo候補,Yahoo候補HDR,rows);
   const sh=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.Yahoo候補);
   if(rows.length) sh.getRange(2,6,rows.length,1).insertCheckboxes();
+}
+
+function キャンセル戻しをYahoo反映済みにする(){
+  const ui=SpreadsheetApp.getUi(), candidates=取り置き_表を読む_(TORIOKI_CFG.Yahoo候補,Yahoo候補HDR).filter(r=>r.確認===true||String(r.確認).toUpperCase()==='TRUE');
+  if(!candidates.length){ ui.alert('Yahoo戻し候補にチェックがありません'); return; }
+  const answer=ui.alert('Yahoo戻しの最終確認','Yahoo在庫へ実際に加算済みの'+candidates.length+'件だけを確定します。',ui.ButtonSet.OK_CANCEL);
+  if(answer!==ui.Button.OK) return;
+  const ledger=取り置き台帳_読む_(), selectedIds=new Set(candidates.map(r=>String(r.取置ID)));
+  const ledgerIdCounts={};
+  ledger.forEach(r=>{ const id=String(r.取置ID||''); ledgerIdCounts[id]=(ledgerIdCounts[id]||0)+1; });
+  const unresolved=Array.from(selectedIds).filter(id=>!id || ledgerIdCounts[id]!==1);
+  if(unresolved.length){ ui.alert('Yahoo戻し候補が現在の取り置き台帳と一致しないため中止しました',unresolved.join('\n'),ui.ButtonSet.OK); return; }
+  const returns=ledger.filter(r=>selectedIds.has(String(r.取置ID)));
+  if(returns.some(r=>r.状態!=='キャンセル戻し'||r.戻し処理結果!=='現物あり')){ ui.alert('現物ありでない候補が含まれるため中止しました'); return; }
+  const existingMoves=EMS在庫移動台帳_読む_(), plan=EMS在庫移動_戻し計画_(returns,existingMoves,new Date());
+  if(plan.errors.length){ ui.alert('Yahoo移動を中止しました',plan.errors.join('\n'),ui.ButtonSet.OK); return; }
+  const updatedLedger=ledger.map(r=>selectedIds.has(String(r.取置ID))?Object.assign({},r,{戻し処理結果:'Yahoo反映済み',更新日時:new Date()}):r);
+  try{
+    EMS在庫移動台帳_保存_(plan.rows);
+    try{ 取り置き台帳_保存_(updatedLedger); }
+    catch(error){ EMS在庫移動台帳_保存_(existingMoves); throw error; }
+  }catch(error){ ui.alert('Yahoo戻し記録に失敗したため台帳を元へ戻しました',error.message,ui.ButtonSet.OK); return; }
+  Yahoo戻し候補を更新_();
 }
 
 function 選択した取り置きを手動解除(){

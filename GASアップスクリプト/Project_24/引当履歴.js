@@ -277,24 +277,24 @@ function EMS番号入力分割_(input){
 function 到着済を在庫反映済みへ(){ 直列_(到着済を在庫反映済みへ本体_); }
 function 到着済を在庫反映済みへ本体_(){
   const ui=SpreadsheetApp.getUi(), cfg=P_KAKUTEI_CFG;
-  // 【締めガード】⚠️が残ったまま締めると、実物を持たない注文のスタンプ(幽霊)が
-  // 「過去便受取済み」として封印され、後から実在庫と合わなくなる(例: 10117220の6/22便)。
-  // ②が保存した整合状態を確認し、⚠️あり/②未実行(6時間超)なら締める前に警告する。
+  let consistency=null, consistencyError='';
   try{
     const raw=PropertiesService.getDocumentProperties().getProperty('引当_整合状態');
-    const st=raw? JSON.parse(raw) : null;
-    const 古い=!st || (Date.now()-(st.ts||0))>6*60*60*1000;
-    if(古い || (st&&st.要確認>0)){
-      const msg= 古い
-        ? '直近6時間以内に ②引き当て実行 が走っていません。\n締める前に②を実行し、⚠️要確認が無いことを確認するのがおすすめです。'
-        : '②の完了サマリに ⚠️要確認 '+st.要確認+'件 が残っています。\nこのまま締めると、実物を持たない注文のスタンプ(幽霊)が「過去便受取済み」として固定され、後から実在庫と合わなくなります。\n\n先に⚠️を解消（🔎商品診断／🔎整合チェック→🧹→②）してから締めるのがおすすめです。';
-      const a=ui.alert('締めの前に確認', msg+'\n\nそれでも今すぐ締めますか？', ui.ButtonSet.OK_CANCEL);
-      if(a!==ui.Button.OK) return;
-    }
-  }catch(e){ /* ガードが読めなくても締め自体は止めない */ }
+    consistency=raw?JSON.parse(raw):null;
+  }catch(error){ consistencyError=error.message; }
+  const stale=!consistency || (Date.now()-(consistency.ts||0))>6*60*60*1000;
+  if(consistencyError || stale || consistency.要確認!==0 || consistency.台帳版!=='v1'){
+    const reason=consistencyError?'整合状態を読み取れません: '+consistencyError
+      :stale?'直近6時間以内の引当結果がありません'
+      :consistency.要確認!==0?'要確認が'+String(consistency.要確認)+'件残っています'
+      :'台帳版がv1ではありません';
+    ui.alert('便を締められません',reason+'。先に② 引き当て実行を正常完了してください。',ui.ButtonSet.OK);
+    return;
+  }
+
   let sh;
   try{ sh=発注共有を開く_().getSheetByName(cfg.シート); }
-  catch(e){ ui.alert('発注共有ファイルが開けません:\n'+e.message); return; }
+  catch(error){ ui.alert('発注共有ファイルが開けません:\n'+error.message); return; }
   if(!sh){ ui.alert('発注共有ファイルに「'+cfg.シート+'」がありません'); return; }
   const hr=cfg.ヘッダー行, last=sh.getLastRow();
   if(last<=hr){ ui.alert('EMSリストにデータがありません'); return; }
@@ -303,7 +303,6 @@ function 到着済を在庫反映済みへ本体_(){
   const c=引当履歴_EMSリスト列_(head);
   const data=sh.getRange(hr+1,1,last-hr,lastCol).getDisplayValues();
 
-  // 今「到着済」の箱をEMS番号ごとに集計して選ばせる
   const counts={};
   data.forEach(r=>{
     if(String(r[c.状態]||'').trim()!=='到着済') return;
@@ -322,10 +321,30 @@ function 到着済を在庫反映済みへ本体_(){
   const bad=targets.filter(t=>!counts[t]);
   if(bad.length){ ui.alert('到着済に無いEMS番号があります: '+bad.join(', ')+'\n入力し直してください。'); return; }
 
-  // ① 締める前に、今のP列の割当を履歴へ記録(最新のP列を確実に残す)
-  try{ 引当履歴_今回到着分を記録_(true); }catch(e){}
+  const active=SpreadsheetApp.getActive(), jp=active.getSheetByName(HIKIATE_CFG.純在庫);
+  if(!jp || jp.getLastRow()<2){ ui.alert('日本在庫に引当結果がありません。先に② 引き当て実行を正常完了してください。'); return; }
+  const jpLastCol=jp.getLastColumn();
+  const jpHead=jp.getRange(2,1,1,jpLastCol).getDisplayValues()[0].map(v=>String(v||'').trim());
+  const jpCode=jpHead.indexOf('商品コード'), jpQty=jpHead.indexOf('余り数(日本在庫)'), jpEms=jpHead.indexOf('EMS番号');
+  if(jpCode<0 || jpQty<0 || jpEms<0){ ui.alert('日本在庫の見出しが不足しています。先に② 引き当て実行をやり直してください。'); return; }
+  const targetSet=new Set(targets), jpLast=jp.getLastRow();
+  const jpData=jpLast>2?jp.getRange(3,1,jpLast-2,jpLastCol).getDisplayValues():[];
+  const surplus=jpData.map(row=>{
+    const ems=String(row[jpEms]||'').trim(), sourceCode=String(row[jpCode]||'').trim();
+    return {ems,code:sourceCode,sourceCode,qty:Number(row[jpQty])||0};
+  }).filter(row=>targetSet.has(row.ems)&&row.qty>0);
+  const moveLines=['EMS番号 / 商品コード / Yahooへ移す数量'].concat(
+    surplus.length?surplus.map(row=>row.ems+' / '+row.sourceCode+' / '+row.qty):['(Yahoo移動対象なし)']);
+  const confirm=ui.alert('Yahoo移動の最終確認',moveLines.join('\n')+'\n\nYahoo在庫への反映が完了している場合だけOK',ui.ButtonSet.OK_CANCEL);
+  if(confirm!==ui.Button.OK) return;
 
-  // ② 対象行のステータスを「在庫反映済み」へ
+  let movementPlan;
+  try{ movementPlan=EMS在庫移動_箱計画_(surplus,EMS在庫移動台帳_読む_(),new Date()); }
+  catch(error){ ui.alert('Yahoo移動を中止しました',error.message,ui.ButtonSet.OK); return; }
+  if(movementPlan.errors.length){ ui.alert('Yahoo移動を中止しました',movementPlan.errors.join('\n'),ui.ButtonSet.OK); return; }
+
+  try{ 引当履歴_今回到着分を記録_(true); }catch(error){}
+
   const flipA1=[];
   for(let i=0;i<data.length;i++){
     if(String(data[i][c.状態]||'').trim()!=='到着済') continue;
@@ -334,15 +353,28 @@ function 到着済を在庫反映済みへ本体_(){
     flipA1.push(sh.getRange(hr+1+i, c.状態+1).getA1Notation());
   }
   if(!flipA1.length){ ui.alert('対象行がありません。'); return; }
-  sh.getRangeList(flipA1).setValue('在庫反映済み');
-  SpreadsheetApp.flush();
+  let externalChanged=false;
+  try{
+    sh.getRangeList(flipA1).setValue('在庫反映済み');
+    externalChanged=true;
+    SpreadsheetApp.flush();
+    EMS在庫移動台帳_保存_(movementPlan.rows);
+  }catch(error){
+    let rollbackError=null;
+    if(externalChanged){
+      try{
+        sh.getRangeList(flipA1).setValue('到着済');
+        SpreadsheetApp.flush();
+      }catch(restoreError){ rollbackError=restoreError; }
+    }
+    const detail=error.message+(rollbackError?'\n到着済への復旧にも失敗しました: '+rollbackError.message:'');
+    ui.alert('便の締めを中止しました','ステータスまたはYahoo移動台帳の更新に失敗しました。\n'+detail,ui.ButtonSet.OK);
+    return;
+  }
 
-  // ③ 履歴を過去取込へ昇格(既存の記録は取込区分/EMS状態が更新され、需要差引きの対象になる)
   let up={追加:0,重複:0,対象:0};
-  try{ const r=引当履歴_EMSリストから記録_(['在庫反映済み'],'過去取込'); if(r && !r.error) up=r; }catch(e){}
-
-  // ④ EMS在庫を最新化(反映済みがQUERYから消えるのを待つ)
-  try{ EMS在庫を更新_本体_(); }catch(e){}
+  try{ const r=引当履歴_EMSリストから記録_(['在庫反映済み'],'過去取込'); if(r && !r.error) up=r; }catch(error){}
+  try{ EMS在庫を更新_本体_(); }catch(error){}
 
   ui.alert('✅ 便の締め 完了',
     '在庫反映済みへ: '+flipA1.length+'行（'+targets.join(', ')+'）\n'+

@@ -19,6 +19,7 @@ const context = {
 vm.createContext(context);
 [
   'Project_24/引当.js',
+  'Project_24/引当履歴.js',
   'Project_24/取り置き計算.js',
   'Project_24/取り置き台帳.js',
   'Project_24/消込台帳.js',
@@ -169,12 +170,64 @@ test('未確認のまま、または不明な選択肢では確定しない', ()
   assert.strictEqual(result.rows.length,0);
 });
 
+test('箱余りのYahoo移動は同じEMS・商品で一度だけ記録する', () => {
+  const surplus=[{ems:'EG1',code:'AAA',sourceCode:'AAA',directBan:'',qty:2,arrival:'2026-07-12'}];
+  const first=context.EMS在庫移動_箱計画_(surplus,[],'2026-07-15 10:00:00');
+  const second=context.EMS在庫移動_箱計画_(surplus,first.rows,'2026-07-15 10:01:00');
+  assert.strictEqual(JSON.stringify(first.errors),'[]');
+  assert.strictEqual(first.added.length,1);
+  assert.strictEqual(first.added[0].処理ID,'YAHOO|EMS|EG1|AAA');
+  assert.strictEqual(second.added.length,0);
+  assert.strictEqual(second.rows.length,1);
+});
+
+test('箱余りのYahoo移動は実surplusのsource identityを商品コードと処理IDへ保持する', () => {
+  const surplus=[
+    {ems:'EG1',code:'POEM65（10116569）',matchCode:'POEM65',sourceCode:'PoEm65（10116569）',directBan:'10116569',qty:1,arrival:'2026-07-12'},
+    {ems:'EG1',code:'RECIPE42/10117126',matchCode:'RECIPE42',sourceCode:'RECIPE42/10117126',directBan:'10117126',qty:1,arrival:'2026-07-12'},
+    {ems:'EG1',code:'10117375',matchCode:'10117375',sourceCode:'10117375',directBan:'10117375',qty:1,arrival:'2026-07-12'}
+  ];
+  const plan=context.EMS在庫移動_箱計画_(surplus,[],'2026-07-15 10:00:00');
+  assert.strictEqual(JSON.stringify(plan.errors),'[]');
+  assert.strictEqual(JSON.stringify(plan.added.map(r=>[r.処理ID,r.商品コード])),JSON.stringify([
+    ['YAHOO|EMS|EG1|POEM65（10116569）','PoEm65（10116569）'],
+    ['YAHOO|EMS|EG1|RECIPE42/10117126','RECIPE42/10117126'],
+    ['YAHOO|EMS|EG1|10117375','10117375']
+  ]));
+});
+
+test('実EMS供給parserはdirect ownerをraw sourceCodeへ必ず保持する', () => {
+  const rows=[
+    ['EG1','PoEm65（10116569）',1],
+    ['EG1','RECIPE42/10117126',1],
+    ['EG1','10117375',1],
+    ['EG1','AAA',1]
+  ];
+  const supplies=context.EMS供給オブジェクト_(rows,{EMS番号:0,コード:1,数量:2},()=> '2026-07-12');
+  assert.strictEqual(JSON.stringify(supplies.map(s=>[s.sourceCode,s.directBan])),JSON.stringify([
+    ['PoEm65（10116569）','10116569'],
+    ['RECIPE42/10117126','10117126'],
+    ['10117375','10117375'],
+    ['AAA','']
+  ]));
+});
+
+test('キャンセル戻しは取置IDごとに一度だけYahoo移動しraw元EMS商品コードを使う', () => {
+  const returns=[{取置ID:'OLD1',状態:'キャンセル戻し',戻し処理結果:'現物あり',商品コード:'POEM65',取り置き数量:1,元EMS番号:'EG0',元EMS商品コード:'PoEm65（10116569）'}];
+  const first=context.EMS在庫移動_戻し計画_(returns,[],'2026-07-15 10:00:00');
+  const second=context.EMS在庫移動_戻し計画_(returns,first.rows,'2026-07-15 10:01:00');
+  assert.strictEqual(first.added[0].処理ID,'YAHOO|RETURN|OLD1');
+  assert.strictEqual(first.added[0].商品コード,'PoEm65（10116569）');
+  assert.strictEqual(second.added.length,0);
+});
+
 test('台帳I/Oと初回登録の公開入口を提供する', () => {
   [
     '取り置き台帳_読む_',
     '取り置き台帳_保存_',
     'EMS在庫移動台帳_読む_',
     'EMS在庫移動台帳_保存_',
+    'キャンセル戻しをYahoo反映済みにする',
     '取り置き初期登録を作成',
     '取り置き初期登録を確定',
     'キャンセル戻し確認を更新',
@@ -471,12 +524,202 @@ test('P列計画の表示エントリを確定割当へ展開する', () => {
   ]));
 });
 
+function 便締めモック_(options){
+  options=options||{};
+  const externalHeader=['ステータス列','EMS番号','商品コード','数量'];
+  const externalRows=[['到着済','EG1','AAA',2],['到着済','EG2','BBB',1]];
+  const state={statusWrites:[],externalAttempts:0,movementSaves:0,savedMoves:null,promotions:0,refreshes:0,alerts:[],flushes:0};
+  const externalSheet={
+    getLastRow:()=>1+externalRows.length,
+    getLastColumn:()=>externalHeader.length,
+    getRange:(row,col,numRows,numCols)=>{
+      const count=numRows||1, width=numCols||1;
+      const source=row===1?[externalHeader]:externalRows.slice(row-2,row-2+count);
+      const values=source.map(r=>r.slice(col-1,col-1+width));
+      return {getValues:()=>values,getDisplayValues:()=>values,getA1Notation:()=> 'A'+row};
+    },
+    getRangeList:a1s=>({setValue:value=>{
+      state.externalAttempts++;
+      if(options.externalStatusFails && value==='在庫反映済み') throw new Error('external status failed');
+      state.statusWrites.push({a1s:a1s.slice(),value});
+    }})
+  };
+  const jpHeader=['状態','到着日','商品コード','余り数(日本在庫)','EMS番号'];
+  const jpRows=options.jpRows||[
+    ['到着済','2026-07-12','AAA',2,'EG1'],
+    ['到着済','2026-07-12','BBB',1,'EG2']
+  ];
+  const jpSheet={
+    getLastRow:()=>2+jpRows.length,
+    getLastColumn:()=>jpHeader.length,
+    getRange:(row,col,numRows,numCols)=>{
+      const count=numRows||1, width=numCols||1;
+      const source=row===2?[jpHeader]:jpRows.slice(row-3,row-3+count);
+      const values=source.map(r=>r.slice(col-1,col-1+width));
+      return {getValues:()=>values,getDisplayValues:()=>values};
+    }
+  };
+  const ui={
+    Button:{OK:'OK'},ButtonSet:{OK:'OK',OK_CANCEL:'OK_CANCEL'},
+    alert(...args){ state.alerts.push(args); return 'OK'; },
+    prompt:()=>({getSelectedButton:()=> 'OK',getResponseText:()=> 'EG1'})
+  };
+  const consistency=Object.prototype.hasOwnProperty.call(options,'consistency')
+    ? options.consistency : {ts:Date.now(),要確認:0,台帳版:'v1'};
+  context.P_KAKUTEI_CFG={シート:'EMSリスト',ヘッダー行:1};
+  context.PropertiesService={getDocumentProperties:()=>({getProperty:()=>consistency?JSON.stringify(consistency):''})};
+  context.SpreadsheetApp.getUi=()=>ui;
+  context.SpreadsheetApp.getActive=()=>({getSheetByName:name=>name==='日本在庫'?jpSheet:null});
+  context.SpreadsheetApp.flush=()=>{
+    state.flushes++;
+    if(options.firstFlushFails && state.flushes===1) throw new Error('external flush failed');
+  };
+  context.発注共有を開く_=()=>({getSheetByName:()=>externalSheet});
+  context.引当履歴_今回到着分を記録_=()=>({追加:0,重複:0,対象:0});
+  context.引当履歴_EMSリストから記録_=()=>{ state.promotions++; return {追加:0,重複:0,対象:1}; };
+  context.EMS在庫を更新_本体_=()=>{ state.refreshes++; };
+  context.EMS在庫移動台帳_読む_=()=>[];
+  context.EMS在庫移動台帳_保存_=rows=>{
+    state.movementSaves++;
+    if(options.movementSaveFails) throw new Error('movement save failed');
+    state.savedMoves=rows.map(r=>Object.assign({},r));
+  };
+  state.execute=()=>context.到着済を在庫反映済みへ本体_();
+  return state;
+}
+
+test('便締めは選択EMSの日本在庫だけを確認してYahoo移動台帳へ保存する', () => {
+  const state=便締めモック_();
+  state.execute();
+  const alertText=state.alerts.map(args=>args.join('\n')).join('\n');
+  assert.ok(alertText.includes('EG1 / AAA / 2'));
+  assert.strictEqual(alertText.includes('EG2 / BBB / 1'),false);
+  assert.ok(alertText.includes('Yahoo在庫への反映が完了している場合だけOK'));
+  assert.strictEqual(state.statusWrites.length,1);
+  assert.strictEqual(JSON.stringify(state.statusWrites[0]),JSON.stringify({a1s:['A2'],value:'在庫反映済み'}));
+  assert.strictEqual(state.movementSaves,1);
+  assert.strictEqual(state.savedMoves.length,1);
+  assert.strictEqual(state.savedMoves[0].処理ID,'YAHOO|EMS|EG1|AAA');
+  assert.strictEqual(state.promotions,1);
+  assert.strictEqual(state.refreshes,1);
+});
+
+test('便締めは整合状態が欠落・古い・要確認あり・非v1なら一切変更しない', () => {
+  const cases=[
+    ['欠落',null],
+    ['古い',{ts:Date.now()-7*60*60*1000,要確認:0,台帳版:'v1'}],
+    ['要確認',{ts:Date.now(),要確認:1,台帳版:'v1'}],
+    ['非v1',{ts:Date.now(),要確認:0,台帳版:'legacy'}]
+  ];
+  cases.forEach(([label,consistency])=>{
+    const state=便締めモック_({consistency});
+    state.execute();
+    assert.strictEqual(state.externalAttempts,0,label+'で外部状態を変更しない');
+    assert.strictEqual(state.movementSaves,0,label+'で移動台帳を保存しない');
+    assert.strictEqual(state.promotions,0,label+'で履歴昇格しない');
+    assert.strictEqual(state.refreshes,0,label+'でEMS更新しない');
+  });
+});
+
+test('便締めは外部ステータス更新失敗時に移動台帳を保存しない', () => {
+  const state=便締めモック_({externalStatusFails:true});
+  state.execute();
+  assert.strictEqual(state.externalAttempts,1);
+  assert.strictEqual(state.movementSaves,0);
+  assert.strictEqual(state.promotions,0);
+  assert.strictEqual(state.refreshes,0);
+});
+
+test('便締めは外部setValue後のflush失敗でも同じセルを到着済へ戻す', () => {
+  const state=便締めモック_({firstFlushFails:true});
+  state.execute();
+  assert.strictEqual(state.movementSaves,0);
+  assert.strictEqual(JSON.stringify(state.statusWrites),JSON.stringify([
+    {a1s:['A2'],value:'在庫反映済み'},
+    {a1s:['A2'],value:'到着済'}
+  ]));
+  assert.strictEqual(state.flushes,2);
+  assert.strictEqual(state.promotions,0);
+  assert.strictEqual(state.refreshes,0);
+});
+
+test('便締めは移動台帳保存失敗時に同じ外部セルを到着済へ戻して後続を止める', () => {
+  const state=便締めモック_({movementSaveFails:true});
+  state.execute();
+  assert.strictEqual(state.movementSaves,1);
+  assert.strictEqual(JSON.stringify(state.statusWrites),JSON.stringify([
+    {a1s:['A2'],value:'在庫反映済み'},
+    {a1s:['A2'],value:'到着済'}
+  ]));
+  assert.strictEqual(state.promotions,0);
+  assert.strictEqual(state.refreshes,0);
+});
+
+function Yahoo確定モック_(options){
+  options=options||{};
+  const candidate={取置ID:'OLD1',確認:true};
+  const baseLedger={取置ID:'OLD1',状態:'キャンセル戻し',戻し処理結果:'現物あり',商品コード:'POEM65',元EMS商品コード:'PoEm65（10116569）',取り置き数量:1,元EMS番号:'EG0'};
+  const ledger=options.duplicateLedger?[baseLedger,Object.assign({},baseLedger)]:[baseLedger];
+  if(options.missingCandidate) candidate.取置ID='MISSING';
+  const existing=[{処理ID:'EXISTING',EMS番号:'EG9',商品コード:'ZZZ',数量:1,移動先:'Yahoo即納',処理日時:'old'}];
+  const state={moveWrites:[],ledgerWrites:0,savedLedger:null,refreshes:0,alerts:[]};
+  const ui={Button:{OK:'OK'},ButtonSet:{OK:'OK',OK_CANCEL:'OK_CANCEL'},alert(...args){ state.alerts.push(args); return 'OK'; }};
+  context.SpreadsheetApp.getUi=()=>ui;
+  context.取り置き_表を読む_=()=>[candidate];
+  context.取り置き台帳_読む_=()=>ledger;
+  context.EMS在庫移動台帳_読む_=()=>existing;
+  context.EMS在庫移動台帳_保存_=rows=>{ state.moveWrites.push(rows.map(r=>Object.assign({},r))); };
+  context.取り置き台帳_保存_=rows=>{
+    state.ledgerWrites++;
+    if(options.ledgerSaveFails) throw new Error('ledger save failed');
+    state.savedLedger=rows.map(r=>Object.assign({},r));
+  };
+  context.Yahoo戻し候補を更新_=()=>{ state.refreshes++; };
+  state.execute=()=>context.キャンセル戻しをYahoo反映済みにする();
+  return state;
+}
+
+test('Yahoo戻し確定は選択IDが現台帳で欠落または重複なら保存しない', () => {
+  [
+    ['欠落',{missingCandidate:true}],
+    ['重複',{duplicateLedger:true}]
+  ].forEach(([label,options])=>{
+    const state=Yahoo確定モック_(options);
+    state.execute();
+    assert.strictEqual(state.moveWrites.length,0,label+'で移動を保存しない');
+    assert.strictEqual(state.ledgerWrites,0,label+'で取り置き台帳を保存しない');
+    assert.strictEqual(state.refreshes,0,label+'で候補を更新しない');
+  });
+});
+
+test('Yahoo戻し確定は移動保存後に取り置き台帳をYahoo反映済みへ更新する', () => {
+  const state=Yahoo確定モック_();
+  state.execute();
+  assert.strictEqual(state.moveWrites.length,1);
+  assert.strictEqual(state.moveWrites[0][1].処理ID,'YAHOO|RETURN|OLD1');
+  assert.strictEqual(state.moveWrites[0][1].商品コード,'PoEm65（10116569）');
+  assert.strictEqual(state.savedLedger[0].戻し処理結果,'Yahoo反映済み');
+  assert.strictEqual(state.refreshes,1);
+});
+
+test('Yahoo戻し確定は取り置き台帳保存失敗時に移動台帳を元へ戻す', () => {
+  const state=Yahoo確定モック_({ledgerSaveFails:true});
+  state.execute();
+  assert.strictEqual(state.ledgerWrites,1);
+  assert.strictEqual(state.moveWrites.length,2);
+  assert.strictEqual(state.moveWrites[0].length,2);
+  assert.strictEqual(JSON.stringify(state.moveWrites[1].map(r=>r.処理ID)),JSON.stringify(['EXISTING']));
+  assert.strictEqual(state.refreshes,0);
+  assert.ok(state.alerts.some(args=>String(args[0]).includes('台帳を元へ戻しました')));
+});
+
 test('受注共通メニューに初回登録の作成と確定を追加する', () => {
   const source=fs.readFileSync('Project_24/引当.js','utf8');
   assert.ok(source.includes(".addItem('📋 取り置き初期登録を作成', '取り置き初期登録を作成')"));
   assert.ok(source.includes(".addItem('✅ 取り置き初期登録を確定', '取り置き初期登録を確定')"));
   assert.ok(source.includes(".addItem('📦 キャンセル戻し確認を更新', 'キャンセル戻し確認を更新')"));
   assert.ok(source.includes(".addItem('✅ キャンセル戻し確認を確定', 'キャンセル戻し確認を確定')"));
+  assert.ok(source.includes(".addItem('🛒 Yahoo戻しを反映済みにする', 'キャンセル戻しをYahoo反映済みにする')"));
   assert.ok(source.includes(".addItem('🔓 選択した取り置きを手動解除', '選択した取り置きを手動解除')"));
 });
 
