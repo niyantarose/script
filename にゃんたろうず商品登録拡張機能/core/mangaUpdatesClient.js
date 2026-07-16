@@ -428,8 +428,10 @@
     return normalizeTitleKey(value)
       // 博客來の商品名と MU の Associated Names は簡体字・繁体字が
       // 混在することがあるため、原題エコー判定に必要な字形だけ正規化する。
+      // （披著狼皮的羊 ⇔ 披着狼皮的羊 のような簡体字別名エコーも束ねる）
       .replace(/來/g, '来')
-      .replace(/當/g, '当');
+      .replace(/當/g, '当')
+      .replace(/著/g, '着');
   }
 
   function collectDetailTitles(detail) {

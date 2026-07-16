@@ -198,4 +198,27 @@ if (sheepResolved.japaneseTitle !== sheepJp) {
   );
 }
 
+// 簡体字別名（披着狼皮的羊）が先頭でも同様に除外できること（著⇔着の字体差対応）。
+// 実シートで誤採用された値そのもの。
+const sheepSimplifiedDetail = {
+  title: "Sheep Princess in Wolf's Clothing",
+  associated: [
+    { title: '披着狼皮的羊' },
+    { title: '披著狼皮的羊公主' },
+    { title: sheepJp },
+  ],
+};
+const sheepSimplifiedResolved = t.tryResolveMatchedDetail_(
+  sheepSimplifiedDetail,
+  sheepRow,
+  sheepKeys,
+  sheepQueries,
+  []
+);
+if (sheepSimplifiedResolved.japaneseTitle !== sheepJp) {
+  throw new Error(
+    `simplified Chinese echo should be skipped, got: ${sheepSimplifiedResolved.japaneseTitle}`
+  );
+}
+
 console.log('manga-updates-client.test.js: ok');

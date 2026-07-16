@@ -977,7 +977,7 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
         result.candidates.push(String(record.record.title).trim());
       }
 
-      const jpTitle = pickJapaneseMangaUpdatesTitle_(record, detail);
+      const jpTitle = pickJapaneseMangaUpdatesTitle_(record, detail, [query, originalProductTitle]);
       if (jpTitle) {
         result.japaneseTitle = jpTitle;
         cache.put(cacheStorageKey, jpTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
@@ -1876,7 +1876,7 @@ function lookupJapaneseTitleViaMangaUpdates_(query) {
     const detail = fetchMangaUpdatesJson_('/series/' + seriesId, { method: 'get' });
     if (!isStrongMangaUpdatesMatch_(query, result, detail)) continue;
 
-    const japaneseTitle = pickJapaneseMangaUpdatesTitle_(result, detail);
+    const japaneseTitle = pickJapaneseMangaUpdatesTitle_(result, detail, [query]);
     if (japaneseTitle) {
       cache.put(cacheStorageKey, japaneseTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
       return japaneseTitle;
@@ -2331,14 +2331,52 @@ function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, categ
   });
 }
 
-function pickJapaneseMangaUpdatesTitle_(searchResult, detail) {
+function muCjkEchoKey_(value) {
+  // 博客來のクエリ（繁体字）と MU の Associated Names（簡繁混在）を突き合わせる
+  // ためのエコー判定キー。エコー判定に必要な主要字形だけ正規化する。
+  return normalizeMangaUpdatesTitleKey_(value)
+    .replace(/來/g, '来')
+    .replace(/當/g, '当')
+    .replace(/著/g, '着');
+}
+
+function muIsPartialEchoKey_(candidateKey, queryKey) {
+  if (!candidateKey || !queryKey) return false;
+  const shorter = candidateKey.length <= queryKey.length ? candidateKey : queryKey;
+  const longer = candidateKey.length <= queryKey.length ? queryKey : candidateKey;
+  if (shorter.length < 4) return false;
+  return longer.indexOf(shorter) >= 0;
+}
+
+function muIsChineseEchoOfQueries_(candidate, echoQueries) {
+  // かな入りは日本語原題の可能性が高いのでエコー除外しない
+  if (hasKanaJapaneseSignal_(candidate)) return false;
+  const qs = Array.isArray(echoQueries) ? echoQueries : (echoQueries ? [echoQueries] : []);
+  const key = normalizeMangaUpdatesTitleKey_(candidate);
+  const variantKey = muCjkEchoKey_(candidate);
+  for (let i = 0; i < qs.length; i += 1) {
+    const qk = normalizeMangaUpdatesTitleKey_(qs[i]);
+    const qvk = muCjkEchoKey_(qs[i]);
+    if (key && qk && (key === qk || muIsPartialEchoKey_(key, qk))) return true;
+    if (variantKey && qvk && (variantKey === qvk || muIsPartialEchoKey_(variantKey, qvk))) return true;
+  }
+  return false;
+}
+
+function pickJapaneseMangaUpdatesTitle_(searchResult, detail, echoQueries) {
+  // クエリの中国語エコー（完全一致・部分一致・簡繁字体差）は日本語候補から除外する。
+  // 例: クエリ「披著狼皮的羊公主」に対する「披着狼皮的羊」。
+  // かな入り候補はエコー除外の対象外。全部エコーなら空文字を返し、
+  // 中国語タイトルを「解決」として採用しない（拡張機能側と同じ方針）。
   const associated = Array.isArray(detail && detail.associated) ? detail.associated : [];
   const jpCandidates = [];
 
   // Associated Names の先頭日本語を優先（MU サイト表示順）
   for (let i = 0; i < associated.length; i += 1) {
     const title = associated[i] && associated[i].title ? String(associated[i].title).trim() : '';
-    if (title && hasJapaneseTitleSignal_(title)) jpCandidates.push(title);
+    if (!title || !hasJapaneseTitleSignal_(title)) continue;
+    if (muIsChineseEchoOfQueries_(title, echoQueries)) continue;
+    jpCandidates.push(title);
   }
 
   const extras = uniqNonEmptyTitles_([
@@ -2348,7 +2386,9 @@ function pickJapaneseMangaUpdatesTitle_(searchResult, detail) {
   ]);
   for (let j = 0; j < extras.length; j += 1) {
     const title = extras[j];
-    if (title && hasJapaneseTitleSignal_(title)) jpCandidates.push(title);
+    if (!title || !hasJapaneseTitleSignal_(title)) continue;
+    if (muIsChineseEchoOfQueries_(title, echoQueries)) continue;
+    jpCandidates.push(title);
   }
 
   for (let k = 0; k < jpCandidates.length; k += 1) {
