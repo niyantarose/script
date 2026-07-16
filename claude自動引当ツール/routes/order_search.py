@@ -1,7 +1,6 @@
 from flask import Blueprint, render_template, request
 from models.order import Order
 from models.order_item import OrderItem
-from models.ems_item import EmsItem
 
 bp = Blueprint('order_search', __name__, url_prefix='/order-search')
 
@@ -9,14 +8,9 @@ bp = Blueprint('order_search', __name__, url_prefix='/order-search')
 def _build_result(o):
     """注文の全商品を取得してグループ化"""
     items = OrderItem.query.filter_by(order_id=o.id).all()
-    ems_numbers = set()
-    for item in items:
-        for ei in EmsItem.query.filter_by(order_item_id=item.id).all():
-            ems_numbers.add(ei.ems.ems_number)
     return {
         'order': o,
         'order_items': items,
-        'ems_numbers': '、'.join(sorted(ems_numbers)) if ems_numbers else '',
     }
 
 
