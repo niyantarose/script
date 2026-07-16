@@ -77,7 +77,7 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now){
     const r=targets[id];
     kept.push({取置ID:id,状態:TORIOKI_STATUS.ACTIVE,受注番号:r.受注番号,商品コード:r.商品コード,SKU:r.SKU,
       取り置き数量:r.取り置き数量,取置元種別:'開始前在庫',元EMS番号:'',元EMS商品コード:'',元取置ID:'',登録日時:now,更新日時:now,
-      戻し処理結果:'',終了理由・メモ:String(r.メモ||'')});
+      戻し処理結果:'','終了理由・メモ':String(r.メモ||'')});
   });
   return {rows:kept,errors:[]};
 }

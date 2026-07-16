@@ -83,7 +83,8 @@ function 取り置き_新規行_(order, qty, source, ems, originId, sourceCode){
     取置ID:取り置き_決定ID_(source,ems,sourceCode||order.code,key,originId), 状態:TORIOKI_STATUS.ACTIVE,
     受注番号:String(order.ban), 商品コード:取り置き_商品コード_(order.sku,order.code), SKU:String(order.sku||''),
     取り置き数量:qty, 取置元種別:source, 元EMS番号:String(ems||''), 元EMS商品コード:String(sourceCode||order.code||'').trim(), 元取置ID:String(originId||''),
-    戻し処理結果:'', 終了理由・メモ:''
+    // 「・」はGASのpush時パーサーが識別子として受け付けない(Nodeは通る)ため、キーは必ず引用符で囲む
+    戻し処理結果:'', '終了理由・メモ':''
   };
 }
 
@@ -187,7 +188,7 @@ function 取り置き_割当計算_(input){
     }
     if(left<originalQty) returnUpdates.push(left===0
       ? {取置ID:source.取置ID,戻し処理結果:TORIOKI_RETURN.REALLOCATED}
-      : {取置ID:source.取置ID,戻し処理結果:TORIOKI_RETURN.PRESENT,取り置き数量:left,終了理由・メモ:(originalQty-left)+'個を再引当済み'});
+      : {取置ID:source.取置ID,戻し処理結果:TORIOKI_RETURN.PRESENT,取り置き数量:left,'終了理由・メモ':(originalQty-left)+'個を再引当済み'});
   });
   const supplyByKey={};
   (input.supplies||[]).forEach(s=>{
