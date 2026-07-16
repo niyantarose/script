@@ -16,7 +16,8 @@ vm.createContext(context);
 [
   'Project_24/引当.js',
   'Project_24/取り置き計算.js',
-  'Project_24/取り置き台帳.js'
+  'Project_24/取り置き台帳.js',
+  'Project_24/消込台帳.js' // 取り置き出荷_(メモ判定)を未台帳出荷計画が使う
 ].forEach(f => vm.runInContext(fs.readFileSync(f, 'utf8'), context));
 
 let failures = 0;
@@ -500,6 +501,55 @@ test('正常なdirect割当では警告を出さない', () => {
   const result=context.取り置き_割当計算_({orders,ledger:[],movements:[],supplies,explicit:[]});
   assert.strictEqual(result.errors.length,0);
   assert.strictEqual((result.warnings||[]).length,0);
+});
+
+// ===== 台帳に載らない出荷(週末GoQ等)の自動発送済み登録 =====
+// 旧9a8f8d8「処理済CSVで事実の在庫差引き(売り越し防止)」の台帳版(ユーザー決定)。
+
+test('台帳外出荷は発送済み行として自動登録し箱の残りを差し引く', () => {
+  const supplies=[{ems:'EG1',code:'AAA',sourceCode:'AAA',qty:3,arrival:'2026-07-12'}];
+  const r=context.取り置き_未台帳出荷計画_(
+    [{ban:'10117000',code:'AAA',sku:'AAAb',qty:1,基準日:'2026-07-12',メモ:''}],[],[],supplies);
+  assert.strictEqual(r.newRows.length,1);
+  assert.strictEqual(r.newRows[0].状態,'発送済み');
+  assert.strictEqual(r.newRows[0].元EMS番号,'EG1');
+  assert.strictEqual(r.newRows[0].取り置き数量,1);
+  assert.strictEqual(r.newRows[0].取置元種別,'出荷実績');
+  assert.strictEqual(r.review.length,0);
+});
+
+test('台帳に行がある注文・メモ取り置き・発送日より後に着いた箱は自動登録しない', () => {
+  const late=[{ems:'EG1',code:'AAA',sourceCode:'AAA',qty:3,arrival:'2026-07-14'}];
+  const r1=context.取り置き_未台帳出荷計画_(
+    [{ban:'1',code:'AAA',sku:'AAAb',qty:1,基準日:'2026-07-12',メモ:''}],[],[],late);
+  assert.strictEqual(r1.newRows.length,0,'発送より後に着いた箱は出どころではない');
+  const r2=context.取り置き_未台帳出荷計画_(
+    [{ban:'1',code:'AAA',sku:'AAAb',qty:1,基準日:'2026-07-15',メモ:'取り置き'}],[],[],late);
+  assert.strictEqual(r2.newRows.length,0,'メモ取り置きは人為オーバーライド');
+  const ledger=[{取置ID:'X',状態:'発送済み',受注番号:'1',商品コード:'AAA',SKU:'AAAb',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'}];
+  const r3=context.取り置き_未台帳出荷計画_(
+    [{ban:'1',code:'AAA',sku:'AAAb',qty:1,基準日:'2026-07-15',メモ:''}],ledger,[],late);
+  assert.strictEqual(r3.newRows.length,0,'台帳に行がある注文は遷移側で扱う');
+});
+
+test('既存使用を差し引いた残りまでしか自動登録せず、不足分は要確認へ', () => {
+  const supplies=[{ems:'EG1',code:'AAA',sourceCode:'AAA',qty:2,arrival:'2026-07-12'}];
+  const ledger=[{取置ID:'H',状態:'取り置き中',受注番号:'2',商品コード:'AAA',SKU:'AAAz',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'}];
+  const r=context.取り置き_未台帳出荷計画_(
+    [{ban:'9',code:'AAA',sku:'AAAb',qty:2,基準日:'2026-07-12',メモ:''}],ledger,[],supplies);
+  assert.strictEqual(r.newRows.length,1);
+  assert.strictEqual(r.newRows[0].取り置き数量,1);
+  assert.strictEqual(r.review.length,1);
+  assert.ok(r.review[0].理由.indexOf('1/2')>=0);
+});
+
+test('同じ出荷を二回渡しても決定IDで重複登録しない(再実行冪等)', () => {
+  const supplies=[{ems:'EG1',code:'AAA',sourceCode:'AAA',qty:3,arrival:'2026-07-12'}];
+  const shipped=[{ban:'10117000',code:'AAA',sku:'AAAb',qty:1,基準日:'2026-07-12',メモ:''}];
+  const first=context.取り置き_未台帳出荷計画_(shipped,[],[],supplies);
+  const second=context.取り置き_未台帳出荷計画_(shipped,first.newRows,[],supplies);
+  assert.strictEqual(second.newRows.length,0,'登録済み(台帳へ保存済み)なら次回は作らない');
+  assert.strictEqual(first.newRows[0].取置ID, context.取り置き_未台帳出荷計画_(shipped,[],[],supplies).newRows[0].取置ID,'IDは決定的');
 });
 
 process.exitCode = failures ? 1 : 0;

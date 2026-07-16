@@ -296,7 +296,8 @@ function 発注共有P列計画_(options){
   if(!recv) return {error:'「'+HIKIATE_CFG.受注+'」タブがありません'};
 
   let ledgerSummary;
-  try{ ledgerSummary=取り置き_集計_(取り置き台帳_読む_(),EMS在庫移動台帳_読む_()); }
+  // options.追加台帳行: ④が保存前に検知した台帳外出荷の自動登録分。使用済みとして供給から差し引く
+  try{ ledgerSummary=取り置き_集計_(取り置き台帳_読む_().concat(options&&options.追加台帳行||[]),EMS在庫移動台帳_読む_()); }
   catch(e){ return {error:'取り置き台帳またはEMS在庫移動台帳が読み込めません:\n'+e.message}; }
 
   // ---- 現役の取り寄せ行(受注明細) ----

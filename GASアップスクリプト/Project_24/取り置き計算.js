@@ -261,6 +261,61 @@ function 取り置き_割当計算_(input){
   return plan;
 }
 
+// 台帳に載らない出荷(週末GoQ直接発送など④未実行の箱からの出荷)を検知し、
+// 「発送済み」行として自動登録する計画を作る。旧9a8f8d8の売り越し防止の台帳版。
+//   shippedRows: 消込台帳_出荷済み行_()の行 / ledgerRows・movements: 現台帳
+//   supplies: EMS供給オブジェクト_の行(到着済の実EMSのみ)
+// ルール: 台帳に行キーが既にある注文・メモ「取り置き」・発送日より後に着いた箱は対象外。
+//         既存使用を差し引いた箱残の範囲だけ登録し、届かない分は要確認へ返す。
+function 取り置き_未台帳出荷計画_(shippedRows, ledgerRows, movements, supplies){
+  const summary=取り置き_集計_(ledgerRows||[], movements||[]);
+  const ledgerKeys=new Set((ledgerRows||[]).map(r=>取り置き_行キー_(r)));
+  const targets={}, order=[];
+  (shippedRows||[]).forEach(r=>{
+    if(取り置き出荷_(r)) return; // メモ「取り置き」= 開始前在庫から出荷。箱を食わせない
+    const qty=Math.max(0,Number(r.qty)||0); if(!qty) return;
+    const key=取り置き_行キー_({ban:r.ban,code:r.code,sku:r.sku});
+    if(ledgerKeys.has(key)) return; // 台帳が知っている注文はCSV遷移側で扱う
+    if(!targets[key]){ targets[key]={ban:String(r.ban||'').trim(),code:String(r.code||''),sku:String(r.sku||''),qty:0,ship:''}; order.push(key); }
+    targets[key].qty+=qty;
+    const d=ymd_(r.基準日); if(d && (!targets[key].ship || d<targets[key].ship)) targets[key].ship=d;
+  });
+  const groups={}; // sourceKey -> {ems,sourceCode,matchCode,directBan,arrival(最古),qty}
+  (supplies||[]).forEach(s=>{
+    const sourceCode=String(s.sourceCode||s.code||'').trim(), key=取り置き_供給キー_(s.ems,sourceCode);
+    if(!groups[key]) groups[key]={_key:key,ems:String(s.ems||''),sourceCode,matchCode:normCode_(s.code),
+      directBan:String(s.directBan||'').trim(),arrival:String(s.arrival||''),qty:0};
+    groups[key].qty+=(Number(s.qty)||0);
+    const a=String(s.arrival||''); if(a && (!groups[key].arrival || a<groups[key].arrival)) groups[key].arrival=a;
+  });
+  const remaining={};
+  Object.keys(groups).forEach(key=>{
+    remaining[key]=Math.max(0,groups[key].qty-取り置き_使用合計_(summary.usageBySupply[key]));
+  });
+  const sorted=Object.keys(groups).map(k=>groups[k]).sort((a,b)=>
+    String(a.arrival).localeCompare(String(b.arrival)) || String(a.ems).localeCompare(String(b.ems)));
+  const newRows=[], review=[];
+  order.forEach(key=>{
+    const t=targets[key]; let left=t.qty;
+    const keys=引当用照合キー一覧_(t.sku,t.code);
+    for(const g of sorted){
+      if(left<=0) break;
+      if(g.directBan && g.directBan!==t.ban) continue;           // 他注文の名指し箱は食わない
+      if(keys.indexOf(g.matchCode)<0) continue;                  // 商品不一致
+      if(t.ship && g.arrival && g.arrival>t.ship) continue;      // 発送より後に着いた箱は出どころではない
+      const take=Math.min(left, remaining[g._key]||0); if(take<=0) continue;
+      remaining[g._key]-=take; left-=take;
+      const row=取り置き_新規行_({ban:t.ban,code:t.code,sku:t.sku}, take, '出荷実績', g.ems, '', g.sourceCode);
+      row.状態=TORIOKI_STATUS.SHIPPED;
+      row['終了理由・メモ']='④自動登録(台帳外出荷)';
+      newRows.push(row);
+    }
+    if(left>0 && left<t.qty) review.push({受注番号:t.ban,商品コード:取り置き_商品コード_(t.sku,t.code),
+      理由:'台帳外出荷のうち'+(t.qty-left)+'/'+t.qty+'だけ箱残と一致(残りは供給不足)'});
+  });
+  return {newRows,review};
+}
+
 function 取り置き_割当検証_(plan,input){
   const projected=(input.ledger||[]).map(r=>Object.assign({},r));
   const byId={}; projected.forEach((r,index)=>byId[String(r.取置ID||'')]=index);

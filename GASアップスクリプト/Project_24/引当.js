@@ -1492,14 +1492,23 @@ function 引当実行_本体_(options){
   const ledgerSummary=取り置き_集計_(ledgerRows,movementRows);
   lines.forEach(l=>{ l.取り置き中数量=ledgerSummary.activeByKey[取り置き_行キー_(l)]||0; });
 
-  // B. P列はここでは書かず、表示計画だけを作る。
-  const pPlan=発注共有P列計画_();
+  // A2. 到着実績のある実EMSだけを供給へ変換する。
+  const supplies=EMS供給オブジェクト_(E,EC,到着_);
+
+  // A3. 台帳に載らない出荷(週末GoQ直接発送など)を検知し、発送済み行として自動登録する。
+  //     箱残を実態へ合わせてから割当・P列計画を作る(旧9a8f8d8の売り越し防止の台帳版)。
+  let 出荷自動={newRows:[],review:[]};
+  try{ 出荷自動=取り置き_未台帳出荷計画_(消込台帳_出荷済み行_(),ledgerRows,movementRows,supplies); }
+  catch(e){ 出荷自動={newRows:[],review:[{受注番号:'-',商品コード:'-',理由:'消込台帳を読めずスキップ: '+e.message}]}; }
+  const ledgerRowsForPlan=出荷自動.newRows.length? ledgerRows.concat(出荷自動.newRows) : ledgerRows;
+
+  // B. P列はここでは書かず、表示計画だけを作る(自動登録分も使用済みとして渡す)。
+  const pPlan=発注共有P列計画_(出荷自動.newRows.length? {追加台帳行:出荷自動.newRows} : {});
   if(pPlan.error){ SpreadsheetApp.getUi().alert(pPlan.error); return; }
 
-  // C. 到着実績のある実EMSだけを供給へ変換し、純粋割当を計算・検証する。
-  const supplies=EMS供給オブジェクト_(E,EC,到着_);
+  // C. 純粋割当を計算・検証する。
   const supplyKeys=new Set(supplies.map(s=>取り置き_供給キー_(s.ems,s.sourceCode||s.code)));
-  const explicit=P列計画_新規確定割当_(pPlan,ledgerRows)
+  const explicit=P列計画_新規確定割当_(pPlan,ledgerRowsForPlan)
     .filter(e=>supplyKeys.has(取り置き_供給キー_(e.ems,e.sourceCode||e.code)));
   const allocationPlan=取り置き_割当計算_({
     // 台湾・中国の入荷済み分(別ルート済数量)は確保済みとして注文数量から除き、韓国EMSを消費させない
@@ -1507,26 +1516,28 @@ function 引当実行_本体_(options){
       ban:l.ban,code:l.code,sku:l.sku,qty:Math.max(0,l.qty-(Number(l.別ルート済数量)||0)),
       sortKey:l.sortKey,i:l.i,keys:candKeys(l),paid:l.paid
     })),
-    ledger:ledgerRows,movements:movementRows,supplies,explicit
+    ledger:ledgerRowsForPlan,movements:movementRows,supplies,explicit
   });
   if(allocationPlan.errors.length){
     const ui=SpreadsheetApp.getUi();
     ui.alert('引当を中止しました',allocationPlan.errors.join('\n'),ui.ButtonSet.OK);
     return;
   }
-  const 割当警告=allocationPlan.warnings||[]; // タグ異常(名指し不在・多め買付)。完走して完了ダイアログで知らせる
+  // タグ異常(名指し不在・多め買付)と台帳外出荷の不一致。完走して完了ダイアログで知らせる
+  const 割当警告=(allocationPlan.warnings||[])
+    .concat(出荷自動.review.map(r=>'台帳外出荷の要確認: '+r.受注番号+' '+r.商品コード+' '+r.理由));
 
   const now=new Date();
-  const projectedLedger=取り置き台帳_割当計画後行_(allocationPlan,ledgerRows,now);
+  const projectedLedger=取り置き台帳_割当計画後行_(allocationPlan,ledgerRowsForPlan,now);
   const projectedSummary=取り置き_集計_(projectedLedger,movementRows);
   引当計画_行へ反映_(lines,ledgerSummary,projectedSummary,allocationPlan.newRows);
   const outputPlan=引当出力計画_(supplies,allocationPlan,projectedLedger);
 
   // preview は純粋計画を返すだけ。ここより前に運用シートへの書込みは無い。
-  if(options.preview) return {allocationPlan,pPlan,lines,ledgerRows,movementRows,projectedLedger,outputPlan};
+  if(options.preview) return {allocationPlan,pPlan,lines,ledgerRows:ledgerRowsForPlan,movementRows,projectedLedger,outputPlan};
 
-  // D. 検証成功後だけ、台帳を一括1回保存してからP列へ反映する。
-  取り置き台帳_割当計画を反映_(allocationPlan,ledgerRows,now);
+  // D. 検証成功後だけ、台帳を一括1回保存してからP列へ反映する(台帳外出荷の自動登録分も同じ保存に含める)。
+  取り置き台帳_割当計画を反映_(allocationPlan,ledgerRowsForPlan,now);
   発注共有P列計画を反映_(pPlan);
   消込台帳更新_(); // 監査用にだけ更新し、割当数量や今回EMS消費の推測には使わない。
 
@@ -1746,8 +1757,8 @@ function 引当実行_本体_(options){
     const ui=SpreadsheetApp.getUi(),処理ms=Date.now()-開始ms,処理秒=Math.round(処理ms/1000);
     console.log('④引当実行 処理時間ms='+処理ms);
     // 台帳・P列・受注明細・全出力が成功した最後にだけ整合状態を確定する。
-    // 突合せ超過(要確認>0)が残っている間は⑤便締めがブロックされる。
-    PropertiesService.getDocumentProperties().setProperty('引当_整合状態',JSON.stringify({ts:Date.now(),要確認:突合超過.length,台帳版:'v1'}));
+    // 突合せ超過と台帳外出荷の不一致(要確認>0)が残っている間は⑤便締めがブロックされる。
+    PropertiesService.getDocumentProperties().setProperty('引当_整合状態',JSON.stringify({ts:Date.now(),要確認:突合超過.length+出荷自動.review.length,台帳版:'v1'}));
     ui.alert(突合超過.length? '⚠️ 引当完了（要確認 '+突合超過.length+'件）'
         : 割当警告.length? '✅ 引当完了（タグ注意 '+割当警告.length+'件）' : '✅ 引当完了（整合OK）',
       '■ 処理時間\n'+処理秒+'秒\n\n■ 突合せ\n'
@@ -1756,6 +1767,7 @@ function 引当実行_本体_(options){
       +(割当警告.length? '\n\n■ ⚠️ 注文番号タグの注意 '+割当警告.length+'件\n'+割当警告.slice(0,10).join('\n')+(割当警告.length>10?'\n…他'+(割当警告.length-10)+'件':''):'')
       +'\n\n■ 注文の分類\n出荷可能 '+ship+' ／ 出荷GO未入金 '+keep+' ／ 希望日待 '+hold+' ／ 部分在庫 '+part+' ／ 引当待ち '+(ord-ship-keep-hold-part)+'（うち入金待ち '+mp+'）'
       +'\n\n■ 処理内容\n取り置き台帳新規 '+確定行数+'行 ／ 入荷日自動記入 '+自動入荷+'件'
+      +(出荷自動.newRows.length? ' ／ 📦台帳外出荷の自動登録 '+出荷自動.newRows.length+'行':'')
       +(emsD.除外? ' ／ 🚫棚卸・EMS番号なしを供給除外 '+emsD.除外+'行':'')
       +(隠れ?'\n\n⚠️ '+隠れ+'：行が隠れています（🔻フィルタ確認/解除で全解除）':''),ui.ButtonSet.OK);
   }
