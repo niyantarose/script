@@ -13,8 +13,6 @@
     .box { border: 1px solid #eee; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
     .box .h { font-size: 11px; font-weight: bold; margin-bottom: 6px; }
     .in .h { color: #b8860b; }
-    .rec .h { color: #137333; }
-    .act .h { color: #1a5fb4; }
     .row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 5px 0; }
     .row label { color: #555; font-size: 12px; }
     .row input { width: 96px; height: 28px; text-align: right; border: 1px solid #ccc; border-radius: 4px; padding: 0 6px; font-size: 13px; background: #FFF9E6; }
@@ -23,6 +21,7 @@
     .sec { font-size: 11px; font-weight: bold; margin: 8px 0 4px; }
     .sec.rec { color: #137333; }
     .sec.act { color: #1a5fb4; }
+    .sec.ref { color: #888; }
     .line { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
     .line .k { color: #666; }
     .line .v { font-weight: bold; }
@@ -51,19 +50,31 @@
   <div class="box in"><div class="h">✎ 入力（黄色）</div><div id="inputs"></div></div>
   <div id="results"></div>
   <button class="refetch" onclick="loadRates()">↻ レートを再取得</button>
-  <div class="note">緑=目標からのおすすめ、青=うわのせ微調整後の実際。C列の式と同じ計算です。</div>
+  <div class="note">目標粗利率は原価帯で自動。韓国は縦×横×厚(cm)で重さ自動（未入力時はg手入力）。</div>
 
   <script>
     var rates = { tw: 5.09, kr: 0.105, cn: 23.82, date: '', ok: false };
     var cur = 'tw';
     var uwaTouched = { tw: false, kr: false, cn: false };
 
+    function goalFromCost(cost) {
+      if (cost <= 2000) return 35;
+      if (cost <= 6000) return 25;
+      if (cost <= 12000) return 20;
+      if (cost <= 20000) return 10;
+      return 8;
+    }
+
+    function krWeight(v) {
+      if (v.h > 0 && v.w > 0 && v.d > 0) return Math.round(v.h * v.w * v.d * 0.45);
+      return Math.round(v.weight || 0);
+    }
+
     var cfg = {
       tw: {
         fields: [
           ['price','本の価格','元',820],
           ['rate','レート','円/元',null],
-          ['goal','目標粗利率','%',25],
           ['ship','送料率','%',35],
           ['mall','モール手数料','%',9],
           ['tax','消費税','%',10]
@@ -75,7 +86,6 @@
         fields: [
           ['price','商品価格','元',37.4],
           ['rate','レート','円/元',null],
-          ['goal','目標粗利率','%',30],
           ['ship','送料率','%',30],
           ['mall','モール手数料','%',9],
           ['card','カード手数料','%',3],
@@ -87,15 +97,18 @@
       kr: {
         fields: [
           ['price','本の価格','W',180900],
-          ['weight','重さ','g',300],
+          ['h','縦','cm',''],
+          ['w','横','cm',''],
+          ['d','厚さ','cm',''],
+          ['weight','重さ手入力','g',300],
           ['rate','レート','円/W',null],
-          ['goal','目標粗利率','%',25],
           ['ship','重量係数','',0.6],
           ['mall','モール手数料','%',9],
           ['tax','消費税','%',10]
         ],
-        cost: function(v){ return Math.round(v.price * v.rate + v.weight * v.ship); },
-        feeTotal: function(v){ return v.mall / 100 + v.tax / 100; }
+        cost: function(v){ var g = krWeight(v); return Math.round(v.price * v.rate + g * v.ship); },
+        feeTotal: function(v){ return v.mall / 100 + v.tax / 100; },
+        weight: krWeight
       }
     };
 
@@ -124,8 +137,9 @@
       document.getElementById('inputs').innerHTML = f.map(function(x){
         var def = x[0]==='rate' ? rates[cur] : x[3];
         var step = (x[2]==='%') ? '0.1' : 'any';
+        var val = def === '' ? '' : def;
         return '<div class="row"><label>'+x[1]+'</label><span style="display:flex;align-items:center;gap:6px;">'+
-          '<input id="f_'+x[0]+'" type="number" step="'+step+'" value="'+def+'" oninput="onInput(\''+x[0]+'\')"/>'+
+          '<input id="f_'+x[0]+'" type="number" step="'+step+'" value="'+val+'" oninput="onInput(\''+x[0]+'\')"/>'+
           '<span class="unit">'+x[2]+'</span></span></div>';
       }).join('');
       if (!uwaTouched[cur]) compute(true);
@@ -141,21 +155,16 @@
       var v = readValues();
       var fee = cfg[cur].feeTotal(v);
       var cost = cfg[cur].cost(v);
-      var theory = cost / (1 - v.goal / 100 - fee);
+      var goalPct = goalFromCost(cost);
+      var theory = cost / (1 - goalPct / 100 - fee);
       var sell10 = Math.round(theory / 10) * 10;
       var sell100 = Math.round(theory / 100) * 100;
       var uwa10 = Math.max(0, sell10 - cost);
       var uwa100 = Math.max(0, sell100 - cost);
+      var profit10 = sell10 - sell10 * fee - cost;
+      var profit100 = sell100 - sell100 * fee - cost;
 
       var uwaEl = document.getElementById('f_uwa');
-      if (!uwaEl) {
-        var actHtml = '<div class="box act"><div class="h">✎ 微調整（青）</div>'+
-          '<div class="row"><label>実際のうわのせ</label><span style="display:flex;align-items:center;gap:6px;">'+
-          '<input id="f_uwa" class="act-in" type="number" step="any" value="'+uwa10+'" oninput="onInput(\'uwa\')"/>'+
-          '<span class="unit">円</span></span></div></div>';
-        document.getElementById('results').innerHTML = actHtml;
-        uwaEl = document.getElementById('f_uwa');
-      }
       if (uwaEl && (resetUwa || !uwaTouched[cur])) {
         uwaEl.value = uwa10;
         v.uwa = uwa10;
@@ -166,22 +175,31 @@
       var profitRate = actualSell > 0 ? profit / actualSell : 0;
       var ok = profitRate >= 0.2;
 
+      var weightLine = '';
+      if (cur === 'kr') {
+        var g = krWeight(v);
+        weightLine = '<div class="line"><span class="k">使用する重さ</span><span class="v">'+g+'g</span></div>';
+      }
+
       document.getElementById('results').innerHTML =
+        '<div class="line"><span class="k">原価</span><span class="v">'+yen(cost)+'</span></div>'+
+        weightLine+
+        '<div class="line"><span class="k">適用目標粗利率(自動)</span><span class="v">'+goalPct+'%</span></div>'+
+        '<div class="sec ref">── 原価帯参考: 2千35% / 6千25% / 1.2万20% / 2万10% / 3万8% ──</div>'+
         '<div class="sec rec">── おすすめ（目標から・緑）──</div>'+
         '<div class="line"><span class="k">理論売値</span><span class="v">'+yen(theory)+'</span></div>'+
         '<div class="line"><span class="k">おすすめ(10円丸め)</span><span class="v">'+yen(sell10)+'</span></div>'+
         '<div class="big"><div class="l">おすすめ(100円丸め)</div><div class="v">'+yen(sell100)+'</div></div>'+
         '<div class="line"><span class="k">推奨うわのせ(10円)</span><span class="v">'+yen(uwa10)+'</span></div>'+
-        '<div class="line"><span class="k">推奨うわのせ(100円)</span><span class="v">'+yen(uwa100)+'</span></div>'+
-        '<div class="line"><span class="k">原価</span><span class="v">'+yen(cost)+'</span></div>'+
+        '<div class="line"><span class="k">おすすめ時粗利(10円)</span><span class="v">'+yen(profit10)+'</span></div>'+
+        '<div class="line"><span class="k">おすすめ時粗利(100円)</span><span class="v">'+yen(profit100)+'</span></div>'+
         '<div class="sec act">── 微調整（実際・青）──</div>'+
-        '<div class="box act"><div class="row"><label>実際のうわのせ</label><span style="display:flex;align-items:center;gap:6px;">'+
+        '<div class="box in" style="background:#f8fbff"><div class="row"><label>実際のうわのせ</label><span style="display:flex;align-items:center;gap:6px;">'+
           '<input id="f_uwa" class="act-in" type="number" step="any" value="'+v.uwa+'" oninput="onInput(\'uwa\')"/>'+
           '<span class="unit">円</span></span></div>'+
           '<div class="hint">実際売値 = 原価 + うわのせ</div></div>'+
         '<div class="actbox"><div class="l">実際売値</div><div class="v">'+yen(actualSell)+'</div></div>'+
         '<div class="line"><span class="k">実質粗利額</span><span class="v">'+yen(profit)+'</span></div>'+
-        '<div class="hint">= 売値 - 売値×手数料 - 原価</div>'+
         '<div class="sig '+(ok?'ok':'ng')+'"><span>'+(ok?'✓':'⚠')+' 実質粗利率</span><span>'+pct(profitRate)+'</span></div>';
     }
 
