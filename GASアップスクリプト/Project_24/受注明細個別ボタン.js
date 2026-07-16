@@ -2,10 +2,13 @@
 // 受注明細で対象の行を選択して、シート上部のボタン(個別引当=緑/引当キャンセル=赤)を押すだけ。
 // 照合キーの転記・個別対応シートへの入力は不要(個別対応シート運用は廃止。関数は残置)。
 //
-// 個別引当: 選択行の商品を発注共有EMSリストの「到着済」の箱から探してP列に名指しを追記。
-//           引当履歴に記録し、入荷日が空欄ならEMS到着日を自動記入する。
-// キャンセル: EMSリストP列からこの受注番号×この商品の名指しを削除。履歴を更新し、
-//           他に有効な割当が無ければ受注明細の入荷日もクリアする。
+// 取り置き台帳が唯一の正になったため、ボタンは台帳へ直接書く(P列は④が計画から書き直す派生表示):
+// 個別引当: 選択行の商品を「到着済」の箱(台帳使用を差し引いた残あり)から選び、
+//           取り置き中の行を台帳へ直接作成。履歴に記録し、入荷日が空欄ならEMS到着日を自動記入。
+//           コード不一致でも受注番号タグ(REQ系・名指し買付)の箱はこの受注の候補になる(救済)。
+// キャンセル: この受注番号×この商品の取り置き中を台帳で手動解除。履歴を更新し、
+//           取り置きが残らなければ受注明細の入荷日もクリアする。
+// どちらもP列・各一覧シートは次の④実行で台帳から自動整合する。
 
 const UKE_KOBETSU_CFG = {
   ボタン行: 5,      // 5行目(凡例1〜4行目と見出し6行目の間の空き行。既存ボタンと重ならない)
@@ -83,39 +86,7 @@ function 受注個別_選択行_(sh, M){
   return Array.from(rows).sort((a,b)=>a-b);
 }
 
-// 純ロジック: EMSリスト行から、この商品に一致する「到着済・残あり」の候補を返す
-// (照合は②と同じ: 受注候補コード_→codeKeys_。加えてコードの受注番号タグ=この受注なら
-//  コードが多少違っても候補にする。残数=行数量-P列既存割当)
-function 受注個別_候補_(emsRows, sku, code, ban){
-  const targetKeys=[];
-  受注候補コード_(sku,code).forEach(v=> codeKeys_(v).forEach(k=>{ if(targetKeys.indexOf(k)<0) targetKeys.push(k); }));
-  const out=[];
-  emsRows.forEach(r=>{
-    if(String(r.状態||'').trim()!=='到着済') return;
-    const tagHit = !!(ban && タグ受注番号_(r.商品コード)===ban);
-    if(!tagHit && !codeKeys_(r.商品コード).some(k=>targetKeys.indexOf(k)>=0)) return;
-    const used=個別対応_P注文展開_(r.注文番号, r.数量).reduce((s,e)=>s+e.qty,0);
-    const 残=Math.max(0,(Number(r.数量)||0)-used);
-    if(残>0) out.push({item:r, 残});
-  });
-  return out;
-}
-
-// P列にこの受注番号×この商品の割当がある行を返す(状態問わず。キャンセル用)
-// コードの受注番号タグ=この受注の行も対象(RECIPE42/10117126 と RECIPE42b/10117126 のような揺れ対策)
-function 受注個別_割当行_(emsRows, sku, code, ban){
-  const targetKeys=[];
-  受注候補コード_(sku,code).forEach(v=> codeKeys_(v).forEach(k=>{ if(targetKeys.indexOf(k)<0) targetKeys.push(k); }));
-  const out=[];
-  emsRows.forEach(r=>{
-    if(!r.注文番号) return;
-    const tagHit = !!(ban && タグ受注番号_(r.商品コード)===ban);
-    if(!tagHit && !codeKeys_(r.商品コード).some(k=>targetKeys.indexOf(k)>=0)) return;
-    const cur=個別対応_P注文展開_(r.注文番号, r.数量).filter(e=>e.ban===ban).reduce((s,e)=>s+e.qty,0);
-    if(cur>0) out.push({item:r, cur});
-  });
-  return out;
-}
+// (旧P列ベースの候補/割当行ヘルパーは台帳直書き化で廃止。候補は取り置き計算.jsの個別_台帳候補_)
 
 // 受注明細の1行を塗る/クリアする(color=nullでクリア)。未入金の受注番号セル(赤)と
 // 個数>=2の個数セル(緑)のマークは維持する(②の色分けと同じ約束事)
@@ -190,6 +161,19 @@ function 受注個別_行情報_(row, M){
   };
 }
 
+// この供給キー(箱×元コード)の台帳ACTIVE行を {ban,qty} に集計(今回入荷EMSの在庫の表示更新用)
+function 受注個別_台帳消費者_(ledgerRows, item){
+  const key=取り置き_供給キー_(item.EMS番号, item.商品コード);
+  const agg={};
+  (ledgerRows||[]).forEach(r=>{
+    if(r.状態!=='取り置き中') return;
+    if(取り置き_供給キー_(r.元EMS番号, r.元EMS商品コード||r.商品コード)!==key) return;
+    const ban=String(r.受注番号||'').trim(); if(!ban) return;
+    agg[ban]=(agg[ban]||0)+(Number(r.取り置き数量)||0);
+  });
+  return Object.keys(agg).map(ban=>({ban, qty:agg[ban]}));
+}
+
 function 選択行を個別引当(){ 直列_(選択行を個別引当_本体_); }
 function 選択行を個別引当_本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
@@ -200,6 +184,9 @@ function 選択行を個別引当_本体_(){
   if(!rows.length){ ui.alert('対象のデータ行を選択してからボタンを押してください。'); return; }
   const ems=個別対応_EMSリスト_();
   if(ems.error){ ui.alert(ems.error); return; }
+  let ledgerRows, movementRows;
+  try{ ledgerRows=取り置き台帳_読む_(); movementRows=EMS在庫移動台帳_読む_(); }
+  catch(e){ ui.alert('取り置き台帳を読み込めません:\n'+e.message); return; }
   const R=sh.getDataRange().getValues();
   const results=[];
   rows.forEach(rowNo=>{
@@ -208,20 +195,18 @@ function 選択行を個別引当_本体_(){
     if(!l.ban || (!l.code && !l.sku)){ results.push('行'+rowNo+': 受注番号/商品コードが読めません'); return; }
     if(l.kbn!=='取り寄せ'){ results.push(label+': 取り寄せ行ではないのでスキップ'); return; }
     if(l.qty<=0){ results.push(label+': 個数0のためスキップ'); return; }
-    const cands=受注個別_候補_(ems.rows, l.sku, l.code, l.ban);
-    if(!cands.length){
-      // 残あり箱が無くても、既にこの受注が到着済の箱に名指しされていれば「割当済み=出せる」なので黄に塗る
-      const 既=受注個別_割当行_(ems.rows, l.sku, l.code, l.ban).filter(h=>String(h.item.状態||'').trim()==='到着済');
-      if(既.length){
-        受注個別_行色_(sh, M, rowNo, HIKIATE_CFG.色_黄);
-        既.forEach(h=>{ const live=個別対応_P注文展開_(ems.sh.getRange(h.item.row, ems.c.注文番号+1).getDisplayValue(), h.item.数量);
-          受注個別_台帳更新_(ss, h.item, live, R, M); });
-        results.push(label+': 既に割当済み('+既.reduce((s,h)=>s+h.cur,0)+'個)。行を黄にしました');
-      } else {
-        results.push(label+': 到着済の箱にこの商品(残あり)が見つかりません');
-      }
+    const summary=取り置き_集計_(ledgerRows, movementRows);
+    const key=取り置き_行キー_({ban:l.ban,code:l.code,sku:l.sku});
+    const 確保済=Number(summary.activeByKey[key])||0;
+    if(確保済>=l.qty){
+      受注個別_行色_(sh, M, rowNo, HIKIATE_CFG.色_黄);
+      results.push(label+': 既に取り置き'+確保済+'個で注文数を満たしています。行を黄にしました');
       return;
     }
+    const targetKeys=[];
+    受注候補コード_(l.sku,l.code).forEach(v=> codeKeys_(v).forEach(k=>{ if(targetKeys.indexOf(k)<0) targetKeys.push(k); }));
+    const cands=個別_台帳候補_(ems.rows, targetKeys, l.ban, summary);
+    if(!cands.length){ results.push(label+': 到着済の箱にこの商品(残あり)が見つかりません'); return; }
     let pick=cands[0];
     if(cands.length>1){
       const menu=cands.map((c,i)=>(i+1)+') '+(c.item.EMS到着日||'?')+'着 '+c.item.EMS番号+(c.item.BoxNo?' Box'+c.item.BoxNo:'')+' 残'+c.残).join('\n');
@@ -231,34 +216,30 @@ function 選択行を個別引当_本体_(){
       if(!(n>=1 && n<=cands.length)){ results.push(label+': 番号が不正のため中止'); return; }
       pick=cands[n-1];
     }
-    // 書き込み直前にP列を読み直す(連続操作でスナップショットが古くても上書きしない)
-    const cell=ems.sh.getRange(pick.item.row, ems.c.注文番号+1);
-    const entries=個別対応_P注文展開_(cell.getDisplayValue(), pick.item.数量);
-    const used=entries.reduce((s,e)=>s+e.qty,0);
-    const 残=Math.max(0,(Number(pick.item.数量)||0)-used);
-    const 既存=entries.filter(e=>e.ban===l.ban).reduce((s,e)=>s+e.qty,0);
-    if(既存>=l.qty){ results.push(label+': 既にこの箱へ'+既存+'個割当済み'); return; }
-    const take=Math.min(l.qty-既存, 残);
+    const take=Math.min(l.qty-確保済, pick.残);
     if(take<=0){ results.push(label+': 箱の残数がありません'); return; }
     const 入荷済=M.入荷>=0 && String(R[rowNo-1][M.入荷]||'').trim()!=='';
     const confirm=ui.alert('個別引当の確認',
-      l.ban+' '+l.name+'\n商品: '+(l.code||l.sku)+' × '+take+'個'+(take<l.qty-既存?'（注文'+l.qty+'個に対して部分）':'')
-      +'\n箱: '+(pick.item.EMS到着日||'?')+'着 '+pick.item.EMS番号+(pick.item.BoxNo?' Box'+pick.item.BoxNo:'')+'（残'+残+'）'
+      l.ban+' '+l.name+'\n商品: '+(l.code||l.sku)+' × '+take+'個'+(take<l.qty-確保済?'（注文'+l.qty+'個に対して部分）':'')
+      +'\n箱: '+(pick.item.EMS到着日||'?')+'着 '+pick.item.EMS番号+(pick.item.BoxNo?' Box'+pick.item.BoxNo:'')+'（残'+pick.残+'）'
+      +'\n※取り置き台帳へ直接登録します(P列・一覧は次の④で整合)'
       +(入荷済?'\n※入荷日は既に入っているので変更しません':'\n※入荷日にEMS到着日を記入します'),
       ui.ButtonSet.OK_CANCEL);
     if(confirm!==ui.Button.OK){ results.push(label+': 中止'); return; }
-    entries.push({ban:l.ban, qty:take});
-    const text=個別対応_P注文整形_(entries, pick.item.数量);
-    cell.setValue(text);
-    cell.setBackground(/[,:：、]/.test(text)?'#fff2cc':null);
-    引当履歴_個別記録_(個別対応_履歴Rec_(pick.item, l.ban, take, '個別引当'));
-    let msg=label+': OK '+take+'個 → '+pick.item.EMS番号;
+    const now=new Date();
+    const applied=個別_台帳引当行_(ledgerRows, {ban:l.ban,code:l.code,sku:l.sku}, take, pick.item.EMS番号, String(pick.item.商品コード||'').trim(), now);
+    if(applied.error){ results.push(label+': '+applied.error); return; }
+    try{ 取り置き台帳_保存_(applied.rows); }
+    catch(e){ results.push(label+': 台帳保存に失敗 '+e.message); return; }
+    ledgerRows=applied.rows; // 連続操作は保存済みの台帳を引き継ぐ
+    try{ 引当履歴_個別記録_(個別対応_履歴Rec_(pick.item, l.ban, take, '個別引当')); }catch(e){}
+    let msg=label+': OK '+take+'個 → '+pick.item.EMS番号+'（台帳登録）';
     if(!入荷済 && M.入荷>=0 && pick.item.EMS到着日){
       sh.getRange(rowNo, M.入荷+1).setValue(pick.item.EMS到着日).setNumberFormat('yyyy-mm-dd');
       msg+=' / 入荷日 '+pick.item.EMS到着日;
     }
     受注個別_行色_(sh, M, rowNo, HIKIATE_CFG.色_黄); // 引き当たった=今回出せる分として即座に黄
-    受注個別_台帳更新_(ss, pick.item, entries, R, M); // 今回入荷EMSの在庫の該当行も連動更新
+    受注個別_台帳更新_(ss, pick.item, 受注個別_台帳消費者_(ledgerRows, pick.item), R, M); // 今回入荷EMSの在庫の該当行も連動更新
     results.push(msg);
   });
   ui.alert('個別引当の結果', results.join('\n'), ui.ButtonSet.OK);
@@ -272,40 +253,48 @@ function 選択行の引当キャンセル_本体_(){
   const M=列マップ_(sh);
   const rows=受注個別_選択行_(sh,M);
   if(!rows.length){ ui.alert('対象のデータ行を選択してからボタンを押してください。'); return; }
-  const ems=個別対応_EMSリスト_();
-  if(ems.error){ ui.alert(ems.error); return; }
+  let ems=null;
+  try{ ems=個別対応_EMSリスト_(); }catch(e){ ems={error:e.message}; }
+  let ledgerRows;
+  try{ ledgerRows=取り置き台帳_読む_(); }
+  catch(e){ ui.alert('取り置き台帳を読み込めません:\n'+e.message); return; }
   const R=sh.getDataRange().getValues();
   const results=[];
   rows.forEach(rowNo=>{
     const l=受注個別_行情報_(R[rowNo-1], M);
     const label=l.ban+' '+(l.code||l.sku);
     if(!l.ban || (!l.code && !l.sku)){ results.push('行'+rowNo+': 受注番号/商品コードが読めません'); return; }
-    const hits=受注個別_割当行_(ems.rows, l.sku, l.code, l.ban);
-    if(!hits.length){ results.push(label+': P列にこの受注の割当が見つかりません'); return; }
-    const total=hits.reduce((s,h)=>s+h.cur,0);
+    const key=取り置き_行キー_({ban:l.ban,code:l.code,sku:l.sku});
+    const targets=ledgerRows.filter(r=>r.状態==='取り置き中' && 取り置き_行キー_(r)===key);
+    if(!targets.length){ results.push(label+': 取り置き台帳にこの受注の取り置き中がありません'); return; }
+    const total=targets.reduce((s,r)=>s+(Number(r.取り置き数量)||0),0);
     const confirm=ui.alert('引当キャンセルの確認',
-      l.ban+' '+(l.code||l.sku)+'\n合計 '+total+'個の割当を取り消します。\n'
-      +hits.map(h=>'・'+(h.item.EMS到着日||'?')+'着 '+h.item.EMS番号+' x'+h.cur).join('\n'),
+      l.ban+' '+(l.code||l.sku)+'\n合計 '+total+'個の取り置きを手動解除します。\n'
+      +targets.map(r=>'・'+(r.元EMS番号||'(EMSなし)')+' x'+r.取り置き数量).join('\n')
+      +'\n※P列・一覧は次の④で整合します',
       ui.ButtonSet.OK_CANCEL);
     if(confirm!==ui.Button.OK){ results.push(label+': 中止'); return; }
-    let removed=0;
-    hits.forEach(h=>{
-      const cell=ems.sh.getRange(h.item.row, ems.c.注文番号+1);
-      const entries=個別対応_P注文展開_(cell.getDisplayValue(), h.item.数量);
-      const kept=[]; let cut=0;
-      entries.forEach(e=>{ if(e.ban===l.ban){ cut+=e.qty; } else kept.push(e); });
-      if(cut<=0) return;
-      const text=個別対応_P注文整形_(kept, h.item.数量);
-      cell.setValue(text);
-      cell.setBackground(/[,:：、]/.test(text)?'#fff2cc':null);
-      引当履歴_キャンセル_(個別対応_履歴Rec_(h.item, l.ban, cut, '個別引当'), cut);
-      受注個別_台帳更新_(ss, h.item, kept, R, M); // 今回入荷EMSの在庫の該当行も連動更新(色クリア・余り復元)
-      removed+=cut;
+    const now=new Date();
+    const plan=個別_台帳解除計画_(ledgerRows, key, '個別ボタンからキャンセル', now);
+    try{ 取り置き台帳_保存_(plan.rows); }
+    catch(e){ results.push(label+': 台帳保存に失敗 '+e.message); return; }
+    ledgerRows=plan.rows; // 連続操作は保存済みの台帳を引き継ぐ
+    // 履歴・今回入荷EMSの在庫の表示も追随(読めない環境では黙ってスキップ。④が正)
+    targets.forEach(r=>{
+      const ems番号=String(r.元EMS番号||'').trim(); if(!ems番号 || !ems || ems.error) return;
+      const item=(ems.rows||[]).find(x=>String(x.EMS番号||'').trim()===ems番号 && normCode_(x.商品コード)===normCode_(r.元EMS商品コード||r.商品コード));
+      if(!item) return;
+      try{ 引当履歴_キャンセル_(個別対応_履歴Rec_(item, l.ban, Number(r.取り置き数量)||0, '個別引当'), Number(r.取り置き数量)||0); }catch(e){}
+      受注個別_台帳更新_(ss, item, 受注個別_台帳消費者_(ledgerRows, item), R, M);
     });
-    SpreadsheetApp.flush(); // 入荷日クリアの「他に有効割当があるか」判定が書き込み後のP列を見るように
-    const cleared=個別対応_入荷日クリア_(l.ban, l.code||l.sku, '');
+    // 取り置きが残らなければ入荷日をクリア(台湾・中国の手入力入荷日は別ルートなのでここへ来ない)
+    let cleared=0;
+    if(M.入荷>=0 && String(R[rowNo-1][M.入荷]||'').trim()!==''){
+      sh.getRange(rowNo, M.入荷+1).setValue('');
+      cleared=1;
+    }
     受注個別_行色_(sh, M, rowNo, null); // キャンセルした行は色をクリア(未入金の赤・個数の緑マークは残す)
-    results.push(label+': キャンセル '+removed+'個'+(cleared?' / 入荷日クリア '+cleared+'行':''));
+    results.push(label+': 手動解除 '+plan.qty+'個'+(cleared?' / 入荷日クリア':''));
   });
   ui.alert('引当キャンセルの結果', results.join('\n'), ui.ButtonSet.OK);
 }

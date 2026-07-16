@@ -261,6 +261,54 @@ function 取り置き_割当計算_(input){
   return plan;
 }
 
+// ===== 個別引当・引当キャンセルボタン用(台帳直書き) =====
+// P列は④が計画から書き直す派生表示になったため、ボタンは台帳へ直接書く。
+
+// 到着済みEMS行から、台帳使用を差し引いた「残あり」候補を返す。
+// targetKeys: 受注側の照合キー(受注候補コード_+codeKeys_で広めに)。ban一致の受注番号タグは
+// コード不一致でも候補(REQ系・名指し買付の救済はこのボタンが担う)。
+function 個別_台帳候補_(emsRows, targetKeys, ban, summary){
+  const keys=(targetKeys||[]).map(k=>normCode_(k)).filter(Boolean);
+  const out=[];
+  (emsRows||[]).forEach(r=>{
+    if(String(r.状態||'').trim()!=='到着済') return;
+    const ems=String(r.EMS番号||'').trim();
+    if(!実EMS番号_(ems)) return;
+    const tagHit=!!(ban && タグ受注番号_(r.商品コード)===String(ban));
+    if(!tagHit && !codeKeys_(r.商品コード).some(k=>keys.indexOf(k)>=0)) return;
+    const supplyKey=取り置き_供給キー_(ems, r.商品コード);
+    const 残=Math.max(0,(Number(r.数量)||0)-取り置き_使用合計_(summary&&summary.usageBySupply?summary.usageBySupply[supplyKey]:null));
+    if(残>0) out.push({item:r, 残});
+  });
+  return out;
+}
+
+// 台帳へ取り置き中行を積む(同じ決定ID=同じ注文×箱なら数量を加算)。保存は呼び出し側。
+function 個別_台帳引当行_(ledgerRows, order, take, ems, sourceCode, now){
+  const row=取り置き_新規行_(order, take, 'EMS', ems, '', sourceCode);
+  const rows=(ledgerRows||[]).map(r=>Object.assign({},r));
+  const index=rows.findIndex(r=>String(r.取置ID||'')===row.取置ID);
+  if(index>=0){
+    const cur=rows[index];
+    if(cur.状態!==TORIOKI_STATUS.ACTIVE) return {rows:null,error:'同じ取置IDの行が取り置き中ではありません: '+row.取置ID};
+    rows[index]=Object.assign({},cur,{取り置き数量:取り置き_整数_(cur.取り置き数量)+take,更新日時:now});
+  } else {
+    rows.push(Object.assign({},row,{登録日時:now,更新日時:now}));
+  }
+  return {rows,error:''};
+}
+
+// 行キーの取り置き中だけを手動解除へ。発送済み・他注文は触らない。保存は呼び出し側。
+function 個別_台帳解除計画_(ledgerRows, key, reason, now){
+  let released=0, qty=0;
+  const rows=(ledgerRows||[]).map(r=>{
+    if(r.状態!==TORIOKI_STATUS.ACTIVE || 取り置き_行キー_(r)!==key) return Object.assign({},r);
+    released++; qty+=取り置き_整数_(r.取り置き数量);
+    return Object.assign({},r,{状態:TORIOKI_STATUS.RELEASED,'終了理由・メモ':reason,更新日時:now});
+  });
+  return {rows,released,qty};
+}
+
 // 台帳に載らない出荷(週末GoQ直接発送など④未実行の箱からの出荷)を検知し、
 // 「発送済み」行として自動登録する計画を作る。旧9a8f8d8の売り越し防止の台帳版。
 //   shippedRows: 消込台帳_出荷済み行_()の行 / ledgerRows・movements: 現台帳
