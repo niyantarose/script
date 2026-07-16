@@ -194,11 +194,17 @@ function 取り置き台帳_割当計画を反映_(plan,existingRows,now){
 }
 
 function 取り置き_受注番号集合_(sheetName){
+  // ④の一覧シートは1行目がタイムスタンプで見出しは書き出し_のstartRow(受注明細と同じ行)に入る。
+  // 見出し行は固定位置にせず探す。シート未生成・見出しなし(=④未実行で空)は候補なしとして空集合。
   const sh=SpreadsheetApp.getActive().getSheetByName(sheetName), out=new Set();
-  if(!sh || sh.getLastRow()<2) return out;
-  const head=sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0].map(v=>String(v||'').trim());
-  const col=head.indexOf('受注番号'); if(col<0) throw new Error(sheetName+'に受注番号見出しがありません');
-  sh.getRange(2,col+1,sh.getLastRow()-1,1).getDisplayValues().forEach(r=>{ const ban=String(r[0]||'').trim(); if(ban) out.add(ban); });
+  if(!sh || sh.getLastRow()<1) return out;
+  const values=sh.getDataRange().getDisplayValues();
+  const hr=values.findIndex(row=>row.map(v=>String(v||'').trim()).indexOf('受注番号')>=0);
+  if(hr<0) return out;
+  const col=values[hr].map(v=>String(v||'').trim()).indexOf('受注番号');
+  for(let i=hr+1;i<values.length;i++){
+    const ban=String(values[i][col]||'').trim(); if(ban) out.add(ban);
+  }
   return out;
 }
 
