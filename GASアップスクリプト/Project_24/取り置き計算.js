@@ -220,12 +220,19 @@ function 取り置き_割当計算_(input){
     addNewRow(取り置き_新規行_(order,take,source,s.ems,'',s.sourceCode));
     return take;
   };
+  // タグの名指し先が不在(キャンセル済み等)・数量超過(多め買付)は日常運用で起きるため、
+  // エラー(④全体中止)ではなく警告にして持ち主のない分を余り(日本在庫)へ回す。
+  const warnings=[];
   supplies.filter(s=>s.directBan).forEach(s=>{
     const available=remainingBySupply[s._key]||0;
     if(available<=0) return;
+    const label=String(s.sourceCode||s.code||'').trim()||normCode_(s.code);
     const order=取り置き_direct注文_(orders,s.directBan,s.code);
-    if(!order) errors.push('注文番号指定の対象なし: '+s.directBan);
-    else if(takeSupply(s,order,available,'EMS')!==available) errors.push('注文番号指定が注文数または供給数を超過: '+s.directBan);
+    if(!order) warnings.push('注文番号指定の対象なし(全量を余りへ): '+s.directBan+' '+label+' x'+available+' → キャンセル済みなら発注共有EMSリストのタグを外してください');
+    else {
+      const taken=takeSupply(s,order,available,'EMS');
+      if(taken!==available) warnings.push('注文番号指定の余剰を余りへ: '+s.directBan+' '+label+' 供給'+available+'／引当'+taken);
+    }
   });
   (input.explicit||[]).forEach(e=>{
     const order=orders.find(o=>String(o.ban)===String(e.ban) && matches(o,e.code));
@@ -249,7 +256,7 @@ function 取り置き_割当計算_(input){
   const surplus=supplies.map(s=>({ems:s.ems,code:s.sourceCode,matchCode:normCode_(s.code),sourceCode:s.sourceCode,directBan:s.directBan,
     qty:remainingBySupply[s._key]||0,arrival:s.arrival}))
     .filter(s=>s.qty>0);
-  const plan={orders,newRows,returnUpdates,remainingBySupply,surplus,errors};
+  const plan={orders,newRows,returnUpdates,remainingBySupply,surplus,errors,warnings:Array.from(new Set(warnings))};
   plan.errors=Array.from(new Set(plan.errors.concat(取り置き_割当検証_(plan,input,summary))));
   return plan;
 }

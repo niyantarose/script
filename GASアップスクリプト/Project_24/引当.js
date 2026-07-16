@@ -1514,6 +1514,7 @@ function 引当実行_本体_(options){
     ui.alert('引当を中止しました',allocationPlan.errors.join('\n'),ui.ButtonSet.OK);
     return;
   }
+  const 割当警告=allocationPlan.warnings||[]; // タグ異常(名指し不在・多め買付)。完走して完了ダイアログで知らせる
 
   const now=new Date();
   const projectedLedger=取り置き台帳_割当計画後行_(allocationPlan,ledgerRows,now);
@@ -1747,10 +1748,12 @@ function 引当実行_本体_(options){
     // 台帳・P列・受注明細・全出力が成功した最後にだけ整合状態を確定する。
     // 突合せ超過(要確認>0)が残っている間は⑤便締めがブロックされる。
     PropertiesService.getDocumentProperties().setProperty('引当_整合状態',JSON.stringify({ts:Date.now(),要確認:突合超過.length,台帳版:'v1'}));
-    ui.alert(突合超過.length? '⚠️ 引当完了（要確認 '+突合超過.length+'件）' : '✅ 引当完了（整合OK）',
+    ui.alert(突合超過.length? '⚠️ 引当完了（要確認 '+突合超過.length+'件）'
+        : 割当警告.length? '✅ 引当完了（タグ注意 '+割当警告.length+'件）' : '✅ 引当完了（整合OK）',
       '■ 処理時間\n'+処理秒+'秒\n\n■ 突合せ\n'
       +(突合超過.length? '⚠️ 箱の供給を超えた消費 '+突合超過.length+'件（⑤便締めはブロックされます）\n'+突合超過.slice(0,10).join('\n')+(突合超過.length>10?'\n…他'+(突合超過.length-10)+'件':'')
         : '✅ 整合OK『'+突合式+'』')
+      +(割当警告.length? '\n\n■ ⚠️ 注文番号タグの注意 '+割当警告.length+'件\n'+割当警告.slice(0,10).join('\n')+(割当警告.length>10?'\n…他'+(割当警告.length-10)+'件':''):'')
       +'\n\n■ 注文の分類\n出荷可能 '+ship+' ／ 出荷GO未入金 '+keep+' ／ 希望日待 '+hold+' ／ 部分在庫 '+part+' ／ 引当待ち '+(ord-ship-keep-hold-part)+'（うち入金待ち '+mp+'）'
       +'\n\n■ 処理内容\n取り置き台帳新規 '+確定行数+'行 ／ 入荷日自動記入 '+自動入荷+'件'
       +(emsD.除外? ' ／ 🚫棚卸・EMS番号なしを供給除外 '+emsD.除外+'行':'')

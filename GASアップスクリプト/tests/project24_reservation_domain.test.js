@@ -466,5 +466,41 @@ test('既存台帳エラーは割当計算結果で重複しない', () => {
   assert.strictEqual(result.errors.length,new Set(result.errors).size);
 });
 
+// ===== タグ異常は警告して完走する(④全体を止めない・持ち主のない分は余りへ) =====
+// キャンセル済み注文の名指しタグや多め買付は日常的に発生するため、全体中止にしない(ユーザー決定)。
+
+test('名指し注文が不在のdirect供給は警告して余りへ回し、他の注文は完走する', () => {
+  const orders=[{ban:'10200000',code:'AAA',sku:'AAAb',qty:1,sortKey:1,i:0,keys:['AAA']}];
+  const supplies=[
+    {ems:'EG1',code:'POEM65',sourceCode:'POEM65（10116569）',qty:2,directBan:'10116569'},
+    {ems:'EG1',code:'AAA',sourceCode:'AAA',qty:1}
+  ];
+  const result=context.取り置き_割当計算_({orders,ledger:[],movements:[],supplies,explicit:[]});
+  assert.strictEqual(result.errors.length,0,'エラーで中止しない: '+JSON.stringify(result.errors));
+  assert.strictEqual(result.warnings.length,1);
+  assert.ok(result.warnings[0].indexOf('10116569')>=0);
+  assert.strictEqual(result.surplus.find(s=>s.directBan==='10116569').qty,2,'不在名指しの箱は全量余りへ');
+  assert.strictEqual(result.newRows.filter(r=>r.受注番号==='10200000').length,1,'他の注文の引当は完走する');
+});
+
+test('多め買付(供給>注文数)のdirect供給は注文分だけ引き当て、残りを警告付きで余りへ', () => {
+  const orders=[{ban:'10116569',code:'POEM65',sku:'POEM65b',qty:1,sortKey:1,i:0,keys:['POEM65']}];
+  const supplies=[{ems:'EG1',code:'POEM65',sourceCode:'POEM65（10116569）',qty:2,directBan:'10116569'}];
+  const result=context.取り置き_割当計算_({orders,ledger:[],movements:[],supplies,explicit:[]});
+  assert.strictEqual(result.errors.length,0,'エラーで中止しない: '+JSON.stringify(result.errors));
+  assert.strictEqual(result.warnings.length,1);
+  assert.strictEqual(result.newRows.length,1);
+  assert.strictEqual(result.newRows[0].取り置き数量,1);
+  assert.strictEqual(result.surplus.find(s=>s.directBan==='10116569').qty,1,'多め分は余りへ');
+});
+
+test('正常なdirect割当では警告を出さない', () => {
+  const orders=[{ban:'10116569',code:'POEM65',sku:'POEM65b',qty:2,sortKey:1,i:0,keys:['POEM65']}];
+  const supplies=[{ems:'EG1',code:'POEM65',sourceCode:'POEM65（10116569）',qty:2,directBan:'10116569'}];
+  const result=context.取り置き_割当計算_({orders,ledger:[],movements:[],supplies,explicit:[]});
+  assert.strictEqual(result.errors.length,0);
+  assert.strictEqual((result.warnings||[]).length,0);
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');
