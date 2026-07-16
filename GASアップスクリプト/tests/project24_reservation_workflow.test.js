@@ -39,16 +39,31 @@ function test(name, fn) {
   }
 }
 
-test('部分在庫と希望日待ちの受注だけを初期候補にする', () => {
+test('一覧に載る受注だけを初期候補にし、現在の状態ラベルを付ける', () => {
   const orders=[
     {ban:'101',code:'AAA',sku:'AAAb',qty:2,kbn:'取り寄せ'},
     {ban:'102',code:'BBB',sku:'BBBb',qty:1,kbn:'取り寄せ'},
     {ban:'103',code:'CCC',sku:'CCCb',qty:1,kbn:'取り寄せ'}
   ];
-  const rows=context.取り置き_初期候補_(orders,new Set(['101']),new Set(['102']));
+  const rows=context.取り置き_初期候補_(orders,[
+    {状態:'部分在庫',bans:new Set(['101'])},
+    {状態:'希望日待ち',bans:new Set(['102'])}
+  ]);
   assert.strictEqual(rows.length,2);
   assert.strictEqual(rows[0].取置ID,'INIT|101|AAA|AAAB');
+  assert.strictEqual(rows[0].現在の状態,'部分在庫');
   assert.strictEqual(rows[1].取置ID,'INIT|102|BBB|BBBB');
+  assert.strictEqual(rows[1].現在の状態,'希望日待ち');
+});
+
+test('同じ受注×商品の分割行は注文数量を合算して1候補にする', () => {
+  const orders=[
+    {ban:'201',code:'ANKI22b',sku:'ANKI22b',qty:2,kbn:'取り寄せ'},
+    {ban:'201',code:'ANKI22b',sku:'ANKI22b',qty:1,kbn:'取り寄せ'}
+  ];
+  const rows=context.取り置き_初期候補_(orders,[{状態:'部分在庫',bans:new Set(['201'])}]);
+  assert.strictEqual(rows.length,1);
+  assert.strictEqual(rows[0].注文数量,3);
 });
 
 test('初回入力は空欄と0を除外し注文数量超過を止める', () => {
@@ -885,7 +900,7 @@ test('受注共通メニューに初回登録の作成と確定を追加する',
 
 // ===== 修正5: 初期候補の範囲拡大・初期確定の再実行ガード・移動台帳の数量不一致ガード =====
 
-test('初期候補は出荷GO未入金・出荷可能の受注も含められる(可変の集合)', () => {
+test('初期候補は出荷GO未入金・出荷可能の受注も含め、状態のグループ順に並ぶ', () => {
   const orders=[
     {ban:'101',code:'AAA',sku:'AAAb',qty:2,kbn:'取り寄せ'},
     {ban:'102',code:'BBB',sku:'BBBb',qty:1,kbn:'取り寄せ'},
@@ -893,9 +908,16 @@ test('初期候補は出荷GO未入金・出荷可能の受注も含められる
     {ban:'104',code:'DDD',sku:'DDDb',qty:1,kbn:'取り寄せ'},
     {ban:'105',code:'EEE',sku:'EEEb',qty:1,kbn:'取り寄せ'}
   ];
-  const rows=context.取り置き_初期候補_(orders,new Set(['101']),new Set(['102']),new Set(['103']),new Set(['104']));
+  const rows=context.取り置き_初期候補_(orders,[
+    {状態:'出荷可能',bans:new Set(['104'])},
+    {状態:'出荷GO未入金',bans:new Set(['103'])},
+    {状態:'部分在庫',bans:new Set(['101'])},
+    {状態:'希望日待ち',bans:new Set(['102'])}
+  ]);
   assert.strictEqual(rows.length,4);
   assert.ok(rows.every(r=>r.受注番号!=='105'));
+  assert.strictEqual(JSON.stringify(rows.map(r=>r.現在の状態)),
+    JSON.stringify(['出荷可能','出荷GO未入金','部分在庫','希望日待ち']),'一覧の優先順でグループ化');
 });
 
 test('発送済みになった開始前在庫行は初期確定の再実行で復活も消滅もしない', () => {
