@@ -540,7 +540,8 @@ function P列シートモック_(pValue){
       getDisplayValues:()=>row===6?[emsHead.slice(col-1,col-1+numCols)]:emsRows.slice(row-7,row-7+numRows).map(r=>r.slice(col-1,col-1+numCols)),
       setValues:values=>{ state.setValues++; state.values=values; },
       setBackground:()=>{ state.setBackground++; }
-    })
+    }),
+    getRangeList:()=>({setBackground:()=>{ state.setBackground++; }}) // 背景色は色ごとにRangeListでまとめ書き
   };
   return {recv,ems,state};
 }

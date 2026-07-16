@@ -63,8 +63,17 @@ function P列書き直し実行_(){
   plan.sheet.getRange(plan.startRow,plan.colP,plan.rowCount,1).setValues(plan.values);
   const backgrounds=clearedRows.map(i=>({a1:P列セルA1_(plan.startRow+i,plan.colP),color:null}))
     .concat(plan.backgrounds||[]);
-  backgrounds.forEach(item=>plan.sheet.getRange(item.a1).setBackground(item.color));
+  P列背景を反映_(plan.sheet, backgrounds);
   return {クリア:cleared, 記入:plan.summary.記入, 分割:plan.summary.分割, 在庫:plan.summary.在庫};
+}
+
+// 背景色を色ごとにRangeListへまとめて反映(1セルずつのAPI呼び出しにしない)
+function P列背景を反映_(sheet, items){
+  const byColor={};
+  (items||[]).forEach(item=>{ if(item && item.a1){ const key=String(item.color); (byColor[key]=byColor[key]||[]).push(item.a1); } });
+  Object.keys(byColor).forEach(key=>{
+    sheet.getRangeList(byColor[key]).setBackground(key==='null'? null : key);
+  });
 }
 
 // ⚖️ 便の引当をやり直す: 指定した到着日の入荷日を白紙に→P列書き直し→②まで一括実行。
@@ -230,7 +239,7 @@ function P列シート識別子_(sheet){
 function 発注共有P列計画を反映_(plan){
   if(plan.error || !plan.writes || !plan.writes.length) return plan.summary||plan;
   plan.sheet.getRange(plan.startRow,plan.colP,plan.rowCount||plan.values.length,1).setValues(plan.values);
-  (plan.backgrounds||[]).forEach(item=>plan.sheet.getRange(item.a1).setBackground(item.color));
+  P列背景を反映_(plan.sheet, plan.backgrounds);
   return Object.assign({},plan.summary,{到着実績:plan.到着実績,到着便:plan.到着便,到着実績取得済:plan.到着実績取得済});
 }
 
