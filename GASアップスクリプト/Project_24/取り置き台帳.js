@@ -1,7 +1,7 @@
 const TORIOKI_CFG = Object.freeze({
   台帳:'取り置き台帳', 初期:'取り置き初期登録', 要確認:'取り置き要確認', 戻し:'キャンセル戻し確認', Yahoo候補:'Yahoo戻し候補', 移動:'EMS在庫移動台帳',
   台帳HDR:['取置ID','状態','受注番号','商品コード','SKU','取り置き数量','取置元種別','元EMS番号','元EMS商品コード','元取置ID','登録日時','更新日時','戻し処理結果','終了理由・メモ'],
-  初期HDR:['取置ID','受注番号','商品コード','SKU','注文数量','現在の状態','現物取り置き数量','メモ','判定'],
+  初期HDR:['取置ID','受注番号','氏名','商品コード','SKU','注文数量','現在の状態','現物取り置き数量','メモ','判定'],
   要確認HDR:['取置ID','受注番号','商品コード','理由'],
   移動HDR:['処理ID','EMS番号','商品コード','数量','移動先','処理日時']
 });
@@ -67,7 +67,7 @@ function 取り置き_初期候補_(orders, sources){
     .sort((a,b)=>(rank[byKey[a].state]-rank[byKey[b].state]) || (a<b?-1:a>b?1:0))
     .map(key=>{
       const c=byKey[key], o=c.o;
-      return {取置ID:'INIT|'+key,受注番号:String(o.ban),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
+      return {取置ID:'INIT|'+key,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
         注文数量:c.qty,現在の状態:c.state,現物取り置き数量:'',メモ:'',判定:''};
     });
 }
@@ -233,7 +233,7 @@ function 取り置き初期登録を作成本体_(){
     const row=values[i], ban=String(row[M.番号]||'').trim(), qty=Number(row[M.個数])||0;
     if(!ban || qty<=0 || 区分_(row[M.選択肢])!=='取り寄せ') continue;
     if(引当_別ルート判定_(row[M.選択肢], M.商品名>=0?row[M.商品名]:'')) continue; // 台湾・中国は台帳の対象外
-    orders.push({ban,code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty});
+    orders.push({ban,氏名:M.氏名>=0?String(row[M.氏名]||''):'',code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty});
   }
   // 出荷GO未入金(未入金滞留)・出荷可能(発送前)も棚に現物がある=候補に含める(空欄なら未取り置き扱い)
   const candidates=取り置き_初期候補_(orders,[
