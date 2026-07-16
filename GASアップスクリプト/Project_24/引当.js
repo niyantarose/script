@@ -1599,7 +1599,23 @@ function 引当実行_本体_(options){
     注文罫線_(recv, recvStart, M.番号);
   }
 
-  let 突合式='';
+  // 突合せ検算: 現供給キーごとに 供給＝取り置き中＋発送済み＋戻し未処理＋在庫なし確定＋Yahoo移動済み＋余り
+  // (全件検算・⑤便締めと同じ台帳式。検証済み計画なら超過0のはずで、超過>0は要確認として⑤をブロックする)
+  const 突合={供給:0,取り置き中:0,発送済み:0,戻し未処理:0,在庫なし確定:0,Yahoo移動済み:0,余り:0}, 突合超過=[];
+  {
+    const qtyByKey={};
+    supplies.forEach(s=>{ const key=取り置き_供給キー_(s.ems,s.sourceCode||s.code); qtyByKey[key]=(qtyByKey[key]||0)+(Number(s.qty)||0); });
+    Object.keys(qtyByKey).forEach(key=>{
+      const u=projectedSummary.usageBySupply[key]||{取り置き中:0,発送済み:0,戻し未処理:0,在庫なし確定:0,Yahoo移動済み:0};
+      const supplied=qtyByKey[key], used=取り置き_使用合計_(u);
+      突合.供給+=supplied; 突合.取り置き中+=u.取り置き中||0; 突合.発送済み+=u.発送済み||0;
+      突合.戻し未処理+=u.戻し未処理||0; 突合.在庫なし確定+=u.在庫なし確定||0; 突合.Yahoo移動済み+=u.Yahoo移動済み||0;
+      突合.余り+=supplied-used;
+      if(used>supplied) 突合超過.push(key.replace('|',' ')+' 使用'+used+'／供給'+supplied);
+    });
+  }
+  const 突合式='供給'+突合.供給+'＝取り置き中'+突合.取り置き中+'＋発送済み'+突合.発送済み+'＋戻し未処理'+突合.戻し未処理
+    +'＋在庫なし確定'+突合.在庫なし確定+'＋Yahoo移動済み'+突合.Yahoo移動済み+'＋余り'+突合.余り;
   const jpRows=outputPlan.surplus.map(r=>['到着済',r.arrival,r.code,r.qty,r.ems]);
 
   // 今回EMS消費者は、同じallocationPlanから作った台帳投影の元EMSで表示する。
@@ -1614,11 +1630,11 @@ function 引当実行_本体_(options){
         .concat(consumers.map(c=>paidOrder[c.ban]?(c.current?cfg.色_黄:cfg.色_着):cfg.色_赤));
       return {vals,bg};
     });
-    突合式='台帳計画 '+rows.length+'供給 / 日本在庫 '+outputPlan.surplus.length+'行';
     const maxCols=rows.reduce((m,r)=>Math.max(m,r.vals.length),EHDR.length);
     let sh=ss.getSheetByName(cfg.日本在庫),fresh=!sh; if(!sh) sh=ss.insertSheet(cfg.日本在庫);
     シート値クリア_(sh);
-    sh.getRange(1,1).setValue('最終引当: '+Utilities.formatDate(now,'Asia/Tokyo','yyyy/MM/dd HH:mm:ss')+' / '+rows.length+'件 ｜ 整合OK『'+突合式+'』');
+    sh.getRange(1,1).setValue('最終引当: '+Utilities.formatDate(now,'Asia/Tokyo','yyyy/MM/dd HH:mm:ss')+' / '+rows.length+'件 ｜ '
+      +(突合超過.length? '⚠️超過消費'+突合超過.length+'件' : '整合OK『'+突合式+'』'));
     const header=EHDR.slice(); while(header.length<maxCols) header.push('');
     sh.getRange(2,1,1,maxCols).setValues([header]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(cfg.字);
     sh.setFrozenRows(2); if(fresh) sh.setRowHeight(2,cfg.行高);
@@ -1715,9 +1731,12 @@ function 引当実行_本体_(options){
     const ui=SpreadsheetApp.getUi(),処理ms=Date.now()-開始ms,処理秒=Math.round(処理ms/1000);
     console.log('④引当実行 処理時間ms='+処理ms);
     // 台帳・P列・受注明細・全出力が成功した最後にだけ整合状態を確定する。
-    PropertiesService.getDocumentProperties().setProperty('引当_整合状態',JSON.stringify({ts:Date.now(),要確認:0,台帳版:'v1'}));
-    ui.alert('✅ 引当完了（整合OK）',
-      '■ 処理時間\n'+処理秒+'秒\n\n■ 突合せ\n✅ 整合OK『'+突合式+'』'
+    // 突合せ超過(要確認>0)が残っている間は⑤便締めがブロックされる。
+    PropertiesService.getDocumentProperties().setProperty('引当_整合状態',JSON.stringify({ts:Date.now(),要確認:突合超過.length,台帳版:'v1'}));
+    ui.alert(突合超過.length? '⚠️ 引当完了（要確認 '+突合超過.length+'件）' : '✅ 引当完了（整合OK）',
+      '■ 処理時間\n'+処理秒+'秒\n\n■ 突合せ\n'
+      +(突合超過.length? '⚠️ 箱の供給を超えた消費 '+突合超過.length+'件（⑤便締めはブロックされます）\n'+突合超過.slice(0,10).join('\n')+(突合超過.length>10?'\n…他'+(突合超過.length-10)+'件':'')
+        : '✅ 整合OK『'+突合式+'』')
       +'\n\n■ 注文の分類\n出荷可能 '+ship+' ／ 出荷GO未入金 '+keep+' ／ 希望日待 '+hold+' ／ 部分在庫 '+part+' ／ 引当待ち '+(ord-ship-keep-hold-part)+'（うち入金待ち '+mp+'）'
       +'\n\n■ 処理内容\n取り置き台帳新規 '+確定行数+'行 ／ 入荷日自動記入 '+自動入荷+'件'
       +(emsD.除外? ' ／ 🚫棚卸・EMS番号なしを供給除外 '+emsD.除外+'行':'')

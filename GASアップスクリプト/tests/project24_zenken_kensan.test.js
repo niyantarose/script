@@ -17,6 +17,8 @@ vm.createContext(context);
   'Project_24/P列確定.js',
   'Project_24/消込台帳.js',
   'Project_24/棚卸.js',
+  'Project_24/取り置き計算.js',
+  'Project_24/取り置き台帳.js',
   'Project_24/全件検算.js',
   'Project_24/入荷日チェック.js' // 参照はしないが構文チェックを兼ねて読み込む
 ].forEach(f => vm.runInContext(fs.readFileSync(f, 'utf8'), context));
@@ -222,6 +224,127 @@ test('全件検算_集計_: 並びは判定の重い順→コード順', () => {
   assert.strictEqual(r.rows[0].code, 'ZZ-09'); // ⚠️超過消費が先頭
   assert.strictEqual(r.rows[0].判定, '⚠️超過消費');
   assert.strictEqual(r.rows[1].code, 'AA-01');
+});
+
+// ===== Task9: 取り置き台帳式による箱別検算 =====
+
+test('箱別供給が新台帳の全区分と一致すればOK', () => {
+  const result = context.全件検算_台帳集計_({
+    supply: [{ ems:'EG1', code:'AAA', sourceCode:'AAA', matchCode:'AAA', qty:10, status:'到着済' }],
+    ledger: [
+      {取置ID:'A',状態:'取り置き中',受注番号:'101',商品コード:'AAA',SKU:'AAAb',取り置き数量:3,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'},
+      {取置ID:'B',状態:'発送済み',受注番号:'102',商品コード:'AAA',SKU:'AAAb',取り置き数量:2,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'},
+      {取置ID:'C',状態:'キャンセル戻し',戻し処理結果:'現物あり',受注番号:'103',商品コード:'AAA',SKU:'AAAb',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'},
+      {取置ID:'D',状態:'キャンセル戻し',戻し処理結果:'在庫なし',受注番号:'104',商品コード:'AAA',SKU:'AAAb',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'}
+    ],
+    movements: [{処理ID:'YAHOO|EMS|EG1|AAA',EMS番号:'EG1',商品コード:'AAA',数量:2}],
+    yahoo: null
+  });
+  const row = result.rows[0];
+  assert.strictEqual(result.errors.length, 0);
+  assert.strictEqual(row.供給, 10);
+  assert.strictEqual(row.取り置き中, 3);
+  assert.strictEqual(row.発送済み, 2);
+  assert.strictEqual(row.戻し未処理, 1);
+  assert.strictEqual(row.在庫なし確定, 1);
+  assert.strictEqual(row.Yahoo移動済み, 2);
+  assert.strictEqual(row.余り, 1);
+  assert.strictEqual(row.判定, 'OK');
+});
+
+test('再引当済み元行とYahoo反映済み元行を二重計上しない', () => {
+  const result = context.全件検算_台帳集計_({
+    supply: [{ems:'EG1',code:'AAA',sourceCode:'AAA',matchCode:'AAA',qty:2,status:'到着済'}],
+    ledger: [
+      {取置ID:'OLD1',状態:'キャンセル戻し',戻し処理結果:'再引当済み',受注番号:'100',商品コード:'AAA',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'},
+      {取置ID:'NEW1',状態:'取り置き中',受注番号:'200',商品コード:'AAA',取り置き数量:1,取置元種別:'キャンセル再引当',元EMS番号:'EG1',元EMS商品コード:'AAA',元取置ID:'OLD1'},
+      {取置ID:'OLD2',状態:'キャンセル戻し',戻し処理結果:'Yahoo反映済み',受注番号:'300',商品コード:'AAA',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'}
+    ],
+    movements: [{処理ID:'YAHOO|RETURN|OLD2',EMS番号:'EG1',商品コード:'AAA',数量:1}],
+    yahoo: null
+  });
+  assert.strictEqual(result.rows[0].取り置き中, 1);
+  assert.strictEqual(result.rows[0].Yahoo移動済み, 1);
+  assert.strictEqual(result.rows[0].余り, 0);
+});
+
+test('供給キーは正規化前source identityを使い数値枝番・タグ・数値directを混ぜない', () => {
+  const result = context.全件検算_台帳集計_({
+    supply: [
+      {ems:'EG1',code:'OFW304-1',sourceCode:'OFW304-1',matchCode:'OFW304-1',qty:1,status:'到着済'},
+      {ems:'EG1',code:'OFW304-2',sourceCode:'OFW304-2',matchCode:'OFW304-2',qty:2,status:'到着済'},
+      {ems:'EG1',code:'POEM65',sourceCode:'POEM65（10116569）',matchCode:'POEM65',qty:3,status:'到着済'},
+      {ems:'EG1',code:'POEM65',sourceCode:'POEM65（10199999）',matchCode:'POEM65',qty:4,status:'在庫反映済み'},
+      {ems:'EG1',code:'KAGURA08W-PG',sourceCode:'10117375',matchCode:'KAGURA08W-PG',qty:5,status:'到着済'}
+    ],
+    ledger: [], movements: [], yahoo: null
+  });
+  assert.strictEqual(result.rows.length, 5);
+  const qtyBySource = Object.fromEntries(result.rows.map(r => [r.商品コード, r.供給]));
+  assert.strictEqual(JSON.stringify(qtyBySource), JSON.stringify({
+    '10117375':5,
+    'OFW304-1':1,
+    'OFW304-2':2,
+    'POEM65（10116569）':3,
+    'POEM65（10199999）':4
+  }));
+});
+
+test('物理供給は到着済と在庫反映済みだけで未着は余りへ入れない', () => {
+  const result = context.全件検算_台帳集計_({
+    supply: [
+      {ems:'EG1',code:'AAA',sourceCode:'AAA',matchCode:'AAA',qty:3,status:'到着済'},
+      {ems:'EG1',code:'AAA',sourceCode:'AAA',matchCode:'AAA',qty:2,status:'在庫反映済み'},
+      {ems:'EG1',code:'AAA',sourceCode:'AAA',matchCode:'AAA',qty:7,status:'未着'}
+    ],
+    ledger: [], movements: [], yahoo: {AAA:5}
+  });
+  assert.strictEqual(result.rows[0].供給, 5);
+  assert.strictEqual(result.rows[0].余り, 5);
+  assert.strictEqual(result.pendingRows.length, 1);
+  assert.strictEqual(result.pendingRows[0].未着数量, 7);
+  assert.strictEqual(result.productRows[0]['Yahoo a在庫'], 5);
+  assert.strictEqual(result.productRows[0].差, 0);
+});
+
+test('供給にない台帳使用と移動使用も超過消費行として表示する', () => {
+  const result = context.全件検算_台帳集計_({
+    supply: [],
+    ledger: [{取置ID:'ORPHAN-A',状態:'取り置き中',受注番号:'101',商品コード:'AAA',SKU:'AAAb',取り置き数量:2,取置元種別:'EMS',元EMS番号:'EG1',元EMS商品コード:'AAA'}],
+    movements: [{処理ID:'ORPHAN-MOVE',EMS番号:'EG2',商品コード:'BBB',数量:1}],
+    yahoo: null
+  });
+  assert.strictEqual(result.errors.length, 0);
+  assert.strictEqual(result.rows.length, 2);
+  result.rows.forEach(r => assert.strictEqual(r.判定, '⚠️超過消費'));
+  const bySource = Object.fromEntries(result.rows.map(r => [r.EMS番号+'|'+r.商品コード, r]));
+  assert.strictEqual(bySource['EG1|AAA'].供給, 0);
+  assert.strictEqual(bySource['EG1|AAA'].取り置き中, 2);
+  assert.strictEqual(bySource['EG1|AAA'].余り, -2);
+  assert.strictEqual(bySource['EG2|BBB'].Yahoo移動済み, 1);
+  assert.strictEqual(bySource['EG2|BBB'].余り, -1);
+});
+
+test('Yahoo比較は商品単位で箱余りを合算し箱別判定へ混ぜない', () => {
+  const result = context.全件検算_台帳集計_({
+    supply: [
+      {ems:'EG1',code:'POEM65',sourceCode:'POEM65（10116569）',matchCode:'POEM65',qty:3,status:'到着済'},
+      {ems:'EG2',code:'POEM65',sourceCode:'POEM65（10199999）',matchCode:'POEM65',qty:2,status:'在庫反映済み'}
+    ],
+    ledger: [
+      {取置ID:'A',状態:'取り置き中',受注番号:'10116569',商品コード:'POEM65',取り置き数量:1,元EMS番号:'EG1',元EMS商品コード:'POEM65（10116569）'},
+      {取置ID:'B',状態:'発送済み',受注番号:'10199999',商品コード:'POEM65',取り置き数量:1,元EMS番号:'EG2',元EMS商品コード:'POEM65（10199999）'}
+    ],
+    movements: [], yahoo: {POEM65:4}
+  });
+  assert.strictEqual(result.rows.length, 2);
+  assert.ok(result.rows.every(r => r.判定 === 'OK'));
+  assert.ok(result.rows.every(r => !Object.prototype.hasOwnProperty.call(r, 'Yahoo a在庫')));
+  assert.strictEqual(result.productRows.length, 1);
+  assert.strictEqual(result.productRows[0].商品コード, 'POEM65');
+  assert.strictEqual(result.productRows[0].余り, 3);
+  assert.strictEqual(result.productRows[0]['Yahoo a在庫'], 4);
+  assert.strictEqual(result.productRows[0].差, 1);
 });
 
 if (failures) process.exit(1);
