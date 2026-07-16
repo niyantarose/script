@@ -356,7 +356,7 @@ function EMS供給オブジェクト_(rows, cols, arrivalFn){
     const ems=String(row[cols.EMS番号]||'').trim(), raw=String(row[cols.コード]||'').trim(), qty=Number(row[cols.数量])||0;
     const arrival=ymd_(typeof arrivalFn==='function'?arrivalFn(row):'');
     if(!実EMS番号_(ems) || !raw || qty<=0 || !/^20\d{2}-\d{2}-\d{2}$/.test(arrival)) return null;
-    return {ems,code:normCode_(raw),qty,arrival,directBan:注文番号在庫コード_(raw)||タグ受注番号_(raw)};
+    return {ems,code:normCode_(raw),sourceCode:raw,qty,arrival,directBan:注文番号在庫コード_(raw)||タグ受注番号_(raw)};
   }).filter(Boolean);
 }
 
@@ -1137,6 +1137,17 @@ function 受注候補コード_(sku, code){
   push(normCode_(c).replace(/[A-Za-z]$/,''));
   return out;
 }
+// 新しい取り置き割当/P列計画では、推測による複合・月号コード展開を行わない。
+// 販売SKUの末尾a/bだけを在庫基底へ寄せ、商品コード自体は完全一致だけを許可する。
+function 引当用照合キー一覧_(sku, code){
+  const out=[];
+  const add=v=>{ const key=normCode_(v); if(key && out.indexOf(key)<0) out.push(key); };
+  const salesSku=normCode_(sku);
+  add(salesSku);
+  if(/[AB]$/.test(salesSku)) add(salesSku.slice(0,-1));
+  add(code);
+  return out;
+}
 function codeKeys_(code){
   const c=normCode_(code); const keys=[c];
   const m=c.match(/^(.+)-(\d{2})(\d{2})-(\d{2})$/);
@@ -1192,6 +1203,14 @@ function ymdFromSheetSerial_(serial){
   const p=n=>('0'+n).slice(-2);
   return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate());
 }
+function 実在YMD_(year,month,day){
+  const y=Number(year),m=Number(month),d=Number(day);
+  if(!Number.isInteger(y)||!Number.isInteger(m)||!Number.isInteger(d)||m<1||m>12||d<1||d>31) return '';
+  const date=new Date(Date.UTC(y,m-1,d));
+  if(date.getUTCFullYear()!==y || date.getUTCMonth()!==m-1 || date.getUTCDate()!==d) return '';
+  const p=n=>('0'+n).slice(-2);
+  return y+'-'+p(m)+'-'+p(d);
+}
 // 旧処理がシリアル値 46213 を new Date("46213") と解釈して作った
 // 「西暦46213年1月1日」のDateを、元のシリアル日(2026-07-10)へ戻す。
 function 旧シリアル年Date補正日_(v){
@@ -1223,9 +1242,9 @@ function ymd_(v){
     if(fromSerial) return fromSerial;
   }
   let m=s.match(/(20\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
-  if(m) return m[1]+'-'+p(+m[2])+'-'+p(+m[3]);
+  if(m) return 実在YMD_(m[1],m[2],m[3]);
   m=s.match(/(\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
-  if(m) return '20'+m[1]+'-'+p(+m[2])+'-'+p(+m[3]);
+  if(m) return 実在YMD_('20'+m[1],m[2],m[3]);
   if(/[-\/.]/.test(s)){
     const d=new Date(s.replace(/\//g,'-'));
     if(!isNaN(d.getTime())) return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
@@ -1294,30 +1313,37 @@ function P列計画_新規確定割当_(plan,ledgerRows){
     fixed[key]=(fixed[key]||0)+(Number(r.取り置き数量)||0);
   });
   const out=[];
-  (plan&&plan.rows||[]).forEach(r=>(r.entries||[]).forEach(e=>{
-    const key=取り置き_供給キー_(r.ems,r.code)+'|'+String(e.ban||'').trim();
+  (plan&&plan.rows||[]).filter(r=>!String(r.directBan||'').trim()).forEach(r=>(r.entries||[]).forEach(e=>{
+    const sourceCode=String(r.sourceCode||r.code||'').trim();
+    const key=取り置き_供給キー_(r.ems,sourceCode)+'|'+String(e.ban||'').trim();
     const qty=Number(e.qty)||0,take=Math.min(qty,fixed[key]||0),left=qty-take;
     fixed[key]=Math.max(0,(fixed[key]||0)-take);
-    if(left>0) out.push({ems:r.ems,code:r.code,ban:String(e.ban||''),qty:left});
+    if(left>0) out.push({ems:r.ems,code:r.code,sourceCode,ban:String(e.ban||''),qty:left});
   }));
   return out;
 }
 
 function 引当出力計画_(supplies,allocationPlan,projectedLedger){
-  const byKey={};
+  const byKey={},bySource={};
   (supplies||[]).forEach(s=>{
-    const key=取り置き_供給キー_(s.ems,s.code);
-    if(!byKey[key]) byKey[key]={ems:String(s.ems||''),code:normCode_(s.code),qty:0,arrival:s.arrival,consumers:[],surplus:0};
+    const sourceCode=String(s.sourceCode||s.code||'').trim(),directBan=String(s.directBan||'').trim();
+    const sourceKey=取り置き_供給キー_(s.ems,sourceCode),key=sourceKey+'|'+directBan;
+    if(!byKey[key]){
+      byKey[key]={ems:String(s.ems||''),code:sourceCode,matchCode:normCode_(s.code),sourceCode,directBan,qty:0,arrival:s.arrival,consumers:[],surplus:0};
+      (bySource[sourceKey]=bySource[sourceKey]||[]).push(byKey[key]);
+    }
     byKey[key].qty+=Number(s.qty)||0;
   });
   const newIds=new Set((allocationPlan&&allocationPlan.newRows||[]).map(r=>String(r.取置ID||'')));
   (projectedLedger||[]).forEach(r=>{
     if(String(r.状態||'')!=='取り置き中' || !実EMS番号_(r.元EMS番号)) return;
-    const key=取り置き_供給キー_(r.元EMS番号,r.元EMS商品コード||r.商品コード), target=byKey[key];
+    const sourceKey=取り置き_供給キー_(r.元EMS番号,r.元EMS商品コード||r.商品コード),owner=String(r.受注番号||'').trim();
+    const target=byKey[sourceKey+'|'+owner] || byKey[sourceKey+'|'] || ((bySource[sourceKey]||[]).length===1?bySource[sourceKey][0]:null);
     if(target) target.consumers.push({ban:String(r.受注番号||''),qty:Number(r.取り置き数量)||0,current:newIds.has(String(r.取置ID||'')),row:r});
   });
   (allocationPlan&&allocationPlan.surplus||[]).forEach(s=>{
-    const target=byKey[取り置き_供給キー_(s.ems,s.code)]; if(target) target.surplus=Number(s.qty)||0;
+    const key=取り置き_供給キー_(s.ems,s.sourceCode||s.code)+'|'+String(s.directBan||'').trim(),target=byKey[key];
+    if(target) target.surplus=Number(s.qty)||0;
   });
   return {supplies:Object.keys(byKey).map(key=>byKey[key]),surplus:(allocationPlan&&allocationPlan.surplus||[]).map(r=>Object.assign({},r))};
 }
@@ -1362,7 +1388,7 @@ function 引当切替_計画行_(lines){
 }
 
 function 引当切替_現行出力行_(ss,plannedRows){
-  const out=[], byBanCode={};
+  const out=[], byBanCode={},usedByBanCode={};
   (plannedRows||[]).forEach(r=>{ const key=String(r.ban)+'|'+normCode_(r.code); (byBanCode[key]=byBanCode[key]||[]).push(r); });
   [HIKIATE_CFG.待ち,HIKIATE_CFG.部分,HIKIATE_CFG.取置,HIKIATE_CFG.希望,HIKIATE_CFG.出荷].forEach(name=>{
     const sh=ss.getSheetByName(name); if(!sh) return;
@@ -1372,9 +1398,19 @@ function 引当切替_現行出力行_(ss,plannedRows){
     const cBan=col('受注番号'),cCode=col('商品コード'),cSku=col('SKU'),cQty=col('個数'),cState=col('状態'),cEms=col('EMS番号');
     values.slice(hr+1).forEach(row=>{
       const ban=String(row[cBan]||'').trim(),code=String(row[cCode]||'').trim(); if(!ban||!code) return;
+      const qty=cQty>=0?Number(row[cQty])||0:0,state=cState>=0?String(row[cState]||''):'',ems=cEms>=0?String(row[cEms]||''):'';
+      const planKey=ban+'|'+normCode_(code),cand=byBanCode[planKey]||[],used=usedByBanCode[planKey]||(usedByBanCode[planKey]=new Set());
       let sku=cSku>=0?String(row[cSku]||'').trim():'';
-      if(!sku){ const cand=byBanCode[ban+'|'+normCode_(code)]||[]; if(cand.length===1) sku=cand[0].sku; }
-      out.push({ban,code,sku,qty:cQty>=0?Number(row[cQty])||0:0,state:cState>=0?String(row[cState]||''):'',ems:cEms>=0?String(row[cEms]||''):''});
+      let index=-1;
+      if(sku) index=cand.findIndex((r,i)=>!used.has(i)&&normCode_(r.sku)===normCode_(sku));
+      else {
+        const exact=[];
+        cand.forEach((r,i)=>{ if(!used.has(i) && (Number(r.qty)||0)===qty && String(r.state||'')===state && String(r.ems||'')===ems) exact.push(i); });
+        index=exact.length?exact[0]:cand.findIndex((r,i)=>!used.has(i));
+        if(index>=0) sku=String(cand[index].sku||'');
+      }
+      if(index>=0) used.add(index);
+      out.push({ban,code,sku,qty,state,ems});
     });
   });
   return out;
@@ -1434,8 +1470,7 @@ function 引当実行_本体_(options){
     const s=ymd_(v);
     if(/^20\d{2}-\d{2}-\d{2}$/.test(s)) return new Date(s+'T00:00:00');
     return String(v||'').trim(); };
-  const candKeys=l=>{ const cands=受注候補コード_(l.sku,l.code);
-    const keys=[]; cands.forEach(v=>codeKeys_(v).forEach(k=>{ if(keys.indexOf(k)<0) keys.push(k); })); return keys; };
+  const candKeys=l=>引当用照合キー一覧_(l.sku,l.code);
 
   // A. 現在の取り置き台帳を受注明細へ重ねる。旧取り置き数・入荷日・履歴は必要数へ使わない。
   const ledgerRows=取り置き台帳_読む_();
@@ -1449,9 +1484,9 @@ function 引当実行_本体_(options){
 
   // C. 到着実績のある実EMSだけを供給へ変換し、純粋割当を計算・検証する。
   const supplies=EMS供給オブジェクト_(E,EC,到着_);
-  const supplyKeys=new Set(supplies.map(s=>取り置き_供給キー_(s.ems,s.code)));
+  const supplyKeys=new Set(supplies.map(s=>取り置き_供給キー_(s.ems,s.sourceCode||s.code)));
   const explicit=P列計画_新規確定割当_(pPlan,ledgerRows)
-    .filter(e=>supplyKeys.has(取り置き_供給キー_(e.ems,e.code)));
+    .filter(e=>supplyKeys.has(取り置き_供給キー_(e.ems,e.sourceCode||e.code)));
   const allocationPlan=取り置き_割当計算_({
     orders:lines.filter(l=>l.kbn==='取り寄せ'&&!l.キャンセル).map(l=>({
       ban:l.ban,code:l.code,sku:l.sku,qty:l.qty,sortKey:l.sortKey,i:l.i,keys:candKeys(l),paid:l.paid
@@ -1479,7 +1514,7 @@ function 引当実行_本体_(options){
   消込台帳更新_(); // 監査用にだけ更新し、割当数量や今回EMS消費の推測には使わない。
 
   const stock={}; outputPlan.surplus.forEach(r=>{ const k=normCode_(r.code); stock[k]=(stock[k]||0)+(Number(r.qty)||0); });
-  const aliasMap={}; supplies.forEach(s=>codeKeys_(s.code).forEach(k=>{ if(!(k in aliasMap)) aliasMap[k]=normCode_(s.code); }));
+  const aliasMap={}; supplies.forEach(s=>引当用照合キー一覧_('',s.code).forEach(k=>{ if(!(k in aliasMap)) aliasMap[k]=normCode_(s.code); }));
   const keyInStock=l=>{ if(l&&l.matchedKey) return normCode_(l.matchedKey); for(const k of candKeys(l)){ if(k in stock) return k; if(aliasMap[k]) return aliasMap[k]; } return null; };
   const code到着={}; supplies.forEach(s=>{ const k=normCode_(s.code); if(!(k in code到着)) code到着[k]=s.arrival; });
   const 入荷消費OK_=()=>false;

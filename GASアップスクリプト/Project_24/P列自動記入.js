@@ -306,9 +306,7 @@ function 発注共有P列計画_(options){
   const 日時_=v=>{ if(v instanceof Date) return isNaN(v.getTime())?null:v;
     const s=String(v||'').trim(); if(!s) return null;
     const d=new Date(s.replace(/\//g,'-')); return isNaN(d.getTime())?null:d; };
-  const キー展開_=(sku,code)=>{ const keys=new Set();
-    受注候補コード_(sku,code).forEach(v=>{ if(v) codeKeys_(v).forEach(k=>keys.add(k)); });
-    return keys; };
+  const キー展開_=(sku,code)=>new Set(引当用照合キー一覧_(sku,code));
   const lines=[];
   for(let i=M.hr;i<R.length;i++){
     const row=R[i]; const ban=String(row[M.番号]||'').trim(); if(!ban) continue;
@@ -366,14 +364,14 @@ function 発注共有P列計画_(options){
     const row=block[i];
     if(!実EMS番号_(ev[i][0])) continue; // 実EMS番号が無い行・棚卸箱へP列を書かない
     const status=String(at(row,colSt)||'').trim(), code=String(at(row,colC)||'').trim();
-    if(到着実績取得済 && code) 到着実績Rows.push({status, 着:ymd_(at(row,colA)), keys:codeKeys_(code), ems:String(ev[i][0]||'').trim()});
+    if(到着実績取得済 && code) 到着実績Rows.push({status, 着:ymd_(at(row,colA)), keys:引当用照合キー一覧_('',code), ems:String(ev[i][0]||'').trim()});
     const pno=String(at(row,colPu)||'').trim();
     if(!pno||!code) continue;
     if(!/^\d{8}/.test(pno)) continue;
     const emsNo=String(ev[i][0]||'').trim();
     const pOriginal=pColumn[i][0];
     rows.push({
-      i,ems:emsNo,code:normCode_(code),arrival:ymd_(at(row,colA)),qty:Number(at(row,colQ))||0,
+      i,ems:emsNo,code:normCode_(code),sourceCode:code,directBan:注文番号在庫コード_(code)||タグ受注番号_(code),arrival:ymd_(at(row,colA)),qty:Number(at(row,colQ))||0,
       pOriginal,対象:P列処理対象EMS_(at(row,colSt)),status
     });
   }
@@ -412,8 +410,8 @@ function 発注共有P列計画_(options){
 
 function P列計画_確定割当_(plan){
   const out=[];
-  (plan.rows||[]).forEach(r=>(r.entries||[]).forEach(e=>{
-    out.push({ems:r.ems,code:r.code,ban:e.ban,qty:e.qty});
+  (plan.rows||[]).filter(r=>!String(r.directBan||'').trim()).forEach(r=>(r.entries||[]).forEach(e=>{
+    out.push({ems:r.ems,code:r.code,sourceCode:String(r.sourceCode||r.code||'').trim(),ban:e.ban,qty:e.qty});
   }));
   return out;
 }
