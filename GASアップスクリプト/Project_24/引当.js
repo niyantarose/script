@@ -387,7 +387,12 @@ function 列マップ_(sh){
 }
 
 function 残必要計算_(l){
-  return Math.max(0,(Number(l&&l.qty)||0)-(Number(l&&l.取り置き中数量)||0)-(Number(l&&l.alloc)||0));
+  return Math.max(0,(Number(l&&l.qty)||0)-(Number(l&&l.取り置き中数量)||0)-(Number(l&&l.alloc)||0)-(Number(l&&l.別ルート済数量)||0));
+}
+
+// 台湾・中国ルート(韓国EMSに照合先が無い)。手入力の入荷日が正で、取り置き台帳の対象外。
+function 引当_別ルート判定_(選択肢, 商品名){
+  return /台湾|中国/.test(String(選択肢||'')) || /台湾|中国/.test(String(商品名||''));
 }
 
 // 受注明細の末尾に「取り置きメモ」列を用意する(あれば何もしない)。
@@ -1258,7 +1263,10 @@ function 今回到着扱い_(l, 入荷消費OK){
   return !!(l && (l.今回P || (l.入荷 && (typeof 入荷消費OK === 'function' ? 入荷消費OK(l) : 入荷日今日_(l.入荷日値)))));
 }
 function 今回行判定_(l, 入荷消費OK){
-  return !!(l && (Number(l.alloc)||0)>0);
+  if(!l) return false;
+  if((Number(l.alloc)||0)>0) return true;
+  // 台湾・中国ルートは当日手入力の入荷日だけ「今回」扱い(当日中に④を回せば出荷可能に上がる旧運用)
+  return !!(l.別ルート && l.入荷 && 入荷日今日_(l.入荷日値));
 }
 // 注文一覧にだけ使う表示コード。今回引当で確定した実コードを優先し、
 // それ以外は受注明細の元コードを維持する(受注明細自体は変更しない)。
@@ -1271,6 +1279,7 @@ function 引当行状態_(l,cfg){
   if(l.kbn==='指定なし') return {st:'要確認',color:cfg.色_橙};
   if((Number(l.alloc)||0)>0) return {st:'引当(今回)',color:cfg.色_黄};
   if((Number(l.取り置き中数量)||0)>0) return {st:'取り置き中',color:cfg.色_着};
+  if(l.別ルート && l.入荷) return {st:'着済',color:cfg.色_着}; // 台湾・中国の手入力入荷
   return {st:'在庫待ち',color:null};
 }
 function 注文出荷準備OK_(arr){
@@ -1455,12 +1464,15 @@ function 引当実行_本体_(options){
     const 入荷日値=M.入荷>=0? row[M.入荷] : '', 入荷=String(入荷日値||'').trim()!=='';
     const 着=(kbn==='即納') || (kbn==='取り寄せ' && 入荷); // 着済かどうか
     const qty=Number(row[M.個数])||0;
+    // 台湾・中国ルートは韓国EMS供給に乗らないため、手入力の入荷日を確保数量として扱う(台帳の対象外)
+    const 別ルート=kbn==='取り寄せ' && 引当_別ルート判定_(row[M.選択肢], row[M.商品名]);
     lines.push({ i, ban, sortKey:番号num_(ban),
       氏名:row[M.氏名], 届:row[M.届], 商品名:row[M.商品名],
       code, sku:String(row[M.SKU]||'').trim(), qty, kbn,
       日時: c日時>=0? 日付値_(row[c日時]) : null,
       メモ: M.メモ>=0? String(row[M.メモ]==null?'':row[M.メモ]).trim() : '',
-      paid:入金済み_(row[M.入金]), 入荷, 入荷日値, 着, alloc:0, 引当成立:false, キャンセル:qty<=0 });
+      paid:入金済み_(row[M.入金]), 入荷, 入荷日値, 着, alloc:0, 引当成立:false, キャンセル:qty<=0,
+      別ルート, 別ルート済数量: 別ルート && 入荷? qty : 0 });
   }
 
   // ===== EMS在庫引当: 到着実績のある実EMSを、台帳の有効取り置きと新規注文へFIFO引当 =====
@@ -1490,8 +1502,10 @@ function 引当実行_本体_(options){
   const explicit=P列計画_新規確定割当_(pPlan,ledgerRows)
     .filter(e=>supplyKeys.has(取り置き_供給キー_(e.ems,e.sourceCode||e.code)));
   const allocationPlan=取り置き_割当計算_({
+    // 台湾・中国の入荷済み分(別ルート済数量)は確保済みとして注文数量から除き、韓国EMSを消費させない
     orders:lines.filter(l=>l.kbn==='取り寄せ'&&!l.キャンセル).map(l=>({
-      ban:l.ban,code:l.code,sku:l.sku,qty:l.qty,sortKey:l.sortKey,i:l.i,keys:candKeys(l),paid:l.paid
+      ban:l.ban,code:l.code,sku:l.sku,qty:Math.max(0,l.qty-(Number(l.別ルート済数量)||0)),
+      sortKey:l.sortKey,i:l.i,keys:candKeys(l),paid:l.paid
     })),
     ledger:ledgerRows,movements:movementRows,supplies,explicit
   });

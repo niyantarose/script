@@ -311,6 +311,9 @@ function 発注共有P列計画_(options){
   for(let i=M.hr;i<R.length;i++){
     const row=R[i]; const ban=String(row[M.番号]||'').trim(); if(!ban) continue;
     if(区分_(row[M.選択肢])!=='取り寄せ') continue;
+    // 台湾・中国ルートで入荷日手入力済みの行は確保済み扱い(韓国EMSのP列で名指ししない)
+    if(引当_別ルート判定_(row[M.選択肢], M.商品名>=0?row[M.商品名]:'') &&
+       M.入荷>=0 && String(row[M.入荷]==null?'':row[M.入荷]).trim()!=='') continue;
     const qty=Number(row[M.個数])||0; if(qty<=0) continue;
     const date=c日時>=0? 日時_(row[c日時]) : null; if(!date) continue;
     const sku=M.SKU>=0?String(row[M.SKU]||'').trim():'';
