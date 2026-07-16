@@ -137,6 +137,7 @@ function 引当計画モック_(allocationPlan) {
   context.取り置き_行キー_=()=> '101|AAA|AAAB';
   context.取り置き_供給キー_=(ems,code)=>String(ems)+'|'+String(code);
   context.発注共有P列計画_=()=>({error:'',rows:[],writes:[],summary:{}});
+  context.P列救済供給マップ_=()=>({});
   context.P列計画_新規確定割当_=()=>[];
   context.取り置き_割当計算_=()=>allocationPlan;
   context.取り置き台帳_割当計画後行_=()=>[];

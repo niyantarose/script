@@ -67,6 +67,21 @@ function P列書き直し実行_(){
   return {クリア:cleared, 記入:plan.summary.記入, 分割:plan.summary.分割, 在庫:plan.summary.在庫};
 }
 
+// P列の手書き値から単一の受注番号名指しを読む(「10117376」「10117376:1」形式のみ。複数名指しは対象外)
+function P手動名指し解析_(text){
+  const m=String(text==null?'':text).trim().match(/^(\d{7,})(?:[:：]\s*\d+)?$/);
+  return m? m[1] : '';
+}
+
+// ④用: 手動名指し(コード不一致救済)の行を 供給キー→受注番号 のマップにする
+function P列救済供給マップ_(planRows){
+  const map={};
+  (planRows||[]).forEach(r=>{
+    if(r && r.手動名指し && r.directBan) map[取り置き_供給キー_(r.ems, r.sourceCode||r.code)]=String(r.directBan);
+  });
+  return map;
+}
+
 // 背景色を色ごとにRangeListへまとめて反映(1セルずつのAPI呼び出しにしない)
 function P列背景を反映_(sheet, items){
   const byColor={};
@@ -339,6 +354,19 @@ function 発注共有P列計画_(options){
   }
   const 到着実績=到着実績取得済?EMS到着実績Map_(到着実績Rows):{};
   const 到着便=到着実績取得済?EMS到着便Map_(到着実績Rows):{};
+
+  // 【コード不一致の名指し救済】箱コードが説明文(핫 토픽…等)でどの注文とも一致せず、
+  // P列に受注番号が手書きされている行は、その番号へのdirect名指しとして扱い、名指しを消さない。
+  // (コードが注文と一致する行の手動Pは従来通り計画が正=上書きされ得る)
+  const 全注文キー=new Set();
+  lines.forEach(l=>{ (l.keys instanceof Set?Array.from(l.keys):l.keys||[]).forEach(k=>全注文キー.add(k)); });
+  rows.forEach(r=>{
+    if(!r.対象 || r.directBan) return;
+    const ban=P手動名指し解析_(r.pOriginal);
+    if(!ban) return;
+    if(全注文キー.has(r.code)) return; // コードが一致する=通常ルートで扱う
+    r.directBan=ban; r.手動名指し=true;
+  });
 
   const fixedBySupply={};
   Object.keys(ledgerSummary.activeRowsByKey||{}).forEach(orderKey=>{

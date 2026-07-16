@@ -1506,6 +1506,16 @@ function 引当実行_本体_(options){
   const pPlan=発注共有P列計画_(出荷自動.newRows.length? {追加台帳行:出荷自動.newRows} : {});
   if(pPlan.error){ SpreadsheetApp.getUi().alert(pPlan.error); return; }
 
+  // B2. P列の手動名指し(説明文コード等のコード不一致救済)を供給のdirect名指しへ引き継ぐ。
+  {
+    const 救済=P列救済供給マップ_(pPlan.rows);
+    supplies.forEach(s=>{
+      if(s.directBan) return;
+      const ban=救済[取り置き_供給キー_(s.ems,s.sourceCode||s.code)];
+      if(ban) s.directBan=ban;
+    });
+  }
+
   // C. 純粋割当を計算・検証する。
   const supplyKeys=new Set(supplies.map(s=>取り置き_供給キー_(s.ems,s.sourceCode||s.code)));
   const explicit=P列計画_新規確定割当_(pPlan,ledgerRowsForPlan)

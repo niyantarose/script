@@ -101,7 +101,9 @@ function 取り置き_direct注文_(orders,directBan,code){
   const owner=(orders||[]).filter(o=>String(o.ban||'')===String(directBan||''));
   const matched=owner.filter(o=>取り置き_注文照合_(o,code));
   if(matched.length===1) return matched[0];
-  if(/^\d{7,}$/.test(normCode_(code)) && owner.length===1) return owner[0];
+  // コードがどの行とも一致しない名指し(受注番号コード・説明文コード+P列手動名指し等)は、
+  // その注文の取り寄せ行が1行だけなら救済する。複数行は曖昧なので呼び出し側が警告して余りへ。
+  if(matched.length===0 && owner.length===1) return owner[0];
   return null;
 }
 
@@ -349,7 +351,8 @@ function 取り置き_未台帳出荷計画_(shippedRows, ledgerRows, movements,
     for(const g of sorted){
       if(left<=0) break;
       if(g.directBan && g.directBan!==t.ban) continue;           // 他注文の名指し箱は食わない
-      if(keys.indexOf(g.matchCode)<0) continue;                  // 商品不一致
+      // 商品一致、またはこの注文への名指し箱(説明文コード等はコード不一致でも出どころ)
+      if(keys.indexOf(g.matchCode)<0 && g.directBan!==t.ban) continue;
       if(t.ship && g.arrival && g.arrival>t.ship) continue;      // 発送より後に着いた箱は出どころではない
       const take=Math.min(left, remaining[g._key]||0); if(take<=0) continue;
       remaining[g._key]-=take; left-=take;
