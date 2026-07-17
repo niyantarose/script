@@ -9,9 +9,24 @@ const 戻しHDR=['取置ID','受注番号','商品コード','数量','元EMS番
 // 取り置き登録の「棚確認」プルダウン。出荷済み/未着/予約は数量なし(登録しない)の目印
 const TORIOKI_棚確認=Object.freeze(['発送待ち','部分在庫','出荷済み','未着','予約']);
 
-// 予約商品の判定(選択肢/商品名の「予約」表記)。棚確認プルダウンへ自動で「予約」を入れる
-function 取り置き_予約判定_(選択肢, 商品名){
-  return /予約/.test(String(選択肢||'')) || /予約/.test(String(商品名||''));
+// 予約商品の判定。「予約」表記だけでは決めない:
+//   ・発売予定日が読めて未来 → 予約(まだ来ないのが正常)として棚確認へ自動セット
+//   ・発売予定日が過去/日付が読めない(「予約早期完売」等) → 自動では付けない(発売済みで
+//     入荷している可能性があるため、人が棚確認で判断する)
+function 取り置き_予約判定_(選択肢, 商品名, today){
+  const text=String(選択肢||'')+' '+String(商品名||'');
+  if(!/予約/.test(text)) return false;
+  const base=today instanceof Date && !isNaN(today.getTime())? today : new Date();
+  const full=text.match(/(20\d{2})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/); // 2026/4/29・2026年4月29日 形式
+  if(full){
+    return new Date(Number(full[1]),Number(full[2])-1,Number(full[3])).getTime()>base.getTime();
+  }
+  const m=text.match(/(\d{1,2})月/); // 「9月」「7月末」形式(年なし)。今月以降なら未来扱い
+  if(m){
+    const month=Number(m[1]);
+    if(month>=1&&month<=12) return month>=(base.getMonth()+1);
+  }
+  return false;
 }
 const Yahoo候補HDR=['取置ID','商品コード','数量','元EMS番号','処理ID','確認'];
 

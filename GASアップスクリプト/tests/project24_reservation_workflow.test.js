@@ -127,10 +127,14 @@ test('棚確認が出荷済み/未着/予約なのに数量入りは確定を止
   assert.ok(result.errors.some(e=>/103.*予約/.test(e)),'予約+数量は矛盾');
 });
 
-test('予約商品は商品名/選択肢の「予約」から自動判定し棚確認へ予約を入れて出す', () => {
-  assert.strictEqual(context.取り置き_予約判定_('★在庫の設定=お取り寄せ（予約9月韓国発売予定）',''),true);
-  assert.strictEqual(context.取り置き_予約判定_('','（予約5月末韓国発売予定）韓国 コミック グッズ'),true);
-  assert.strictEqual(context.取り置き_予約判定_('★在庫の選択=お取り寄せ（韓国から）','韓国 グッズ'),false);
+test('予約判定は発売予定日が未来のときだけ自動で予約にする', () => {
+  const today=new Date(2026,6,16); // 2026-07-16
+  assert.strictEqual(context.取り置き_予約判定_('★在庫の設定=お取り寄せ（予約9月韓国発売予定）','',today),true,'9月=未来');
+  assert.strictEqual(context.取り置き_予約判定_('','（予約7月末韓国発売予定）グッズ',today),true,'当月=まだ来なくて正常');
+  assert.strictEqual(context.取り置き_予約判定_('','（予約5月末韓国発売予定）韓国 コミック グッズ',today),false,'過去の発売予定=入荷済みかもなので自動では付けない');
+  assert.strictEqual(context.取り置き_予約判定_('★在庫の選択=お取り寄せ（2026/4/29韓国発売予定）','【予約】グッズ',today),false,'過去の日付');
+  assert.strictEqual(context.取り置き_予約判定_('','【予約早期完売】韓国 グッズ',today),false,'日付が読めない予約は人が判断');
+  assert.strictEqual(context.取り置き_予約判定_('★在庫の選択=お取り寄せ（韓国から）','韓国 グッズ',today),false,'予約表記なし');
   const rows=context.取り置き_初期候補_(
     [{ban:'201',code:'JMEE-SPKZ-20',sku:'JMEE-SPKZ-20-4b',qty:1,kbn:'取り寄せ',予約:true},
      {ban:'202',code:'AAA',sku:'AAAb',qty:1,kbn:'取り寄せ'}],
