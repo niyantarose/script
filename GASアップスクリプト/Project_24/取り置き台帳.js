@@ -136,6 +136,7 @@ function 取り置き_登録絞り込み_(rows){
     // ステータス除外は入力済みでも最優先(登録済みの取り置きはCSV取込が出荷時に自動で発送済みへ落とす)
     if(/予約/.test(st)) return false;   // 予約中=幽霊スタンプ。来ないものは来ない
     if(/出荷GO/.test(st)) return false; // 揃って出荷作業に入る注文=棚チェック不要
+    if(/部分包装/.test(st)) return true; // 梱包が始まっている=現物が事務所に必ずある。スタンプ無しでも出す
     if(String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim()!=='') return true; // 確定/入力済みは表示
     if(String(c.旧入荷日||'').trim()==='') return false;
     if(String(c.棚確認||'')==='予約') return false;
