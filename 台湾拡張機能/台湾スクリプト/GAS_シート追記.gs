@@ -3302,8 +3302,53 @@ function bookCodeSharedHighWaterCell_(ss) {
   return sheet ? sheet.getRange('B1') : null;
 }
 
+/**
+ * 【解放プール】シート側の「♻️ 番号を選んで解放」で明示的に解放された番号の置き場
+ * （採番管理!B2、カンマ区切り4桁）。採番時に小さい順で最優先消費する。
+ * 自動の空き番探索は行わない（過去の作品IDずれ事故の原因のため）。
+ */
+function bookCodeReleasedPoolCell_(ss) {
+  let sheet = ss.getSheetByName('採番管理');
+  if (!sheet) {
+    bookCodeSharedHighWaterCell_(ss); // シート自動作成に相乗り
+    sheet = ss.getSheetByName('採番管理');
+  }
+  return sheet ? sheet.getRange('B2') : null;
+}
+
 function bookCodeNextUnusedWorkId_(ss, runtime) {
   const used = bookCodeGetUsedIds_(ss, runtime);
+
+  // 解放プールがあれば小さい順に優先消費（シート側と同じ挙動）。
+  // 使用済みになっていた番号は黙って除外。ハイウォーターは動かさない。
+  try {
+    const poolCell = bookCodeReleasedPoolCell_(ss);
+    if (poolCell) {
+      const list = String(poolCell.getDisplayValue() || '')
+        .split(/[,、\s]+/)
+        .map(function(s) { return s.replace(/\D/g, ''); })
+        .filter(Boolean)
+        .map(function(s) { return parseInt(s, 10); })
+        .filter(function(n) { return isFinite(n) && n > 0; })
+        .sort(function(a, b) { return a - b; });
+      if (list.length) {
+        let picked = '';
+        const rest = [];
+        for (let i = 0; i < list.length; i += 1) {
+          const id = String(list[i]).padStart(4, '0');
+          if (!picked && !used.has(id)) { picked = id; continue; }
+          if (!used.has(id)) rest.push(id);
+        }
+        if (picked || rest.length !== list.length) {
+          try { poolCell.setValue(rest.join(',')); SpreadsheetApp.flush(); } catch (e) {}
+        }
+        if (picked) {
+          used.add(picked);
+          return picked;
+        }
+      }
+    }
+  } catch (e) {}
   // 旧実装は 1 から順に「空き番」を探して再利用していた。
   // 誤採番の修正などで解放された旧IDを新規作品が拾ってしまい、過去のコードと紛らわしくなるため、
   // シート側（Project_01 onEdit）と同じ「最大値+1 ＋ ハイウォーターマーク」方式に変更（欠番は永久欠番）。

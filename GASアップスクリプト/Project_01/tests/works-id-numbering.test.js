@@ -11,12 +11,17 @@ let sharedCellValue = ''; // 採番管理!B1
 let sheetExists = true;
 let insertedSheet = false;
 
+let poolCellValue = ''; // 採番管理!B2（解放プール）
 const fakeRange = {
   getDisplayValue: () => String(sharedCellValue),
   setValue: (v) => { sharedCellValue = String(v); return fakeRange; },
 };
+const fakePoolRange = {
+  getDisplayValue: () => String(poolCellValue),
+  setValue: (v) => { poolCellValue = String(v); return fakePoolRange; },
+};
 const fakeNumberingSheet = {
-  getRange: () => fakeRange,
+  getRange: (...args) => (args[0] === 'B2' ? fakePoolRange : fakeRange),
   hideSheet: () => {},
 };
 const fakeSS = {
@@ -120,6 +125,30 @@ seedUsed(['0005', '0165']);
 docProps['台湾書籍系_作品ID_ハイウォーター'] = '0';
 sharedCellValue = '100';
 eq('巻き戻し: 走査max(165)が下限', ctx.台湾書籍系_次の未使用作品ID_(), '0166');
+
+// ケース7: 解放プールがあれば小さい順に優先消費（HWは動かさない）
+seedUsed(['0005', '0165']);
+docProps['台湾書籍系_作品ID_ハイウォーター'] = '168';
+sharedCellValue = '168';
+poolCellValue = '0167,0166';
+eq('プール: 最小の0166を消費', ctx.台湾書籍系_次の未使用作品ID_(), '0166');
+eq('プール: 残りは0167', poolCellValue, '0167');
+eq('プール: HWは168のまま', sharedCellValue, '168');
+
+// ケース8: プール内の番号が使用済みになっていたら黙って除外して次へ
+seedUsed(['0005', '0166']);
+docProps['台湾書籍系_作品ID_ハイウォーター'] = '168';
+sharedCellValue = '168';
+poolCellValue = '0166,0167';
+eq('プール: 使用済み0166を飛ばして0167', ctx.台湾書籍系_次の未使用作品ID_(), '0167');
+eq('プール: 空になる', poolCellValue, '');
+
+// ケース9: プールが空なら従来どおり末尾+1
+seedUsed(['0005', '0165']);
+docProps['台湾書籍系_作品ID_ハイウォーター'] = '0';
+sharedCellValue = '165';
+poolCellValue = '';
+eq('プール空: 従来のmax+1', ctx.台湾書籍系_次の未使用作品ID_(), '0166');
 
 process.exitCode = failed ? 1 : 0;
 console.log(failed ? `\n${failed} failed` : '\nall passed');

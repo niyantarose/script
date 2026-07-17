@@ -52,6 +52,7 @@ function onOpen() {
     .addItem('📁 フォルダをSKUにリネーム', '全シート_フォルダをSKUにリネーム')
     .addItem('🔍 次の空き作品IDを確認', '作品ID_次の空き番号を確認')
     .addItem('🔙 採番を巻き戻す（未使用の末尾番号を解放）', '台湾書籍系_採番を巻き戻す_')
+    .addItem('♻️ 欠番管理シートを更新（クリックで解放を選ぶ）', '台湾書籍系_欠番管理シートを更新_')
     .addItem('⚡ トリガー再設定（onEdit+onChange）', 'トリガーを設定')
     .addItem('🔘 このシートに確定発行ボタンを設置', '台湾CN_確定発行ボタンを設置')
 
@@ -172,6 +173,7 @@ function onOpen() {
   ui.createMenu('💴 計算機')
     .addItem('🧮 電卓を開く', '計算機サイドバーを開く')
     .addItem('✨ きれいな計算機シートを作成', '計算機_きれいなシートを作成')
+    .addItem('🩺 動作確認（軽い）', '計算機_動作確認')
     .addToUi();
 }
 
@@ -189,6 +191,12 @@ function onEditInstallable_(e) {
 
     // ★ ログシートは完全に無視
     if (シート名 === '_DEBUG_LOG') return;
+
+    // 欠番管理シート: チェックボックスで番号の解放/取り消しを行う専用ハンドラ
+    if (シート名 === '欠番管理') {
+      台湾書籍系_欠番管理_onEdit_(e);
+      return;
+    }
 
     台湾まんが_ONEDIT_LOG_('onEditInstallable_:entry', {
       sheet: シート名,
