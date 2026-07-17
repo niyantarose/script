@@ -125,6 +125,20 @@ function 取り置き_棚確認判定_(c){
   return 旧あり? '要棚確認' : '';
 }
 
+// 棚チェックの手間を最小にする絞り込み: 「物がある可能性が高い行」だけを残す。
+//   残す = 確定済み/入力済みの数量がある行、または 旧入荷日あり(帳簿上は届いているはず)で
+//          予約中・未来の予約でない行
+//   落とす = 予約中の幽霊スタンプ、未来発売の予約、帳簿上まだ届いていない行(どうせ棚に無い)
+function 取り置き_登録絞り込み_(rows){
+  return (rows||[]).filter(c=>{
+    if(String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim()!=='') return true; // 確定/入力済みは常に表示
+    if(String(c.旧入荷日||'').trim()==='') return false;
+    if(/予約/.test(String(c.受注ステータス||''))) return false;
+    if(String(c.棚確認||'')==='予約') return false;
+    return true;
+  });
+}
+
 // 洗い替えの引き継ぎ: 台帳の確定数量を土台に、シートへ手入力済みの数量・メモを上書きで残す。
 // 消えるのは「候補から外れた行(出荷済み・キャンセルで注文自体が消えた)」だけ。
 function 取り置き_登録シート引き継ぎ_(candidates, sheetRows, ledgerRows){
@@ -333,6 +347,7 @@ function 取り置き初期登録を作成本体_(){
   if(!sheetRows.length) sheetRows=読む(TORIOKI_CFG.初期,['取置ID','現物取り置き数量','メモ']);
   if(!sheetRows.length) sheetRows=読む('取り置き初期登録',['取置ID','現物取り置き数量','メモ']); // 旧名からの一度きりの引き継ぎ
   candidates=取り置き_登録シート引き継ぎ_(candidates,sheetRows,取り置き台帳_読む_());
+  candidates=取り置き_登録絞り込み_(candidates); // 物がある可能性が高い行だけの最小リストへ
   candidates.forEach(c=>{ c.判定=取り置き_棚確認判定_(c); });
   // 要棚確認を上に(その中は状態グループ順のまま=元の並びを保つ安定ソート)
   candidates=candidates.map((c,i)=>({c,i}))
