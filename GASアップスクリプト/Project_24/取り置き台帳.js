@@ -9,8 +9,27 @@ const 戻しHDR=['取置ID','受注番号','商品コード','数量','元EMS番
 // 取り置き登録の「棚確認」プルダウン。出荷済み/未着/予約は数量なし(登録しない)の目印
 const TORIOKI_棚確認=Object.freeze(['発送待ち','部分在庫','出荷済み','未着','予約']);
 
-// (商品名の「予約」表記による自動判定は撤去した。5月発売の予約済み入荷品まで巻き込むため、
-//  予約の除外は受注ステータス「予約中」だけで行い、「予約」は棚確認プルダウンの手動選択として残す)
+// 商品名・選択肢に「予約」と未来の発売予定がある場合だけ自動予約にする。
+// 過去日・日付不明は入荷済みの可能性があるため自動では除外しない。
+function 取り置き_予約判定_(選択肢, 商品名, today){
+  const text=String(選択肢||'')+' '+String(商品名||'');
+  if(text.indexOf('予約')<0) return false;
+  const base=today instanceof Date && !isNaN(today.getTime())? today : new Date();
+  const full=text.match(/(20\d{2})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+  if(full){
+    const y=Number(full[1]), month=Number(full[2]), day=Number(full[3]);
+    const date=new Date(y,month-1,day);
+    if(date.getFullYear()!==y || date.getMonth()!==month-1 || date.getDate()!==day) return false;
+    return date.getTime()>base.getTime();
+  }
+  const m=text.match(/(?:^|[^\d年])(\d{1,2})月(\s*末)?/);
+  if(!m) return false;
+  const month=Number(m[1]), currentMonth=base.getMonth()+1;
+  if(month<1 || month>12) return false;
+  if(month>currentMonth) return true;
+  if(month!==currentMonth || !m[2]) return false;
+  return new Date(base.getFullYear(),month,0).getTime()>base.getTime();
+}
 const Yahoo候補HDR=['取置ID','商品コード','数量','元EMS番号','処理ID','確認'];
 
 function CSV行を受注行オブジェクトへ_(header, rows){
@@ -64,11 +83,12 @@ function 取り置き_初期候補_(orders, sources){
   (orders||[]).forEach(o=>{
     const state=stateOf(o.ban); if(!state) return;
     const key=取り置き_行キー_(o);
-    if(!byKey[key]){ byKey[key]={o,qty:0,state,入荷日:'',EMS:'',ステータス:''}; keys.push(key); }
+    if(!byKey[key]){ byKey[key]={o,qty:0,state,入荷日:'',EMS:'',予約:false,ステータス:''}; keys.push(key); }
     byKey[key].qty+=Number(o.qty)||0;
     // 旧帳簿の着済情報(入荷日スタンプ/EMS番号)。棚を確認すべき行の目印として表示する
     if(!byKey[key].入荷日){ const d=ymd_(o.入荷日); if(d) byKey[key].入荷日=d; }
     if(!byKey[key].EMS && String(o.EMS||'').trim()) byKey[key].EMS=String(o.EMS).trim();
+    if(o.予約) byKey[key].予約=true;
     if(!byKey[key].ステータス && String(o.ステータス||'').trim()) byKey[key].ステータス=String(o.ステータス).trim();
   });
   const rank={}; list.forEach((s,i)=>{ rank[String(s.状態||'')]=i; });
@@ -78,7 +98,7 @@ function 取り置き_初期候補_(orders, sources){
       const c=byKey[key], o=c.o;
       return {取置ID:'INIT|'+key,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
         注文数量:c.qty,現在の状態:c.state,受注ステータス:c.ステータス,旧入荷日:c.入荷日,旧EMS:c.EMS,
-        棚確認:'',現物取り置き数量:'',メモ:'',判定:''};
+        棚確認:(c.予約 && !c.入荷日 && !/部分包装/.test(String(c.ステータス||'')))?'予約':'',現物取り置き数量:'',メモ:'',判定:''};
     });
 }
 
@@ -325,7 +345,8 @@ function 取り置き初期登録を作成本体_(){
     if(/部分包装/.test(ステータス)) 部分包装.add(ban); // 梱包中=現物が必ずある注文(スタンプや一覧に関係なく拾う)
     orders.push({ban,氏名:M.氏名>=0?String(row[M.氏名]||''):'',code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty,
       入荷日,EMS:M.EMS>=0?String(row[M.EMS]||''):'',
-      ステータス});
+      ステータス,
+      予約:取り置き_予約判定_(row[M.選択肢],M.商品名>=0?row[M.商品名]:'')});
   }
   // 出荷GO未入金(未入金滞留)・出荷可能(発送前)も棚に現物がある=候補に含める(空欄なら未取り置き扱い)。
   // どの一覧にも載っていなくても、入荷日スタンプがある注文と部分包装の注文は自動で候補に出す

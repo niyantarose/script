@@ -127,12 +127,32 @@ test('棚確認が出荷済み/未着/予約なのに数量入りは確定を止
   assert.ok(result.errors.some(e=>/103.*予約/.test(e)),'予約+数量は矛盾');
 });
 
-test('商品名や選択肢の予約表記では棚確認を自動予約にしない', () => {
+test('予約判定は未来の発売予定だけを自動予約にする', () => {
+  const today=new Date(2026,6,17);
+  assert.strictEqual(context.取り置き_予約判定_('予約9月韓国発売予定','',today),true);
+  assert.strictEqual(context.取り置き_予約判定_('予約7月末韓国発売予定','',today),true);
+  assert.strictEqual(context.取り置き_予約判定_('予約5月韓国発売予定','',today),false);
+  assert.strictEqual(context.取り置き_予約判定_('','予約早期完売',today),false);
+  assert.strictEqual(context.取り置き_予約判定_('予約2026/7/18韓国発売予定','',today),true,'年月日がtodayより後');
+  assert.strictEqual(context.取り置き_予約判定_('予約2026/7/17韓国発売予定','',today),false,'当日は未来ではない');
+  assert.strictEqual(context.取り置き_予約判定_('韓国発売予定','',today),false,'予約表記なし');
+
   const rows=context.取り置き_初期候補_([
-    {ban:'201',code:'AAA',sku:'AAAb',qty:1,予約:true,商品名:'（予約5月発売）商品'},
-    {ban:'202',code:'BBB',sku:'BBBb',qty:1,選択肢:'予約9月発売予定'}
-  ],[{状態:'着済スタンプ(要棚確認)',bans:new Set(['201','202'])}]);
-  assert.strictEqual(JSON.stringify(rows.map(r=>r.棚確認)),JSON.stringify(['','']));
+    {ban:'201',code:'AAA',sku:'AAAb',qty:1,予約:true},
+    {ban:'202',code:'BBB',sku:'BBBb',qty:1,予約:false},
+    {ban:'203',code:'CCC',sku:'CCCb',qty:1,予約:true,入荷日:'2026-07-11'},
+    {ban:'204',code:'DDD',sku:'DDDb',qty:1,予約:true,ステータス:'部分包装'}
+  ],[
+    {状態:'着済スタンプ(要棚確認)',bans:new Set(['201','202','203'])},
+    {状態:'部分包装(要棚確認)',bans:new Set(['204'])}
+  ]);
+  assert.strictEqual(rows.find(r=>r.受注番号==='201').棚確認,'予約','未来予約を自動選択');
+  assert.strictEqual(rows.find(r=>r.受注番号==='202').棚確認,'','過去日・日付不明は自動選択しない');
+  assert.strictEqual(rows.find(r=>r.受注番号==='203').棚確認,'','旧入荷日があれば現物形跡を優先');
+  assert.strictEqual(rows.find(r=>r.受注番号==='204').棚確認,'','部分包装なら現物形跡を優先');
+  const applied=context.取り置き_棚確認記憶を適用_(rows,{});
+  assert.strictEqual(JSON.stringify(applied.rows.map(r=>r.受注番号)),JSON.stringify(['202','203','204']),'自動予約は後段で非表示');
+  assert.strictEqual(applied.store[rows.find(r=>r.受注番号==='201').取置ID],'予約','自動予約を記憶');
 });
 
 test('同じ受注×商品の分割行は注文数量を合算して1候補にする', () => {
