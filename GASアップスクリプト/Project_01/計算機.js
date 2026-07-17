@@ -115,8 +115,8 @@ function 計算機_きれいなシートを作成_() {
     ['', '', 'blank'],
     ['── 入力（黄色・毎回ここ）──', '', 'section'],
     ['本の価格(元)', 820, 'input', '0.0', '元'],
-    ['使用レート(円/元)', '=IFERROR(B6,5.09)', 'input', '0.000', '通常は自動。盛る時は数値で上書き'],
-    ['市場レート(自動)', '=IFERROR(GOOGLEFINANCE("CURRENCY:TWDJPY"),"取得不可")', 'auto', '0.000', '自動取得'],
+    ['使用レート(円/元)', 5.09, 'input', '0.000', '市場レートを見て必要なら上書き'],
+    ['市場レート(目安)', 5.09, 'auto', '0.000', '目安。正確なレートは別途確認'],
     ['送料率', 0.35, 'input', '0%', '送料(元)=本の価格×送料率'],
     ['モール手数料', 0.09, 'input', '0%', 'Yahoo等'],
     ['消費税', 0.1, 'input', '0%', '0.1=10%'],
@@ -153,8 +153,8 @@ function 計算機_きれいなシートを作成_() {
     ['', '', 'blank'],
     ['── 入力（黄色・毎回ここ）──', '', 'section'],
     ['商品価格(元)', 37.4, 'input', '0.0', '元'],
-    ['使用レート(円/元)', '=IFERROR(B6,23.82)', 'input', '0.000', '通常は自動。盛る時は数値で上書き'],
-    ['市場レート(自動)', '=IFERROR(GOOGLEFINANCE("CURRENCY:CNYJPY"),"取得不可")', 'auto', '0.000', '自動取得'],
+    ['使用レート(円/元)', 23.82, 'input', '0.000', '市場レートを見て必要なら上書き'],
+    ['市場レート(目安)', 23.82, 'auto', '0.000', '目安。正確なレートは別途確認'],
     ['送料率', 0.3, 'input', '0%', '送料(元)=商品価格×送料率'],
     ['モール手数料', 0.09, 'input', '0%', 'Yahoo等'],
     ['カード手数料', 0.03, 'input', '0%', '決済手数料'],
@@ -193,8 +193,8 @@ function 計算機_きれいなシートを作成_() {
     ['── 入力（黄色・毎回ここ）──', '', 'section'],
     ['本の価格(ウォン)', 180900, 'input', '#,##0', 'ウォン'],
     ['重さ(g)', 300, 'input', '#,##0', 'グラムで重さを入力'],
-    ['使用レート(円/ウォン)', '=IFERROR(B7,0.105)', 'input', '0.0000', '通常は自動。盛る時は数値で上書き'],
-    ['市場レート(自動)', '=IFERROR(GOOGLEFINANCE("CURRENCY:KRWJPY"),"取得不可")', 'auto', '0.0000', '自動取得'],
+    ['使用レート(円/ウォン)', 0.105, 'input', '0.0000', '市場レートを見て必要なら上書き'],
+    ['市場レート(目安)', 0.105, 'auto', '0.0000', '目安。正確なレートは別途確認'],
     ['重量係数(送料)', 0.6, 'input', '0.0', '送料(円)=重さ×係数'],
     ['モール手数料', 0.09, 'input', '0%', 'Yahoo等'],
     ['消費税', 0.1, 'input', '0%', '0.1=10%'],
@@ -222,55 +222,26 @@ function 計算機_きれいなシートを作成_() {
     ['', '', 'blank'],
   ].concat(計算機_原価帯設定行_());
 
-  ss.toast('台湾計算機を作成中…', '計算機', 5);
+  ss.toast('計算機シートを作成中…', '計算機', 10);
   計算機_buildSheet_(ss, '台湾計算機', 台湾);
-  SpreadsheetApp.flush();
-
-  ss.toast('韓国計算機を作成中…', '計算機', 5);
   計算機_buildSheet_(ss, '韓国計算機', 韓国);
-  SpreadsheetApp.flush();
-
-  ss.toast('中国計算機を作成中…', '計算機', 5);
   計算機_buildSheet_(ss, '中国計算機', 中国);
-  SpreadsheetApp.flush();
 
   const done = ss.getSheetByName('台湾計算機');
   if (done) ss.setActiveSheet(done);
-  SpreadsheetApp.getUi().alert(
-    '完了',
-    '「台湾計算機」「韓国計算機」「中国計算機」を作り直しました。\n' +
-      '※古い「台湾価格計算表」などはそのまま残しています。下のタブで新しい計算機を開いてください。',
-    SpreadsheetApp.getUi().ButtonSet.OK
-  );
+  ss.toast('完了：台湾計算機 / 韓国計算機 / 中国計算機', '計算機', 8);
 }
 
-function 計算機_setNote_(range, note) {
-  if (!note) return;
-  const text = String(note);
-  if (text.charAt(0) === '=') range.setValue("'" + text);
-  else range.setValue(text);
-  range.setFontColor('#5F6368').setFontSize(11);
-}
-
-/** 既存シートを安全に差し替えて新規作成 */
+/** 既存シートをクリアして書き直す（deleteしない＝ハングしにくい） */
 function 計算機_buildSheet_(ss, name, rows) {
-  const old = ss.getSheetByName(name);
-  if (old) {
-    // アクティブだと delete が重い／失敗することがあるので、別シートを開いてから削除
-    const others = ss.getSheets().filter(function (s) { return s.getName() !== name; });
-    if (others.length) ss.setActiveSheet(others[0]);
-    const tmp = name + '_旧_' + Date.now();
-    try {
-      old.setName(tmp);
-      SpreadsheetApp.flush();
-      const doomed = ss.getSheetByName(tmp);
-      if (doomed) ss.deleteSheet(doomed);
-    } catch (e) {
-      try { ss.deleteSheet(old); } catch (e2) { /* ignore */ }
-    }
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+  } else {
+    sh.clear();
+    sh.setConditionalFormatRules([]);
   }
 
-  const sh = ss.insertSheet(name);
   sh.setColumnWidth(1, 240);
   sh.setColumnWidth(2, 150);
   sh.setColumnWidth(3, 400);
@@ -283,61 +254,81 @@ function 計算機_buildSheet_(ss, name, rows) {
     actual: '#D0E0F0',
     bandPrice: '#FCE4EC',
   };
-  let profitA1 = null;
+
   const n = rows.length;
-  const labels = [];
-  const values = [];
-  const notes = [];
+  const colA = [];
+  const colB = [];
+  const colC = [];
   for (let i = 0; i < n; i++) {
-    labels.push([rows[i][0] || '']);
-    values.push(['']);
-    notes.push(['']);
+    const r = rows[i];
+    const type = r[2];
+    colA.push([type === 'blank' ? '' : (r[0] || '')]);
+    if (type === 'blank' || type === 'title' || type === 'section' || type === 'sectionPink') {
+      colB.push(['']);
+    } else if (typeof r[1] === 'string' && r[1].charAt(0) === '=') {
+      colB.push([r[1]]); // setFormulas で後から入れるが、一旦空でも可
+    } else {
+      colB.push([r[1] === undefined || r[1] === null ? '' : r[1]]);
+    }
+    const note = r[4] ? String(r[4]) : '';
+    colC.push([note.charAt(0) === '=' ? "'" + note : note]);
   }
 
-  // ラベル・数値・数式を配列に載せて一括書き込み（セル単位より速い）
-  rows.forEach(function (r, idx) {
+  // B列の数式は setFormulas、値は setValues に分ける
+  const bVals = [];
+  const bForms = [];
+  for (let i = 0; i < n; i++) {
+    const r = rows[i];
     const type = r[2];
     const val = r[1];
     if (type === 'blank' || type === 'title' || type === 'section' || type === 'sectionPink') {
-      labels[idx][0] = r[0] || '';
-      return;
+      bVals.push(['']);
+      bForms.push(['']);
+    } else if (typeof val === 'string' && val.charAt(0) === '=') {
+      bVals.push(['']);
+      bForms.push([val]);
+    } else {
+      bVals.push([val === undefined || val === null ? '' : val]);
+      bForms.push(['']);
     }
-    labels[idx][0] = r[0] || '';
-    if (typeof val === 'string' && val.charAt(0) === '=') values[idx][0] = val;
-    else if (val === '' && type === 'input') values[idx][0] = '';
-    else values[idx][0] = val;
-    if (r[4]) {
-      const note = String(r[4]);
-      notes[idx][0] = note.charAt(0) === '=' ? "'" + note : note;
-    }
-  });
+  }
 
-  sh.getRange(1, 1, n, 1).setValues(labels).setFontSize(13);
-  // 数式と値を分けてセット（setValues だと数式が文字列になるため）
-  rows.forEach(function (r, idx) {
-    const row = idx + 1;
+  sh.getRange(1, 1, n, 1).setValues(colA);
+  sh.getRange(1, 2, n, 1).setValues(bVals);
+  sh.getRange(1, 3, n, 1).setValues(colC).setFontColor('#5F6368').setFontSize(11);
+  sh.getRange(1, 1, n, 2).setFontSize(13);
+
+  // 数式だけ個別セット（空の setFormulas は値を消すため使わない）
+  for (let i = 0; i < n; i++) {
+    const f = bForms[i][0];
+    if (f) sh.getRange(i + 1, 2).setFormula(f);
+  }
+
+  let profitA1 = null;
+  for (let i = 0; i < n; i++) {
+    const r = rows[i];
+    const row = i + 1;
     const type = r[2];
-    const val = r[1];
     const fmt = r[3];
-    if (type === 'blank') return;
+    if (type === 'blank') continue;
+
     if (type === 'title') {
       sh.getRange(row, 1, 1, 3).merge();
       sh.getRange(row, 1).setFontSize(18).setFontWeight('bold');
-      return;
+      continue;
     }
     if (type === 'section' || type === 'sectionPink') {
       sh.getRange(row, 1, 1, 3).merge();
       const sec = sh.getRange(row, 1).setFontWeight('bold').setFontSize(13);
       if (type === 'sectionPink') sec.setFontColor('#C2185B').setBackground('#FCE4EC');
       else sec.setFontColor('#3C4043');
-      return;
+      continue;
     }
+
+    const a = sh.getRange(row, 1);
     const b = sh.getRange(row, 2);
-    if (typeof val === 'string' && val.charAt(0) === '=') b.setFormula(val);
-    else b.setValue(values[idx][0]);
     if (fmt) b.setNumberFormat(fmt);
     b.setFontSize(14);
-    const a = sh.getRange(row, 1);
     if (BG[type]) {
       a.setBackground(BG[type]);
       b.setBackground(BG[type]);
@@ -346,21 +337,18 @@ function 計算機_buildSheet_(ss, name, rows) {
     if (type === 'bandPrice') b.setFontSize(16).setFontWeight('bold');
     if (type === 'actual' && (r[0] === '実際売値' || r[0] === '実質粗利額')) b.setFontSize(18).setFontWeight('bold');
     if (type === 'band') b.setFontWeight('bold');
-    if (notes[idx][0]) {
-      const c = sh.getRange(row, 3);
-      c.setValue(notes[idx][0]).setFontColor('#5F6368').setFontSize(11);
-    }
-    if (r[0] === '実質粗利率' && type === 'actual') profitA1 = b.getA1Notation();
-  });
+    if (r[0] === '実質粗利率' && type === 'actual') profitA1 = 'B' + row;
+  }
 
   if (profitA1) {
     const rng = sh.getRange(profitA1);
-    const bad = SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberLessThan(0.2).setBackground('#F4C7C3').setFontColor('#CC0000').setBold(true)
-      .setRanges([rng]).build();
-    const ok = SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberGreaterThanOrEqualTo(0.2).setBackground('#D0E0F0')
-      .setRanges([rng]).build();
-    sh.setConditionalFormatRules([bad, ok]);
+    sh.setConditionalFormatRules([
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberLessThan(0.2).setBackground('#F4C7C3').setFontColor('#CC0000').setBold(true)
+        .setRanges([rng]).build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberGreaterThanOrEqualTo(0.2).setBackground('#D0E0F0')
+        .setRanges([rng]).build(),
+    ]);
   }
 }
