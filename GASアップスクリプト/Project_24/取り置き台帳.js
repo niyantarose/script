@@ -365,6 +365,8 @@ function 取り置き初期登録を作成本体_(){
     .map(x=>x.c);
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
   const sh2=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
+  // 列の並びが変わっても古い位置のプルダウンが残らないよう、シート全体の入力規則を消してから付け直す
+  sh2.getRange(1,1,sh2.getMaxRows(),sh2.getMaxColumns()).clearDataValidations();
   if(candidates.length){
     // 棚確認列にプルダウン(空欄OK)を付け、要棚確認の行を黄色でマーク
     const col=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1;
