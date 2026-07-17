@@ -134,6 +134,7 @@ function 取り置き_登録絞り込み_(rows){
     if(String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim()!=='') return true; // 確定/入力済みは常に表示
     if(String(c.旧入荷日||'').trim()==='') return false;
     if(/予約/.test(String(c.受注ステータス||''))) return false;
+    if(/出荷GO/.test(String(c.受注ステータス||''))) return false; // 揃って出荷作業に入る注文=棚チェック不要(すぐCSVで消える)
     if(String(c.棚確認||'')==='予約') return false;
     return true;
   });
