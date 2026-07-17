@@ -81,6 +81,15 @@ function 計算機_原価帯設定行_() {
 }
 
 function 計算機_きれいなシートを作成() {
+  try {
+    計算機_きれいなシートを作成_();
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('計算機シート作成エラー', String(e && e.message ? e.message : e), SpreadsheetApp.getUi().ButtonSet.OK);
+    throw e;
+  }
+}
+
+function 計算機_きれいなシートを作成_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   const twCost = Math.round((820 + 820 * 0.35) * 5.09);
@@ -213,11 +222,26 @@ function 計算機_きれいなシートを作成() {
     ['', '', 'blank'],
   ].concat(計算機_原価帯設定行_());
 
+  ss.toast('台湾計算機を作成中…', '計算機', 5);
   計算機_buildSheet_(ss, '台湾計算機', 台湾);
-  計算機_buildSheet_(ss, '韓国計算機', 韓国);
-  計算機_buildSheet_(ss, '中国計算機', 中国);
+  SpreadsheetApp.flush();
 
-  ss.toast('台湾・韓国・中国 計算機 v2 を再作成しました');
+  ss.toast('韓国計算機を作成中…', '計算機', 5);
+  計算機_buildSheet_(ss, '韓国計算機', 韓国);
+  SpreadsheetApp.flush();
+
+  ss.toast('中国計算機を作成中…', '計算機', 5);
+  計算機_buildSheet_(ss, '中国計算機', 中国);
+  SpreadsheetApp.flush();
+
+  const done = ss.getSheetByName('台湾計算機');
+  if (done) ss.setActiveSheet(done);
+  SpreadsheetApp.getUi().alert(
+    '完了',
+    '「台湾計算機」「韓国計算機」「中国計算機」を作り直しました。\n' +
+      '※古い「台湾価格計算表」などはそのまま残しています。下のタブで新しい計算機を開いてください。',
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
 }
 
 function 計算機_setNote_(range, note) {
@@ -228,14 +252,28 @@ function 計算機_setNote_(range, note) {
   range.setFontColor('#5F6368').setFontSize(11);
 }
 
+/** 既存シートを安全に差し替えて新規作成 */
 function 計算機_buildSheet_(ss, name, rows) {
   const old = ss.getSheetByName(name);
-  if (old) ss.deleteSheet(old);
+  if (old) {
+    // アクティブだと delete が重い／失敗することがあるので、別シートを開いてから削除
+    const others = ss.getSheets().filter(function (s) { return s.getName() !== name; });
+    if (others.length) ss.setActiveSheet(others[0]);
+    const tmp = name + '_旧_' + Date.now();
+    try {
+      old.setName(tmp);
+      SpreadsheetApp.flush();
+      const doomed = ss.getSheetByName(tmp);
+      if (doomed) ss.deleteSheet(doomed);
+    } catch (e) {
+      try { ss.deleteSheet(old); } catch (e2) { /* ignore */ }
+    }
+  }
+
   const sh = ss.insertSheet(name);
   sh.setColumnWidth(1, 240);
   sh.setColumnWidth(2, 150);
   sh.setColumnWidth(3, 400);
-  sh.getRange(1, 1, 80, 3).setFontSize(12);
 
   const BG = {
     input: '#FFF2CC',
@@ -246,53 +284,73 @@ function 計算機_buildSheet_(ss, name, rows) {
     bandPrice: '#FCE4EC',
   };
   let profitA1 = null;
+  const n = rows.length;
+  const labels = [];
+  const values = [];
+  const notes = [];
+  for (let i = 0; i < n; i++) {
+    labels.push([rows[i][0] || '']);
+    values.push(['']);
+    notes.push(['']);
+  }
 
+  // ラベル・数値・数式を配列に載せて一括書き込み（セル単位より速い）
+  rows.forEach(function (r, idx) {
+    const type = r[2];
+    const val = r[1];
+    if (type === 'blank' || type === 'title' || type === 'section' || type === 'sectionPink') {
+      labels[idx][0] = r[0] || '';
+      return;
+    }
+    labels[idx][0] = r[0] || '';
+    if (typeof val === 'string' && val.charAt(0) === '=') values[idx][0] = val;
+    else if (val === '' && type === 'input') values[idx][0] = '';
+    else values[idx][0] = val;
+    if (r[4]) {
+      const note = String(r[4]);
+      notes[idx][0] = note.charAt(0) === '=' ? "'" + note : note;
+    }
+  });
+
+  sh.getRange(1, 1, n, 1).setValues(labels).setFontSize(13);
+  // 数式と値を分けてセット（setValues だと数式が文字列になるため）
   rows.forEach(function (r, idx) {
     const row = idx + 1;
-    const label = r[0], val = r[1], type = r[2], fmt = r[3], note = r[4];
+    const type = r[2];
+    const val = r[1];
+    const fmt = r[3];
     if (type === 'blank') return;
     if (type === 'title') {
       sh.getRange(row, 1, 1, 3).merge();
-      sh.getRange(row, 1).setValue(label).setFontSize(18).setFontWeight('bold');
+      sh.getRange(row, 1).setFontSize(18).setFontWeight('bold');
       return;
     }
     if (type === 'section' || type === 'sectionPink') {
       sh.getRange(row, 1, 1, 3).merge();
-      const sec = sh.getRange(row, 1).setValue(label).setFontWeight('bold').setFontSize(13);
-      if (type === 'sectionPink') {
-        sec.setFontColor('#C2185B').setBackground('#FCE4EC');
-      } else {
-        sec.setFontColor('#3C4043');
-      }
+      const sec = sh.getRange(row, 1).setFontWeight('bold').setFontSize(13);
+      if (type === 'sectionPink') sec.setFontColor('#C2185B').setBackground('#FCE4EC');
+      else sec.setFontColor('#3C4043');
       return;
     }
-    const a = sh.getRange(row, 1);
     const b = sh.getRange(row, 2);
-    a.setValue(label).setFontSize(13);
     if (typeof val === 'string' && val.charAt(0) === '=') b.setFormula(val);
-    else if (val === '' && type === 'input') b.setValue('');
-    else b.setValue(val);
+    else b.setValue(values[idx][0]);
     if (fmt) b.setNumberFormat(fmt);
     b.setFontSize(14);
+    const a = sh.getRange(row, 1);
     if (BG[type]) {
       a.setBackground(BG[type]);
       b.setBackground(BG[type]);
     }
-    if (type === 'result' && label.indexOf('おすすめ') >= 0) {
-      b.setFontSize(16).setFontWeight('bold');
+    if (type === 'result' && String(r[0]).indexOf('おすすめ') >= 0) b.setFontSize(16).setFontWeight('bold');
+    if (type === 'bandPrice') b.setFontSize(16).setFontWeight('bold');
+    if (type === 'actual' && (r[0] === '実際売値' || r[0] === '実質粗利額')) b.setFontSize(18).setFontWeight('bold');
+    if (type === 'band') b.setFontWeight('bold');
+    if (notes[idx][0]) {
+      const c = sh.getRange(row, 3);
+      c.setValue(notes[idx][0]).setFontColor('#5F6368').setFontSize(11);
     }
-    if (type === 'bandPrice') {
-      b.setFontSize(16).setFontWeight('bold');
-    }
-    if (type === 'actual' && (label === '実際売値' || label === '実質粗利額')) {
-      b.setFontSize(18).setFontWeight('bold');
-    }
-    if (type === 'band') {
-      a.setFontSize(13);
-      b.setFontSize(14).setFontWeight('bold');
-    }
-    if (note) 計算機_setNote_(sh.getRange(row, 3), note);
-    if (label === '実質粗利率' && type === 'actual') profitA1 = b.getA1Notation();
+    if (r[0] === '実質粗利率' && type === 'actual') profitA1 = b.getA1Notation();
   });
 
   if (profitA1) {
