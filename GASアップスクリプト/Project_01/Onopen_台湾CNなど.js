@@ -193,8 +193,11 @@ function onEditInstallable_(e) {
     // ★ ログシートは完全に無視
     if (シート名 === '_DEBUG_LOG') return;
 
-    // 欠番管理シート: ☑は選択のみ（反映は「♻ 解放実行」ボタン）。onEditでは何もしない
-    if (シート名 === '欠番管理') return;
+    // 欠番管理シート: C列の☑は選択のみ。E2の「▶ 解放実行」☑だけを処理する
+    if (シート名 === '欠番管理') {
+      台湾書籍系_欠番管理実行チェック_onEdit_(e);
+      return;
+    }
 
     台湾まんが_ONEDIT_LOG_('onEditInstallable_:entry', {
       sheet: シート名,

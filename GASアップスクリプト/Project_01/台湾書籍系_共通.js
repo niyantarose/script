@@ -4530,8 +4530,17 @@ function 台湾書籍系_欠番管理シートを更新_() {
       }
     }
 
-    // 「♻ 解放実行」ボタンを設置（既存があれば作り直し）。
-    // 失敗しても解放はメニュー「♻ 解放実行」から実行できる。
+    // 実行スイッチ（E2の☑）: 画像ボタンより確実な実行手段。
+    // ☑を入れた瞬間に onEdit 経由で解放実行が走り、☑は自動で戻る。
+    sh.getRange('E1').setValue('▶ 解放実行（下の☑をクリック）');
+    sh.getRange('E1').setBackground('#00796B').setFontColor('#ffffff').setFontWeight('bold');
+    const 実行セル = sh.getRange('E2');
+    実行セル.insertCheckboxes();
+    実行セル.setValue(false);
+    sh.setColumnWidth(5, 200);
+
+    // 「♻ 解放実行」画像ボタンも設置を試みる（環境により入らないことがあるため補助扱い。
+    // 失敗しても E2 の☑かメニュー「♻ 解放実行」で実行できる）。
     let ボタンエラー = '';
     try {
       sh.getImages().forEach(function (img) {
@@ -4542,7 +4551,7 @@ function 台湾書籍系_欠番管理シートを更新_() {
       const blob = Utilities.newBlob(
         Utilities.base64Decode(欠番解放ボタン_PNG_BASE64), 'image/png', 'release_button.png'
       );
-      const img = sh.insertImage(blob, 5, 2); // E2 あたり
+      const img = sh.insertImage(blob, 7, 2); // G2 あたり（E2の実行☑と重ねない）
       img.setAltTextTitle('欠番解放実行ボタン');
       // 末尾アンダースコアの関数はボタン（assignScript）から呼べないため公開ラッパーを割り当てる
       img.assignScript('台湾_欠番解放実行');
@@ -4555,10 +4564,10 @@ function 台湾書籍系_欠番管理シートを更新_() {
     SpreadsheetApp.flush();
     ui.alert(
       '✅ 欠番管理シートを更新しました（未使用 ' + 行データ.length + ' 件）。\n\n' +
-      '手順: 解放したい番号に☑を入れる →「♻ 解放実行」ボタン（またはメニューの「♻ 解放実行」）。\n' +
-      '（☑だけでは何も起きません。実行した時にまとめて反映されます）\n\n' +
+      '手順: 解放したい番号のC列に☑ → E2の「▶ 解放実行」☑をクリック。\n' +
+      '（C列の☑だけでは何も起きません。実行した時にまとめて反映されます）\n\n' +
       '⚠️ 昔からの欠番（過去の事故由来）や「Yahooへ送信済みなのにシートからは消した」番号は解放しないでください。' +
-      (ボタンエラー ? '\n\n⚠️ ボタンの設置に失敗しました（メニューから実行してください）: ' + ボタンエラー : '')
+      (ボタンエラー ? '\n\n（画像ボタンは設置できませんでしたが、E2の☑かメニューで実行できます: ' + ボタンエラー + '）' : '')
     );
   } finally {
     lock.releaseLock();
@@ -4572,6 +4581,22 @@ function 台湾書籍系_欠番管理シートを更新_() {
  * ボタンにはこの名前を割り当てる。
  */
 function 台湾_欠番解放実行() {
+  台湾書籍系_チェックした番号を解放_();
+}
+
+/**
+ * 欠番管理シートの E2「▶ 解放実行」☑ を処理する（onEditから呼ばれる）。
+ * ☑を入れた瞬間に解放実行を走らせ、☑は自動で戻す。
+ * 画像ボタンが環境により設置できないことがあるための確実な代替手段。
+ */
+function 台湾書籍系_欠番管理実行チェック_onEdit_(e) {
+  if (!e || !e.range) return;
+  const sh = e.range.getSheet();
+  if (sh.getName() !== '欠番管理') return;
+  if (e.range.getRow() !== 2 || e.range.getColumn() !== 5) return; // E2のみ
+  if (sh.getRange('E2').getValue() !== true) return; // ☑を入れた時だけ
+  sh.getRange('E2').setValue(false); // 先に戻す（連打・再発火防止）
+  SpreadsheetApp.flush();
   台湾書籍系_チェックした番号を解放_();
 }
 
