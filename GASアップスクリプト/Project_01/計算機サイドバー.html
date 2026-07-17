@@ -22,8 +22,10 @@
     .row input.act-in { background: #E8F0FE; }
     .unit { width: 48px; font-size: 13px; color: #666; }
     .sec { font-size: 14px; font-weight: bold; margin: 10px 0 6px; }
-    .sec.rec { color: #137333; }
-    .sec.act { color: #1a5fb4; }
+    .big.profit { background: #E8F0FE; }
+    .big.profit .l { color: #1a5fb4; }
+    .big.profit .v { color: #1a5fb4; }
+    .sec.auto { color: #5F6368; }
     .line { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 14px; }
     .line .k { color: #555; }
     .line .v { font-weight: bold; font-size: 15px; }
@@ -55,7 +57,7 @@
     <div class="hint">一番下の設定。ここを変えると適用率が自動で変わる</div>
   </div>
   <button class="refetch" onclick="loadRates()">↻ レートを再取得</button>
-  <div class="note">おすすめは理論売値と100円丸めの2つ。目標粗利率は通常は原価帯に連動。</div>
+  <div class="note">おすすめは10円丸めと100円丸め。下に原価帯の自動価格結果あり。</div>
 
   <script>
     var rates = { tw: 5.09, kr: 0.105, cn: 23.82, date: '', ok: false };
@@ -212,13 +214,19 @@
       var goalPct = v.goal;
       var denom = 1 - goalPct / 100 - fee;
       var theory = denom > 0 ? cost / denom : 0;
+      var sell10 = Math.round(theory / 10) * 10;
       var sell100 = Math.round(theory / 100) * 100;
-      var uwa100 = Math.max(0, sell100 - cost);
+      var uwa10 = Math.max(0, sell10 - cost);
+
+      var autoDenom = 1 - autoGoal / 100 - fee;
+      var autoTheory = autoDenom > 0 ? cost / autoDenom : 0;
+      var auto10 = Math.round(autoTheory / 10) * 10;
+      var auto100 = Math.round(autoTheory / 100) * 100;
 
       var uwaEl = document.getElementById('f_uwa');
       if (uwaEl && (resetAuto || !uwaTouched[cur])) {
-        uwaEl.value = uwa100;
-        v.uwa = uwa100;
+        uwaEl.value = uwa10;
+        v.uwa = uwa10;
       }
 
       var actualSell = cost + v.uwa;
@@ -230,13 +238,16 @@
         '<div class="sec act">── 微調整結果（青）──</div>'+
         '<div class="hint">実際売値 = 原価 + 黄色欄のうわのせ</div>'+
         '<div class="actbox"><div class="l">実際売値</div><div class="v">'+yen(actualSell)+'</div></div>'+
-        '<div class="line"><span class="k">実質粗利額</span><span class="v">'+yen(profit)+'</span></div>'+
+        '<div class="big profit"><div class="l">実質粗利額</div><div class="v">'+yen(profit)+'</div></div>'+
         '<div class="sig '+(ok?'ok':'ng')+'"><span>'+(ok?'✓':'⚠')+' 実質粗利率</span><span>'+pct(profitRate)+'</span></div>'+
         '<div class="sec rec">── おすすめ（緑）──</div>'+
-        '<div class="line"><span class="k">理論売値</span><span class="v">'+yen(theory)+'</span></div>'+
-        '<div class="big"><div class="l">おすすめ売値(100円丸め)</div><div class="v">'+yen(sell100)+'</div></div>'+
+        '<div class="line"><span class="k">おすすめ(10円丸め)</span><span class="v">'+yen(sell10)+'</span></div>'+
+        '<div class="big"><div class="l">おすすめ(100円丸め)</div><div class="v">'+yen(sell100)+'</div></div>'+
+        '<div class="sec auto">── 自動価格計算結果（原価帯）──</div>'+
         '<div class="line"><span class="k">原価</span><span class="v">'+yen(cost)+'</span></div>'+
-        '<div class="line"><span class="k">適用目標粗利率(自動)</span><span class="v">'+autoGoal+'%</span></div>';
+        '<div class="line"><span class="k">適用目標粗利率(自動)</span><span class="v">'+autoGoal+'%</span></div>'+
+        '<div class="line"><span class="k">原価帯売値(10円丸め)</span><span class="v">'+yen(auto10)+'</span></div>'+
+        '<div class="line"><span class="k">原価帯売値(100円丸め)</span><span class="v">'+yen(auto100)+'</span></div>';
     }
 
     function loadRates(){
