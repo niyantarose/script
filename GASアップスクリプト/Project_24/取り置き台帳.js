@@ -83,22 +83,24 @@ function 取り置き_初期候補_(orders, sources){
   (orders||[]).forEach(o=>{
     const state=stateOf(o.ban); if(!state) return;
     const key=取り置き_行キー_(o);
-    if(!byKey[key]){ byKey[key]={o,qty:0,state,入荷日:'',EMS:'',予約:false,ステータス:''}; keys.push(key); }
+    if(!byKey[key]){ byKey[key]={o,qty:0,state,入荷日:'',EMS:'',予約:false,ステータス一覧:[]}; keys.push(key); }
     byKey[key].qty+=Number(o.qty)||0;
     // 旧帳簿の着済情報(入荷日スタンプ/EMS番号)。棚を確認すべき行の目印として表示する
     if(!byKey[key].入荷日){ const d=ymd_(o.入荷日); if(d) byKey[key].入荷日=d; }
     if(!byKey[key].EMS && String(o.EMS||'').trim()) byKey[key].EMS=String(o.EMS).trim();
     if(o.予約) byKey[key].予約=true;
-    if(!byKey[key].ステータス && String(o.ステータス||'').trim()) byKey[key].ステータス=String(o.ステータス).trim();
+    const status=String(o.ステータス||'').trim();
+    if(status && byKey[key].ステータス一覧.indexOf(status)<0) byKey[key].ステータス一覧.push(status);
   });
   const rank={}; list.forEach((s,i)=>{ rank[String(s.状態||'')]=i; });
   return keys
     .sort((a,b)=>(rank[byKey[a].state]-rank[byKey[b].state]) || (a<b?-1:a>b?1:0))
     .map(key=>{
-      const c=byKey[key], o=c.o;
+      const c=byKey[key], o=c.o, statuses=c.ステータス一覧.join(' / ');
+      const 自動予約=c.予約 && !c.入荷日 && !/部分包装/.test(statuses);
       return {取置ID:'INIT|'+key,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
-        注文数量:c.qty,現在の状態:c.state,受注ステータス:c.ステータス,旧入荷日:c.入荷日,旧EMS:c.EMS,
-        棚確認:(c.予約 && !c.入荷日 && !/部分包装/.test(String(c.ステータス||'')))?'予約':'',現物取り置き数量:'',メモ:'',判定:''};
+        注文数量:c.qty,現在の状態:c.state,受注ステータス:statuses,旧入荷日:c.入荷日,旧EMS:c.EMS,
+        棚確認:自動予約?'予約':'',自動予約,現物取り置き数量:'',メモ:'',判定:''};
     });
 }
 
@@ -139,16 +141,21 @@ function 取り置き_登録絞り込み_(rows){
   });
 }
 
-// 「出荷済み/未着/予約」と判断済みの行は次回から表示しない。判断はDocumentPropertiesに取置IDで記憶し、
-// 注文が候補から消えたら記憶も自動で消える(store=次回保存する記憶)。数量入りの行は対象外(表示)。
+// 手動で「出荷済み/未着/予約」と判断した行は次回から表示しない。判断はDocumentPropertiesに取置IDで記憶し、
+// 注文が候補から消えたら記憶も自動で消える。自動予約は当回だけ非表示で記憶しない。数量入りの行は対象外(表示)。
 function 取り置き_棚確認記憶を適用_(candidates, store){
   const memo=store||{}, out=[], next={};
   (candidates||[]).forEach(c=>{
     const id=String(c.取置ID||'');
     const qty=String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim();
     let check=String(c.棚確認||'').trim();
-    if(!check && memo[id]) check=String(memo[id]); // 過去の判断を復元
-    if(qty==='' && (check==='出荷済み'||check==='未着'||check==='予約')){ next[id]=check; return; } // 判断済み=非表示で記憶
+    let autoReservation=c.自動予約===true && check==='予約';
+    if(autoReservation && memo[id]){ check=String(memo[id]); autoReservation=false; } // 手動の過去判断を自動予約より優先
+    else if(!check && memo[id]) check=String(memo[id]); // 過去の判断を復元
+    if(qty==='' && (check==='出荷済み'||check==='未着'||check==='予約')){
+      if(!autoReservation) next[id]=check; // 自動予約は現在の判定で隠すだけで永続化しない
+      return;
+    }
     out.push(Object.assign({},c,{棚確認:check}));
   });
   return {rows:out, store:next};
@@ -170,6 +177,7 @@ function 取り置き_登録シート引き継ぎ_(candidates, sheetRows, ledger
     return Object.assign({},c,{
       現物取り置き数量: (qty!=null && String(qty).trim()!=='')? qty : c.現物取り置き数量,
       棚確認: check!==''? check : c.棚確認,
+      自動予約: check!==''? false : c.自動予約,
       メモ: memo!==''? memo : c.メモ
     });
   });
