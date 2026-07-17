@@ -80,17 +80,32 @@ function 計算機_原価帯設定行_() {
   ];
 }
 
+/** 超軽量動作確認（止まっている時はまずこれ） */
+function 計算機_動作確認() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ss.toast('計算機スクリプトは動いています', '計算機', 5);
+  Logger.log('計算機_動作確認 OK ' + new Date());
+}
+
 function 計算機_きれいなシートを作成() {
   try {
     計算機_きれいなシートを作成_();
   } catch (e) {
-    SpreadsheetApp.getUi().alert('計算機シート作成エラー', String(e && e.message ? e.message : e), SpreadsheetApp.getUi().ButtonSet.OK);
-    throw e;
+    const msg = String(e && e.message ? e.message : e);
+    Logger.log('計算機シート作成エラー: ' + msg);
+    try {
+      SpreadsheetApp.getActiveSpreadsheet().toast('エラー: ' + msg, '計算機', 15);
+    } catch (ignore) {}
+    try {
+      SpreadsheetApp.getUi().alert('計算機シート作成エラー', msg, SpreadsheetApp.getUi().ButtonSet.OK);
+    } catch (ignore2) {}
   }
 }
 
 function 計算機_きれいなシートを作成_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ss.toast('開始: 台湾→韓国→中国', '計算機', 8);
+  SpreadsheetApp.flush();
 
   const twCost = Math.round((820 + 820 * 0.35) * 5.09);
   const twFee = 0.09 + 0.1;
@@ -222,18 +237,25 @@ function 計算機_きれいなシートを作成_() {
     ['', '', 'blank'],
   ].concat(計算機_原価帯設定行_());
 
-  ss.toast('計算機シートを作成中…', '計算機', 10);
-  計算機_buildSheet_(ss, '台湾計算機', 台湾);
-  計算機_buildSheet_(ss, '韓国計算機', 韓国);
-  計算機_buildSheet_(ss, '中国計算機', 中国);
+  計算機_buildSheetFast_(ss, '台湾計算機', 台湾);
+  ss.toast('台湾OK → 韓国…', '計算機', 5);
+  SpreadsheetApp.flush();
+
+  計算機_buildSheetFast_(ss, '韓国計算機', 韓国);
+  ss.toast('韓国OK → 中国…', '計算機', 5);
+  SpreadsheetApp.flush();
+
+  計算機_buildSheetFast_(ss, '中国計算機', 中国);
 
   const done = ss.getSheetByName('台湾計算機');
   if (done) ss.setActiveSheet(done);
   ss.toast('完了：台湾計算機 / 韓国計算機 / 中国計算機', '計算機', 8);
 }
 
-/** 既存シートをクリアして書き直す（deleteしない＝ハングしにくい） */
-function 計算機_buildSheet_(ss, name, rows) {
+/**
+ * 既存シートを clear して一括書き込み（行ごとの API 連打を避ける）
+ */
+function 計算機_buildSheetFast_(ss, name, rows) {
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
@@ -256,99 +278,103 @@ function 計算機_buildSheet_(ss, name, rows) {
   };
 
   const n = rows.length;
-  const colA = [];
-  const colB = [];
-  const colC = [];
-  for (let i = 0; i < n; i++) {
-    const r = rows[i];
-    const type = r[2];
-    colA.push([type === 'blank' ? '' : (r[0] || '')]);
-    if (type === 'blank' || type === 'title' || type === 'section' || type === 'sectionPink') {
-      colB.push(['']);
-    } else if (typeof r[1] === 'string' && r[1].charAt(0) === '=') {
-      colB.push([r[1]]); // setFormulas で後から入れるが、一旦空でも可
-    } else {
-      colB.push([r[1] === undefined || r[1] === null ? '' : r[1]]);
-    }
-    const note = r[4] ? String(r[4]) : '';
-    colC.push([note.charAt(0) === '=' ? "'" + note : note]);
-  }
-
-  // B列の数式は setFormulas、値は setValues に分ける
-  const bVals = [];
-  const bForms = [];
-  for (let i = 0; i < n; i++) {
-    const r = rows[i];
-    const type = r[2];
-    const val = r[1];
-    if (type === 'blank' || type === 'title' || type === 'section' || type === 'sectionPink') {
-      bVals.push(['']);
-      bForms.push(['']);
-    } else if (typeof val === 'string' && val.charAt(0) === '=') {
-      bVals.push(['']);
-      bForms.push([val]);
-    } else {
-      bVals.push([val === undefined || val === null ? '' : val]);
-      bForms.push(['']);
-    }
-  }
-
-  sh.getRange(1, 1, n, 1).setValues(colA);
-  sh.getRange(1, 2, n, 1).setValues(bVals);
-  sh.getRange(1, 3, n, 1).setValues(colC).setFontColor('#5F6368').setFontSize(11);
-  sh.getRange(1, 1, n, 2).setFontSize(13);
-
-  // 数式だけ個別セット（空の setFormulas は値を消すため使わない）
-  for (let i = 0; i < n; i++) {
-    const f = bForms[i][0];
-    if (f) sh.getRange(i + 1, 2).setFormula(f);
-  }
-
+  const values = [];
+  const bgA = [];
+  const bgB = [];
+  const bgC = [];
+  const fmtB = [];
+  const sizeA = [];
+  const sizeB = [];
+  const weightA = [];
+  const weightB = [];
+  const colorA = [];
+  const formulaRows = [];
   let profitA1 = null;
+
   for (let i = 0; i < n; i++) {
     const r = rows[i];
-    const row = i + 1;
-    const type = r[2];
-    const fmt = r[3];
-    if (type === 'blank') continue;
+    const type = r[2] || 'blank';
+    const label = (type === 'blank') ? '' : (r[0] || '');
+    const noteRaw = r[4] ? String(r[4]) : '';
+    const note = noteRaw.charAt(0) === '=' ? "'" + noteRaw : noteRaw;
+    const val = r[1];
+    const isFormula = typeof val === 'string' && val.charAt(0) === '=';
+    const isHeader = (type === 'title' || type === 'section' || type === 'sectionPink' || type === 'blank');
+
+    values.push([label, isHeader || isFormula ? '' : (val === undefined || val === null ? '' : val), note]);
+
+    let ba = null;
+    let bb = null;
+    let bc = null;
+    let fa = 13;
+    let fb = 14;
+    let wa = 'normal';
+    let wb = 'normal';
+    let ca = '#000000';
 
     if (type === 'title') {
-      sh.getRange(row, 1, 1, 3).merge();
-      sh.getRange(row, 1).setFontSize(18).setFontWeight('bold');
-      continue;
-    }
-    if (type === 'section' || type === 'sectionPink') {
-      sh.getRange(row, 1, 1, 3).merge();
-      const sec = sh.getRange(row, 1).setFontWeight('bold').setFontSize(13);
-      if (type === 'sectionPink') sec.setFontColor('#C2185B').setBackground('#FCE4EC');
-      else sec.setFontColor('#3C4043');
-      continue;
+      fa = 18; wa = 'bold';
+    } else if (type === 'section') {
+      fa = 13; wa = 'bold'; ca = '#3C4043';
+    } else if (type === 'sectionPink') {
+      fa = 13; wa = 'bold'; ca = '#C2185B';
+      ba = '#FCE4EC'; bb = '#FCE4EC'; bc = '#FCE4EC';
+    } else if (BG[type]) {
+      ba = BG[type];
+      bb = BG[type];
+      if (type === 'result' && String(r[0]).indexOf('おすすめ') >= 0) {
+        fb = 16; wb = 'bold';
+      }
+      if (type === 'bandPrice') {
+        fb = 16; wb = 'bold';
+      }
+      if (type === 'actual' && (r[0] === '実際売値' || r[0] === '実質粗利額')) {
+        fb = 18; wb = 'bold';
+      }
+      if (type === 'band') wb = 'bold';
     }
 
-    const a = sh.getRange(row, 1);
-    const b = sh.getRange(row, 2);
-    if (fmt) b.setNumberFormat(fmt);
-    b.setFontSize(14);
-    if (BG[type]) {
-      a.setBackground(BG[type]);
-      b.setBackground(BG[type]);
+    bgA.push([ba]);
+    bgB.push([bb]);
+    bgC.push([bc]);
+    fmtB.push([(!isHeader && r[3]) ? r[3] : '@']);
+    sizeA.push([fa]);
+    sizeB.push([fb]);
+    weightA.push([wa]);
+    weightB.push([wb]);
+    colorA.push([ca]);
+
+    if (isFormula) formulaRows.push({ row: i + 1, formula: val });
+    if (r[0] === '実質粗利率' && type === 'actual') profitA1 = 'B' + (i + 1);
+  }
+
+  const rng = sh.getRange(1, 1, n, 3);
+  rng.setValues(values);
+  sh.getRange(1, 1, n, 1).setBackgrounds(bgA).setFontSizes(sizeA).setFontWeights(weightA).setFontColors(colorA);
+  sh.getRange(1, 2, n, 1).setBackgrounds(bgB).setFontSizes(sizeB).setFontWeights(weightB).setNumberFormats(fmtB);
+  sh.getRange(1, 3, n, 1).setBackgrounds(bgC).setFontColor('#5F6368').setFontSize(11);
+
+  for (let i = 0; i < formulaRows.length; i++) {
+    sh.getRange(formulaRows[i].row, 2).setFormula(formulaRows[i].formula);
+  }
+
+  // タイトル・見出しだけ結合（少なめ）
+  for (let i = 0; i < n; i++) {
+    const type = rows[i][2];
+    if (type === 'title' || type === 'section' || type === 'sectionPink') {
+      sh.getRange(i + 1, 1, 1, 3).merge();
     }
-    if (type === 'result' && String(r[0]).indexOf('おすすめ') >= 0) b.setFontSize(16).setFontWeight('bold');
-    if (type === 'bandPrice') b.setFontSize(16).setFontWeight('bold');
-    if (type === 'actual' && (r[0] === '実際売値' || r[0] === '実質粗利額')) b.setFontSize(18).setFontWeight('bold');
-    if (type === 'band') b.setFontWeight('bold');
-    if (r[0] === '実質粗利率' && type === 'actual') profitA1 = 'B' + row;
   }
 
   if (profitA1) {
-    const rng = sh.getRange(profitA1);
+    const pr = sh.getRange(profitA1);
     sh.setConditionalFormatRules([
       SpreadsheetApp.newConditionalFormatRule()
         .whenNumberLessThan(0.2).setBackground('#F4C7C3').setFontColor('#CC0000').setBold(true)
-        .setRanges([rng]).build(),
+        .setRanges([pr]).build(),
       SpreadsheetApp.newConditionalFormatRule()
         .whenNumberGreaterThanOrEqualTo(0.2).setBackground('#D0E0F0')
-        .setRanges([rng]).build(),
+        .setRanges([pr]).build(),
     ]);
   }
 }
