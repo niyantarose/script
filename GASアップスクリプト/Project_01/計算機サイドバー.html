@@ -13,14 +13,17 @@
     .box { border: 1px solid #eee; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
     .box .h { font-size: 11px; font-weight: bold; margin-bottom: 6px; }
     .in .h { color: #b8860b; }
+    .bandbox { border: 1px solid #e6c87a; background: #fffaf0; }
+    .bandbox .h { color: #8a6d1b; }
     .row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 5px 0; }
     .row label { color: #555; font-size: 12px; }
     .row input { width: 96px; height: 28px; text-align: right; border: 1px solid #ccc; border-radius: 4px; padding: 0 6px; font-size: 13px; background: #FFF9E6; }
+    .row input.band-in { background: #FCE8B2; }
+    .row input.act-in { background: #E8F0FE; }
     .unit { width: 44px; font-size: 11px; color: #999; }
     .sec { font-size: 11px; font-weight: bold; margin: 8px 0 4px; }
     .sec.rec { color: #137333; }
     .sec.act { color: #1a5fb4; }
-    .sec.ref { color: #888; }
     .line { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
     .line .k { color: #666; }
     .line .v { font-weight: bold; }
@@ -46,23 +49,27 @@
     <button id="t_cn" onclick="setC('cn')">中国</button>
   </div>
   <div class="rate" id="rate">レート取得中...</div>
-  <div class="box in"><div class="h">✎ 入力（黄色）</div><div id="inputs"></div></div>
+  <div class="box in"><div class="h">✎ 入力（黄色・毎回ここ）</div><div id="inputs"></div></div>
+  <div class="box bandbox"><div class="h">⚙ 【別設定】原価帯別の目標粗利率</div><div id="bands"></div>
+    <div class="hint">ここを変えると、原価に応じた適用率が自動で変わる</div>
+  </div>
   <div id="results"></div>
   <button class="refetch" onclick="loadRates()">↻ レートを再取得</button>
-  <div class="note">目標粗利率・うわのせは黄色欄で手入力。初期値は原価帯／推奨。手入力後は自動追従しません。</div>
+  <div class="note">毎回の入力と原価帯ルールは別。目標粗利率は通常は自動連動、上書きも可。</div>
 
   <script>
     var rates = { tw: 5.09, kr: 0.105, cn: 23.82, date: '', ok: false };
     var cur = 'tw';
-    var goalTouched = { tw: false, kr: false, cn: false };
     var uwaTouched = { tw: false, kr: false, cn: false };
+    var goalTouched = { tw: false, kr: false, cn: false };
+    var bands = { g2: 35, g6: 25, g12: 20, g20: 10, g30: 8 };
 
-    function goalFromCost(cost) {
-      if (cost <= 2000) return 35;
-      if (cost <= 6000) return 25;
-      if (cost <= 12000) return 20;
-      if (cost <= 20000) return 10;
-      return 8;
+    function goalFromBands(cost, b) {
+      if (cost <= 2000) return b.g2;
+      if (cost <= 6000) return b.g6;
+      if (cost <= 12000) return b.g12;
+      if (cost <= 20000) return b.g20;
+      return b.g30;
     }
 
     var cfg = {
@@ -109,6 +116,14 @@
       }
     };
 
+    var bandFields = [
+      ['g2','〜2,000円',35],
+      ['g6','〜6,000円',25],
+      ['g12','〜12,000円',20],
+      ['g20','〜20,000円',10],
+      ['g30','20,000円超',8]
+    ];
+
     function yen(v){ return '¥'+Math.round(v).toLocaleString('ja-JP'); }
     function pct(v){ return (v*100).toFixed(1)+'%'; }
 
@@ -116,6 +131,15 @@
       cur = c;
       ['tw','kr','cn'].forEach(function(k){ document.getElementById('t_'+k).className = (k===c?'on':''); });
       render();
+    }
+
+    function readBands(){
+      var b = {};
+      bandFields.forEach(function(x){
+        var el = document.getElementById('b_'+x[0]);
+        b[x[0]] = el ? parseFloat(el.value) || 0 : x[2];
+      });
+      return b;
     }
 
     function readValues(){
@@ -127,48 +151,65 @@
       return v;
     }
 
-    function preserveField(id, touched){
-      var el = document.getElementById(id);
-      if (el && touched) return el.value;
-      return null;
-    }
-
     function render(){
-      var f = cfg[cur].fields;
-      var prevGoal = preserveField('f_goal', goalTouched[cur]);
-      var prevUwa = preserveField('f_uwa', uwaTouched[cur]);
-      document.getElementById('inputs').innerHTML = f.map(function(x){
+      var prev = {};
+      cfg[cur].fields.forEach(function(x){
+        var el = document.getElementById('f_'+x[0]);
+        if (el) prev[x[0]] = el.value;
+      });
+      bandFields.forEach(function(x){
+        var el = document.getElementById('b_'+x[0]);
+        if (el) bands[x[0]] = parseFloat(el.value) || x[2];
+      });
+
+      document.getElementById('bands').innerHTML = bandFields.map(function(x){
+        var val = bands[x[0]] != null ? bands[x[0]] : x[2];
+        return '<div class="row"><label>'+x[1]+'</label><span style="display:flex;align-items:center;gap:6px;">'+
+          '<input id="b_'+x[0]+'" class="band-in" type="number" step="0.1" value="'+val+'" oninput="onBand()"/>'+
+          '<span class="unit">%</span></span></div>';
+      }).join('');
+
+      document.getElementById('inputs').innerHTML = cfg[cur].fields.map(function(x){
         var def = x[0]==='rate' ? rates[cur] : x[3];
-        if (x[0]==='goal' && prevGoal !== null) def = prevGoal;
-        if (x[0]==='uwa' && prevUwa !== null) def = prevUwa;
+        if (x[0]==='uwa' && prev.uwa != null && uwaTouched[cur]) def = prev.uwa;
+        if (x[0]==='goal' && prev.goal != null && goalTouched[cur]) def = prev.goal;
         var step = (x[2]==='%') ? '0.1' : 'any';
         var val = (def === '' || def === null) ? '' : def;
+        var cls = x[0]==='uwa' ? ' class="act-in"' : '';
         return '<div class="row"><label>'+x[1]+'</label><span style="display:flex;align-items:center;gap:6px;">'+
-          '<input id="f_'+x[0]+'" type="number" step="'+step+'" value="'+val+'" oninput="onInput(\''+x[0]+'\')"/>'+
+          '<input id="f_'+x[0]+'" type="number" step="'+step+'" value="'+val+'"'+cls+' oninput="onInput(\''+x[0]+'\')"/>'+
           '<span class="unit">'+x[2]+'</span></span></div>';
       }).join('');
-      compute(!goalTouched[cur], !uwaTouched[cur]);
+
+      if (!uwaTouched[cur] || !goalTouched[cur]) compute(true);
+      else compute(false);
+    }
+
+    function onBand(){
+      goalTouched[cur] = false;
+      compute(true);
     }
 
     function onInput(key){
-      if (key === 'goal') goalTouched[cur] = true;
       if (key === 'uwa') uwaTouched[cur] = true;
-      compute(false, false);
+      if (key === 'goal') goalTouched[cur] = true;
+      compute(false);
     }
 
-    function compute(resetGoal, resetUwa){
+    function compute(resetAuto){
       var v = readValues();
+      var b = readBands();
       var fee = cfg[cur].feeTotal(v);
       var cost = cfg[cur].cost(v);
-      var bandPct = goalFromCost(cost);
+      var autoGoal = goalFromBands(cost, b);
 
       var goalEl = document.getElementById('f_goal');
-      if (goalEl && (resetGoal || !goalTouched[cur])) {
-        goalEl.value = bandPct;
-        v.goal = bandPct;
+      if (goalEl && (resetAuto || !goalTouched[cur])) {
+        goalEl.value = autoGoal;
+        v.goal = autoGoal;
       }
-      var goalPct = v.goal;
 
+      var goalPct = v.goal;
       var theory = cost / (1 - goalPct / 100 - fee);
       var sell10 = Math.round(theory / 10) * 10;
       var sell100 = Math.round(theory / 100) * 100;
@@ -177,7 +218,7 @@
       var profit100 = sell100 - sell100 * fee - cost;
 
       var uwaEl = document.getElementById('f_uwa');
-      if (uwaEl && (resetUwa || !uwaTouched[cur])) {
+      if (uwaEl && (resetAuto || !uwaTouched[cur])) {
         uwaEl.value = uwa10;
         v.uwa = uwa10;
       }
@@ -189,9 +230,8 @@
 
       document.getElementById('results').innerHTML =
         '<div class="line"><span class="k">原価</span><span class="v">'+yen(cost)+'</span></div>'+
-        '<div class="line"><span class="k">原価帯参考粗利率</span><span class="v">'+bandPct+'%</span></div>'+
-        '<div class="sec ref">── 原価帯参考: 2千35% / 6千25% / 1.2万20% / 2万10% / 3万8% ──</div>'+
-        '<div class="sec rec">── おすすめ（黄色の目標粗利率から・緑）──</div>'+
+        '<div class="line"><span class="k">適用目標粗利率(原価帯から自動)</span><span class="v">'+autoGoal+'%</span></div>'+
+        '<div class="sec rec">── おすすめ（目標から・緑）──</div>'+
         '<div class="line"><span class="k">理論売値</span><span class="v">'+yen(theory)+'</span></div>'+
         '<div class="line"><span class="k">おすすめ(10円丸め)</span><span class="v">'+yen(sell10)+'</span></div>'+
         '<div class="big"><div class="l">おすすめ(100円丸め)</div><div class="v">'+yen(sell100)+'</div></div>'+
