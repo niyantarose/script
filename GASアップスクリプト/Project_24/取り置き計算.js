@@ -260,7 +260,9 @@ function 取り置き_割当計算_(input){
     qty:remainingBySupply[s._key]||0,arrival:s.arrival}))
     .filter(s=>s.qty>0);
   const plan={orders,newRows,returnUpdates,remainingBySupply,surplus,errors,warnings:Array.from(new Set(warnings))};
-  plan.errors=Array.from(new Set(plan.errors.concat(取り置き_割当検証_(plan,input,summary))));
+  const 検証=取り置き_割当検証_(plan,input);
+  plan.errors=Array.from(new Set(plan.errors.concat(検証.errors)));
+  plan.warnings=Array.from(new Set(plan.warnings.concat(検証.warnings)));
   return plan;
 }
 
@@ -368,6 +370,11 @@ function 取り置き_未台帳出荷計画_(shippedRows, ledgerRows, movements,
   return {newRows,review};
 }
 
+// 戻り {errors, warnings}:
+//   errors  = ④を止めるべき異常(台帳の重複ID・非整数、計画が作った不正行=内部バグ)
+//   warnings= ④は完走し人に知らせる注意(注文が消えた/減った台帳行、箱の供給超過)。
+//     注文が消えた・減った取り置きは、現物は既に確保済みなので勝手に消さず「手動解除で調整」を促す。
+//     供給超過は⑤便締めをブロックする突合超過(引当.js)と同種なので、ここでも警告に留める。
 function 取り置き_割当検証_(plan,input){
   const projected=(input.ledger||[]).map(r=>Object.assign({},r));
   const byId={}; projected.forEach((r,index)=>byId[String(r.取置ID||'')]=index);
@@ -380,14 +387,16 @@ function 取り置き_割当検証_(plan,input){
     if(index===undefined){ byId[id]=projected.length; projected.push(Object.assign({},row)); }
     else projected[index]=Object.assign({},projected[index],row);
   });
-  const projectedSummary=取り置き_集計_(projected,input.movements||[]), errors=projectedSummary.errors.slice();
+  const projectedSummary=取り置き_集計_(projected,input.movements||[]);
+  const errors=projectedSummary.errors.slice(), warnings=[];
   const orderQty={};
   (input.orders||[]).forEach(order=>{
     const key=取り置き_行キー_(order); orderQty[key]=(orderQty[key]||0)+(Number(order.qty)||0);
   });
   Object.keys(projectedSummary.activeByKey).forEach(key=>{
-    if(!(key in orderQty)) errors.push('取り置き中の対象注文なし: '+key);
-    else if(projectedSummary.activeByKey[key]>orderQty[key]) errors.push('注文数量超過: '+key+' 取り置き'+projectedSummary.activeByKey[key]+' / 注文'+orderQty[key]);
+    const reserved=projectedSummary.activeByKey[key];
+    if(!(key in orderQty)) warnings.push('取り置き台帳に現注文の無い行(出荷/削除済みなら手動解除してください): '+key+' 取り置き'+reserved);
+    else if(reserved>orderQty[key]) warnings.push('取り置きが注文数を超過(手動解除で調整してください): '+key+' 取り置き'+reserved+' / 注文'+orderQty[key]);
   });
   const supplyQty={};
   (input.supplies||[]).forEach(s=>{
@@ -396,12 +405,12 @@ function 取り置き_割当検証_(plan,input){
   Object.keys(projectedSummary.usageBySupply).forEach(key=>{
     if(!(key in supplyQty)) return; // 締め済み過去EMSは全件検算で確認し、現在④の供給上限には使わない
     const used=取り置き_使用合計_(projectedSummary.usageBySupply[key]), supplied=supplyQty[key]||0;
-    if(used>supplied) errors.push('EMS供給超過: '+key+' 使用'+used+' / 供給'+supplied);
+    if(used>supplied) warnings.push('EMS供給超過(便締め前に要確認): '+key.replace('|',' ')+' 使用'+used+' / 供給'+supplied);
   });
   (plan.newRows||[]).forEach(row=>{
     if(!取り置き_整数_(row.取り置き数量)) errors.push('新規取り置き数量が正の整数でない: '+row.取置ID);
     const order=(input.orders||[]).find(o=>取り置き_行キー_(o)===取り置き_行キー_(row));
     if(order && 取り置き_商品コード_(order.sku,order.code)!==normCode_(row.商品コード)) errors.push('数値枝番または商品コード不一致: '+row.取置ID);
   });
-  return Array.from(new Set(errors));
+  return {errors:Array.from(new Set(errors)), warnings:Array.from(new Set(warnings))};
 }

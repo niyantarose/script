@@ -467,6 +467,41 @@ test('既存台帳エラーは割当計算結果で重複しない', () => {
   assert.strictEqual(result.errors.length,new Set(result.errors).size);
 });
 
+// ===== 注文が消えた/減った取り置きは④を止めず警告にする(手動解除の候補として知らせる) =====
+
+test('注文が消えた取り置き中は中止せず警告にする(④を完走)', () => {
+  const result=context.取り置き_割当計算_({
+    orders:[], // 受注明細から消えた(出荷/削除)
+    ledger:[{取置ID:'H',状態:'取り置き中',受注番号:'10116841',商品コード:'BEE48',SKU:'BEE48B',取り置き数量:1,取置元種別:'開始前在庫'}],
+    movements:[],supplies:[],explicit:[]
+  });
+  assert.strictEqual(result.errors.length,0,'エラーで中止しない: '+JSON.stringify(result.errors));
+  assert.ok(result.warnings.some(w=>/BEE48/.test(w)&&/手動解除/.test(w)));
+});
+
+test('取り置きが注文数を超過しても中止せず警告にする', () => {
+  const result=context.取り置き_割当計算_({
+    orders:[{ban:'101',code:'AAA',sku:'AAAb',qty:1,sortKey:1,i:0,keys:['AAA']}],
+    ledger:[{取置ID:'H',状態:'取り置き中',受注番号:'101',商品コード:'AAA',SKU:'AAAb',取り置き数量:2,取置元種別:'開始前在庫'}],
+    movements:[],supplies:[],explicit:[]
+  });
+  assert.strictEqual(result.errors.length,0,JSON.stringify(result.errors));
+  assert.ok(result.warnings.some(w=>/注文数を超過/.test(w)));
+});
+
+test('計画が作った不正な新規行は従来通りエラーで中止する(内部バグ検知)', () => {
+  // 台帳の重複IDは集計エラー=中止のまま
+  const result=context.取り置き_割当計算_({
+    orders:[],
+    ledger:[
+      {取置ID:'DUP',状態:'取り置き中',受注番号:'1',商品コード:'AAA',SKU:'AAAb',取り置き数量:1},
+      {取置ID:'DUP',状態:'取り置き中',受注番号:'1',商品コード:'AAA',SKU:'AAAb',取り置き数量:1}
+    ],
+    movements:[],supplies:[],explicit:[]
+  });
+  assert.ok(result.errors.some(e=>/重複/.test(e)),'重複IDは中止のまま');
+});
+
 // ===== タグ異常は警告して完走する(④全体を止めない・持ち主のない分は余りへ) =====
 // キャンセル済み注文の名指しタグや多め買付は日常的に発生するため、全体中止にしない(ユーザー決定)。
 
