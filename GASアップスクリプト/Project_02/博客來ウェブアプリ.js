@@ -3324,10 +3324,11 @@ function bookCodeNextUnusedWorkId_(ss, runtime) {
   try {
     const poolCell = bookCodeReleasedPoolCell_(ss);
     if (poolCell) {
+      // トークンは「純粋な1〜4桁の数字」だけを受け付ける（シート側パーサーと同じ厳密化。
+      // 数字以外を剥がす旧方式はセルのゴミ文字列を解放番号として拾う事故があった）
       const list = String(poolCell.getDisplayValue() || '')
         .split(/[,、\s]+/)
-        .map(function(s) { return s.replace(/\D/g, ''); })
-        .filter(Boolean)
+        .filter(function(s) { return /^\d{1,4}$/.test(s); })
         .map(function(s) { return parseInt(s, 10); })
         .filter(function(n) { return isFinite(n) && n > 0; })
         .sort(function(a, b) { return a - b; });

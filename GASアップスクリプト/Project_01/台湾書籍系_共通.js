@@ -4293,10 +4293,12 @@ function 台湾書籍系_解放プールセル_() {
 }
 
 function 台湾書籍系_解放プール読取_(セル) {
+  // トークンは「純粋な1〜4桁の数字」だけを受け付ける。
+  // 以前は数字以外を剥がして解釈していたため、セルに紛れ込んだ日時などの
+  // ゴミ文字列（例: 6:30→630、10月→10）を解放番号として拾う事故があった。
   const list = String((セル && セル.getDisplayValue()) || '')
     .split(/[,、\s]+/)
-    .map(s => s.replace(/\D/g, ''))
-    .filter(Boolean)
+    .filter(s => /^\d{1,4}$/.test(s))
     .map(s => parseInt(s, 10))
     .filter(n => Number.isFinite(n) && n > 0);
   list.sort((a, b) => a - b);
@@ -4475,7 +4477,18 @@ function 台湾書籍系_欠番管理シートを更新_() {
     const 上限 = Math.max(保存最大, セル最大, 実使用最大);
 
     const プールセル = 台湾書籍系_解放プールセル_();
-    const プール = プールセル ? 台湾書籍系_解放プール読取_(プールセル) : [];
+    let プール = プールセル ? 台湾書籍系_解放プール読取_(プールセル) : [];
+    // プールの自動掃除: 使用中になった番号と、発行済み最大を超える番号（ゴミ混入由来）を除去
+    const 掃除後プール = プール.filter(function (n) {
+      return !used.has(String(n).padStart(4, '0')) && n <= 上限;
+    });
+    if (プールセル && 掃除後プール.length !== プール.length) {
+      try {
+        プールセル.setValue(掃除後プール.map(function (n) { return String(n).padStart(4, '0'); }).join(','));
+        SpreadsheetApp.flush();
+      } catch (e) {}
+    }
+    プール = 掃除後プール;
     const プール集合 = {};
     プール.forEach(function (n) { プール集合[n] = true; });
 
@@ -4587,9 +4600,32 @@ function 台湾書籍系_チェックした番号を解放_() {
       ui.alert('採番管理シートにアクセスできませんでした。');
       return;
     }
+    // 現在のハイウォーター（プール掃除の上限判定に使う）
+    let 保存最大HW = 0;
+    try {
+      保存最大HW = parseInt(
+        PropertiesService.getDocumentProperties().getProperty('台湾書籍系_作品ID_ハイウォーター') || '0', 10) || 0;
+    } catch (e) {}
+    let セル最大HW = 0;
+    try {
+      const hwセル = 台湾書籍系_共有ハイウォーターセル_();
+      if (hwセル) セル最大HW = parseInt(String(hwセル.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+    } catch (e) {}
+    let 実使用最大HW = 0;
+    used.forEach(function (id) {
+      const v = parseInt(String(id).replace(/\D/g, ''), 10);
+      if (Number.isFinite(v) && v > 実使用最大HW) 実使用最大HW = v;
+    });
+    const 上限HW = Math.max(保存最大HW, セル最大HW, 実使用最大HW);
+
     const プール = 台湾書籍系_解放プール読取_(プールセル);
     const poolSet = {};
-    プール.forEach(function (n) { poolSet[n] = true; });
+    // 自動掃除: 使用中・上限超え（ゴミ混入由来）はプールに載せない＝書き戻しで消える
+    プール.forEach(function (n) {
+      if (used.has(String(n).padStart(4, '0'))) return;
+      if (n > 上限HW) return;
+      poolSet[n] = true;
+    });
 
     const 行数 = sh.getLastRow() - 1;
     const data = sh.getRange(2, 1, 行数, 3).getValues();
