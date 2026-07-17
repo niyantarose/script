@@ -4510,7 +4510,7 @@ function 台湾書籍系_欠番管理シートを更新_() {
     sh.clear();
     sh.getRange(1, 1, 1, 4).setValues([[
       '番号', '状態', '解放する（☑で選ぶ）',
-      '☑で選んで「♻ 解放実行」ボタンを押すと解放されます（☑を外して押せば取り消し）。解放した番号は次の新規採番で小さい順に優先使用。一覧の更新はメニュー「♻️ 欠番管理シートを更新」',
+      '☑で選んで「▶ 解放実行」→ 解放され、☑は自動で外れます。取り消しは「♻️解放済み」の行にもう一度☑して実行。解放した番号は次の新規採番で小さい順に優先使用。一覧の更新はメニュー「♻️ 欠番管理シートを更新」',
     ]]);
     sh.getRange(1, 1, 1, 3)
       .setBackground('#1a73e8').setFontColor('#ffffff').setFontWeight('bold');
@@ -4523,11 +4523,9 @@ function 台湾書籍系_欠番管理シートを更新_() {
     if (行データ.length) {
       sh.getRange(2, 1, 行データ.length, 1).setNumberFormat('@');
       sh.getRange(2, 1, 行データ.length, 3).setValues(行データ.map(function (r) { return [r[0], r[1], '']; }));
-      const チェック範囲 = sh.getRange(2, 3, 行データ.length, 1);
-      チェック範囲.insertCheckboxes();
-      for (let i = 0; i < 行データ.length; i += 1) {
-        if (行データ[i][2]) sh.getRange(i + 2, 3).setValue(true);
-      }
+      // ☑は「指示」であって状態表示ではないので、常に空で並べる
+      //（解放済みかどうかは状態列で分かる。実行後も☑は自動で外れる）
+      sh.getRange(2, 3, 行データ.length, 1).insertCheckboxes();
     }
 
     // 実行スイッチ（E2の☑）: 画像ボタンより確実な実行手段。
@@ -4601,10 +4599,10 @@ function 台湾書籍系_欠番管理実行チェック_onEdit_(e) {
 }
 
 /**
- * 「♻ 解放実行」ボタン: 欠番管理シートのチェック状態を欠番プールへまとめて反映する。
- * ☑あり・未解放 → プールへ登録（使用中なら理由つきで拒否しチェックを戻す）
- * ☑なし・解放済み → プールから取り消し
- * ☑だけでは何も起きない（ボタンを押した時にだけ反映）。
+ * 「♻ 解放実行」: ☑の付いた行だけを処理し、処理後は☑を全て外す（☑は指示であって状態ではない）。
+ * ☑あり・未解放 → プールへ解放（使用中なら理由つきで拒否）
+ * ☑あり・解放済み → 取り消し（トグル）
+ * ☑なしの行には一切触らない。
  */
 function 台湾書籍系_チェックした番号を解放_() {
   const ui = SpreadsheetApp.getUi();
@@ -4666,29 +4664,33 @@ function 台湾書籍系_チェックした番号を解放_() {
       if (!Number.isFinite(n) || n <= 0) continue;
       const id4 = String(n).padStart(4, '0');
       const checked = data[i][2] === true;
-      const inPool = !!poolSet[n];
+      if (!checked) continue; // ☑の無い行には触らない
 
-      if (checked && !inPool) {
-        if (used.has(id4)) {
-          const 説明 = 台湾書籍系_ID使用箇所の説明_(id4);
-          NG.push({ 行: i + 2, id: id4, 理由: '使用中' + (説明 ? ': ' + 説明 : '') });
-          continue;
-        }
-        poolSet[n] = true;
-        解放.push(id4);
-        sh.getRange(i + 2, 2).setValue('♻️解放済み（次の採番で使用）');
-      } else if (!checked && inPool) {
+      const inPool = !!poolSet[n];
+      if (inPool) {
+        // 解放済みの行に☑して実行 → 取り消し（トグル）
         delete poolSet[n];
         取消.push(id4);
         sh.getRange(i + 2, 2).setValue('未使用（欠番）');
+      } else if (used.has(id4)) {
+        const 説明 = 台湾書籍系_ID使用箇所の説明_(id4);
+        NG.push({ 行: i + 2, id: id4, 理由: '使用中' + (説明 ? ': ' + 説明 : '') });
+      } else {
+        poolSet[n] = true;
+        解放.push(id4);
+        sh.getRange(i + 2, 2).setValue('♻️解放済み（次の採番で使用）');
       }
     }
 
-    // NG行はチェックを戻して理由を状態欄に書く
+    // NG行は理由を状態欄に書く
     NG.forEach(function (x) {
-      sh.getRange(x.行, 3).setValue(false);
       sh.getRange(x.行, 2).setValue('❌解放不可: ' + x.理由);
     });
+
+    // ☑は「指示」なので、実行後は全て外す
+    if (行数 > 0) {
+      sh.getRange(2, 3, 行数, 1).setValue(false);
+    }
 
     const out = Object.keys(poolSet)
       .map(function (k) { return parseInt(k, 10); })
