@@ -4529,7 +4529,8 @@ function 台湾書籍系_欠番管理シートを更新_() {
       );
       const img = sh.insertImage(blob, 5, 2); // E2 あたり
       img.setAltTextTitle('欠番解放実行ボタン');
-      img.assignScript('台湾書籍系_チェックした番号を解放_');
+      // 末尾アンダースコアの関数はボタン（assignScript）から呼べないため公開ラッパーを割り当てる
+      img.assignScript('台湾_欠番解放実行');
       img.setWidth(132);
       img.setHeight(36);
     } catch (e) {}
@@ -4544,6 +4545,16 @@ function 台湾書籍系_欠番管理シートを更新_() {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * 「♻ 解放実行」ボタン用の公開ラッパー。
+ * 末尾アンダースコア付き関数はGASのプライベート扱いで assignScript から
+ * 呼び出せない（「スクリプト関数が見つかりませんでした」になる）ため、
+ * ボタンにはこの名前を割り当てる。
+ */
+function 台湾_欠番解放実行() {
+  台湾書籍系_チェックした番号を解放_();
 }
 
 /**
