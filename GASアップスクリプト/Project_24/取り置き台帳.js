@@ -37,6 +37,22 @@ function 取り置き_棚確認書式を設定_(sh, rowCount){
   sh.setConditionalFormatRules(rules);
 }
 
+function 取り置き_登録行書式を更新_(sh, candidates){
+  const rows=candidates||[], 幅=TORIOKI_CFG.初期HDR.length;
+  const 管理行数=Math.max(0,sh.getMaxRows()-1);
+  if(管理行数>0){
+    const 管理範囲=sh.getRange(2,1,管理行数,幅);
+    管理範囲.setBackground(null);
+    管理範囲.setBorder(false,false,false,false,false,false);
+  }
+  注文罫線_(sh,2,1);
+  if(rows.length){
+    sh.getRange(2,1,rows.length,幅).setBackgrounds(
+      rows.map(c=>new Array(幅).fill(c.判定==='要棚確認'? '#fff2cc' : null)));
+  }
+  取り置き_棚確認書式を設定_(sh,rows.length);
+}
+
 // 商品名・選択肢に「予約」と未来の発売予定がある場合だけ自動予約にする。
 // 過去日・日付不明は入荷済みの可能性があるため自動では除外しない。
 function 取り置き_予約判定_(選択肢, 商品名, today){
@@ -430,7 +446,6 @@ function 取り置き初期登録を作成本体_(){
   candidates=取り置き_注文単位で並べる_(candidates);
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
   const sh2=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
-  注文罫線_(sh2,2,1);
   // 列の並びが変わっても古い位置のプルダウンが残らないよう、シート全体の入力規則を消してから付け直す
   sh2.getRange(1,1,sh2.getMaxRows(),sh2.getMaxColumns()).clearDataValidations();
   if(candidates.length){
@@ -438,11 +453,8 @@ function 取り置き初期登録を作成本体_(){
     const col=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1;
     sh2.getRange(2,col,candidates.length,1)
       .setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(TORIOKI_棚確認.slice(),true).setAllowInvalid(true).build());
-    const 幅=TORIOKI_CFG.初期HDR.length;
-    sh2.getRange(2,1,candidates.length,幅).setBackgrounds(
-      candidates.map(c=>new Array(幅).fill(c.判定==='要棚確認'? '#fff2cc' : null)));
   }
-  取り置き_棚確認書式を設定_(sh2,candidates.length);
+  取り置き_登録行書式を更新_(sh2,candidates);
   const 入力済=candidates.filter(c=>String(c.現物取り置き数量)!=='').length;
   const 要確認数=candidates.filter(c=>c.判定==='要棚確認').length;
   ui.alert('取り置き登録を作成しました',
