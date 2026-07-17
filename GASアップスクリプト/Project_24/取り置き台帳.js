@@ -96,7 +96,8 @@ function 取り置き_初期候補_(orders, sources){
       const c=byKey[key], o=c.o;
       return {取置ID:'INIT|'+key,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
         注文数量:c.qty,現在の状態:c.state,受注ステータス:c.ステータス,旧入荷日:c.入荷日,旧EMS:c.EMS,
-        棚確認:c.予約?'予約':'',現物取り置き数量:'',メモ:'',判定:''};
+        // 入荷日スタンプがある行は「予約」より届いた形跡が勝つ(例: 予約7月発売が7/11に入荷済み)
+        棚確認:(c.予約 && !c.入荷日)?'予約':'',現物取り置き数量:'',メモ:'',判定:''};
     });
 }
 
@@ -350,6 +351,11 @@ function 取り置き初期登録を作成本体_(){
   if(!sheetRows.length) sheetRows=読む(TORIOKI_CFG.初期,['取置ID','現物取り置き数量','メモ']);
   if(!sheetRows.length) sheetRows=読む('取り置き初期登録',['取置ID','現物取り置き数量','メモ']); // 旧名からの一度きりの引き継ぎ
   candidates=取り置き_登録シート引き継ぎ_(candidates,sheetRows,取り置き台帳_読む_());
+  // 入荷日スタンプがある未入力行の「予約」は白紙へ戻す(過去の自動セットの引き継ぎ対策。届いた形跡が勝つ)
+  candidates.forEach(c=>{
+    if(String(c.旧入荷日||'').trim()!=='' && c.棚確認==='予約' &&
+       String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim()==='') c.棚確認='';
+  });
   candidates=取り置き_登録絞り込み_(candidates); // 物がある可能性が高い行だけの最小リストへ
   candidates.forEach(c=>{ c.判定=取り置き_棚確認判定_(c); });
   // 要棚確認を上に(その中は状態グループ順のまま=元の並びを保つ安定ソート)
