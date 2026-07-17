@@ -144,6 +144,21 @@ function 取り置き_登録絞り込み_(rows){
   });
 }
 
+// 「出荷済み/未着」と判断済みの行は次回から表示しない。判断はDocumentPropertiesに取置IDで記憶し、
+// 注文が候補から消えたら記憶も自動で消える(store=次回保存する記憶)。数量入りの行は対象外(表示)。
+function 取り置き_棚確認記憶を適用_(candidates, store){
+  const memo=store||{}, out=[], next={};
+  (candidates||[]).forEach(c=>{
+    const id=String(c.取置ID||'');
+    const qty=String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim();
+    let check=String(c.棚確認||'').trim();
+    if(!check && memo[id]) check=String(memo[id]); // 過去の判断を復元
+    if(qty==='' && (check==='出荷済み'||check==='未着')){ next[id]=check; return; } // 判断済み=非表示で記憶
+    out.push(Object.assign({},c,{棚確認:check}));
+  });
+  return {rows:out, store:next};
+}
+
 // 洗い替えの引き継ぎ: 台帳の確定数量を土台に、シートへ手入力済みの数量・メモを上書きで残す。
 // 消えるのは「候補から外れた行(出荷済み・キャンセルで注文自体が消えた)」だけ。
 function 取り置き_登録シート引き継ぎ_(candidates, sheetRows, ledgerRows){
@@ -358,6 +373,12 @@ function 取り置き初期登録を作成本体_(){
        String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim()==='') c.棚確認='';
   });
   candidates=取り置き_登録絞り込み_(candidates); // 物がある可能性が高い行だけの最小リストへ
+  // 出荷済み/未着と判断済みの行は記憶して以後表示しない(注文が消えれば記憶も自動掃除)
+  let 棚記憶={};
+  try{ 棚記憶=JSON.parse(PropertiesService.getDocumentProperties().getProperty('取り置き登録_棚確認済み')||'{}'); }catch(e){}
+  const 記憶適用=取り置き_棚確認記憶を適用_(candidates,棚記憶);
+  candidates=記憶適用.rows;
+  try{ PropertiesService.getDocumentProperties().setProperty('取り置き登録_棚確認済み',JSON.stringify(記憶適用.store)); }catch(e){}
   candidates.forEach(c=>{ c.判定=取り置き_棚確認判定_(c); });
   // 要棚確認を上に(その中は状態グループ順のまま=元の並びを保つ安定ソート)
   candidates=candidates.map((c,i)=>({c,i}))
