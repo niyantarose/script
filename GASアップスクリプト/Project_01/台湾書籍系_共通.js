@@ -4493,11 +4493,11 @@ function 台湾書籍系_欠番管理シートを更新_() {
     let sh = ss.getSheetByName('欠番管理');
     if (!sh) sh = ss.insertSheet('欠番管理');
 
-    // 全消し→書き直し（古い一覧・書式を残さない）
+    // 全消し→書き直し（古い一覧・書式を残さない。フローティング画像=ボタンはclearでは消えない）
     sh.clear();
     sh.getRange(1, 1, 1, 4).setValues([[
-      '番号', '状態', '解放する（クリック）',
-      '☑を入れる→次の新規採番でその番号を優先使用 / ☑を外す→取り消し。一覧の更新はメニュー「♻️ 欠番管理シートを更新」',
+      '番号', '状態', '解放する（☑で選ぶ）',
+      '☑で選んで「♻ 解放実行」ボタンを押すと解放されます（☑を外して押せば取り消し）。解放した番号は次の新規採番で小さい順に優先使用。一覧の更新はメニュー「♻️ 欠番管理シートを更新」',
     ]]);
     sh.getRange(1, 1, 1, 3)
       .setBackground('#1a73e8').setFontColor('#ffffff').setFontWeight('bold');
@@ -4517,10 +4517,28 @@ function 台湾書籍系_欠番管理シートを更新_() {
       }
     }
 
+    // 「♻ 解放実行」ボタンを設置（既存があれば作り直し）
+    try {
+      sh.getImages().forEach(function (img) {
+        try {
+          if (img.getAltTextTitle() === '欠番解放実行ボタン') img.remove();
+        } catch (e) {}
+      });
+      const blob = Utilities.newBlob(
+        Utilities.base64Decode(欠番解放ボタン_PNG_BASE64), 'image/png', 'release_button.png'
+      );
+      const img = sh.insertImage(blob, 5, 2); // E2 あたり
+      img.setAltTextTitle('欠番解放実行ボタン');
+      img.assignScript('台湾書籍系_チェックした番号を解放_');
+      img.setWidth(132);
+      img.setHeight(36);
+    } catch (e) {}
+
     SpreadsheetApp.flush();
     ui.alert(
       '✅ 欠番管理シートを更新しました（未使用 ' + 行データ.length + ' 件）。\n\n' +
-      '解放したい番号の「解放する」にチェックを入れるだけでOKです。\n' +
+      '手順: 解放したい番号に☑を入れる →「♻ 解放実行」ボタンを押す。\n' +
+      '（☑だけでは何も起きません。ボタンを押した時にまとめて反映されます）\n\n' +
       '⚠️ 昔からの欠番（過去の事故由来）や「Yahooへ送信済みなのにシートからは消した」番号は解放しないでください。'
     );
   } finally {
@@ -4529,68 +4547,97 @@ function 台湾書籍系_欠番管理シートを更新_() {
 }
 
 /**
- * 欠番管理シートのチェックボックス操作（onEditから呼ばれる）。
- * ☑ → プールへ登録（使用中なら理由を状態欄に書いてチェックを戻す）
- * ☑解除 → プールから取り消し
+ * 「♻ 解放実行」ボタン: 欠番管理シートのチェック状態を欠番プールへまとめて反映する。
+ * ☑あり・未解放 → プールへ登録（使用中なら理由つきで拒否しチェックを戻す）
+ * ☑なし・解放済み → プールから取り消し
+ * ☑だけでは何も起きない（ボタンを押した時にだけ反映）。
  */
-function 台湾書籍系_欠番管理_onEdit_(e) {
-  if (!e || !e.range) return;
-  const sh = e.range.getSheet();
-  if (sh.getName() !== '欠番管理') return;
-  const row = e.range.getRow();
-  const col = e.range.getColumn();
-  if (row < 2 || col !== 3 || e.range.getNumRows() !== 1) return;
-
-  const id4raw = String(sh.getRange(row, 1).getDisplayValue()).replace(/\D/g, '');
-  if (!id4raw) return;
-  const n = parseInt(id4raw, 10);
-  if (!Number.isFinite(n) || n <= 0) return;
-  const id4 = String(n).padStart(4, '0');
-  const checked = sh.getRange(row, 3).getValue() === true;
-
-  const lock = LockService.getDocumentLock();
-  try {
-    lock.waitLock(15000);
-  } catch (err) {
+function 台湾書籍系_チェックした番号を解放_() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('欠番管理');
+  if (!sh || sh.getLastRow() < 2) {
+    ui.alert('欠番管理シートに一覧がありません。先にメニュー「♻️ 欠番管理シートを更新」を実行してください。');
     return;
   }
-  try {
-    const プールセル = 台湾書籍系_解放プールセル_();
-    if (!プールセル) return;
-    const プール = 台湾書籍系_解放プール読取_(プールセル);
 
-    if (checked) {
-      台湾書籍系_使用済みIDキャッシュ無効化_();
-      const used = 台湾書籍系_使用済み作品IDセット_();
-      if (used.has(id4)) {
-        // 使用中は解放できない: チェックを戻して理由を見せる
-        sh.getRange(row, 3).setValue(false);
-        const 説明 = 台湾書籍系_ID使用箇所の説明_(id4);
-        sh.getRange(row, 2).setValue('❌使用中のため解放不可' + (説明 ? ': ' + 説明 : ''));
-        SpreadsheetApp.getActiveSpreadsheet().toast(
-          id4 + ' は使用中のため解放できません' + (説明 ? ' / ' + 説明 : ''), '欠番管理', 8);
-        return;
-      }
-      if (プール.indexOf(n) < 0) プール.push(n);
-      プール.sort(function (a, b) { return a - b; });
-      プールセル.setValue(プール.map(function (v) { return String(v).padStart(4, '0'); }).join(','));
-      SpreadsheetApp.flush();
-      sh.getRange(row, 2).setValue('♻️解放済み（次の採番で使用）');
-      SpreadsheetApp.getActiveSpreadsheet().toast('♻️ ' + id4 + ' を解放しました（次の新規採番で優先使用）', '欠番管理', 5);
-    } else {
-      const idx = プール.indexOf(n);
-      if (idx >= 0) {
-        プール.splice(idx, 1);
-        プールセル.setValue(プール.map(function (v) { return String(v).padStart(4, '0'); }).join(','));
-        SpreadsheetApp.flush();
-      }
-      sh.getRange(row, 2).setValue('未使用（欠番）');
-      SpreadsheetApp.getActiveSpreadsheet().toast('↩️ ' + id4 + ' の解放を取り消しました', '欠番管理', 5);
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    台湾書籍系_使用済みIDキャッシュ無効化_();
+    const used = 台湾書籍系_使用済み作品IDセット_();
+    const プールセル = 台湾書籍系_解放プールセル_();
+    if (!プールセル) {
+      ui.alert('採番管理シートにアクセスできませんでした。');
+      return;
     }
+    const プール = 台湾書籍系_解放プール読取_(プールセル);
+    const poolSet = {};
+    プール.forEach(function (n) { poolSet[n] = true; });
+
+    const 行数 = sh.getLastRow() - 1;
+    const data = sh.getRange(2, 1, 行数, 3).getValues();
+
+    const 解放 = [];
+    const 取消 = [];
+    const NG = [];
+
+    for (let i = 0; i < data.length; i += 1) {
+      const raw = String(data[i][0] || '').replace(/\D/g, '');
+      if (!raw) continue;
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      const id4 = String(n).padStart(4, '0');
+      const checked = data[i][2] === true;
+      const inPool = !!poolSet[n];
+
+      if (checked && !inPool) {
+        if (used.has(id4)) {
+          const 説明 = 台湾書籍系_ID使用箇所の説明_(id4);
+          NG.push({ 行: i + 2, id: id4, 理由: '使用中' + (説明 ? ': ' + 説明 : '') });
+          continue;
+        }
+        poolSet[n] = true;
+        解放.push(id4);
+        sh.getRange(i + 2, 2).setValue('♻️解放済み（次の採番で使用）');
+      } else if (!checked && inPool) {
+        delete poolSet[n];
+        取消.push(id4);
+        sh.getRange(i + 2, 2).setValue('未使用（欠番）');
+      }
+    }
+
+    // NG行はチェックを戻して理由を状態欄に書く
+    NG.forEach(function (x) {
+      sh.getRange(x.行, 3).setValue(false);
+      sh.getRange(x.行, 2).setValue('❌解放不可: ' + x.理由);
+    });
+
+    const out = Object.keys(poolSet)
+      .map(function (k) { return parseInt(k, 10); })
+      .filter(function (n) { return Number.isFinite(n) && n > 0; })
+      .sort(function (a, b) { return a - b; })
+      .map(function (n) { return String(n).padStart(4, '0'); });
+    プールセル.setValue(out.join(','));
+    SpreadsheetApp.flush();
+
+    if (!解放.length && !取消.length && !NG.length) {
+      ui.alert('変更はありません（☑の状態とプールが既に一致しています）。');
+      return;
+    }
+    ui.alert(
+      (解放.length ? '♻️ 解放: ' + 解放.join(', ') + '\n' : '') +
+      (取消.length ? '↩️ 取り消し: ' + 取消.join(', ') + '\n' : '') +
+      (NG.length ? '❌ 解放不可:\n' + NG.map(function (x) { return '  ' + x.id + ' ' + x.理由; }).join('\n') + '\n' : '') +
+      '\n現在のプール: ' + (out.join(', ') || '（空）') +
+      '\n※解放した番号は次の新規採番で小さい順に優先使用されます'
+    );
   } finally {
     lock.releaseLock();
   }
 }
+
+var 欠番解放ボタン_PNG_BASE64 = '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';
 
 /**
  * 【採番の巻き戻し】どこにも使われていない末尾の番号をハイウォーターから解放し、

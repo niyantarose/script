@@ -192,11 +192,8 @@ function onEditInstallable_(e) {
     // ★ ログシートは完全に無視
     if (シート名 === '_DEBUG_LOG') return;
 
-    // 欠番管理シート: チェックボックスで番号の解放/取り消しを行う専用ハンドラ
-    if (シート名 === '欠番管理') {
-      台湾書籍系_欠番管理_onEdit_(e);
-      return;
-    }
+    // 欠番管理シート: ☑は選択のみ（反映は「♻ 解放実行」ボタン）。onEditでは何もしない
+    if (シート名 === '欠番管理') return;
 
     台湾まんが_ONEDIT_LOG_('onEditInstallable_:entry', {
       sheet: シート名,
