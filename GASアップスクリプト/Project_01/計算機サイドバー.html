@@ -26,6 +26,10 @@
     .big.profit .l { color: #1a5fb4; }
     .big.profit .v { color: #1a5fb4; }
     .sec.auto { color: #5F6368; }
+    .sec.pink { color: #C2185B; }
+    .big.band { background: #FCE4EC; }
+    .big.band .l { color: #C2185B; }
+    .big.band .v { color: #C2185B; }
     .line { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 14px; }
     .line .k { color: #555; }
     .line .v { font-weight: bold; font-size: 15px; }
@@ -243,11 +247,12 @@
         '<div class="sec rec">── おすすめ（緑）──</div>'+
         '<div class="line"><span class="k">おすすめ(10円丸め)</span><span class="v">'+yen(sell10)+'</span></div>'+
         '<div class="big"><div class="l">おすすめ(100円丸め)</div><div class="v">'+yen(sell100)+'</div></div>'+
-        '<div class="sec auto">── 自動価格計算結果（原価帯）──</div>'+
-        '<div class="line"><span class="k">原価</span><span class="v">'+yen(cost)+'</span></div>'+
-        '<div class="line"><span class="k">適用目標粗利率(自動)</span><span class="v">'+autoGoal+'%</span></div>'+
+        '<div class="sec pink">── 自動価格計算結果（原価帯）──</div>'+
         '<div class="line"><span class="k">原価帯売値(10円丸め)</span><span class="v">'+yen(auto10)+'</span></div>'+
-        '<div class="line"><span class="k">原価帯売値(100円丸め)</span><span class="v">'+yen(auto100)+'</span></div>';
+        '<div class="big band"><div class="l">原価帯売値(100円丸め)</div><div class="v">'+yen(auto100)+'</div></div>'+
+        '<div class="sec auto">── 自動計算 ──</div>'+
+        '<div class="line"><span class="k">原価</span><span class="v">'+yen(cost)+'</span></div>'+
+        '<div class="line"><span class="k">適用目標粗利率(自動)</span><span class="v">'+autoGoal+'%</span></div>';
     }
 
     function loadRates(){
