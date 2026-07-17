@@ -1254,5 +1254,21 @@ test('出荷済み/未着/予約と判断した行は非表示になり記憶さ
   assert.strictEqual(qty.rows.length,1);
 });
 
+test('要棚確認を優先しても同じ注文の商品行を分断しない', () => {
+  const rows=context.取り置き_注文単位で並べる_([
+    {受注番号:'200',商品コード:'B1',判定:''},
+    {受注番号:'100',商品コード:'A1',判定:'要棚確認'},
+    {受注番号:'100',商品コード:'A2',判定:''},
+    {受注番号:'300',商品コード:'C1',判定:''}
+  ]);
+  assert.strictEqual(JSON.stringify(rows.map(r=>r.受注番号)),JSON.stringify(['100','100','200','300']));
+});
+
+test('取り置き登録の注文境界は同じ注文の最終行を全14列で返す', () => {
+  assert.strictEqual(JSON.stringify(Array.from(context.取り置き_注文境界A1_([
+    {受注番号:'100'},{受注番号:'100'},{受注番号:'200'}
+  ]))),JSON.stringify(['A3:N3','A4:N4']));
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');

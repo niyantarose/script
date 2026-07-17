@@ -104,6 +104,23 @@ function 取り置き_初期候補_(orders, sources){
     });
 }
 
+function 取り置き_注文単位で並べる_(rows){
+  const groups=[], byBan=new Map();
+  (rows||[]).forEach(row=>{
+    const ban=String(row&&row.受注番号!=null?row.受注番号:'');
+    let group=byBan.get(ban);
+    if(!group){ group={rows:[],要確認:false,i:groups.length}; byBan.set(ban,group); groups.push(group); }
+    group.rows.push(row);
+    if(row && row.判定==='要棚確認') group.要確認=true;
+  });
+  groups.sort((a,b)=>(a.要確認?0:1)-(b.要確認?0:1) || a.i-b.i);
+  return groups.reduce((out,group)=>out.concat(group.rows),[]);
+}
+
+function 取り置き_注文境界A1_(rows){
+  return 注文境界A1_((rows||[]).map(row=>({ban:row.受注番号})),2,TORIOKI_CFG.初期HDR.length);
+}
+
 // 再作成しても確定済みの数量が消えないよう、台帳の開始前在庫(取り置き中)を候補へ差し込む
 function 取り置き_初期候補へ既存数量_(candidates, ledgerRows){
   const qtyById={};
@@ -381,12 +398,11 @@ function 取り置き初期登録を作成本体_(){
   candidates=記憶適用.rows;
   try{ PropertiesService.getDocumentProperties().setProperty('取り置き登録_棚確認済み',JSON.stringify(記憶適用.store)); }catch(e){}
   candidates.forEach(c=>{ c.判定=取り置き_棚確認判定_(c); });
-  // 要棚確認を上に(その中は状態グループ順のまま=元の並びを保つ安定ソート)
-  candidates=candidates.map((c,i)=>({c,i}))
-    .sort((a,b)=>((a.c.判定==='要棚確認')?0:1)-((b.c.判定==='要棚確認')?0:1) || a.i-b.i)
-    .map(x=>x.c);
+  // 要棚確認を含む注文を上にし、同じ受注番号の商品行は分断しない
+  candidates=取り置き_注文単位で並べる_(candidates);
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
   const sh2=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
+  注文罫線_(sh2,2,1);
   // 列の並びが変わっても古い位置のプルダウンが残らないよう、シート全体の入力規則を消してから付け直す
   sh2.getRange(1,1,sh2.getMaxRows(),sh2.getMaxColumns()).clearDataValidations();
   if(candidates.length){
