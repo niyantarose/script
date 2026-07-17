@@ -1270,5 +1270,65 @@ test('取り置き登録の注文境界は同じ注文の最終行を全14列で
   ]))),JSON.stringify(['A3:N3','A4:N4']));
 });
 
+test('棚確認の条件付き書式定義は5ステータスを決められた順と色で返す', () => {
+  const defs=context.取り置き_棚確認書式定義_(11,2);
+  assert.strictEqual(JSON.stringify(defs.map(d=>[d.値,d.背景])),JSON.stringify([
+    ['発送待ち','#cfe2f3'],
+    ['部分在庫','#d9ead3'],
+    ['出荷済み','#f4cccc'],
+    ['未着','#d9d9d9'],
+    ['予約','#d9d2e9']
+  ]));
+  assert.strictEqual(defs[2].条件,'=$K2="出荷済み"');
+  assert.strictEqual(defs[2].文字色,'#990000');
+  assert.strictEqual(defs[2].太字,true);
+});
+
+test('棚確認の条件付き書式は対象商品行の全列へ固定5ルールを一括設定する', () => {
+  const calls={ranges:[],saved:[]};
+  context.SpreadsheetApp.newConditionalFormatRule=()=>{
+    const rule={};
+    const builder={
+      whenFormulaSatisfied:value=>{ rule.条件=value; return builder; },
+      setBackground:value=>{ rule.背景=value; return builder; },
+      setRanges:value=>{ rule.ranges=value; return builder; },
+      setFontColor:value=>{ rule.文字色=value; return builder; },
+      setBold:value=>{ rule.太字=value; return builder; },
+      build:()=>rule
+    };
+    return builder;
+  };
+  const sheet={
+    getRange:(row,col,rowCount,colCount)=>{
+      const range={row,col,rowCount,colCount}; calls.ranges.push(range); return range;
+    },
+    setConditionalFormatRules:rules=>calls.saved.push(rules)
+  };
+
+  context.取り置き_棚確認書式を設定_(sheet,3);
+
+  assert.strictEqual(JSON.stringify(calls.ranges),JSON.stringify([{row:2,col:1,rowCount:3,colCount:14}]));
+  assert.strictEqual(calls.saved.length,1,'5ルールを1回で保存');
+  assert.strictEqual(calls.saved[0].length,5);
+  assert.ok(calls.saved[0].every(rule=>rule.ranges[0]===calls.ranges[0]),'全ルールが商品行だけを対象');
+  assert.strictEqual(calls.saved[0][2].文字色,'#990000','出荷済みだけ濃い赤文字');
+  assert.strictEqual(calls.saved[0][2].太字,true,'出荷済みだけ太字');
+  assert.strictEqual(calls.saved[0].filter(rule=>rule.文字色).length,1);
+  assert.strictEqual(calls.saved[0].filter(rule=>rule.太字).length,1);
+});
+
+test('棚確認の条件付き書式は0件なら古いルールを空配列で消す', () => {
+  const calls={getRange:0,saved:[]};
+  const sheet={
+    getRange:()=>{ calls.getRange++; throw new Error('0件では範囲を作らない'); },
+    setConditionalFormatRules:rules=>calls.saved.push(rules)
+  };
+
+  context.取り置き_棚確認書式を設定_(sheet,0);
+
+  assert.strictEqual(calls.getRange,0);
+  assert.strictEqual(JSON.stringify(calls.saved),JSON.stringify([[]]));
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');

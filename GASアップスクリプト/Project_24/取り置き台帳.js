@@ -9,6 +9,34 @@ const 戻しHDR=['取置ID','受注番号','商品コード','数量','元EMS番
 // 取り置き登録の「棚確認」プルダウン。出荷済み/未着/予約は数量なし(登録しない)の目印
 const TORIOKI_棚確認=Object.freeze(['発送待ち','部分在庫','出荷済み','未着','予約']);
 
+function 取り置き_棚確認書式定義_(棚確認列, 開始行){
+  let n=棚確認列, 列記号='';
+  while(n>0){ n--; 列記号=String.fromCharCode(65+n%26)+列記号; n=Math.floor(n/26); }
+  return [
+    {値:'発送待ち',背景:'#cfe2f3'},
+    {値:'部分在庫',背景:'#d9ead3'},
+    {値:'出荷済み',背景:'#f4cccc',文字色:'#990000',太字:true},
+    {値:'未着',背景:'#d9d9d9'},
+    {値:'予約',背景:'#d9d2e9'}
+  ].map(def=>Object.assign({条件:'=$'+列記号+開始行+'="'+def.値+'"'},def));
+}
+
+function 取り置き_棚確認書式を設定_(sh, rowCount){
+  if(rowCount<=0){ sh.setConditionalFormatRules([]); return; }
+  const 棚確認列=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1, 幅=TORIOKI_CFG.初期HDR.length;
+  const target=sh.getRange(2,1,rowCount,幅);
+  const rules=取り置き_棚確認書式定義_(棚確認列,2).map(def=>{
+    let b=SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(def.条件)
+      .setBackground(def.背景)
+      .setRanges([target]);
+    if(def.文字色) b=b.setFontColor(def.文字色);
+    if(def.太字) b=b.setBold(true);
+    return b.build();
+  });
+  sh.setConditionalFormatRules(rules);
+}
+
 // 商品名・選択肢に「予約」と未来の発売予定がある場合だけ自動予約にする。
 // 過去日・日付不明は入荷済みの可能性があるため自動では除外しない。
 function 取り置き_予約判定_(選択肢, 商品名, today){
@@ -414,6 +442,7 @@ function 取り置き初期登録を作成本体_(){
     sh2.getRange(2,1,candidates.length,幅).setBackgrounds(
       candidates.map(c=>new Array(幅).fill(c.判定==='要棚確認'? '#fff2cc' : null)));
   }
+  取り置き_棚確認書式を設定_(sh2,candidates.length);
   const 入力済=candidates.filter(c=>String(c.現物取り置き数量)!=='').length;
   const 要確認数=candidates.filter(c=>c.判定==='要棚確認').length;
   ui.alert('取り置き登録を作成しました',
