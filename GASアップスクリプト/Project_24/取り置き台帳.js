@@ -131,10 +131,12 @@ function 取り置き_棚確認判定_(c){
 //   落とす = 予約中の幽霊スタンプ、未来発売の予約、帳簿上まだ届いていない行(どうせ棚に無い)
 function 取り置き_登録絞り込み_(rows){
   return (rows||[]).filter(c=>{
-    if(String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim()!=='') return true; // 確定/入力済みは常に表示
+    const st=String(c.受注ステータス||'');
+    // ステータス除外は入力済みでも最優先(登録済みの取り置きはCSV取込が出荷時に自動で発送済みへ落とす)
+    if(/予約/.test(st)) return false;   // 予約中=幽霊スタンプ。来ないものは来ない
+    if(/出荷GO/.test(st)) return false; // 揃って出荷作業に入る注文=棚チェック不要
+    if(String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim()!=='') return true; // 確定/入力済みは表示
     if(String(c.旧入荷日||'').trim()==='') return false;
-    if(/予約/.test(String(c.受注ステータス||''))) return false;
-    if(/出荷GO/.test(String(c.受注ステータス||''))) return false; // 揃って出荷作業に入る注文=棚チェック不要(すぐCSVで消える)
     if(String(c.棚確認||'')==='予約') return false;
     return true;
   });
