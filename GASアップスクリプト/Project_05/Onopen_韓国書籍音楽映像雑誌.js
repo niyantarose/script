@@ -30,6 +30,7 @@ function onOpen() {
         .addItem('全チェック解除',     'チェック_全解除')
         .addItem('未登録のみチェック', 'チェック_未登録のみ')
     )
+    .addItem('🔘 このシートに確定発行ボタンを設置', '韓国_確定発行ボタンを設置')
 
     .addSubMenu(
       ui.createMenu('韓国書籍')

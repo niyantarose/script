@@ -9,7 +9,7 @@ class Inventory(db.Model):
     product_code     = db.Column(db.String(100), nullable=False, index=True)
     product_sub_code = db.Column(db.String(100), nullable=True)
     product_name     = db.Column(db.String(200), nullable=True)   # 商品名
-    inventory_type   = db.Column(db.String(20),  nullable=False)  # 'yahoo' / 'local'
+    inventory_type   = db.Column(db.String(20),  nullable=False)  # 'yahoo' / '即納' / 'お取り寄せ'
     quantity         = db.Column(db.Integer, default=0)           # 在庫数（Yahoo同期値）
     reserved_qty     = db.Column(db.Integer, default=0)           # 引当済み数
     available_qty    = db.Column(db.Integer, default=0)           # 引当可能数

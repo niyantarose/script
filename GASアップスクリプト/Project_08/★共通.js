@@ -708,6 +708,8 @@ const クレジット種別 = 取得(cn.クレジット種別);
           } else {
             作品データ.maxId++;
             作品ID = String(作品データ.maxId).padStart(4, '0');
+            // 発行した瞬間にハイウォーターを永続化（行削除後の同ID再発行を根絶）
+            採番ハイウォーター更新(cfg, 作品データ.maxId);
 
             作品データ.keyToId[worksKey] = 作品ID;
             作品データ.keyToRow[worksKey] = null;
@@ -1157,26 +1159,13 @@ function WorksKey再正規化を実行(作品シート, cfg) {
  * WorksID振り直し
  * ============================================================ */
 function WorksID振り直しを実行(作品シート, cfg) {
-  const result = { 変更数: 0, 旧新マップ: {} };
-  if (!作品シート || 作品シート.getLastRow() < 2) return result;
-
-  const データ = 作品シート.getRange(2, 1, 作品シート.getLastRow() - 1, cfg.作品列数).getValues();
-  const 行リスト = データ.map(r => ({ 旧ID: parseInt(String(r[1] || '0'), 10), データ: r }));
-  行リスト.sort((a, b) => a.旧ID - b.旧ID);
-
-  const 新データ = 行リスト.map((item, i) => {
-    const r = item.データ.slice();
-    const 新ID = String(i + 1).padStart(4, '0');
-    if (String(item.旧ID).padStart(4, '0') !== 新ID) {
-      result.旧新マップ[String(item.旧ID).padStart(4, '0')] = 新ID;
-      result.変更数++;
-    }
-    r[1] = 新ID;
-    return r;
-  });
-
-  作品シート.getRange(2, 1, 新データ.length, cfg.作品列数).setValues(新データ);
-  return result;
+  // 【封印 2026-07-15】作品IDは永久ID。1から連番に詰め直すと、登録済み商品行や
+  // Yahoo等の外部に出たコードは古いIDのまま残り、同じIDが別作品を指す
+  // 「作品IDずれ」になる（一括更新が毎回これを呼んでいたのが再発源だった）。
+  // 現在の採番は max+1+ハイウォーター方式のため、欠番はそのままで問題ない。
+  // 振り直しがどうしても必要な場合は、商品行・外部コードの一括書き換えと
+  // セットで別途設計すること。
+  return { 変更数: 0, 旧新マップ: {} };
 }
 
 /* ============================================================
@@ -1275,6 +1264,71 @@ function 作品シートを確保(ss, cfg) {
   return sh;
 }
 
+/* ============================================================
+ * 作品ID採番ハイウォーターマーク
+ *
+ * 従来の採番は「Works走査のmaxId + 1」だけで、Works行を削除すると
+ * 同じIDが別作品に再発行される欠陥があった（台湾側で実際に発生した事故と同型）。
+ * DocumentProperties と スプレッドシート上の「採番管理」シート（Worksシート名ごと
+ * に1行）に発行済み最大値を永続化し、走査maxと合成する。欠番は永久欠番。
+ * セル側は複数プロジェクト（例: グッズ=Project_06 と 書籍系=Project_05）から
+ * 見える共有ストア、props側はセルが壊れた場合の縮退用。
+ * ============================================================ */
+function 採番ハイウォーターセル_(cfg) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('採番管理');
+  if (!sh) {
+    try {
+      sh = ss.insertSheet('採番管理');
+      sh.getRange(1, 1).setValue('Worksシート名（削除・編集禁止。作品ID採番のハイウォーター）');
+      sh.getRange(1, 2).setValue('発行済み最大値');
+      sh.hideSheet();
+    } catch (e) {
+      sh = ss.getSheetByName('採番管理');
+    }
+  }
+  if (!sh) return null;
+  const 最終行 = sh.getLastRow();
+  if (最終行 >= 2) {
+    const 名前一覧 = sh.getRange(2, 1, 最終行 - 1, 1).getDisplayValues();
+    for (let i = 0; i < 名前一覧.length; i++) {
+      if (String(名前一覧[i][0]).trim() === cfg.作品シート名) return sh.getRange(i + 2, 2);
+    }
+  }
+  const 行 = Math.max(最終行 + 1, 2);
+  sh.getRange(行, 1).setValue(cfg.作品シート名);
+  return sh.getRange(行, 2);
+}
+
+function 採番ハイウォーター読取(cfg) {
+  let props値 = 0;
+  try {
+    props値 = parseInt(
+      PropertiesService.getDocumentProperties()
+        .getProperty('作品ID_ハイウォーター_' + cfg.作品シート名) || '0', 10) || 0;
+  } catch (e) {}
+  let セル値 = 0;
+  try {
+    const range = 採番ハイウォーターセル_(cfg);
+    if (range) セル値 = parseInt(String(range.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+  } catch (e) {}
+  return Math.max(props値, セル値);
+}
+
+function 採番ハイウォーター更新(cfg, 値) {
+  try {
+    PropertiesService.getDocumentProperties()
+      .setProperty('作品ID_ハイウォーター_' + cfg.作品シート名, String(値));
+  } catch (e) {}
+  try {
+    const range = 採番ハイウォーターセル_(cfg);
+    if (range) {
+      range.setValue(値);
+      SpreadsheetApp.flush();
+    }
+  } catch (e) {}
+}
+
 function 全作品データを読み込み(作品シート, cfg) {
   const result = {
     keyToId: {},
@@ -1287,6 +1341,10 @@ function 全作品データを読み込み(作品シート, cfg) {
     keyUpdates: [],
     titleToKey: {}
   };
+
+  // 発行済みハイウォーターを合成（Works行が削除・全消去されてもIDを再発行しない）
+  const 保存最大 = 採番ハイウォーター読取(cfg);
+  if (保存最大 > result.maxId) result.maxId = 保存最大;
 
   const 最終行 = 作品シート.getLastRow();
   if (最終行 < 2) return result;
@@ -1427,6 +1485,23 @@ function 確定発行を実行(cfg) {
         作品IDから既存WorksKey[正規ID] = k;
       }
     }
+
+    // 【確定発行プリフライト】シート内で既に使われている商品コード/SKU → 行番号。
+    // Yahoo等の店舗には同一コードを2つ置けないため、別の行と同じコードを
+    // 発行しそうな行は確定せず保留にする（台湾側と同じ検査の韓国版）。
+    const コード正規化_ = (v) => String(v == null ? '' : v).normalize('NFKC')
+      .replace(/[\s　]+/g, '').toUpperCase();
+    const 使用中コード行 = {};
+    for (let i = 0; i < 全データ.length; i++) {
+      const r = 全データ[i];
+      [値取得_(r, 列マップ, cn.商品コード), 値取得_(r, 列マップ, cn.SKU自動)].forEach(v => {
+        const key = コード正規化_(v);
+        if (!key || key.indexOf('ERROR') === 0) return;
+        if (!使用中コード行[key]) 使用中コード行[key] = [];
+        if (使用中コード行[key].indexOf(i + 2) < 0) 使用中コード行[key].push(i + 2);
+      });
+    }
+    const 確定保留リスト = [];
 
     function 列をまとめて書き込む(colNum, valueMap) {
       if (!colNum) return;
@@ -1605,6 +1680,8 @@ if (行既存作品ID候補) {
         } else {
           作品データ.maxId++;
           作品ID = String(作品データ.maxId).padStart(4, '0');
+          // 発行した瞬間にハイウォーターを永続化（行削除後の同ID再発行を根絶）
+          採番ハイウォーター更新(cfg, 作品データ.maxId);
 
           作品データ.keyToId[worksKey] = 作品ID;
           作品データ.keyToData[worksKey] = {
@@ -1690,6 +1767,21 @@ if (行既存作品ID候補) {
         クレジット種別
       );
 
+      // 【確定発行プリフライト】生成したSKUが他の行のコードと重複するなら確定しない。
+      // チェックは残し、ステータスに理由を書いて後のダイアログで一覧表示する。
+      const SKUキー = コード正規化_(SKU);
+      if (SKUキー) {
+        const 他行 = (使用中コード行[SKUキー] || []).filter(row => row !== sheetRow);
+        if (他行.length) {
+          確定保留リスト.push({ 行: sheetRow, SKU: SKU, 相手: 他行.join(',') });
+          if (colステータス) 変更mapステータス[sheetRow] = `⚠️確定保留: コード重複(${SKU} が行${他行.join(',')}にも存在)`;
+          continue;
+        }
+        // 同一実行内で後続の行が同じSKUを生成した場合も検出できるよう予約
+        if (!使用中コード行[SKUキー]) 使用中コード行[SKUキー] = [];
+        使用中コード行[SKUキー].push(sheetRow);
+      }
+
       if (col作品ID) 変更map作品ID[sheetRow] = 作品ID;
       if (colSKU自動) 変更mapSKU自動[sheetRow] = SKU;
       if (col商品コード) 変更map商品コード[sheetRow] = SKU;
@@ -1714,11 +1806,24 @@ if (行既存作品ID候補) {
     作品データを更新_確定(作品シート, 作品データ, cfg);
 
     if (col発行チェック) {
-      const 解除 = Array(最終行 - 1).fill([false]);
+      // 保留行のチェックは残す（目に見える形で「未確定」を伝える）
+      const 保留行集合 = {};
+      確定保留リスト.forEach(p => { 保留行集合[p.行] = true; });
+      const 現況 = sh.getRange(2, col発行チェック, 最終行 - 1, 1).getValues();
+      const 解除 = 現況.map((v, idx) => [保留行集合[idx + 2] ? v[0] : false]);
       sh.getRange(2, col発行チェック, 最終行 - 1, 1).setValues(解除);
     }
 
-    ui.alert(`✅ 確定発行完了: ${発行数}件`);
+    if (確定保留リスト.length) {
+      ui.alert(
+        '⚠️ 確定発行の保留',
+        `コード重複のため ${確定保留リスト.length} 行は確定していません（チェックは残っています）。\n` +
+        '重複を解消してからもう一度確定発行してください。\n\n' +
+        確定保留リスト.map(p => `行${p.行}: ${p.SKU} ⇔ 行${p.相手}`).join('\n'),
+        ui.ButtonSet.OK
+      );
+    }
+    ui.alert(`✅ 確定発行完了: ${発行数}件` + (確定保留リスト.length ? `\n⚠️ コード重複で保留: ${確定保留リスト.length}件` : ''));
   } finally {
     lock.releaseLock();
   }
@@ -1759,7 +1864,7 @@ function 削除を実行(cfg) {
  * ============================================================ */
 function 一括更新を実行(cfg) {
   const ui = SpreadsheetApp.getUi();
-  if (ui.alert('確認', '未登録行を再生成します（Works重複整理+ID振り直し含む）。続行？', ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
+  if (ui.alert('確認', '未登録行を再生成します（Works重複整理含む。作品IDの振り直しはしません＝永久ID）。続行？', ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
 
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName(cfg.マスターシート名);
@@ -1966,6 +2071,8 @@ let 原題 = 取得(cn.原題) || 商品タイトル;
   } else {
     作品データ.maxId++;
     作品ID = String(作品データ.maxId).padStart(4, '0');
+    // 発行した瞬間にハイウォーターを永続化（行削除後の同ID再発行を根絶）
+    採番ハイウォーター更新(cfg, 作品データ.maxId);
 
     作品データ.keyToId[worksKey] = 作品ID;
     作品データ.keyToData[worksKey] = {

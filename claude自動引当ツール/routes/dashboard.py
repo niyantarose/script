@@ -2,7 +2,6 @@ from flask import Blueprint, render_template
 from models import db
 from models.order import Order
 from models.order_item import OrderItem
-from models.purchase import Purchase
 from models.alert import Alert
 from sqlalchemy import func
 
@@ -35,15 +34,6 @@ def index():
         Order.status != 'shipped'
     ).count()
 
-    # 発注漏れ
-    purchase_missing = db.session.query(OrderItem).filter(
-        OrderItem.inventory_type == 'お取り寄せ',
-        OrderItem.status == 'pending',
-        ~OrderItem.id.in_(
-            db.session.query(Purchase.order_item_id).distinct()
-        )
-    ).count()
-
     # 未解決アラート
     alerts = Alert.query.filter_by(resolved_flag=False).order_by(Alert.created_at.desc()).limit(10).all()
 
@@ -51,5 +41,4 @@ def index():
                            shippable=shippable,
                            partial=partial,
                            delayed=delayed,
-                           purchase_missing=purchase_missing,
                            alerts=alerts)

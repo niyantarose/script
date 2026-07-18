@@ -271,9 +271,10 @@ class YahooAPI:
             })
         return items
 
-    def download_item_csv(self) -> list:
+    def download_item_csv(self, max_wait: int = 120) -> list:
         """Yahoo商品データを一括ダウンロード（type=1）。商品名・価格を取得。
         downloadRequest → ポーリングdownloadSubmit の2ステップで取得。
+        max_wait: ファイル生成待ちの上限秒（商品数が多い店舗では長めに指定する）。
         返り値: [{'code': ..., 'name': ..., 'price': ...}, ...]"""
         import csv, io
         access_token = self.get_access_token()
@@ -282,7 +283,7 @@ class YahooAPI:
         self._download_request(access_token, '1')
 
         # Step 2: ポーリングでダウンロード
-        content = self._download_submit_with_retry(access_token, '1', max_wait=120)
+        content = self._download_submit_with_retry(access_token, '1', max_wait=max_wait)
 
         items = []
         reader = csv.DictReader(io.StringIO(content))

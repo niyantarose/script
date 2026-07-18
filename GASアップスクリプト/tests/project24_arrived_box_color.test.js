@@ -103,6 +103,8 @@ test('ymd_はGoogleシリアル日(46212)を46212-01-01に誤読しない', () =
   assert.strictEqual(context.ymd_(46214), '2026-07-11');
   assert.strictEqual(context.ymd_('2026-07-09'), '2026-07-09');
   assert.strictEqual(context.ymd_('26/07/09(木)'), '2026-07-09');
+  assert.strictEqual(context.ymd_('46213-01-01'), '2026-07-10');
+  assert.strictEqual(context.ymd_(new Date(46213, 0, 1)), '2026-07-10');
 });
 
 if (failures) process.exit(1);

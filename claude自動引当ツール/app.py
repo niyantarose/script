@@ -21,23 +21,19 @@ def create_app():
     # Blueprint登録
     from routes.dashboard import bp as dashboard_bp
     from routes.orders import bp as orders_bp
-    from routes.purchases import bp as purchases_bp
-    from routes.ems import bp as ems_bp
-    from routes.japan_inventory import bp as japan_bp
     from routes.import_data import bp as import_bp
     from routes.order_search import bp as order_search_bp
     from routes.oauth import bp as oauth_bp
     from routes.stock import bp as stock_bp
+    from routes.ledger import bp as ledger_bp
 
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(orders_bp)
-    app.register_blueprint(purchases_bp)
-    app.register_blueprint(ems_bp)
-    app.register_blueprint(japan_bp)
     app.register_blueprint(import_bp)
     app.register_blueprint(order_search_bp)
     app.register_blueprint(oauth_bp)
     app.register_blueprint(stock_bp)
+    app.register_blueprint(ledger_bp)
 
     # テンプレートにnowを渡す
     @app.context_processor

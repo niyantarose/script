@@ -113,11 +113,14 @@ function 台湾書籍系_作品比較キー_(v) {
     .replace(/[上中下前後](?:[+＋・、][上中下前後])+/g, '')
     .replace(/(?:\d{1,3}|[０-９]{1,3})(?:[+＋](?:\d{1,3}|[０-９]{1,3}))+/g, '')
     .replace(/\s+/g, '')
-    .replace(/(?:\d{1,3}|[０-９]{1,3})\s*(?:巻|册|集|部|話|期|號|号)?/gi, '')
+    .replace(/(?:第)?(?:\d{1,3}|[０-９]{1,3})\s*(?:巻|册|集|部|話|期|號|号)?/gi, '')
     .replace(/(?:特装版|特裝版|首刷限定版|初版限定版|初回限定版|限定版|通常版|首刷附錄版|附錄版|附录版|特典版)/gi, '')
     // 末尾の単独 上/下（巻）を除去（作品 上巻 / 作品下 等を束ねる）。
     // 「中」は道中・世界中・途中 等で誤爆するため対象外。
     .replace(/[上下](?:巻|卷|冊|册|集|部)?$/u, '')
+    // 末尾に残った媒体語を除去（「我獨自升級22漫畫」→巻数除去後の「…漫畫」を本題へ束ねる。
+    // 0033/0128 のような同一作品の二重Works発生源。中間の媒体語は残す）
+    .replace(/(?:漫畫|漫画|小說|小説|コミック)$/,'')
     .trim();
 }
 
@@ -2935,6 +2938,84 @@ function 台湾書籍系_ローカル一括更新_(シート名, 設定) {
   }
 }
 
+/**
+ * 確定発行プリフライト検査（純関数・Nodeテスト対象）。
+ * 確定をブロックすべき問題がある対象行だけ {row, 理由} を返す。
+ *
+ * 対象: [{row, code, sku, status, 作品ID列, 原題, 作者}]
+ * 全コード出現: {正規化コード: [行番号,...]}（シート全行の商品コード/SKUから）
+ * works: [{id, 原題, 作者}]（Worksシート全行）
+ */
+function 台湾書籍系_確定発行検査_(対象, 全コード出現, works) {
+  const 問題 = [];
+
+  // Works二重の事前計算: 比較キー+作者でグループ化し、同一作品に複数IDがあれば記録。
+  // 作者が明確に異なる同名タイトルは別作品として扱う（誤爆防止）。
+  const worksグループ = {};
+  (works || []).forEach(w => {
+    const key = 台湾書籍系_作品比較キー_(w.原題);
+    if (!key) return;
+    const author = 台湾書籍系_正規化文字列_(w.作者);
+    if (!worksグループ[key]) worksグループ[key] = [];
+    worksグループ[key].push({ id: 台湾書籍系_作品ID4桁を取得_(w.id), author });
+  });
+  const 二重ID = {}; // 作品ID → 相方IDリスト
+  Object.keys(worksグループ).forEach(key => {
+    const list = worksグループ[key];
+    if (list.length < 2) return;
+    list.forEach(a => {
+      const 相方 = list.filter(b =>
+        b.id !== a.id &&
+        (!a.author || !b.author || a.author === b.author) // 両方に作者があって違う場合のみ別作品扱い
+      ).map(b => b.id);
+      if (相方.length) 二重ID[a.id] = 相方;
+    });
+  });
+
+  (対象 || []).forEach(t => {
+    const 理由リスト = [];
+
+    // (a) onEditガード等が付けた ⚠️ステータスの持ち越し（従来は確定時に上書きして消えていた）
+    const status = 台湾書籍系_正規化文字列_(t.status);
+    if (status.indexOf('⚠️') >= 0) {
+      理由リスト.push(status);
+    }
+
+    // (b) 行内ID整合: コード/SKU/作品ID列から取れるIDが食い違っていないか
+    const ids = [
+      台湾書籍系_コードから作品ID4桁を取得_(t.code),
+      台湾書籍系_コードから作品ID4桁を取得_(t.sku),
+      台湾書籍系_作品ID4桁を取得_(t.作品ID列),
+    ].filter(Boolean);
+    const uniq = [...new Set(ids)];
+    if (uniq.length > 1) {
+      理由リスト.push(`行内ID不整合(${uniq.join('/')})`);
+    }
+
+    // (c) シート内コード重複（Yahooには同一コードを2つ置けない）
+    [t.code, t.sku].forEach(c => {
+      const key = 台湾書籍系_正規化文字列_(c).toUpperCase();
+      if (!key || !全コード出現[key]) return;
+      const 他行 = 全コード出現[key].filter(r => r !== t.row);
+      if (他行.length) {
+        理由リスト.push(`コード重複(${key} が行${他行.join(',')}にも存在)`);
+      }
+    });
+
+    // (d) Works二重（同一作品に複数ID: 0033/0128型）
+    const myId = uniq.length === 1 ? uniq[0] : 台湾書籍系_作品ID4桁を取得_(t.作品ID列);
+    if (myId && 二重ID[myId]) {
+      理由リスト.push(`Works二重の疑い(ID ${myId} と ${二重ID[myId].join(',')} が同一作品)`);
+    }
+
+    if (理由リスト.length) {
+      問題.push({ row: t.row, 理由: [...new Set(理由リスト)].join(' / ') });
+    }
+  });
+
+  return 問題;
+}
+
 /*
  * 台湾専用の「① 確定発行」（媒体対応・安全版）。
  *
@@ -3029,16 +3110,80 @@ function 台湾書籍系_ローカル確定発行_(シート名, 設定) {
     const colSKU = 実列名.SKU自動 ? 列[実列名.SKU自動] : 0;
     const col登録状況 = 実列名.登録状況 ? 列[実列名.登録状況] : 0;
     const colステータス = 実列名.コードステータス ? 列[実列名.コードステータス] : 0;
+    const 実列名作品ID = 台湾書籍系_実列名を取得_(列, [cn.作品ID, '作品ID(W)（自動）', '作品ID(W)(自動)', '作品(W)（自動）']);
+    const 実列名原題 = 台湾書籍系_実列名を取得_(列, [cn.原題, '原題タイトル']);
+    const col作品ID = 実列名作品ID ? 列[実列名作品ID] : 0;
+    const col原題 = 実列名原題 ? 列[実列名原題] : 0;
+    const col作者 = 列['作者'] || 0;
 
     const codeVals = col商品コード ? sh.getRange(2, col商品コード, numRows, 1).getValues() : null;
     const skuVals = colSKU ? sh.getRange(2, colSKU, numRows, 1).getValues() : null;
+    const statusVals = colステータス ? sh.getRange(2, colステータス, numRows, 1).getDisplayValues() : null;
+    const workIdVals = col作品ID ? sh.getRange(2, col作品ID, numRows, 1).getDisplayValues() : null;
+    const 原題Vals = col原題 ? sh.getRange(2, col原題, numRows, 1).getDisplayValues() : null;
+    const 作者Vals = col作者 ? sh.getRange(2, col作者, numRows, 1).getDisplayValues() : null;
 
-    // ③ コードが出た行だけ確定（登録済み＋発行済み確定）。失敗行はチェックを残す。
+    // ②' プリフライト検査の材料: シート全行のコード出現Map と Works一覧
+    const 全コード出現 = {};
+    for (let i = 0; i < numRows; i++) {
+      [codeVals && codeVals[i][0], skuVals && skuVals[i][0]].forEach(v => {
+        const key = 台湾書籍系_正規化文字列_(v).toUpperCase();
+        if (!key || key.startsWith('ERROR')) return;
+        if (!全コード出現[key]) 全コード出現[key] = [];
+        if (!全コード出現[key].includes(i + 2)) 全コード出現[key].push(i + 2);
+      });
+    }
+    const works = [];
+    try {
+      const wsh = ss.getSheetByName(設定.作品シート名);
+      if (wsh && wsh.getLastRow() >= 2) {
+        const wHeaders = wsh.getRange(1, 1, 1, wsh.getLastColumn()).getDisplayValues()[0]
+          .map(v => 台湾書籍系_正規化文字列_(v));
+        const wCol = {};
+        wHeaders.forEach((h, i) => { if (h) wCol[h] = i; });
+        const wData = wsh.getRange(2, 1, wsh.getLastRow() - 1, wsh.getLastColumn()).getDisplayValues();
+        wData.forEach(r => {
+          works.push({
+            id: wCol['作品ID'] != null ? r[wCol['作品ID']] : '',
+            原題: wCol['原題タイトル'] != null ? r[wCol['原題タイトル']] : '',
+            作者: wCol['作者'] != null ? r[wCol['作者']] : '',
+          });
+        });
+      }
+    } catch (e) {
+      Logger.log('確定発行プリフライト: Works読込失敗 ' + e);
+    }
+
+    const 検査対象 = 対象行.map(row => {
+      const i = row - 2;
+      return {
+        row,
+        code: codeVals ? 台湾書籍系_正規化文字列_(codeVals[i][0]) : '',
+        sku: skuVals ? 台湾書籍系_正規化文字列_(skuVals[i][0]) : '',
+        status: statusVals ? statusVals[i][0] : '',
+        作品ID列: workIdVals ? workIdVals[i][0] : '',
+        原題: 原題Vals ? 原題Vals[i][0] : '',
+        作者: 作者Vals ? 作者Vals[i][0] : '',
+      };
+    });
+    const 問題リスト = 台湾書籍系_確定発行検査_(検査対象, 全コード出現, works);
+    const 問題Map = {};
+    問題リスト.forEach(p => { 問題Map[p.row] = p.理由; });
+
+    // ③ コードが出て検査も通った行だけ確定（登録済み＋発行済み確定）。
+    //    検査で引っかかった行は確定せず、チェックを残して理由をステータスに書く。
+    let 保留数 = 0;
     対象行.forEach(row => {
       const i = row - 2;
       const code = codeVals ? 台湾書籍系_正規化文字列_(codeVals[i][0]) : '';
       const sku = skuVals ? 台湾書籍系_正規化文字列_(skuVals[i][0]) : '';
       const 成功 = !!(code || sku);
+
+      if (問題Map[row]) {
+        保留数++;
+        if (colステータス) sh.getRange(row, colステータス).setValue('⚠️確定保留: ' + 問題Map[row]);
+        return; // チェックは残す＝目に見える
+      }
 
       if (成功) {
         発行数++;
@@ -3052,10 +3197,22 @@ function 台湾書籍系_ローカル確定発行_(シート名, 設定) {
 
     ss.toast(
       `✅ ${シート名}：確定 ${発行数} 件` +
-        (失敗数 ? ` ／ 情報不足で未確定 ${失敗数} 件（チェックは残しました）` : ''),
+        (失敗数 ? ` ／ 情報不足で未確定 ${失敗数} 件（チェックは残しました）` : '') +
+        (保留数 ? ` ／ ⚠️検査で保留 ${保留数} 件` : ''),
       '確定発行 完了',
       6
     );
+
+    // 検査で保留した行は、その場で理由を見せる（後から気づく事故を防ぐ）
+    if (問題リスト.length) {
+      ui.alert(
+        '⚠️ 確定発行の保留',
+        `検査で問題が見つかった ${問題リスト.length} 行は確定していません。\n` +
+        `修正後にもう一度確定発行してください。\n\n` +
+        問題リスト.map(p => `行${p.row}: ${p.理由}`).join('\n'),
+        ui.ButtonSet.OK
+      );
+    }
   } finally {
     lock.releaseLock();
   }
@@ -4097,9 +4254,85 @@ function 台湾書籍系_使用済みIDキャッシュ取得_() {
   return _台湾書籍系_使用済みIDキャッシュ_;
 }
 
+/**
+ * 【採番一元化】共有ハイウォーターマークの管理セル（採番管理!B1）。
+ * DocumentProperties はこのプロジェクト専用ストアで、Webアプリ（Project_02、
+ * ScriptProperties使用）とは分裂している。片方だけが発行した最上位IDの行が
+ * 削除されると、もう片方がそのIDを再発行しうるため、スプレッドシート上の
+ * 管理セルを両系統の共有ストアとする。Properties はセル破損時の縮退用に残す。
+ */
+function 台湾書籍系_共有ハイウォーターセル_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('採番管理');
+  if (!sh) {
+    try {
+      sh = ss.insertSheet('採番管理');
+      sh.getRange('A1').setValue('台湾書籍系_作品ID_ハイウォーター（削除・編集禁止。シート側とWebアプリの採番が共有）');
+      sh.hideSheet();
+    } catch (e) {
+      // 同時作成の競合などは取得し直す
+      sh = ss.getSheetByName('採番管理');
+    }
+  }
+  return sh ? sh.getRange('B1') : null;
+}
+
+/**
+ * 【解放プール】人が「♻️ 番号を選んで解放」で明示的に解放した番号の置き場（採番管理!B2、
+ * カンマ区切り4桁）。採番時に小さい順で最優先消費される。自動の空き番探索は行わない
+ * （それは過去の作品IDずれ事故の原因）ため、ここに入れた番号だけが再利用される。
+ */
+function 台湾書籍系_解放プールセル_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('採番管理');
+  if (!sh) {
+    台湾書籍系_共有ハイウォーターセル_(); // シート自動作成に相乗り
+    sh = ss.getSheetByName('採番管理');
+  }
+  return sh ? sh.getRange('B2') : null;
+}
+
+function 台湾書籍系_解放プール読取_(セル) {
+  // トークンは「純粋な1〜4桁の数字」だけを受け付ける。
+  // 以前は数字以外を剥がして解釈していたため、セルに紛れ込んだ日時などの
+  // ゴミ文字列（例: 6:30→630、10月→10）を解放番号として拾う事故があった。
+  const list = String((セル && セル.getDisplayValue()) || '')
+    .split(/[,、\s]+/)
+    .filter(s => /^\d{1,4}$/.test(s))
+    .map(s => parseInt(s, 10))
+    .filter(n => Number.isFinite(n) && n > 0);
+  list.sort((a, b) => a - b);
+  return list;
+}
+
 function 台湾書籍系_次の未使用作品ID_() {
   // 実行内キャッシュを使用（全シート走査を実行ごとに1回へ削減）
   const used = 台湾書籍系_使用済みIDキャッシュ取得_();
+
+  // 解放プール（明示的に解放された番号）があれば小さい順に優先消費する。
+  // 使用済みになっていた番号は黙ってプールから除外。ハイウォーターは動かさない。
+  try {
+    const プールセル = 台湾書籍系_解放プールセル_();
+    if (プールセル) {
+      const list = 台湾書籍系_解放プール読取_(プールセル);
+      if (list.length) {
+        let 採用 = '';
+        const 残り = [];
+        for (let i = 0; i < list.length; i += 1) {
+          const id = String(list[i]).padStart(4, '0');
+          if (!採用 && !used.has(id)) { 採用 = id; continue; }
+          if (!used.has(id)) 残り.push(id); // 未使用は残す／使用済みは捨てる
+        }
+        if (採用 || 残り.length !== list.length) {
+          try { プールセル.setValue(残り.join(',')); SpreadsheetApp.flush(); } catch (e) {}
+        }
+        if (採用) {
+          used.add(採用);
+          return 採用;
+        }
+      }
+    }
+  } catch (e) {}
 
   // 【安全採番】欠番(空き番)は再利用しない。既存の最大番号と、永続ハイウォーターマークの
   // 大きい方 +1 を割り当てる。→「使用中IDの上書き」も「削除済みIDの再利用」も根絶する。
@@ -4119,9 +4352,27 @@ function 台湾書籍系_次の未使用作品ID_() {
     props = null;
   }
 
-  const 次 = Math.max(最大, 保存最大) + 1;
+  // 共有ハイウォーター（Webアプリ側 Project_02 の採番もここに反映される）
+  let 共有最大 = 0;
+  let 共有セル = null;
+  try {
+    共有セル = 台湾書籍系_共有ハイウォーターセル_();
+    if (共有セル) 共有最大 = parseInt(String(共有セル.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+  } catch (e) {
+    共有セル = null;
+  }
+
+  // セルに正の値があるときはセルを正とする（「採番を巻き戻す」メニューで下げた値に
+  // props残骸が勝って巻き戻しが無効化されるのを防ぐ）。走査maxが常に下限なので
+  // セルをいくら下げても使用中IDを越えることはない。セル空/破損時のみpropsに縮退。
+  const 基準最大 = (共有セル && 共有最大 > 0) ? 共有最大 : 保存最大;
+  const 次 = Math.max(最大, 基準最大) + 1;
   if (次 >= 10000) throw new Error('使用可能な作品IDがありません');
 
+  if (共有セル) {
+    // 他系統から少しでも早く見えるよう即フラッシュ（採番は新規作品時のみで頻度は低い）
+    try { 共有セル.setValue(次); SpreadsheetApp.flush(); } catch (e) {}
+  }
   if (props) {
     try { props.setProperty('台湾書籍系_作品ID_ハイウォーター', String(次)); } catch (e) {}
   }
@@ -4129,6 +4380,429 @@ function 台湾書籍系_次の未使用作品ID_() {
   const id = String(次).padStart(4, '0');
   used.add(id); // 同一実行内で次の採番に同じIDを返さないよう予約（衝突防止）
   return id;
+}
+
+/**
+ * 指定の作品ID(4桁)がどこで使われているかを探し、表示用の説明文を返す。
+ * 巻き戻しダイアログで「どのタイトルが下限になっているか」を見せるために使う。
+ */
+function 台湾書籍系_ID使用箇所の説明_(id4) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Works（書籍専用）: 作品ID列
+  try {
+    const wsh = ss.getSheetByName('Works（書籍専用）');
+    if (wsh && wsh.getLastRow() >= 2) {
+      const headers = wsh.getRange(1, 1, 1, wsh.getLastColumn()).getDisplayValues()[0]
+        .map(v => 台湾書籍系_正規化文字列_(v));
+      const col = {};
+      headers.forEach((h, i) => { if (h) col[h] = i; });
+      if (col['作品ID'] != null) {
+        const data = wsh.getRange(2, 1, wsh.getLastRow() - 1, wsh.getLastColumn()).getDisplayValues();
+        for (let i = 0; i < data.length; i++) {
+          if (台湾書籍系_作品ID4桁を取得_(data[i][col['作品ID']]) !== id4) continue;
+          const title = (col['日本語タイトル'] != null ? data[i][col['日本語タイトル']] : '') ||
+                        (col['原題タイトル'] != null ? data[i][col['原題タイトル']] : '');
+          return '「' + (title || '(タイトル不明)') + '」(Works ' + (i + 2) + '行目)';
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 商品シート: 作品ID列とコード列
+  const 商品シート一覧 = ['台湾まんが', '台湾書籍その他'];
+  for (let s = 0; s < 商品シート一覧.length; s++) {
+    try {
+      const sh = ss.getSheetByName(商品シート一覧[s]);
+      if (!sh || sh.getLastRow() < 2) continue;
+      const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0]
+        .map(v => 台湾書籍系_正規化文字列_(v));
+      const col = {};
+      headers.forEach((h, i) => { if (h) col[h] = i; });
+      const id列候補 = ['作品ID(W)（自動）', '作品ID(W)(自動)', '作品(W)（自動）'];
+      const code列候補 = ['親コード', '商品コード(SKU)', '商品コード（SKU）', 'SKU（自動）', 'SKU(自動)'];
+      const data = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getDisplayValues();
+      for (let i = 0; i < data.length; i++) {
+        let hit = false;
+        for (let c = 0; c < id列候補.length && !hit; c++) {
+          if (col[id列候補[c]] != null &&
+              台湾書籍系_作品ID4桁を取得_(data[i][col[id列候補[c]]]) === id4) hit = true;
+        }
+        for (let c = 0; c < code列候補.length && !hit; c++) {
+          if (col[code列候補[c]] != null &&
+              台湾書籍系_コードから作品ID4桁を取得_(data[i][col[code列候補[c]]]) === id4) hit = true;
+        }
+        if (!hit) continue;
+        const title = (col['日本語タイトル'] != null ? data[i][col['日本語タイトル']] : '') ||
+                      (col['タイトル'] != null ? data[i][col['タイトル']] : '');
+        return '「' + (title || '(タイトル不明)') + '」(' + 商品シート一覧[s] + ' ' + (i + 2) + '行目)';
+      }
+    } catch (e) {}
+  }
+
+  return '';
+}
+
+/**
+ * 【欠番管理シート】未使用番号の一覧を「欠番管理」シートに書き出す。
+ * C列のチェックボックスをクリックするだけで解放（=欠番プールへ登録）でき、
+ * チェックを外せば取り消せる（クリック処理は 台湾書籍系_欠番管理_onEdit_）。
+ * プールの番号は次回の採番で小さい順に優先消費される。
+ * 自動の空き番探索はしない（過去の作品IDずれ事故の原因のため、人の明示選択のみ）。
+ */
+function 台湾書籍系_欠番管理シートを更新_() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    台湾書籍系_使用済みIDキャッシュ無効化_();
+    const used = 台湾書籍系_使用済み作品IDセット_();
+
+    let 保存最大 = 0;
+    try {
+      保存最大 = parseInt(
+        PropertiesService.getDocumentProperties().getProperty('台湾書籍系_作品ID_ハイウォーター') || '0', 10) || 0;
+    } catch (e) {}
+    let セル最大 = 0;
+    try {
+      const セル = 台湾書籍系_共有ハイウォーターセル_();
+      if (セル) セル最大 = parseInt(String(セル.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+    } catch (e) {}
+    let 実使用最大 = 0;
+    used.forEach(function (id) {
+      const n = parseInt(String(id).replace(/\D/g, ''), 10);
+      if (Number.isFinite(n) && n > 実使用最大) 実使用最大 = n;
+    });
+    const 上限 = Math.max(保存最大, セル最大, 実使用最大);
+
+    const プールセル = 台湾書籍系_解放プールセル_();
+    let プール = プールセル ? 台湾書籍系_解放プール読取_(プールセル) : [];
+    // プールの自動掃除: 使用中になった番号と、発行済み最大を超える番号（ゴミ混入由来）を除去
+    const 掃除後プール = プール.filter(function (n) {
+      return !used.has(String(n).padStart(4, '0')) && n <= 上限;
+    });
+    if (プールセル && 掃除後プール.length !== プール.length) {
+      try {
+        プールセル.setValue(掃除後プール.map(function (n) { return String(n).padStart(4, '0'); }).join(','));
+        SpreadsheetApp.flush();
+      } catch (e) {}
+    }
+    プール = 掃除後プール;
+    const プール集合 = {};
+    プール.forEach(function (n) { プール集合[n] = true; });
+
+    const 行データ = [];
+    for (let n = 1; n <= 上限; n += 1) {
+      const id = String(n).padStart(4, '0');
+      if (used.has(id)) continue;
+      行データ.push([
+        id,
+        プール集合[n] ? '♻️解放済み（次の採番で使用）' : '未使用（欠番）',
+        !!プール集合[n],
+      ]);
+    }
+
+    let sh = ss.getSheetByName('欠番管理');
+    if (!sh) sh = ss.insertSheet('欠番管理');
+
+    // 全消し→書き直し（古い一覧・書式を残さない。フローティング画像=ボタンはclearでは消えない）
+    sh.clear();
+    sh.getRange(1, 1, 1, 4).setValues([[
+      '番号', '状態', '解放する（☑で選ぶ）',
+      '☑で選んで「▶ 解放実行」→ 解放され、☑は自動で外れます。取り消しは「♻️解放済み」の行にもう一度☑して実行。解放した番号は次の新規採番で小さい順に優先使用。一覧の更新はメニュー「♻️ 欠番管理シートを更新」',
+    ]]);
+    sh.getRange(1, 1, 1, 3)
+      .setBackground('#1a73e8').setFontColor('#ffffff').setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.setColumnWidth(1, 70);
+    sh.setColumnWidth(2, 230);
+    sh.setColumnWidth(3, 150);
+    sh.setColumnWidth(4, 600);
+
+    if (行データ.length) {
+      sh.getRange(2, 1, 行データ.length, 1).setNumberFormat('@');
+      sh.getRange(2, 1, 行データ.length, 3).setValues(行データ.map(function (r) { return [r[0], r[1], '']; }));
+      // ☑は「指示」であって状態表示ではないので、常に空で並べる
+      //（解放済みかどうかは状態列で分かる。実行後も☑は自動で外れる）
+      sh.getRange(2, 3, 行データ.length, 1).insertCheckboxes();
+    }
+
+    // 実行スイッチ（E2の☑）: 画像ボタンより確実な実行手段。
+    // ☑を入れた瞬間に onEdit 経由で解放実行が走り、☑は自動で戻る。
+    sh.getRange('E1').setValue('▶ 解放実行（下の☑をクリック）');
+    sh.getRange('E1').setBackground('#00796B').setFontColor('#ffffff').setFontWeight('bold');
+    const 実行セル = sh.getRange('E2');
+    実行セル.insertCheckboxes();
+    実行セル.setValue(false);
+    sh.setColumnWidth(5, 200);
+
+    // 「♻ 解放実行」画像ボタンも設置を試みる（環境により入らないことがあるため補助扱い。
+    // 失敗しても E2 の☑かメニュー「♻ 解放実行」で実行できる）。
+    let ボタンエラー = '';
+    try {
+      sh.getImages().forEach(function (img) {
+        try {
+          if (img.getAltTextTitle() === '欠番解放実行ボタン') img.remove();
+        } catch (e) {}
+      });
+      const blob = Utilities.newBlob(
+        Utilities.base64Decode(欠番解放ボタン_PNG_BASE64), 'image/png', 'release_button.png'
+      );
+      const img = sh.insertImage(blob, 7, 2); // G2 あたり（E2の実行☑と重ねない）
+      img.setAltTextTitle('欠番解放実行ボタン');
+      // 末尾アンダースコアの関数はボタン（assignScript）から呼べないため公開ラッパーを割り当てる
+      img.assignScript('台湾_欠番解放実行');
+      img.setWidth(132);
+      img.setHeight(36);
+    } catch (e) {
+      ボタンエラー = String(e && e.message ? e.message : e);
+    }
+
+    SpreadsheetApp.flush();
+    ui.alert(
+      '✅ 欠番管理シートを更新しました（未使用 ' + 行データ.length + ' 件）。\n\n' +
+      '手順: 解放したい番号のC列に☑ → E2の「▶ 解放実行」☑をクリック。\n' +
+      '（C列の☑だけでは何も起きません。実行した時にまとめて反映されます）\n\n' +
+      '⚠️ 昔からの欠番（過去の事故由来）や「Yahooへ送信済みなのにシートからは消した」番号は解放しないでください。' +
+      (ボタンエラー ? '\n\n（画像ボタンは設置できませんでしたが、E2の☑かメニューで実行できます: ' + ボタンエラー + '）' : '')
+    );
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * 「♻ 解放実行」ボタン用の公開ラッパー。
+ * 末尾アンダースコア付き関数はGASのプライベート扱いで assignScript から
+ * 呼び出せない（「スクリプト関数が見つかりませんでした」になる）ため、
+ * ボタンにはこの名前を割り当てる。
+ */
+function 台湾_欠番解放実行() {
+  台湾書籍系_チェックした番号を解放_();
+}
+
+/**
+ * 欠番管理シートの E2「▶ 解放実行」☑ を処理する（onEditから呼ばれる）。
+ * ☑を入れた瞬間に解放実行を走らせ、☑は自動で戻す。
+ * 画像ボタンが環境により設置できないことがあるための確実な代替手段。
+ */
+function 台湾書籍系_欠番管理実行チェック_onEdit_(e) {
+  if (!e || !e.range) return;
+  const sh = e.range.getSheet();
+  if (sh.getName() !== '欠番管理') return;
+  if (e.range.getRow() !== 2 || e.range.getColumn() !== 5) return; // E2のみ
+  if (sh.getRange('E2').getValue() !== true) return; // ☑を入れた時だけ
+  sh.getRange('E2').setValue(false); // 先に戻す（連打・再発火防止）
+  SpreadsheetApp.flush();
+  台湾書籍系_チェックした番号を解放_();
+}
+
+/**
+ * 「♻ 解放実行」: ☑の付いた行だけを処理し、処理後は☑を全て外す（☑は指示であって状態ではない）。
+ * ☑あり・未解放 → プールへ解放（使用中なら理由つきで拒否）
+ * ☑あり・解放済み → 取り消し（トグル）
+ * ☑なしの行には一切触らない。
+ */
+function 台湾書籍系_チェックした番号を解放_() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('欠番管理');
+  if (!sh || sh.getLastRow() < 2) {
+    ui.alert('欠番管理シートに一覧がありません。先にメニュー「♻️ 欠番管理シートを更新」を実行してください。');
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    台湾書籍系_使用済みIDキャッシュ無効化_();
+    const used = 台湾書籍系_使用済み作品IDセット_();
+    const プールセル = 台湾書籍系_解放プールセル_();
+    if (!プールセル) {
+      ui.alert('採番管理シートにアクセスできませんでした。');
+      return;
+    }
+    // 現在のハイウォーター（プール掃除の上限判定に使う）
+    let 保存最大HW = 0;
+    try {
+      保存最大HW = parseInt(
+        PropertiesService.getDocumentProperties().getProperty('台湾書籍系_作品ID_ハイウォーター') || '0', 10) || 0;
+    } catch (e) {}
+    let セル最大HW = 0;
+    try {
+      const hwセル = 台湾書籍系_共有ハイウォーターセル_();
+      if (hwセル) セル最大HW = parseInt(String(hwセル.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+    } catch (e) {}
+    let 実使用最大HW = 0;
+    used.forEach(function (id) {
+      const v = parseInt(String(id).replace(/\D/g, ''), 10);
+      if (Number.isFinite(v) && v > 実使用最大HW) 実使用最大HW = v;
+    });
+    const 上限HW = Math.max(保存最大HW, セル最大HW, 実使用最大HW);
+
+    const プール = 台湾書籍系_解放プール読取_(プールセル);
+    const poolSet = {};
+    // 自動掃除: 使用中・上限超え（ゴミ混入由来）はプールに載せない＝書き戻しで消える
+    プール.forEach(function (n) {
+      if (used.has(String(n).padStart(4, '0'))) return;
+      if (n > 上限HW) return;
+      poolSet[n] = true;
+    });
+
+    const 行数 = sh.getLastRow() - 1;
+    const data = sh.getRange(2, 1, 行数, 3).getValues();
+
+    const 解放 = [];
+    const 取消 = [];
+    const NG = [];
+
+    for (let i = 0; i < data.length; i += 1) {
+      const raw = String(data[i][0] || '').replace(/\D/g, '');
+      if (!raw) continue;
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      const id4 = String(n).padStart(4, '0');
+      const checked = data[i][2] === true;
+      if (!checked) continue; // ☑の無い行には触らない
+
+      const inPool = !!poolSet[n];
+      if (inPool) {
+        // 解放済みの行に☑して実行 → 取り消し（トグル）
+        delete poolSet[n];
+        取消.push(id4);
+        sh.getRange(i + 2, 2).setValue('未使用（欠番）');
+      } else if (used.has(id4)) {
+        const 説明 = 台湾書籍系_ID使用箇所の説明_(id4);
+        NG.push({ 行: i + 2, id: id4, 理由: '使用中' + (説明 ? ': ' + 説明 : '') });
+      } else {
+        poolSet[n] = true;
+        解放.push(id4);
+        sh.getRange(i + 2, 2).setValue('♻️解放済み（次の採番で使用）');
+      }
+    }
+
+    // NG行は理由を状態欄に書く
+    NG.forEach(function (x) {
+      sh.getRange(x.行, 2).setValue('❌解放不可: ' + x.理由);
+    });
+
+    // ☑は「指示」なので、実行後は全て外す
+    if (行数 > 0) {
+      sh.getRange(2, 3, 行数, 1).setValue(false);
+    }
+
+    const out = Object.keys(poolSet)
+      .map(function (k) { return parseInt(k, 10); })
+      .filter(function (n) { return Number.isFinite(n) && n > 0; })
+      .sort(function (a, b) { return a - b; })
+      .map(function (n) { return String(n).padStart(4, '0'); });
+    プールセル.setValue(out.join(','));
+    SpreadsheetApp.flush();
+
+    if (!解放.length && !取消.length && !NG.length) {
+      ui.alert('変更はありません（☑の状態とプールが既に一致しています）。');
+      return;
+    }
+    ui.alert(
+      (解放.length ? '♻️ 解放: ' + 解放.join(', ') + '\n' : '') +
+      (取消.length ? '↩️ 取り消し: ' + 取消.join(', ') + '\n' : '') +
+      (NG.length ? '❌ 解放不可:\n' + NG.map(function (x) { return '  ' + x.id + ' ' + x.理由; }).join('\n') + '\n' : '') +
+      '\n現在のプール: ' + (out.join(', ') || '（空）') +
+      '\n※解放した番号は次の新規採番で小さい順に優先使用されます'
+    );
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+var 欠番解放ボタン_PNG_BASE64 = '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';
+
+/**
+ * 【採番の巻き戻し】どこにも使われていない末尾の番号をハイウォーターから解放し、
+ * 次回の採番で再利用できるようにする（テスト登録→削除で番号だけ進んだ場合の回収用）。
+ * Works・台湾まんが・台湾書籍その他のID列/コード列すべてを走査し、実際に使われている
+ * 最大番号までしか下げないため、使用中IDとの衝突は起こらない。
+ * 使用中の番号が下限になっている場合は、そのタイトルと場所を明示する。
+ * 注意: 「Yahooへ送信済みなのにシートからは行ごと消した」番号は走査で見えないので、
+ * その心当たりがある場合は巻き戻さないこと（確認ダイアログでも明示している）。
+ */
+function 台湾書籍系_採番を巻き戻す_() {
+  const ui = SpreadsheetApp.getUi();
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    台湾書籍系_使用済みIDキャッシュ無効化_();
+    const used = 台湾書籍系_使用済み作品IDセット_();
+    let 実使用最大 = 0;
+    used.forEach(function (id) {
+      const n = parseInt(String(id).replace(/\D/g, ''), 10);
+      if (Number.isFinite(n) && n > 実使用最大) 実使用最大 = n;
+    });
+
+    let 保存最大 = 0;
+    let props = null;
+    try {
+      props = PropertiesService.getDocumentProperties();
+      保存最大 = parseInt(props.getProperty('台湾書籍系_作品ID_ハイウォーター') || '0', 10) || 0;
+    } catch (e) {
+      props = null;
+    }
+    let セル最大 = 0;
+    let セル = null;
+    try {
+      セル = 台湾書籍系_共有ハイウォーターセル_();
+      if (セル) セル最大 = parseInt(String(セル.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+    } catch (e) {
+      セル = null;
+    }
+
+    const 現在HW = Math.max(保存最大, セル最大);
+    const 下限説明 = 実使用最大 > 0
+      ? 台湾書籍系_ID使用箇所の説明_(String(実使用最大).padStart(4, '0'))
+      : '';
+
+    if (現在HW <= 実使用最大) {
+      ui.alert(
+        '❌ 巻き戻せる番号はありません。\n\n' +
+        '発行済み最大 ' + String(現在HW).padStart(4, '0') + ' は使用中です' +
+        (下限説明 ? ':\n' + 下限説明 : '。') + '\n\n' +
+        '（他のタイトルが使っている番号は解放できません）'
+      );
+      return;
+    }
+
+    const 解放開始 = String(実使用最大 + 1).padStart(4, '0');
+    const 解放終了 = String(現在HW).padStart(4, '0');
+    if (
+      ui.alert(
+        '採番の巻き戻し',
+        '未使用の末尾番号 ' + 解放開始 + '〜' + 解放終了 + ' を解放し、次回の採番から再利用します。\n\n' +
+        (下限説明
+          ? 'これより下は戻せません: ' + String(実使用最大).padStart(4, '0') + ' を ' + 下限説明 + ' が使用中です。\n\n'
+          : '') +
+        '⚠️ この範囲に「Yahooへ送信済み・出品済みなのにシートからは消した」番号が含まれる場合、\n' +
+        '再利用するとYahoo側と衝突します。心当たりが無ければOKを押してください。',
+        ui.ButtonSet.OK_CANCEL
+      ) !== ui.Button.OK
+    ) {
+      return;
+    }
+
+    if (セル) {
+      try { セル.setValue(実使用最大); SpreadsheetApp.flush(); } catch (e) {}
+    }
+    if (props) {
+      try { props.setProperty('台湾書籍系_作品ID_ハイウォーター', String(実使用最大)); } catch (e) {}
+    }
+
+    ui.alert(
+      '✅ 巻き戻しました。次の新規作品IDは ' + String(実使用最大 + 1).padStart(4, '0') + ' です。\n\n' +
+      '（拡張機能=Webアプリ側の採番も共有セル経由で自動追従します）'
+    );
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function 台湾書籍系_作品ID衝突チェック_() {

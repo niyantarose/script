@@ -11,6 +11,28 @@ const KESHIKOMI_CFG = {
   有効日数: 60 // これより古い出荷済みは在庫と無関係とみなして差し引かない(古い台帳が新しい入荷を食わないように)
 };
 
+function 台帳比較値_(value){
+  if(value instanceof Date) return isNaN(value.getTime())?'':'D:'+ymd_(value);
+  const text=String(value==null?'':value).trim();
+  if(/^(?:20\d{2}|\d{2})[-\/.]\d{1,2}[-\/.]\d{1,2}/.test(text)){
+    const date=ymd_(text);
+    if(/^20\d{2}-\d{2}-\d{2}$/.test(date)) return 'D:'+date;
+  }
+  return text;
+}
+
+function 行列同一_(left,right){
+  const a=left||[], b=right||[];
+  if(a.length!==b.length) return false;
+  for(let r=0;r<a.length;r++){
+    if(a[r].length!==b[r].length) return false;
+    for(let c=0;c<a[r].length;c++){
+      if(台帳比較値_(a[r][c])!==台帳比較値_(b[r][c])) return false;
+    }
+  }
+  return true;
+}
+
 // 台帳を最新化: 受注明細の取り寄せ行と突き合わせ、消えた注文を「出荷済み?」にする
 function 消込台帳更新_(){
   const ss=SpreadsheetApp.getActive(), cfg=KESHIKOMI_CFG;
@@ -77,14 +99,18 @@ function 消込台帳更新_(){
     新規++;
   });
 
-  if(out.length){
-    out.sort((a,b)=> String(b[0]).localeCompare(String(a[0])) || String(a[1]).localeCompare(String(b[1]))); // 新しい注文を上に
-    sh.getRange(2,1,out.length,cfg.HDR.length).setValues(out);
-    const bg=out.map(r=>{ const st=String(r[5]||'');
-      const c= st.indexOf('出荷済み')===0? '#efefef' : st==='キャンセル'? '#f4cccc' : null;
-      return new Array(cfg.HDR.length).fill(c); });
-    sh.getRange(2,1,out.length,cfg.HDR.length).setBackgrounds(bg);
-    sh.getRange(2,5,out.length,1).setNumberFormat('yyyy-mm-dd');
+  out.sort((a,b)=> String(b[0]).localeCompare(String(a[0])) || String(a[1]).localeCompare(String(b[1]))); // 新しい注文を上に
+  if(!行列同一_(vals,out)){
+    const clearRows=Math.max(vals.length,out.length);
+    if(clearRows) sh.getRange(2,1,clearRows,cfg.HDR.length).clearContent().setBackground(null);
+    if(out.length){
+      sh.getRange(2,1,out.length,cfg.HDR.length).setValues(out);
+      const bg=out.map(r=>{ const st=String(r[5]||'');
+        const c= st.indexOf('出荷済み')===0? '#efefef' : st==='キャンセル'? '#f4cccc' : null;
+        return new Array(cfg.HDR.length).fill(c); });
+      sh.getRange(2,1,out.length,cfg.HDR.length).setBackgrounds(bg);
+      sh.getRange(2,5,out.length,1).setNumberFormat('yyyy-mm-dd');
+    }
   }
   return {新規, 新規出荷済, 復活};
 }
@@ -108,10 +134,14 @@ function 消込台帳_出荷済み行_(){
     const base=r[4]||r[7]; // 入荷日→なければ消滅日
     const d= base instanceof Date? base : new Date(String(base||''));
     if(!isNaN(d.getTime()) && d.getTime()<limit.getTime()) return;
-    out.push({ban:String(r[0]||'').trim(), code:String(r[1]||'').trim(), sku:String(r[2]||'').trim(), qty, 入荷日:r[4], 基準日:r[7]||r[6]});
+    out.push({ban:String(r[0]||'').trim(), code:String(r[1]||'').trim(), sku:String(r[2]||'').trim(), qty, 入荷日:r[4], 基準日:r[7]||r[6], メモ:String(r[8]||'').trim()});
   });
   return out;
 }
+
+// 台帳のメモ列に「取り置き」と書かれた出荷済み行か。
+// 開始前の取り置き在庫（EMS箱の外）から出荷した分は、今回の箱を消費させないための人為マーク。
+function 取り置き出荷_(l){ return /取り?置き|取置/.test(String(l&&l.メモ||'')); }
 
 // ===== 移行用: 発送済み注文CSVを消込台帳へ一括登録 =====
 // GoQで「出荷日を期間指定」して出力した発送済みCSVを、いつものドライブフォルダに入れてから実行。
@@ -219,13 +249,15 @@ function キャンセル処理_(bans){
   if(tsh && tsh.getLastRow()>1){
     const n=tsh.getLastRow()-1;
     const tv=tsh.getRange(2,1,n,KESHIKOMI_CFG.HDR.length).getValues();
+    const states=tv.map(row=>[String(row[5]||'')]);
     for(let i=0;i<n;i++){
       const ban=String(tv[i][0]||'').trim();
       if(bans.indexOf(ban)<0) continue;
-      if(String(tv[i][5]||'').trim()==='キャンセル') continue;
-      tsh.getRange(2+i,6).setValue('キャンセル');
+      if(states[i][0].trim()==='キャンセル') continue;
+      states[i][0]='キャンセル';
       台帳更新++;
     }
+    if(台帳更新) tsh.getRange(2,6,n,1).setValues(states);
   }
   results.push('消込台帳: '+台帳更新+'行を「キャンセル」に');
 
@@ -278,28 +310,15 @@ function 消込台帳_処理済を登録_(header, rows){
     sh.setFrozenRows(1);
     [110,180,180,60,100,110,100,100,200].forEach((w,c)=> sh.setColumnWidth(c+1,w));
   }
-  // 前回の取込で登録した「CSV処理済」行は毎回消してから貼り直す(常に最新CSVの処理済＝直近60日だけに保つ。
-  // 消えた注文の出荷済み?・手動キャンセルは残す)。これで掃除ボタンを手で押す必要がなくなる。
-  {
-    const last0=sh.getLastRow();
-    if(last0>1){
-      const vals0=sh.getRange(2,1,last0-1,cfg.HDR.length).getValues();
-      const keep=vals0.filter(r=> String(r[8]||'').trim()!=='CSV処理済');
-      if(keep.length!==vals0.length){
-        sh.getRange(2,1,sh.getMaxRows()-1,cfg.HDR.length).clearContent().setBackground(null);
-        if(keep.length){
-          sh.getRange(2,1,keep.length,cfg.HDR.length).setValues(keep);
-          const bg=keep.map(r=>{ const st=String(r[5]||''); const c= st.indexOf('出荷済み')===0?'#efefef':st==='キャンセル'?'#f4cccc':null; return new Array(cfg.HDR.length).fill(c); });
-          sh.getRange(2,1,keep.length,cfg.HDR.length).setBackgrounds(bg);
-          sh.getRange(2,5,keep.length,1).setNumberFormat('yyyy-mm-dd');
-        }
-      }
-    }
-  }
-  const last=sh.getLastRow();
+  // 現在値を1回だけ読み、CSV処理済み以外の恒久行と今回CSVの行から次の完成配列を作る。
+  // 完成配列が同一ならシートへ一切書かない。
+  const currentLast=sh.getLastRow();
+  const current=currentLast>1?sh.getRange(2,1,currentLast-1,cfg.HDR.length).getValues():[];
+  const permanent=current.filter(r=>String(r[8]||'').trim()!=='CSV処理済');
   const existing=new Set();
-  if(last>1){ sh.getRange(2,1,last-1,3).getValues().forEach(r=>
-    existing.add(String(r[0]).trim()+'|'+String(r[1]).trim()+'|'+String(r[2]).trim())); }
+  permanent.forEach(r=>existing.add(
+    String(r[0]).trim()+'|'+String(r[1]).trim()+'|'+String(r[2]).trim()
+  ));
 
   const today=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd');
   const limit=new Date(); limit.setDate(limit.getDate()-cfg.有効日数); // これより前に発送された分は今の箱と無関係
@@ -320,11 +339,20 @@ function 消込台帳_処理済を登録_(header, rows){
     add.push([ban,code,sku,qty,入荷v,'出荷済み',発送日,発送日,'CSV処理済']);
     existing.add(key);
   });
-  if(add.length){
-    const start=sh.getLastRow()+1;
-    sh.getRange(start,1,add.length,cfg.HDR.length).setValues(add)
-      .setBackgrounds(add.map(()=>new Array(cfg.HDR.length).fill('#efefef')));
-    sh.getRange(start,5,add.length,1).setNumberFormat('yyyy-mm-dd');
+  const next=permanent.concat(add);
+  if(!行列同一_(current,next)){
+    const clearRows=Math.max(current.length,next.length);
+    if(clearRows) sh.getRange(2,1,clearRows,cfg.HDR.length).clearContent().setBackground(null);
+    if(next.length){
+      sh.getRange(2,1,next.length,cfg.HDR.length).setValues(next);
+      const bg=next.map(r=>{
+        const st=String(r[5]||'');
+        const color=st.indexOf('出荷済み')===0?'#efefef':st==='キャンセル'?'#f4cccc':null;
+        return new Array(cfg.HDR.length).fill(color);
+      });
+      sh.getRange(2,1,next.length,cfg.HDR.length).setBackgrounds(bg);
+      sh.getRange(2,5,next.length,1).setNumberFormat('yyyy-mm-dd');
+    }
   }
   return {追加:add.length, 既存, 対象外, 古い};
 }

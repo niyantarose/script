@@ -1,5 +1,33 @@
 // books.com.tw 商品情報スクレイパー
 
+// ===== 日本語原題の採用判定（テスト対象のためトップレベルに定義） =====
+
+// かな文字（ひらがな・カタカナ・繰り返し記号・長音）を含むか
+function hasJapaneseSubtitleSignal(value) {
+  return /[ぁ-ゖァ-ヺ々〆ヵヶー]/.test(String(value || ''));
+}
+
+// CJK文字（漢字・かな・ハングル）を一切含まない英字表記か。
+// 原題が最初から英語の日本作品（例: 末広マチ『How to melt』）は
+// 原文書名欄に英字のみで載るため、これも日本語原題として扱う。
+function isLatinOnlyOriginalTitle(value) {
+  const text = String(value || '').trim();
+  if (text.length < 2 || text.length > 120) return false;
+  if (!/[A-Za-zＡ-Ｚａ-ｚ]/.test(text)) return false;
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text)) return false;
+  return true;
+}
+
+// h1直下のh2（博客來の原文書名欄）テキストを日本語原題として採用してよいか。
+// 出版社入力の原文書名なので信頼できるが、中文副題・韓国語原題は弾く。
+function acceptsTrustedOriginalSubtitle(subtitleText, titleText) {
+  const normalize = value => String(value || '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+  const subtitle = normalize(subtitleText);
+  const title = normalize(titleText);
+  if (!subtitle || subtitle === title) return false;
+  return hasJapaneseSubtitleSignal(subtitle) || isLatinOnlyOriginalTitle(subtitle);
+}
+
 async function getProductInfo() {
   const url = window.location.href;
   const productCode = url.match(/products\/([^?]+)/)?.[1] || '';
@@ -604,7 +632,7 @@ const scoreEdgeDistance = edge => {
 
     return normalizeCandidate(fallback);
   };
-  const hasJapaneseSubtitleSignal = value => /[ぁ-ゖァ-ヺ々〆ヵヶー]/.test(String(value || ''));
+  // hasJapaneseSubtitleSignal はトップレベル定義を使用
   const normalizeJapaneseSubtitle = raw => toSingleLine(raw)
     .replace(/^(?:日文(?:版)?|日本語(?:タイトル|標題|版)?|日文標題|日文标题|日文書名|日文书名)\\s*[：:]\\s*/u, '')
     .trim();
@@ -646,22 +674,23 @@ const scoreEdgeDistance = edge => {
       return { text: inline, trusted: true };
     }
 
-    // 【強力なショートカット】h1の直後（隣）に h2 があり、そこに日本語が含まれていればダイレクトに採用する！
+    // 【強力なショートカット】h1の直後（隣）に h2（原文書名欄）があれば直接採用する。
+    // かな入り日本語のほか、原題が英語表記のみの日本作品（例: How to melt）も受け付ける。
     const nextEl = titleEl.nextElementSibling;
     if (nextEl && String(nextEl.tagName).toUpperCase() === 'H2') {
       const text = normalizeJapaneseSubtitle(getText(nextEl) || nextEl.innerText || '');
-      if (hasJapaneseSubtitleSignal(text) && text !== toSingleLine(titleText)) {
+      if (acceptsTrustedOriginalSubtitle(text, titleText)) {
         return { text, trusted: true };
       }
     }
-    
+
     // 兄弟要素の中にある h2 をダイレクトに探す
     const parent = titleEl.parentElement;
     if (parent) {
       const h2El = parent.querySelector('h2');
       if (h2El && h2El !== titleEl) {
         const text = normalizeJapaneseSubtitle(getText(h2El) || h2El.innerText || '');
-        if (hasJapaneseSubtitleSignal(text) && text !== toSingleLine(titleText)) {
+        if (acceptsTrustedOriginalSubtitle(text, titleText)) {
           return { text, trusted: true };
         }
       }

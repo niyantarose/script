@@ -1,0 +1,157 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="topbar">
+  <span class="page-title">在庫台帳（足し引き）</span>
+  <div class="topbar-actions">
+    <button class="btn btn-info btn-sm" onclick="loadBalances()">⟳ 更新</button>
+  </div>
+</div>
+
+<div class="filter-bar" style="gap:12px;padding:8px 20px;">
+  <input type="text" id="q" placeholder="商品コード / 商品名で検索"
+         style="width:280px;font-size:13px;padding:6px 10px;"
+         onkeydown="if(event.key==='Enter')loadBalances()">
+  <button class="btn btn-primary btn-sm" onclick="loadBalances()">検索</button>
+</div>
+
+<div style="padding:0 20px 20px;">
+  <table class="data-table" style="width:100%;">
+    <thead>
+      <tr>
+        <th>商品コード</th><th>商品名</th><th style="text-align:right;">台帳在庫</th>
+        <th style="text-align:right;">引当済</th><th style="text-align:right;">出品可能</th>
+        <th>棚番号</th><th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="7">検索してください</td></tr></tbody>
+  </table>
+</div>
+
+<!-- 足し引きモーダル -->
+<div id="tx-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;">
+  <div style="background:var(--bg-primary,#fff);max-width:420px;margin:10vh auto;padding:20px;border-radius:8px;">
+    <h3 id="tx-title" style="margin:0 0 12px;">足し引き</h3>
+    <div style="margin-bottom:10px;">
+      <label>種別</label>
+      <select id="tx-type" style="width:100%;padding:6px;">
+        <option value="manual_in">＋ 手動入庫</option>
+        <option value="manual_out">− 手動出庫</option>
+        <option value="adjust">± 調整（実数訂正）</option>
+      </select>
+    </div>
+    <div style="margin-bottom:10px;">
+      <label>数量（調整のみマイナス可）</label>
+      <input type="number" id="tx-qty" value="1" style="width:100%;padding:6px;">
+    </div>
+    <div style="margin-bottom:14px;">
+      <label>理由（出庫・調整は必須）</label>
+      <input type="text" id="tx-reason" placeholder="例: 破損 / 棚卸差異" style="width:100%;padding:6px;">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="closeTxModal()">キャンセル</button>
+      <button class="btn btn-primary btn-sm" onclick="submitTx()">記録する</button>
+    </div>
+  </div>
+</div>
+
+<!-- 履歴モーダル -->
+<div id="hist-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;">
+  <div style="background:var(--bg-primary,#fff);max-width:640px;margin:8vh auto;padding:20px;border-radius:8px;max-height:75vh;overflow:auto;">
+    <h3 id="hist-title" style="margin:0 0 12px;">履歴</h3>
+    <table class="data-table" style="width:100%;">
+      <thead><tr><th>日時</th><th>種別</th><th style="text-align:right;">数量</th><th>理由</th></tr></thead>
+      <tbody id="hist-rows"></tbody>
+    </table>
+    <div style="text-align:right;margin-top:12px;">
+      <button class="btn btn-sm" onclick="document.getElementById('hist-modal').style.display='none'">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentCode = '';
+
+async function loadBalances() {
+  const q = document.getElementById('q').value.trim();
+  const res = await fetch('/ledger/api/balances?q=' + encodeURIComponent(q));
+  const data = await res.json();
+  const tbody = document.getElementById('rows');
+  if (!data.items.length) {
+    tbody.innerHTML = '<tr><td colspan="7">該当なし</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.items.map(it => `
+    <tr>
+      <td>${esc(it.product_code)}</td>
+      <td>${esc(it.product_name)}</td>
+      <td style="text-align:right;font-weight:600;">${it.ledger_qty}</td>
+      <td style="text-align:right;">${it.reserved_qty}</td>
+      <td style="text-align:right;">${it.available_qty}</td>
+      <td>${esc(it.location)}</td>
+      <td>
+        <button class="btn btn-sm" data-action="tx" data-code="${esc(it.product_code)}">±</button>
+        <button class="btn btn-sm" data-action="hist" data-code="${esc(it.product_code)}">履歴</button>
+      </td>
+    </tr>`).join('');
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function openTxModal(code) {
+  currentCode = code;
+  document.getElementById('tx-title').textContent = code + ' の足し引き';
+  document.getElementById('tx-qty').value = 1;
+  document.getElementById('tx-reason').value = '';
+  document.getElementById('tx-modal').style.display = 'block';
+}
+function closeTxModal() {
+  document.getElementById('tx-modal').style.display = 'none';
+}
+
+async function submitTx() {
+  const body = {
+    product_code: currentCode,
+    tx_type: document.getElementById('tx-type').value,
+    qty: parseInt(document.getElementById('tx-qty').value, 10),
+    reason: document.getElementById('tx-reason').value.trim(),
+  };
+  const res = await fetch('/ledger/api/tx', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) { alert(data.message || 'エラー'); return; }
+  closeTxModal();
+  loadBalances();
+}
+
+async function openHistory(code) {
+  const res = await fetch('/ledger/api/history/' + encodeURIComponent(code));
+  const data = await res.json();
+  document.getElementById('hist-title').textContent = code + ' の履歴';
+  document.getElementById('hist-rows').innerHTML = data.items.map(t => `
+    <tr>
+      <td>${esc(t.created_at)}</td>
+      <td>${esc(t.tx_type_label)}</td>
+      <td style="text-align:right;font-weight:600;color:${t.qty >= 0 ? 'var(--success,#188038)' : 'var(--danger,#d93025)'};">
+        ${t.qty >= 0 ? '+' : ''}${t.qty}</td>
+      <td>${esc(t.reason)}</td>
+    </tr>`).join('') || '<tr><td colspan="4">履歴なし</td></tr>';
+  document.getElementById('hist-modal').style.display = 'block';
+}
+
+document.getElementById('rows').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'tx') openTxModal(btn.dataset.code);
+  if (btn.dataset.action === 'hist') openHistory(btn.dataset.code);
+});
+
+loadBalances();
+</script>
+{% endblock %}

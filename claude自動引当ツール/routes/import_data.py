@@ -4,12 +4,9 @@ from flask import Blueprint, request, jsonify, current_app
 from models import db
 from models.order import Order
 from models.order_item import OrderItem
-from models.purchase import Purchase
-from models.ems import Ems
-from models.ems_item import EmsItem
 from models.inventory import Inventory
-from models.import_log import ImportLog
-from datetime import datetime, timedelta
+from models.alert import Alert
+from datetime import datetime
 
 bp = Blueprint('import_data', __name__, url_prefix='/import')
 
@@ -59,16 +56,31 @@ def import_yahoo_orders():
             alloc_stats = run_auto_allocation(item_ids=new_item_ids)
             db.session.commit()
 
+        # ── 在庫台帳: 注文出庫・キャンセル戻しを記録 ──────────────────
+        ledger_out = 0
+        ledger_ret = {'returned': 0, 'alerted': 0}
+        try:
+            from services.stock_ledger import apply_order_out, sync_cancel_returns
+            ledger_out = apply_order_out(new_item_ids)
+            ledger_ret = sync_cancel_returns()
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(f'Ledger hook error: {e}')
+
         return jsonify({
             'status':          'ok',
             'imported_orders': imported_orders,
             'imported_items':  imported_items,
             'alloc':           alloc_stats,
+            'ledger_out':      ledger_out,
+            'ledger_returns':  ledger_ret,
             'message': (f'{imported_orders}件の受注・{imported_items}件の明細を取込みました'
                         f' | 引当: 即納{alloc_stats["fully_allocated"]}件'
                         f' / 部分{alloc_stats["partial"]}件'
                         f' / お取り寄せ{alloc_stats["tori"]}件'
-                        f' / 不足{alloc_stats["shortage"]}件'),
+                        f' / 不足{alloc_stats["shortage"]}件'
+                        f' | 台帳: 出庫{ledger_out}件 / 戻し{ledger_ret["returned"]}件'),
         })
     except Exception as e:
         db.session.rollback()
@@ -428,277 +440,6 @@ def _upsert_yahoo_inventory(items):
     return imported, updated
 
 
-# ─── Google Sheets ───────────────────────────────────────────────────────────
-
-@bp.route('/google_purchases', methods=['POST'])
-def import_google_purchases():
-    try:
-        from services.google_sheets import GoogleSheetsAPI
-        api = GoogleSheetsAPI()
-        rows = api.fetch_purchases()
-        imported = _upsert_purchases(rows, agent='tegu')
-        return jsonify({'status': 'ok', 'imported': imported})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@bp.route('/google_ems', methods=['POST'])
-def import_google_ems():
-    try:
-        from services.google_sheets import GoogleSheetsAPI
-        api = GoogleSheetsAPI()
-        rows = api.fetch_ems_list()
-        imported = _upsert_ems_rows(rows, agent='tegu')
-        return jsonify({'status': 'ok', 'imported': imported})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# ─── Cloudike（ダニエル）────────────────────────────────────────────────────
-
-@bp.route('/cloudike_purchase', methods=['POST'])
-def import_cloudike_purchase():
-    """Cloudike から最新の発注ファイル (Watanabe_list_YYMMDD.xlsm) を取込 → ダニエル発注リスト"""
-    try:
-        from services.cloudike_webdav import CloudikeWebDAV
-        from services.purchase_excel_parser import PurchaseExcelParser
-
-        webdav = CloudikeWebDAV()
-        local_path, filename = webdav.download_latest_purchase()
-        if not local_path:
-            return jsonify({'status': 'ok', 'message': '発注ファイルが見つかりませんでした', 'imported': 0})
-
-        parser = PurchaseExcelParser()
-        rows = parser.parse(local_path)
-        imported = _upsert_purchases_from_excel(rows, agent='daniel')
-
-        log = ImportLog.query.filter_by(filename=filename).first()
-        if log:
-            log.record_count = imported
-            log.imported_at  = datetime.now()
-        else:
-            db.session.add(ImportLog(filename=filename, file_type='purchase_daniel', record_count=imported))
-        db.session.commit()
-        return jsonify({'status': 'ok', 'imported': imported, 'filename': filename})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@bp.route('/cloudike_ems', methods=['POST'])
-def import_cloudike_ems():
-    """Cloudike から最新の EMS 発送リスト (EMS発送リスト_YYMMDD.xlsx) を取込 → ダニエルEMSリスト"""
-    try:
-        from services.cloudike_webdav import CloudikeWebDAV
-        from services.ems_excel_parser import EmsExcelParser
-
-        webdav = CloudikeWebDAV()
-        local_path, filename = webdav.download_latest_ems()
-        if not local_path:
-            return jsonify({'status': 'ok', 'message': 'EMSファイルが見つかりませんでした', 'imported': 0})
-
-        parser = EmsExcelParser()
-        items = parser.parse(local_path)
-        imported = _upsert_ems_items(items, agent='daniel')
-
-        log = ImportLog.query.filter_by(filename=filename).first()
-        if log:
-            log.record_count = imported
-            log.imported_at  = datetime.now()
-        else:
-            db.session.add(ImportLog(filename=filename, file_type='ems_daniel', record_count=imported))
-        db.session.commit()
-        return jsonify({'status': 'ok', 'imported': imported, 'filename': filename})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# ─── Google Drive（rclone 経由）────────────────────────────────────────────
-
-GDRIVE_PURCHASE_FOLDER = 'gdrive:在庫引当/05.와타나베/01.와타나베주문'
-GDRIVE_EMS_FOLDER      = 'gdrive:在庫引当/05.와타나베/02.와타나베발송리스트'
-
-
-def _rclone_download_latest(remote_folder, pattern_re, suffix):
-    """rclone で remote_folder の最新ファイルを tmp にダウンロードして返す。"""
-    import subprocess, tempfile, re, os
-    result = subprocess.run(
-        ['/usr/bin/rclone', 'ls', remote_folder],
-        capture_output=True, text=True, timeout=30
-    )
-    files = []
-    for line in result.stdout.strip().splitlines():
-        m = re.search(pattern_re, line)
-        if m:
-            files.append(m.group(0))
-    if not files:
-        return None, None
-    latest = sorted(files)[-1]
-    remote_path = remote_folder + '/' + latest
-    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(fd)
-    subprocess.run(['/usr/bin/rclone', 'copyto', remote_path, tmp_path],
-                   capture_output=True, timeout=90, check=True)
-    return tmp_path, latest
-
-
-@bp.route('/gdrive_purchase', methods=['POST'])
-def import_gdrive_purchase():
-    """Google Drive から rclone で Watanabe_list_*.xlsm をダウンロードして取込"""
-    import os
-    try:
-        tmp_path, filename = _rclone_download_latest(
-            GDRIVE_PURCHASE_FOLDER,
-            r'Watanabe_list_\d{6}.*\.xlsm?$',
-            '.xlsm'
-        )
-        if not tmp_path:
-            return jsonify({'status': 'ok', 'message': '発注ファイルが見つかりませんでした', 'imported': 0})
-
-        from services.purchase_excel_parser import PurchaseExcelParser
-        rows = PurchaseExcelParser().parse(tmp_path)
-        imported = _upsert_purchases_from_excel(rows, agent='daniel')
-
-        log = ImportLog.query.filter_by(filename=filename).first()
-        if log:
-            log.record_count = imported; log.imported_at = datetime.now()
-        else:
-            db.session.add(ImportLog(filename=filename, file_type='purchase_daniel', record_count=imported))
-        db.session.commit()
-        os.unlink(tmp_path)
-        return jsonify({'status': 'ok', 'imported': imported, 'filename': filename,
-                        'message': f'{filename} から {imported}件取込みました'})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@bp.route('/gdrive_ems', methods=['POST'])
-def import_gdrive_ems():
-    """Google Drive から rclone で EMS発送リスト_*.xlsx をダウンロードして取込"""
-    import os
-    try:
-        tmp_path, filename = _rclone_download_latest(
-            GDRIVE_EMS_FOLDER,
-            r'EMS(?:発送リスト|발송리스트)_\d{6}.*\.xlsx?$',
-            '.xlsx'
-        )
-        if not tmp_path:
-            return jsonify({'status': 'ok', 'message': 'EMSファイルが見つかりませんでした', 'imported': 0})
-
-        from services.ems_excel_parser import EmsExcelParser
-        items = EmsExcelParser().parse(tmp_path)
-        imported = _upsert_ems_items(items, agent='daniel')
-
-        log = ImportLog.query.filter_by(filename=filename).first()
-        if log:
-            log.record_count = imported; log.imported_at = datetime.now()
-        else:
-            db.session.add(ImportLog(filename=filename, file_type='ems_daniel', record_count=imported))
-        db.session.commit()
-        os.unlink(tmp_path)
-        return jsonify({'status': 'ok', 'imported': imported, 'filename': filename,
-                        'message': f'{filename} から {imported}件取込みました'})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# ─── フォルダ監視取込（Google Drive / OneDrive 等） ──────────────────────────
-
-PURCHASE_PATTERN_RE = r'Watanabe_list_\d{6}.*\.xlsm?$'
-# 日本語名（EMS発送リスト_）と韓国語名（EMS발송리스트_）の両方に対応
-EMS_PATTERN_RE = r'EMS(?:発送リスト|발송리스트)_\d{6}.*\.xlsx?$'
-
-
-def _scan_folder(folder, pattern_re):
-    """指定フォルダからパターンに合うファイル一覧を返す"""
-    import re
-    if not folder or not os.path.isdir(folder):
-        return []
-    result = []
-    for fname in sorted(os.listdir(folder)):
-        fpath = os.path.join(folder, fname)
-        if os.path.isfile(fpath) and re.search(pattern_re, fname):
-            result.append((fname, fpath))
-    return result
-
-
-def _folder_file_list(folder, pattern_re, file_type_label):
-    files = []
-    for fname, _ in _scan_folder(folder, pattern_re):
-        log = ImportLog.query.filter_by(filename=fname).first()
-        files.append({'name': fname, 'type': file_type_label,
-                      'imported': log is not None,
-                      'imported_at': log.imported_at.strftime('%m/%d %H:%M') if log else ''})
-    return files
-
-
-@bp.route('/folder_status', methods=['GET'])
-def folder_status():
-    """監視フォルダのファイル状況を返す"""
-    kind = request.args.get('type', 'purchase')  # 'purchase' or 'ems'
-    if kind == 'ems':
-        folder = os.getenv('WATCH_FOLDER_EMS', '')
-        files = _folder_file_list(folder, EMS_PATTERN_RE, 'EMS')
-    else:
-        folder = os.getenv('WATCH_FOLDER_PURCHASE', '')
-        files = _folder_file_list(folder, PURCHASE_PATTERN_RE, '発注')
-    return jsonify({'folder': folder, 'files': files,
-                    'folder_exists': os.path.isdir(folder) if folder else False})
-
-
-@bp.route('/from_folder', methods=['POST'])
-def import_from_folder():
-    """Google Drive フォルダから新しいファイルを取込"""
-    kind = request.args.get('type', 'all')  # 'purchase', 'ems', 'all'
-    results = {'purchase': [], 'ems': []}
-    total = 0
-
-    if kind in ('purchase', 'all'):
-        from services.purchase_excel_parser import PurchaseExcelParser
-        folder = os.getenv('WATCH_FOLDER_PURCHASE', '')
-        for fname, fpath in _scan_folder(folder, PURCHASE_PATTERN_RE):
-            if ImportLog.query.filter_by(filename=fname).first():
-                results['purchase'].append({'file': fname, 'status': 'skip', 'count': 0})
-                continue
-            try:
-                rows = PurchaseExcelParser().parse(fpath)
-                cnt = _upsert_purchases_from_excel(rows, agent='daniel')
-                db.session.add(ImportLog(filename=fname, file_type='purchase_daniel', record_count=cnt))
-                db.session.commit()
-                results['purchase'].append({'file': fname, 'status': 'ok', 'count': cnt})
-                total += cnt
-            except Exception as e:
-                db.session.rollback()
-                results['purchase'].append({'file': fname, 'status': 'error', 'message': str(e)})
-
-    if kind in ('ems', 'all'):
-        from services.ems_excel_parser import EmsExcelParser
-        folder = os.getenv('WATCH_FOLDER_EMS', '')
-        for fname, fpath in _scan_folder(folder, EMS_PATTERN_RE):
-            if ImportLog.query.filter_by(filename=fname).first():
-                results['ems'].append({'file': fname, 'status': 'skip', 'count': 0})
-                continue
-            try:
-                items = EmsExcelParser().parse(fpath)
-                cnt = _upsert_ems_items(items, agent='daniel')
-                db.session.add(ImportLog(filename=fname, file_type='ems_daniel', record_count=cnt))
-                db.session.commit()
-                results['ems'].append({'file': fname, 'status': 'ok', 'count': cnt})
-                total += cnt
-            except Exception as e:
-                db.session.rollback()
-                results['ems'].append({'file': fname, 'status': 'error', 'message': str(e)})
-
-    new_ok = [r for lst in results.values() for r in lst if r['status'] == 'ok']
-    msg = f'{len(new_ok)}ファイル・{total}件取込みました' if new_ok else '新しいファイルはありませんでした'
-    return jsonify({'status': 'ok', 'message': msg, 'results': results, 'imported': total})
-
-
 # ─── 手動ファイルアップロード ────────────────────────────────────────────────
 
 def _save_upload(file_obj):
@@ -710,135 +451,24 @@ def _save_upload(file_obj):
     return tmp_path
 
 
-@bp.route('/preview', methods=['POST'])
-def preview_excel():
-    """Excelの先頭数行を返してカラム確認に使う"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'ファイルなし'}), 400
-    f = request.files['file']
-    tmp = _save_upload(f)
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(tmp, read_only=True, data_only=True)
-        ws = wb.active
-        rows = []
-        for i, row in enumerate(ws.iter_rows(values_only=True)):
-            rows.append(list(row))
-            if i >= 5:
-                break
-        wb.close()
-        return jsonify({'rows': rows})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        try: os.unlink(tmp)
-        except: pass
-
-
-@bp.route('/upload/daniel_purchase', methods=['POST'])
-def upload_daniel_purchase():
-    """手動アップロード: ダニエル発注ファイル (Watanabe_list_*.xlsm)"""
-    if 'file' not in request.files:
-        return jsonify({'status': 'error', 'message': 'ファイルが選択されていません'}), 400
-    f = request.files['file']
-    if not f.filename:
-        return jsonify({'status': 'error', 'message': 'ファイル名が不明です'}), 400
-    tmp = _save_upload(f)
-    try:
-        from services.purchase_excel_parser import PurchaseExcelParser
-        rows = PurchaseExcelParser().parse(tmp)
-        imported = _upsert_purchases_from_excel(rows, agent='daniel')
-        log = ImportLog.query.filter_by(filename=f.filename).first()
-        if log:
-            log.record_count = imported
-            log.imported_at  = datetime.now()
-        else:
-            db.session.add(ImportLog(filename=f.filename, file_type='purchase_daniel',
-                                     record_count=imported))
-        db.session.commit()
-        return jsonify({'status': 'ok', 'imported': imported, 'filename': f.filename,
-                        'message': f'{imported}件取込みました'})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        try: os.unlink(tmp)
-        except: pass
-
-
-@bp.route('/upload/daniel_ems', methods=['POST'])
-def upload_daniel_ems():
-    """手動アップロード: ダニエルEMSファイル (EMS발송리스트_*.xlsx)"""
-    if 'file' not in request.files:
-        return jsonify({'status': 'error', 'message': 'ファイルが選択されていません'}), 400
-    f = request.files['file']
-    if not f.filename:
-        return jsonify({'status': 'error', 'message': 'ファイル名が不明です'}), 400
-    tmp = _save_upload(f)
-    try:
-        from services.ems_excel_parser import EmsExcelParser
-        items = EmsExcelParser().parse(tmp)
-        imported = _upsert_ems_items(items, agent='daniel')
-        log = ImportLog.query.filter_by(filename=f.filename).first()
-        if log:
-            log.record_count = imported
-            log.imported_at  = datetime.now()
-        else:
-            db.session.add(ImportLog(filename=f.filename, file_type='ems_daniel',
-                                     record_count=imported))
-        db.session.commit()
-        return jsonify({'status': 'ok', 'imported': imported, 'filename': f.filename,
-                        'message': f'{imported}件取込みました'})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        try: os.unlink(tmp)
-        except: pass
-
-
 # ─── 全取込（cron + 手動ボタン共用）─────────────────────────────────────────
 
 @bp.route('/all', methods=['POST'])
 def import_all():
     results = {}
 
-    # Cloudike ダニエル発注
-    try:
-        from services.cloudike_webdav import CloudikeWebDAV
-        from services.purchase_excel_parser import PurchaseExcelParser
-        webdav = CloudikeWebDAV()
-        local_path, filename = webdav.download_latest_purchase()
-        if local_path and filename and not ImportLog.query.filter_by(filename=filename).first():
-            rows = PurchaseExcelParser().parse(local_path)
-            imported = _upsert_purchases_from_excel(rows, agent='daniel')
-            db.session.add(ImportLog(filename=filename, file_type='purchase_daniel', record_count=imported))
-            db.session.commit()
-            results['daniel_purchase'] = {'status': 'ok', 'imported': imported, 'filename': filename}
-        else:
-            results['daniel_purchase'] = {'status': 'ok', 'message': '新しい発注ファイルなし', 'imported': 0}
-    except Exception as e:
-        results['daniel_purchase'] = {'status': 'error', 'message': str(e)}
-
-    # Cloudike ダニエルEMS
-    try:
-        from services.cloudike_webdav import CloudikeWebDAV
-        from services.ems_excel_parser import EmsExcelParser
-        webdav = CloudikeWebDAV()
-        local_path, filename = webdav.download_latest_ems()
-        if local_path and filename and not ImportLog.query.filter_by(filename=filename).first():
-            items = EmsExcelParser().parse(local_path)
-            imported = _upsert_ems_items(items, agent='daniel')
-            db.session.add(ImportLog(filename=filename, file_type='ems_daniel', record_count=imported))
-            db.session.commit()
-            results['daniel_ems'] = {'status': 'ok', 'imported': imported, 'filename': filename}
-        else:
-            results['daniel_ems'] = {'status': 'ok', 'message': '新しいEMSファイルなし', 'imported': 0}
-    except Exception as e:
-        results['daniel_ems'] = {'status': 'error', 'message': str(e)}
-
     results['yahoo'] = {'status': 'ok', 'message': 'API設定後に有効化'}
-    return jsonify({'status': 'ok', 'results': results})
+
+    # ─── 台帳整合性チェック ────────────────────────────────────────
+    try:
+        from services.stock_ledger import verify_cache_integrity
+        mismatches = verify_cache_integrity()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        mismatches = []
+
+    return jsonify({'status': 'ok', 'results': results, 'ledger_mismatch_fixed': len(mismatches)})
 
 
 # ─── 内部ヘルパー ─────────────────────────────────────────────────────────────
@@ -887,6 +517,14 @@ def _upsert_yahoo_order(order_raw: dict):
                 ordered_at=ordered_at,
                 status='shipped',
             ))
+            # 初見で既に出荷済み: 台帳出庫が記録されないためアラート(取込停止期間の検知用)
+            if ordered_at and (datetime.now() - ordered_at).days <= 35:
+                db.session.add(Alert(
+                    alert_type='ledger_out_missing',
+                    product_code=None,
+                    message=(f'注文 {order_id_str} は初回取込時点で既に出荷済みのため、'
+                             f'台帳の出庫記録がありません。必要なら手動出庫してください。'),
+                ))
         return 0, 0, []
 
     new_order = 0
@@ -947,289 +585,18 @@ def _upsert_yahoo_order(order_raw: dict):
     return new_order, new_items, new_item_ids
 
 
-def _upsert_purchases(rows, agent='tegu'):
-    imported = 0
-    for row in rows:
-        product_code = row.get('商品コード', '')
-        oi = OrderItem.query.filter_by(product_code=product_code).first()
-        if not oi:
-            continue
-        if Purchase.query.filter_by(order_item_id=oi.id, product_code=product_code).first():
-            continue
-        try:
-            ordered_at = datetime.strptime(row.get('発注日', ''), '%Y/%m/%d').date()
-        except Exception:
-            ordered_at = datetime.now().date()
-        p = Purchase(
-            order_item_id=oi.id, product_code=product_code,
-            product_name=row.get('商品名', ''), quantity=int(row.get('数量', 1)),
-            shop_name=row.get('発注先', ''), ordered_at=ordered_at,
-            status='ordered', agent=agent,
-        )
-        db.session.add(p)
-        imported += 1
-    db.session.commit()
-    return imported
-
-
-def _upsert_purchases_from_excel(rows, agent='daniel'):
-    """全行をupsert（purchase_no+product_codeで同定。statusは手動変更を保持）"""
-    imported = 0
-    updated = 0
-    for row in rows:
-        product_code = row.get('product_code', '')
-        if not product_code:
-            continue
-        purchase_no = row.get('purchase_no', '') or ''
-        order_id    = row.get('order_id', '') or ''
-
-        # ── 既存チェック: purchase_no + product_code ──
-        existing = None
-        if purchase_no:
-            existing = Purchase.query.filter_by(
-                purchase_no=purchase_no, product_code=product_code
-            ).first()
-
-        if existing:
-            # 更新（statusは保持、その他は上書き）
-            existing.product_name = row.get('product_name') or existing.product_name
-            existing.quantity     = row.get('quantity', existing.quantity) or existing.quantity
-            existing.shop_name    = row.get('shop_name') or existing.shop_name
-            existing.ordered_at   = row.get('ordered_at') or existing.ordered_at
-            existing.memo         = row.get('memo') or existing.memo
-            if order_id:
-                existing.order_id = order_id
-            existing.updated_at = datetime.now()
-            updated += 1
-        else:
-            # OrderItemとの紐付けを試みる（なくても保存する）
-            oi = OrderItem.query.filter_by(product_code=product_code).first()
-            p = Purchase(
-                purchase_no=purchase_no,
-                order_id=order_id,
-                order_item_id=oi.id if oi else None,
-                product_code=product_code,
-                product_name=row.get('product_name', ''),
-                quantity=row.get('quantity', 1),
-                shop_name=row.get('shop_name', ''),
-                ordered_at=row.get('ordered_at') or datetime.now().date(),
-                status='ordered',
-                memo=row.get('memo', ''),
-                agent=agent,
-            )
-            db.session.add(p)
-            imported += 1
-
-    db.session.commit()
-    return imported + updated
-
-
-def _upsert_ems_rows(rows, agent='tegu'):
-    imported = 0
-    for row in rows:
-        ems_number = row.get('EMS番号', '')
-        if not ems_number or Ems.query.filter_by(ems_number=ems_number).first():
-            continue
-        try:
-            shipped_at = datetime.strptime(row.get('発送日', ''), '%Y/%m/%d').date()
-        except Exception:
-            shipped_at = datetime.now().date()
-        ems = Ems(
-            ems_number=ems_number, shipped_at=shipped_at,
-            estimated_arrival=shipped_at + timedelta(days=3),
-            status='in_transit', agent=agent,
-        )
-        db.session.add(ems)
-        db.session.flush()
-        product_code = row.get('商品コード', '')
-        if product_code:
-            oi = OrderItem.query.filter_by(product_code=product_code).first()
-            if oi:
-                db.session.add(EmsItem(
-                    ems_id=ems.id, order_item_id=oi.id,
-                    product_code=product_code, quantity=int(row.get('数量', 1)),
-                ))
-        imported += 1
-    db.session.commit()
-    return imported
-
-
-def _upsert_ems_items(items, agent='daniel'):
-    """全行をupsert（ems_numberで同定。arrived/statusは手動変更を保持）"""
-    imported = 0
-    updated = 0
-    for item in items:
-        ems_number = item.get('ems_number', '')
-        if not ems_number:
-            continue
-
-        # shipped_at が None（発送日空欄）の場合は today() でなく None のままにする
-        # → sort 汚染防止（今日付けになって一番上に来てしまうバグを防ぐ）
-        shipped_at    = item.get('shipped_at')  # None OK
-        product_code  = item.get('product_code', '')
-        purchase_date = item.get('purchase_date', '') or ''   # B列: 구매日 作成日
-        purchase_no   = item.get('purchase_no', '') or ''     # F列: 구매番号
-        order_id      = item.get('order_id', '') or ''
-
-        # ── Ems のUPSERT ──
-        ems = Ems.query.filter_by(ems_number=ems_number).first()
-        if not ems:
-            ems = Ems(
-                ems_number=ems_number,
-                purchase_no=purchase_no,
-                order_id=order_id,
-                shipped_at=shipped_at,   # None の場合もそのままセット
-                estimated_arrival=(shipped_at + timedelta(days=3)) if shipped_at else None,
-                status='in_transit',
-                agent=agent,
-            )
-            db.session.add(ems)
-            db.session.flush()
-        else:
-            # 発送日・発注NOは更新（statusはarrived保持）
-            if shipped_at:  # None で上書きしない
-                ems.shipped_at = shipped_at
-            if purchase_no:
-                ems.purchase_no = purchase_no
-            if order_id:
-                ems.order_id = order_id
-
-        # ── EmsItem のUPSERT ──
-        # キー: ems_id + product_code + purchase_no（purchase_no がある場合は精確に区別）
-        if product_code:
-            if purchase_no:
-                existing_item = EmsItem.query.filter_by(
-                    ems_id=ems.id, product_code=product_code, purchase_no=purchase_no
-                ).first()
-                # purchase_no なし（旧データ）で同一product_codeが存在する場合はそちらを更新
-                if not existing_item:
-                    existing_item = EmsItem.query.filter(
-                        EmsItem.ems_id == ems.id,
-                        EmsItem.product_code == product_code,
-                        EmsItem.purchase_no == None,
-                    ).first()
-            else:
-                existing_item = EmsItem.query.filter_by(
-                    ems_id=ems.id, product_code=product_code
-                ).filter(EmsItem.purchase_no == None).first()
-
-            if existing_item:
-                existing_item.quantity     = item.get('quantity', existing_item.quantity)
-                existing_item.product_name = item.get('product_name') or existing_item.product_name
-                existing_item.purchase_date = purchase_date or existing_item.purchase_date
-                if purchase_no:
-                    existing_item.purchase_no = purchase_no
-                updated += 1
-            else:
-                # ① purchase_no → Purchase → order_item_id の順で紐付けを試みる
-                oi = None
-                if purchase_no:
-                    from models.purchase import Purchase
-                    p = Purchase.query.filter_by(
-                        purchase_no=purchase_no, product_code=product_code
-                    ).first()
-                    if p and p.order_item_id:
-                        from models.order_item import OrderItem as OI
-                        oi = OI.query.get(p.order_item_id)
-                # ② product_code フォールバック
-                if oi is None:
-                    oi = OrderItem.query.filter_by(product_code=product_code).first()
-
-                db.session.add(EmsItem(
-                    ems_id=ems.id,
-                    order_item_id=oi.id if oi else None,
-                    purchase_date=purchase_date or None,
-                    purchase_no=purchase_no or None,
-                    product_code=product_code,
-                    product_name=item.get('product_name', ''),
-                    quantity=item.get('quantity', 1),
-                ))
-                imported += 1
-
-    db.session.commit()
-    return imported + updated
-
-
-def _upsert_import_log(filename, file_type, record_count):
-    """ImportLog を upsert（新規 or 更新）"""
-    log = ImportLog.query.filter_by(filename=filename).first()
-    if log:
-        log.record_count = record_count
-        log.imported_at  = datetime.now()
-    else:
-        db.session.add(ImportLog(filename=filename, file_type=file_type, record_count=record_count))
-
-
 def run_all_imports_job(app):
-    """APScheduler から呼び出す用（1時間ごと自動実行）
-    ・Cloudike の全ファイルをupsert取込
-    ・ローカルフォルダ（Google Drive）も同様
+    """APScheduler / systemdタイマーから呼び出す定期ジョブ。
+    ダニエル・テグ(大邱)の取込廃止後は台帳整合性チェックのみ実施する。
     """
     with app.app_context():
-        # ─── Cloudike WebDAV（全ファイルをupsert）──────────────────────────
+        # ─── 台帳整合性チェック ────────────────────────────────────────
         try:
-            from services.cloudike_webdav import CloudikeWebDAV
-            from services.purchase_excel_parser import PurchaseExcelParser
-            from services.ems_excel_parser import EmsExcelParser
-            webdav = CloudikeWebDAV()
-
-            # 発注ファイル：全件取込
-            for file_info in webdav.list_all_purchase_files():
-                fname = file_info['name']
-                try:
-                    local_path = webdav.download_file(file_info['href'], fname)
-                    rows = PurchaseExcelParser().parse(local_path)
-                    cnt = _upsert_purchases_from_excel(rows, agent='daniel')
-                    _upsert_import_log(fname, 'purchase_daniel', cnt)
-                    db.session.commit()
-                    app.logger.info(f'Auto import purchase: {fname} → {cnt} 件')
-                except Exception as e:
-                    db.session.rollback()
-                    app.logger.error(f'Auto import purchase error [{fname}]: {e}')
-
-            # EMSファイル：全件取込
-            for file_info in webdav.list_all_ems_files():
-                fname = file_info['name']
-                try:
-                    local_path = webdav.download_file(file_info['href'], fname)
-                    items = EmsExcelParser().parse(local_path)
-                    cnt = _upsert_ems_items(items, agent='daniel')
-                    _upsert_import_log(fname, 'ems_daniel', cnt)
-                    db.session.commit()
-                    app.logger.info(f'Auto import EMS: {fname} → {cnt} 件')
-                except Exception as e:
-                    db.session.rollback()
-                    app.logger.error(f'Auto import EMS error [{fname}]: {e}')
-
+            from services.stock_ledger import verify_cache_integrity
+            mismatches = verify_cache_integrity()
+            db.session.commit()
+            if mismatches:
+                app.logger.warning(f'Ledger integrity: {len(mismatches)} 件修正 {mismatches}')
         except Exception as e:
-            app.logger.error(f'Auto import WebDAV error: {e}')
-
-        # ─── フォルダ監視（Google Drive / ローカル）────────────────────────
-        try:
-            from services.purchase_excel_parser import PurchaseExcelParser
-            from services.ems_excel_parser import EmsExcelParser
-            p_folder = os.getenv('WATCH_FOLDER_PURCHASE', '')
-            for fname, fpath in _scan_folder(p_folder, PURCHASE_PATTERN_RE):
-                try:
-                    rows = PurchaseExcelParser().parse(fpath)
-                    cnt = _upsert_purchases_from_excel(rows, agent='daniel')
-                    _upsert_import_log(fname, 'purchase_daniel', cnt)
-                    db.session.commit()
-                    app.logger.info(f'Folder import purchase: {fname} → {cnt} 件')
-                except Exception as e:
-                    db.session.rollback()
-                    app.logger.error(f'Folder import purchase error [{fname}]: {e}')
-
-            e_folder = os.getenv('WATCH_FOLDER_EMS', '')
-            for fname, fpath in _scan_folder(e_folder, EMS_PATTERN_RE):
-                try:
-                    items = EmsExcelParser().parse(fpath)
-                    cnt = _upsert_ems_items(items, agent='daniel')
-                    _upsert_import_log(fname, 'ems_daniel', cnt)
-                    db.session.commit()
-                    app.logger.info(f'Folder import EMS: {fname} → {cnt} 件')
-                except Exception as e:
-                    db.session.rollback()
-                    app.logger.error(f'Folder import EMS error [{fname}]: {e}')
-        except Exception as e:
-            app.logger.error(f'Auto import folder error: {e}')
+            db.session.rollback()
+            app.logger.error(f'Ledger integrity check error: {e}')

@@ -511,6 +511,34 @@ function 韓国グッズ_Worksシートを確保_(ss) {
   return sh;
 }
 
+/**
+ * 韓国グッズWorksの新IDを採番する。
+ * 旧実装は getLastRow ベースで、Works行を削除すると既存IDと同じ番号を
+ * 別作品に発行する欠陥があった。既存IDの最大値と、ライブラリ共通の
+ * ハイウォーター（採番管理シート + DocumentProperties）の大きい方 +1 に変更。
+ * 欠番は永久欠番。
+ */
+function 韓国グッズ_次のWorksID_(Worksシート) {
+  let 最大 = 0;
+  if (Worksシート.getLastRow() >= 2) {
+    Worksシート.getRange(2, 2, Worksシート.getLastRow() - 1, 1).getDisplayValues()
+      .forEach(([v]) => {
+        const m = String(v || '').match(/(\d+)\s*$/);
+        const n = m ? parseInt(m[1], 10) : NaN;
+        if (!isNaN(n) && n > 最大) 最大 = n;
+      });
+  }
+  let 保存最大 = 0;
+  try {
+    保存最大 = _kyoutuu.採番ハイウォーター読取(設定_韓国グッズ);
+  } catch (e) {}
+  const 次 = Math.max(最大, 保存最大) + 1;
+  try {
+    _kyoutuu.採番ハイウォーター更新(設定_韓国グッズ, 次);
+  } catch (e) {}
+  return 'KR-W-' + String(次).padStart(4, '0');
+}
+
 function 韓国グッズ_Worksを更新_(Worksシート, Works更新Map) {
   const 既存Map = {};
   if (Worksシート.getLastRow() >= 2) {
@@ -527,7 +555,7 @@ function 韓国グッズ_Worksを更新_(Worksシート, Works更新Map) {
       Worksシート.getRange(行, 5).setValue(info.件数);
       Worksシート.getRange(行, 6).setValue(new Date());
     } else {
-      const 新ID = 'KR-W-' + String(Worksシート.getLastRow()).padStart(4, '0');
+      const 新ID = 韓国グッズ_次のWorksID_(Worksシート);
       Worksシート.appendRow([WorksKey, 新ID, 作品名, info.略称, info.件数, new Date()]);
       既存Map[作品名] = Worksシート.getLastRow();
     }
@@ -571,14 +599,15 @@ function 韓国グッズ_重複チェック() {
  * Works初期化
  * ============================================================ */
 function 韓国グッズ_Works初期化() {
-  const ui = SpreadsheetApp.getUi();
-  if (ui.alert('警告', 'Works（韓国グッズ）を全削除します。続行？', ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
-  const ss = SpreadsheetApp.getActive();
-  let sh = ss.getSheetByName(設定_韓国グッズ.作品シート名);
-  if (sh) { const last = sh.getLastRow(); if (last > 1) sh.deleteRows(2, last - 1); }
-  else { sh = ss.insertSheet(設定_韓国グッズ.作品シート名); }
-  sh.getRange(1, 1, 1, 設定_韓国グッズ.作品列数).setValues([設定_韓国グッズ.作品ヘッダー]);
-  ui.alert('✅ Works初期化完了（韓国グッズ）');
+  // 【封印 2026-07-15】Works全削除は、商品行に残る作品ID・SKUを宙に浮かせる破壊操作のため停止
+  // （台湾側と同じ運用。採番はハイウォーターで安全に継続する）。
+  SpreadsheetApp.getUi().alert(
+    '🔒 この操作は封印されています',
+    '「Works初期化（全削除）」は作品IDずれ事故の原因になるため、2026-07-15に停止しました。\n\n' +
+    '・作品IDは永久ID（欠番はそのまま。採番はハイウォーターで安全に継続します）\n' +
+    '・どうしても必要な場合は管理者に相談してください',
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
 }
 
 /* ============================================================

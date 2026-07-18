@@ -18,7 +18,6 @@ class OrderItem(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
 
-    purchases = db.relationship('Purchase', backref='order_item', lazy='dynamic')
     allocations = db.relationship('Allocation', backref='order_item', lazy='dynamic')
 
     STATUS_LABELS = {

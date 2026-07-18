@@ -108,29 +108,6 @@ function saveStatus(sel, baseUrl, id) {
   .catch(function() { showToast('通信エラー', true); });
 }
 
-// ── データ取込（汎用） ───────────────────────────────────────────────
-function importData(url, label) {
-  if (!confirm(label + ' を取込みますか？')) return;
-  var btn = event.currentTarget;
-  var orig = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '取込中...';
-  fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})})
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.status === 'error') {
-      showToast('エラー: ' + data.message, true);
-    } else {
-      var msg = data.message || (data.imported + '件取込みました');
-      if (data.filename) msg += ' (' + data.filename + ')';
-      showToast(msg);
-      if ((data.imported || 0) > 0) setTimeout(function() { location.reload(); }, 1200);
-    }
-  })
-  .catch(function() { showToast('通信エラー', true); })
-  .finally(function() { btn.disabled = false; btn.textContent = orig; });
-}
-
 // ── インライン編集の初期化 ────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function() {
   document.querySelectorAll('.cell-edit').forEach(function(td) {

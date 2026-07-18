@@ -25,6 +25,9 @@ class Alert(db.Model):
         'japan_ship_missing': '発送漏れ',
         'stock_shortage': '在庫不足',
         'delay_warning': '遅延警告',
+        'shipped_cancel': '出荷済みキャンセル（要手動戻し）',
+        'ledger_mismatch': '台帳とキャッシュの不一致',
+        'ledger_out_missing': '台帳出庫の記録漏れ疑い',
     }
 
     @property

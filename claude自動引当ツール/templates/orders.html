@@ -76,7 +76,6 @@
         <th style="width:50px;text-align:center;">数量</th>
         <th style="width:80px;">注文ステータス</th>
         <th>引当ステータス</th>
-        <th>入荷EMS</th>
         <th style="width:55px;">経過</th>
       </tr>
     </thead>
@@ -84,7 +83,6 @@
       {% for g in grouped %}
         {% set o = g.order %}
         {% set order_items = g.order_items %}
-        {% set ems_nums = g.ems_numbers %}
         {% for item in order_items %}
         <tr class="data-row order-group-{{ loop.index0 % 2 }}
                    {{ 'delay-red' if o.days_elapsed >= 10 else ('delay-yellow' if o.days_elapsed >= 7 else '') }}
@@ -148,8 +146,6 @@
             </select>
           </td>
 
-          <td style="font-size:11px;">{% if loop.first %}{{ ems_nums or '—' }}{% endif %}</td>
-
           <td style="text-align:center;white-space:nowrap;">
             {% if loop.first %}
               <span style="font-size:11px;{% if o.days_elapsed >= 10 %}color:var(--accent-red);font-weight:700;{% elif o.days_elapsed >= 7 %}color:var(--accent-orange);{% endif %}">
@@ -160,7 +156,7 @@
         </tr>
         {% endfor %}
         {% if not loop.last %}
-        <tr class="order-divider"><td colspan="12"></td></tr>
+        <tr class="order-divider"><td colspan="11"></td></tr>
         {% endif %}
       {% endfor %}
       {% if not grouped %}

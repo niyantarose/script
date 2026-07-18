@@ -146,6 +146,36 @@ function EMSリスト_発送日基準に並べ替え() {
   SpreadsheetApp.getActive().toast('EMSリストをEMS発送日基準で並べ替えました。');
 }
 
+// エディタ（アクティブシートに依存できない文脈）から実行する並べ替え
+function EMSリスト_発送日基準に並べ替え_エディタ実行() {
+  const sh = SpreadsheetApp.getActive().getSheetByName('EMSリスト');
+  if (!sh || !EMS_isTargetSheet_(sh)) {
+    Logger.log('EMSリストが見つからないか、見出しが想定と異なります。');
+    return;
+  }
+
+  const cfg = EMS_CFG;
+  const lastRow = EMS_findLastDataRow_(sh);
+  if (lastRow < cfg.START_ROW) {
+    Logger.log('並べ替え対象のデータ行がありません。');
+    return;
+  }
+
+  const numRows = lastRow - cfg.START_ROW + 1;
+  const lastCol = sh.getLastColumn();
+
+  sh.getRange(cfg.START_ROW, 1, numRows, lastCol).sort([
+    { column: cfg.COL_EMS_DATE, ascending: true },
+    { column: cfg.COL_EMS_NO, ascending: true },
+    { column: cfg.COL_NO, ascending: true },
+  ]);
+
+  SpreadsheetApp.flush();
+  EMS_updateAllSheet_(sh, false);
+  EMS_updateBordersByEmsNo_(sh);
+  Logger.log('EMSリストをEMS発送日基準で並べ替えました（%s行）。', numRows);
+}
+
 function EMS_findLastDataRow_(sh) {
   const cfg = EMS_CFG;
   const lastRow = sh.getLastRow();

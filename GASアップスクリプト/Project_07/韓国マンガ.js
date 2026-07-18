@@ -205,43 +205,20 @@ function 韓国マンガ_プルダウン更新() {
  * Works管理
  * ============================================================ */
 
+function 韓国マンガ_Works危険操作を停止_(操作名) {
+  SpreadsheetApp.getUi().alert(
+    '🔒 この操作は封印されています',
+    `「${操作名}」は作品IDずれ事故（登録済み商品やYahoo上のコードと食い違う）の原因になるため、\n` +
+    '2026-07-15に停止しました（台湾側と同じ運用）。\n\n' +
+    '・作品IDは永久ID（欠番はそのまま。採番はハイウォーターで安全に継続します）\n' +
+    '・どうしても必要な場合は管理者に相談してください',
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
 function 韓国マンガ_Works初期化() {
-  const ui = SpreadsheetApp.getUi();
-
-  if (
-    ui.alert(
-      '警告',
-      'Worksを全削除します。続行しますか？',
-      ui.ButtonSet.OK_CANCEL
-    ) !== ui.Button.OK
-  ) {
-    return;
-  }
-
-  const ss = SpreadsheetApp.getActive();
-  let sh = ss.getSheetByName(設定_韓国マンガ.作品シート名);
-
-  if (sh) {
-    const last = sh.getLastRow();
-    if (last > 1) {
-      sh.deleteRows(2, last - 1);
-    }
-  } else {
-    sh = ss.insertSheet(設定_韓国マンガ.作品シート名);
-  }
-
-  sh.getRange(1, 1, 1, 設定_韓国マンガ.作品列数)
-    .setValues([設定_韓国マンガ.作品ヘッダー]);
-
-  sh.getRange(1, 1, 1, 設定_韓国マンガ.作品列数)
-    .setBackground('#4a86e8')
-    .setFontColor('#ffffff')
-    .setFontWeight('bold')
-    .setHorizontalAlignment('center');
-
-  sh.setFrozenRows(1);
-
-  ui.alert('✅ Works初期化完了（韓国マンガ）');
+  // 【封印】Works全削除は、商品行に残る作品ID・SKUを宙に浮かせる破壊操作のため停止。
+  韓国マンガ_Works危険操作を停止_('Works初期化（全削除）');
 }
 
 function 韓国マンガ_WorksKey再正規化() {
@@ -339,88 +316,15 @@ function 韓国マンガ_重複統合() {
 }
 
 function 韓国マンガ_ID振り直し() {
-  const ui = SpreadsheetApp.getUi();
-  const 作品シート = SpreadsheetApp.getActive()
-    .getSheetByName(設定_韓国マンガ.作品シート名);
-
-  if (!作品シート || 作品シート.getLastRow() < 2) {
-    ui.alert('Worksにデータがありません');
-    return;
-  }
-
-  if (
-    ui.alert(
-      '確認',
-      'Works IDを1から連番に振り直します。続行しますか？',
-      ui.ButtonSet.OK_CANCEL
-    ) !== ui.Button.OK
-  ) {
-    return;
-  }
-
-  const lock = LockService.getDocumentLock();
-  lock.waitLock(30000);
-
-  try {
-    const r = _kyoutuu.WorksID振り直しを実行(
-      作品シート,
-      設定_韓国マンガ
-    );
-
-    ui.alert(`✅ ID振り直し完了\n変更: ${r.変更数}件`);
-  } finally {
-    lock.releaseLock();
-  }
+  // 【封印】ID振り直しは登録済み商品・外部コードと食い違う「ずれ」の直接原因のため停止。
+  // （ライブラリ側の WorksID振り直しを実行 も無効化済み）
+  韓国マンガ_Works危険操作を停止_('Works ID振り直し');
 }
 
 function 韓国マンガ_孤立削除() {
-  const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActive();
-
-  const 作品シート = ss.getSheetByName(設定_韓国マンガ.作品シート名);
-  const マスターシート = ss.getSheetByName(設定_韓国マンガ.マスターシート名);
-
-  if (!作品シート || 作品シート.getLastRow() < 2) {
-    ui.alert('Worksにデータがありません');
-    return;
-  }
-
-  if (!マスターシート) {
-    ui.alert('マスターシートがありません');
-    return;
-  }
-
-  if (
-    ui.alert(
-      '確認',
-      '孤立エントリーを削除します。続行しますか？',
-      ui.ButtonSet.OK_CANCEL
-    ) !== ui.Button.OK
-  ) {
-    return;
-  }
-
-  const lock = LockService.getDocumentLock();
-  lock.waitLock(30000);
-
-  try {
-    const 列マップ = _kyoutuu.列番号を取得(マスターシート);
-
-    const r = _kyoutuu.Works孤立エントリーを削除(
-      作品シート,
-      マスターシート,
-      列マップ,
-      設定_韓国マンガ
-    );
-
-    ui.alert(
-      r.削除数 === 0
-        ? '✅ 孤立エントリーはありません！'
-        : `✅ 削除完了: ${r.削除数}件`
-    );
-  } finally {
-    lock.releaseLock();
-  }
+  // 【封印】Works行の削除操作は台湾側の封印と揃えて停止（採番はハイウォーターで保護済みだが、
+  // 作品メタデータの喪失と誤削除のリスクが残るため）。
+  韓国マンガ_Works危険操作を停止_('Works孤立エントリー削除');
 }
 
 /* ============================================================

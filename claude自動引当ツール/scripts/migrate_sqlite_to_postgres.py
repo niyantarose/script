@@ -4,6 +4,9 @@ SQLite（読み取り専用）から PostgreSQL へデータを複製するテ�
 
 本番 SQLite は書き換えない。--sqlite-path にコピー先を渡すことを推奨。
 PostgreSQL 接続は --env-file（既定: リポジトリ直下の .env.pgtest）の USE_SQLITE / DATABASE_URL 等。
+
+注意: ダニエル・大邱(テグ)機能の撤去に伴い、purchases / ems / ems_items /
+japan_inventory_staging の履歴データは移行対象外（SQLite側に残るのみ）。
 """
 from __future__ import annotations
 
@@ -134,14 +137,6 @@ def run_precheck_sqlite(sqlite_path: Path) -> int:
             """,
         )
         chk(
-            'ems.ems_number 重複',
-            """
-            SELECT COUNT(*) FROM (
-              SELECT 1 FROM ems GROUP BY ems_number HAVING COUNT(*) > 1
-            )
-            """,
-        )
-        chk(
             'import_logs.filename 重複',
             """
             SELECT COUNT(*) FROM (
@@ -158,43 +153,11 @@ def run_precheck_sqlite(sqlite_path: Path) -> int:
             """,
         )
         chk(
-            '孤立 ems_items (ems_id)',
-            """
-            SELECT COUNT(*) FROM ems_items ei
-            LEFT JOIN ems e ON e.id = ei.ems_id
-            WHERE e.id IS NULL
-            """,
-        )
-        chk(
-            '孤立 ems_items (order_item_id が非NULLだが存在しない)',
-            """
-            SELECT COUNT(*) FROM ems_items ei
-            LEFT JOIN order_items oi ON oi.id = ei.order_item_id
-            WHERE ei.order_item_id IS NOT NULL AND oi.id IS NULL
-            """,
-        )
-        chk(
-            '孤立 purchases (order_item_id が非NULLだが存在しない)',
-            """
-            SELECT COUNT(*) FROM purchases p
-            LEFT JOIN order_items oi ON oi.id = p.order_item_id
-            WHERE p.order_item_id IS NOT NULL AND oi.id IS NULL
-            """,
-        )
-        chk(
             '孤立 allocations (order_item_id)',
             """
             SELECT COUNT(*) FROM allocations a
             LEFT JOIN order_items oi ON oi.id = a.order_item_id
             WHERE oi.id IS NULL
-            """,
-        )
-        chk(
-            '孤立 allocations (ems_item_id が非NULLだが存在しない)',
-            """
-            SELECT COUNT(*) FROM allocations a
-            LEFT JOIN ems_items ei ON ei.id = a.ems_item_id
-            WHERE a.ems_item_id IS NOT NULL AND ei.id IS NULL
             """,
         )
         chk(
@@ -213,23 +176,6 @@ def run_precheck_sqlite(sqlite_path: Path) -> int:
             WHERE al.order_item_id IS NOT NULL AND oi.id IS NULL
             """,
         )
-        chk(
-            '孤立 japan_inventory_staging (ems_item_id)',
-            """
-            SELECT COUNT(*) FROM japan_inventory_staging j
-            LEFT JOIN ems_items ei ON ei.id = j.ems_item_id
-            WHERE ei.id IS NULL
-            """,
-        )
-        chk(
-            '孤立 japan_inventory_staging (assigned_order_item_id が非NULLだが存在しない)',
-            """
-            SELECT COUNT(*) FROM japan_inventory_staging j
-            LEFT JOIN order_items oi ON oi.id = j.assigned_order_item_id
-            WHERE j.assigned_order_item_id IS NOT NULL AND oi.id IS NULL
-            """,
-        )
-
         len_err, len_info = _check_orders_string_lengths(conn)
         issues.extend(len_err)
 
@@ -294,40 +240,34 @@ def _load_models():
     global MODEL_ORDER
     from models.order import Order
     from models.order_item import OrderItem
-    from models.ems import Ems
-    from models.ems_item import EmsItem
     from models.inventory import Inventory
     from models.import_log import ImportLog
-    from models.purchase import Purchase
     from models.allocation import Allocation
     from models.alert import Alert
-    from models.japan_inventory import JapanInventoryStaging
+    from models.stock_transaction import StockTransaction
+    from models.mall_sku import MallSku
 
     MODEL_ORDER = [
         Order,
         OrderItem,
-        Ems,
-        EmsItem,
         Inventory,
         ImportLog,
-        Purchase,
         Allocation,
         Alert,
-        JapanInventoryStaging,
+        StockTransaction,
+        MallSku,
     ]
 
 
 TRUNCATE_TABLES_SQL = """
 TRUNCATE TABLE
-  japan_inventory_staging,
+  mall_skus,
+  stock_transactions,
   alerts,
   allocations,
-  purchases,
   import_logs,
   inventory,
-  ems_items,
   order_items,
-  ems,
   orders
 RESTART IDENTITY CASCADE
 """

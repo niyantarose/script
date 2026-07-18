@@ -977,7 +977,7 @@ function searchMangaUpdatesCandidates_(query, language, category, originalProduc
         result.candidates.push(String(record.record.title).trim());
       }
 
-      const jpTitle = pickJapaneseMangaUpdatesTitle_(record, detail);
+      const jpTitle = pickJapaneseMangaUpdatesTitle_(record, detail, [query, originalProductTitle]);
       if (jpTitle) {
         result.japaneseTitle = jpTitle;
         cache.put(cacheStorageKey, jpTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
@@ -1876,7 +1876,7 @@ function lookupJapaneseTitleViaMangaUpdates_(query) {
     const detail = fetchMangaUpdatesJson_('/series/' + seriesId, { method: 'get' });
     if (!isStrongMangaUpdatesMatch_(query, result, detail)) continue;
 
-    const japaneseTitle = pickJapaneseMangaUpdatesTitle_(result, detail);
+    const japaneseTitle = pickJapaneseMangaUpdatesTitle_(result, detail, [query]);
     if (japaneseTitle) {
       cache.put(cacheStorageKey, japaneseTitle, MANGA_UPDATES_CACHE_TTL_SECONDS);
       return japaneseTitle;
@@ -2331,14 +2331,52 @@ function isStrongMangaUpdatesMatch_(query, searchResult, detail, language, categ
   });
 }
 
-function pickJapaneseMangaUpdatesTitle_(searchResult, detail) {
+function muCjkEchoKey_(value) {
+  // 博客來のクエリ（繁体字）と MU の Associated Names（簡繁混在）を突き合わせる
+  // ためのエコー判定キー。エコー判定に必要な主要字形だけ正規化する。
+  return normalizeMangaUpdatesTitleKey_(value)
+    .replace(/來/g, '来')
+    .replace(/當/g, '当')
+    .replace(/著/g, '着');
+}
+
+function muIsPartialEchoKey_(candidateKey, queryKey) {
+  if (!candidateKey || !queryKey) return false;
+  const shorter = candidateKey.length <= queryKey.length ? candidateKey : queryKey;
+  const longer = candidateKey.length <= queryKey.length ? queryKey : candidateKey;
+  if (shorter.length < 4) return false;
+  return longer.indexOf(shorter) >= 0;
+}
+
+function muIsChineseEchoOfQueries_(candidate, echoQueries) {
+  // かな入りは日本語原題の可能性が高いのでエコー除外しない
+  if (hasKanaJapaneseSignal_(candidate)) return false;
+  const qs = Array.isArray(echoQueries) ? echoQueries : (echoQueries ? [echoQueries] : []);
+  const key = normalizeMangaUpdatesTitleKey_(candidate);
+  const variantKey = muCjkEchoKey_(candidate);
+  for (let i = 0; i < qs.length; i += 1) {
+    const qk = normalizeMangaUpdatesTitleKey_(qs[i]);
+    const qvk = muCjkEchoKey_(qs[i]);
+    if (key && qk && (key === qk || muIsPartialEchoKey_(key, qk))) return true;
+    if (variantKey && qvk && (variantKey === qvk || muIsPartialEchoKey_(variantKey, qvk))) return true;
+  }
+  return false;
+}
+
+function pickJapaneseMangaUpdatesTitle_(searchResult, detail, echoQueries) {
+  // クエリの中国語エコー（完全一致・部分一致・簡繁字体差）は日本語候補から除外する。
+  // 例: クエリ「披著狼皮的羊公主」に対する「披着狼皮的羊」。
+  // かな入り候補はエコー除外の対象外。全部エコーなら空文字を返し、
+  // 中国語タイトルを「解決」として採用しない（拡張機能側と同じ方針）。
   const associated = Array.isArray(detail && detail.associated) ? detail.associated : [];
   const jpCandidates = [];
 
   // Associated Names の先頭日本語を優先（MU サイト表示順）
   for (let i = 0; i < associated.length; i += 1) {
     const title = associated[i] && associated[i].title ? String(associated[i].title).trim() : '';
-    if (title && hasJapaneseTitleSignal_(title)) jpCandidates.push(title);
+    if (!title || !hasJapaneseTitleSignal_(title)) continue;
+    if (muIsChineseEchoOfQueries_(title, echoQueries)) continue;
+    jpCandidates.push(title);
   }
 
   const extras = uniqNonEmptyTitles_([
@@ -2348,7 +2386,9 @@ function pickJapaneseMangaUpdatesTitle_(searchResult, detail) {
   ]);
   for (let j = 0; j < extras.length; j += 1) {
     const title = extras[j];
-    if (title && hasJapaneseTitleSignal_(title)) jpCandidates.push(title);
+    if (!title || !hasJapaneseTitleSignal_(title)) continue;
+    if (muIsChineseEchoOfQueries_(title, echoQueries)) continue;
+    jpCandidates.push(title);
   }
 
   for (let k = 0; k < jpCandidates.length; k += 1) {
@@ -3052,6 +3092,9 @@ function bookCodeWorkCompareKey_(value) {
     .replace(/\b(?:X|IX|IV|V?I{1,3})\b$/i, '')
     .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$/g, '')
     .replace(/(?:特装版|特裝版|首刷限定版|初版限定版|初回限定版|限定版|通常版|特装|特裝|首刷|初版|特典)/gi, '')
+    // 末尾に残った媒体語を除去（「我獨自升級22漫畫」→巻数除去後の「…漫畫」を本題へ束ねる。
+    // シート側(Project_01)の 台湾書籍系_作品比較キー_ と同じ強化。中間の媒体語は残す）
+    .replace(/(?:漫畫|漫画|小說|小説|コミック)$/,'')
     .trim();
 }
 
@@ -3237,8 +3280,76 @@ function bookCodeGetUsedIds_(ss, runtime) {
   return used;
 }
 
+/**
+ * 【採番一元化】共有ハイウォーターマークの管理セル（採番管理!B1）。
+ * ScriptProperties はこのWebアプリ専用ストアで、シート側（Project_01、
+ * DocumentProperties使用）とは分裂している。片方だけが発行した最上位IDの行が
+ * 削除されると、もう片方がそのIDを再発行しうるため、スプレッドシート上の
+ * 管理セルを両系統の共有ストアとする。Properties はセル破損時の縮退用に残す。
+ */
+function bookCodeSharedHighWaterCell_(ss) {
+  let sheet = ss.getSheetByName('採番管理');
+  if (!sheet) {
+    try {
+      sheet = ss.insertSheet('採番管理');
+      sheet.getRange('A1').setValue('台湾書籍系_作品ID_ハイウォーター（削除・編集禁止。シート側とWebアプリの採番が共有）');
+      sheet.hideSheet();
+    } catch (e) {
+      // 同時作成の競合などは取得し直す
+      sheet = ss.getSheetByName('採番管理');
+    }
+  }
+  return sheet ? sheet.getRange('B1') : null;
+}
+
+/**
+ * 【解放プール】シート側の「♻️ 番号を選んで解放」で明示的に解放された番号の置き場
+ * （採番管理!B2、カンマ区切り4桁）。採番時に小さい順で最優先消費する。
+ * 自動の空き番探索は行わない（過去の作品IDずれ事故の原因のため）。
+ */
+function bookCodeReleasedPoolCell_(ss) {
+  let sheet = ss.getSheetByName('採番管理');
+  if (!sheet) {
+    bookCodeSharedHighWaterCell_(ss); // シート自動作成に相乗り
+    sheet = ss.getSheetByName('採番管理');
+  }
+  return sheet ? sheet.getRange('B2') : null;
+}
+
 function bookCodeNextUnusedWorkId_(ss, runtime) {
   const used = bookCodeGetUsedIds_(ss, runtime);
+
+  // 解放プールがあれば小さい順に優先消費（シート側と同じ挙動）。
+  // 使用済みになっていた番号は黙って除外。ハイウォーターは動かさない。
+  try {
+    const poolCell = bookCodeReleasedPoolCell_(ss);
+    if (poolCell) {
+      // トークンは「純粋な1〜4桁の数字」だけを受け付ける（シート側パーサーと同じ厳密化。
+      // 数字以外を剥がす旧方式はセルのゴミ文字列を解放番号として拾う事故があった）
+      const list = String(poolCell.getDisplayValue() || '')
+        .split(/[,、\s]+/)
+        .filter(function(s) { return /^\d{1,4}$/.test(s); })
+        .map(function(s) { return parseInt(s, 10); })
+        .filter(function(n) { return isFinite(n) && n > 0; })
+        .sort(function(a, b) { return a - b; });
+      if (list.length) {
+        let picked = '';
+        const rest = [];
+        for (let i = 0; i < list.length; i += 1) {
+          const id = String(list[i]).padStart(4, '0');
+          if (!picked && !used.has(id)) { picked = id; continue; }
+          if (!used.has(id)) rest.push(id);
+        }
+        if (picked || rest.length !== list.length) {
+          try { poolCell.setValue(rest.join(',')); SpreadsheetApp.flush(); } catch (e) {}
+        }
+        if (picked) {
+          used.add(picked);
+          return picked;
+        }
+      }
+    }
+  } catch (e) {}
   // 旧実装は 1 から順に「空き番」を探して再利用していた。
   // 誤採番の修正などで解放された旧IDを新規作品が拾ってしまい、過去のコードと紛らわしくなるため、
   // シート側（Project_01 onEdit）と同じ「最大値+1 ＋ ハイウォーターマーク」方式に変更（欠番は永久欠番）。
@@ -3258,8 +3369,26 @@ function bookCodeNextUnusedWorkId_(ss, runtime) {
     props = null;
   }
 
-  const next = Math.max(max, savedMax) + 1;
+  // 共有ハイウォーター（シート側 Project_01 の採番もここに反映される）
+  let sharedMax = 0;
+  let sharedCell = null;
+  try {
+    sharedCell = bookCodeSharedHighWaterCell_(ss);
+    if (sharedCell) sharedMax = parseInt(String(sharedCell.getDisplayValue()).replace(/\D/g, ''), 10) || 0;
+  } catch (e) {
+    sharedCell = null;
+  }
+
+  // セルに正の値があるときはセルを正とする（シート側の「採番を巻き戻す」メニューで
+  // 下げた値に、このWebアプリのScriptProperties残骸が勝って巻き戻しが無効化される
+  // のを防ぐ）。走査maxが常に下限なので、セルが低くても使用中IDは越えない。
+  const baseMax = (sharedCell && sharedMax > 0) ? sharedMax : savedMax;
+  const next = Math.max(max, baseMax) + 1;
   if (next >= 10000) throw new Error('使用可能な作品IDがありません');
+  if (sharedCell) {
+    // 他系統から少しでも早く見えるよう即フラッシュ（採番は新規作品時のみで頻度は低い）
+    try { sharedCell.setValue(next); SpreadsheetApp.flush(); } catch (e) {}
+  }
   if (props) {
     try { props.setProperty('台湾書籍系_作品ID_ハイウォーター', String(next)); } catch (e) {}
   }

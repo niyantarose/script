@@ -163,4 +163,62 @@ if (matriarchResolved.japaneseTitle !== '今世は当主になります') {
   throw new Error(`Mixed-script Chinese echo should be skipped, got: ${matriarchResolved.japaneseTitle}`);
 }
 
+// === 部分一致の中国語エコーを除外し、かな入り日本語原題を採用する ===
+// クエリ「披著狼皮的羊公主」に対し、Associated 先頭の「披著狼皮的羊」を
+// 日本語題として誤採用しないこと。
+const sheepJp = '狼の皮をかぶった羊姫';
+const sheepDetail = {
+  title: "Sheep Princess in Wolf's Clothing",
+  associated: [
+    { title: '披著狼皮的羊' },
+    { title: '披著狼皮的羊公主' },
+    { title: "Sheep Princess in Wolf's Clothing" },
+    { title: sheepJp },
+  ],
+};
+const sheepRow = {
+  hit_title: '披著狼皮的羊公主',
+  record: {
+    title: "Sheep Princess in Wolf's Clothing",
+    associated: [{ title: '披著狼皮的羊公主' }],
+  },
+};
+const sheepQueries = ['披著狼皮的羊公主'];
+const sheepKeys = sheepQueries.map(t.normalizeTitleKey);
+const sheepResolved = t.tryResolveMatchedDetail_(
+  sheepDetail,
+  sheepRow,
+  sheepKeys,
+  sheepQueries,
+  []
+);
+if (sheepResolved.japaneseTitle !== sheepJp) {
+  throw new Error(
+    `partial Chinese echo should yield JP title ${sheepJp}, got: ${sheepResolved.japaneseTitle}`
+  );
+}
+
+// 簡体字別名（披着狼皮的羊）が先頭でも同様に除外できること（著⇔着の字体差対応）。
+// 実シートで誤採用された値そのもの。
+const sheepSimplifiedDetail = {
+  title: "Sheep Princess in Wolf's Clothing",
+  associated: [
+    { title: '披着狼皮的羊' },
+    { title: '披著狼皮的羊公主' },
+    { title: sheepJp },
+  ],
+};
+const sheepSimplifiedResolved = t.tryResolveMatchedDetail_(
+  sheepSimplifiedDetail,
+  sheepRow,
+  sheepKeys,
+  sheepQueries,
+  []
+);
+if (sheepSimplifiedResolved.japaneseTitle !== sheepJp) {
+  throw new Error(
+    `simplified Chinese echo should be skipped, got: ${sheepSimplifiedResolved.japaneseTitle}`
+  );
+}
+
 console.log('manga-updates-client.test.js: ok');

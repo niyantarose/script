@@ -46,7 +46,6 @@
         <th style="width:60px;text-align:center;">数量</th>
         <th>配送ステータス</th>
         <th>注文ステータス</th>
-        <th>入荷EMS番号</th>
         <th>経過日数</th>
       </tr>
     </thead>
@@ -86,16 +85,15 @@
               {% endif %}
             {% endif %}
           </td>
-          <td>{% if loop.first %}{{ g.ems_numbers or '—' }}{% endif %}</td>
           <td>{% if loop.first %}{{ o.days_elapsed }}日{% endif %}</td>
         </tr>
         {% endfor %}
         {% if not loop.last %}
-        <tr class="order-divider"><td colspan="10"></td></tr>
+        <tr class="order-divider"><td colspan="9"></td></tr>
         {% endif %}
       {% endfor %}
       {% if not results %}
-      <tr><td colspan="10" class="empty-state">該当する注文はありません</td></tr>
+      <tr><td colspan="9" class="empty-state">該当する注文はありません</td></tr>
       {% endif %}
     </tbody>
   </table>

@@ -6,7 +6,6 @@ from models.order import Order
 from models.order_item import OrderItem
 from models.allocation import Allocation
 from models.inventory import Inventory
-from models.ems_item import EmsItem
 from datetime import datetime
 from sqlalchemy import or_
 
@@ -80,25 +79,13 @@ def index():
     items_by_order = {}
     for it in items_bulk:
         items_by_order.setdefault(it.order_id, []).append(it)
-    all_item_ids = [it.id for it in items_bulk]
-    ems_by_item = {}  # item_id → set of ems_number
-    if all_item_ids:
-        from models.ems_item import EmsItem as EI
-        eis = EI.query.filter(EI.order_item_id.in_(all_item_ids)).all()
-        for ei in eis:
-            ems_by_item.setdefault(ei.order_item_id, set()).add(ei.ems.ems_number)
-
     # グルーピング
     grouped = []
     for o in orders:
         items = items_by_order.get(o.id, [])
-        ems_nums = set()
-        for it in items:
-            ems_nums |= ems_by_item.get(it.id, set())
         grouped.append({
             'order': o,
             'order_items': items,
-            'ems_numbers': '、'.join(sorted(ems_nums)) if ems_nums else '',
         })
 
     return render_template('orders.html',
