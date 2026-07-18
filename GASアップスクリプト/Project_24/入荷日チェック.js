@@ -233,21 +233,7 @@ function 入荷日チェック_一覧をクリア本体_(){
   if(!recv){ ui.alert('「'+HIKIATE_CFG.受注+'」タブがありません'); return; }
   const M=列マップ_(recv);
   if(M.入荷<0){ ui.alert('受注明細に「入荷日」列がありません'); return; }
-  // A列はgetValuesで取る(日付書式の残骸で表示が「1900-04-28」でも中身の行番号119を使う)
-  const raw=rep.getRange(3,1,rep.getLastRow()-2,8).getValues();
-  const disp=rep.getRange(3,1,rep.getLastRow()-2,8).getDisplayValues();
-  const list=[];
-  for(let i=0;i<raw.length;i++){
-    const ban=String(disp[i][1]||raw[i][1]||'').trim(); if(!ban) continue;
-    list.push({
-      rowNo:Number(raw[i][0])||0,
-      ban:ban,
-      code:String(disp[i][3]||'').trim(),
-      sku:String(disp[i][4]||'').trim(),
-      listed:ymd_(raw[i][6]!==''&&raw[i][6]!=null? raw[i][6] : disp[i][6]),
-      reason:String(disp[i][7]||'')
-    });
-  }
+  const list=rep.getRange(3,1,rep.getLastRow()-2,8).getDisplayValues().filter(r=>String(r[1]||'').trim());
   if(!list.length){ ui.alert('一覧が空です(問題なし)。'); return; }
   const ans=ui.alert('入荷日の一括クリア',
     '一覧の '+list.length+' 行の入荷日を受注明細から消します。\n\n'+
@@ -259,13 +245,13 @@ function 入荷日チェック_一覧をクリア本体_(){
   let ok=0, ng=0, 保留=0;
   const 結果=[];
   list.forEach(r=>{
-    const rowNo=r.rowNo, ban=r.ban, code=r.code, sku=r.sku, listed=r.listed;
+    const rowNo=Number(r[0])||0, ban=String(r[1]||'').trim(), code=String(r[3]||'').trim(), sku=String(r[4]||'').trim(), listed=ymd_(r[6]);
     let res='';
-    if(String(r.reason||'').indexOf('台湾/中国ルート')===0){
+    if(String(r[7]||'').indexOf('台湾/中国ルート')===0){
       結果.push(['台湾/中国ルートのためスキップ(消す場合は手動で)']); 保留++;
       return;
     }
-    if(String(r.reason||'').indexOf('未到着扱い:')===0){
+    if(String(r[7]||'').indexOf('未到着扱い:')===0){
       結果.push(['入荷日は正しい可能性が高いためスキップ(EMSリスト側のステータスを「到着済」に直してください)']); 保留++;
       return;
     }
@@ -449,8 +435,7 @@ function 入荷日整合チェック(){
   // --- 結果を「入荷日チェック」シートへ(受注明細は触らない) ---
   const NAME='入荷日チェック';
   let rep=ss.getSheetByName(NAME); if(!rep) rep=ss.insertSheet(NAME);
-  // clearContentsだけでは前回の日付書式が残り、行番号119が「1900-04-28」と見える
-  rep.clear();
+  rep.clearContents();
   const 幽霊=r.幽霊超過||[];
   rep.getRange(1,1).setValue('入荷日の整合チェック: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
     +' / 疑わしい行 '+out.length+'件（消す前に必ず目視確認。手入力の入荷日は正しい場合あり）'
@@ -460,12 +445,7 @@ function 入荷日整合チェック(){
   rep.getRange(2,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
   rep.setFrozenRows(2);
   if(out.length){
-    // 入荷日は文字列(yyyy-MM-dd)。数値列は日付書式にしない(A列の行番号が日付化される事故を防ぐ)
-    const body=out.map(r=>[r[0], String(r[1]||''), String(r[2]||''), String(r[3]||''), String(r[4]||''), r[5], String(r[6]||''), String(r[7]||'')]);
-    const rng=rep.getRange(3,1,body.length,HDR.length);
-    rng.setValues(body).setFontSize(HIKIATE_CFG.字).setNumberFormat('@');
-    rep.getRange(3,1,body.length,1).setNumberFormat('0'); // 行番号は整数
-    rep.getRange(3,6,body.length,1).setNumberFormat('0'); // 個数
+    rep.getRange(3,1,out.length,HDR.length).setValues(out).setFontSize(HIKIATE_CFG.字);
   } else {
     rep.getRange(3,1).setValue('(問題なし: 一覧に出すべき入荷日ズレはありません)');
   }
