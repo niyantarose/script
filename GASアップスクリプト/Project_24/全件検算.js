@@ -117,6 +117,75 @@ function 全件検算_集計_(src){
   return {rows:rows, counts:counts};
 }
 
+// ===== Task9: 取り置き台帳式の箱別検算(純粋・Nodeテスト対象) =====
+// src:
+//   supply:    [{ems, code, sourceCode, matchCode, qty, status}] EMSリスト全状態の行(素の値)
+//   ledger:    取り置き台帳の行 / movements: EMS在庫移動台帳の行
+//   yahoo:     {基底コード:数量} | null(照合なし)
+// 戻り: {rows, pendingRows, productRows, counts, errors}
+//   rows: 箱別(EMS番号×元コードidentity)。供給=到着済+在庫反映済みの実数量。
+//         不変式: 供給 = 取り置き中+発送済み+戻し未処理+在庫なし確定+Yahoo移動済み+余り
+//         供給に無い台帳/移動の使用も行として出す(余りが負=⚠️超過消費)。
+//   pendingRows: 未着の箱(検算対象外の見える化)
+//   productRows: 基底コード単位に余りを合算しYahoo a在庫と比較(比較のみ。箱別判定には使わない)
+function 全件検算_台帳集計_(src){
+  const summary=取り置き_集計_(src.ledger||[], src.movements||[]);
+  const errors=summary.errors.slice();
+  const boxes={}, meta={}, pending={};
+  const boxFor=(key,ems,sourceCode,matchCode)=>{
+    if(!boxes[key]){
+      boxes[key]={EMS番号:ems,商品コード:sourceCode,判定:'OK',供給:0,取り置き中:0,発送済み:0,戻し未処理:0,在庫なし確定:0,Yahoo移動済み:0,余り:0};
+      meta[key]={matchCode:matchCode||normCode_(sourceCode)};
+    }
+    return boxes[key];
+  };
+  (src.supply||[]).forEach(r=>{
+    const ems=String(r.ems||'').trim(), sourceCode=String(r.sourceCode||r.code||'').trim();
+    const qty=Number(r.qty)||0, status=String(r.status||'').trim();
+    if(!実EMS番号_(ems) || !sourceCode || qty<=0) return;
+    const key=取り置き_供給キー_(ems,sourceCode);
+    const matchCode=normCode_(r.matchCode||r.code||sourceCode);
+    if(status==='到着済' || status==='在庫反映済み') boxFor(key,ems,sourceCode,matchCode).供給+=qty;
+    else {
+      const p=pending[key]||(pending[key]={EMS番号:ems,商品コード:sourceCode,未着数量:0});
+      p.未着数量+=qty;
+    }
+  });
+  // 供給に無い使用(締め済み過去箱への追記漏れ・台帳の誤記)も行に出して負の余りで見せる
+  Object.keys(summary.usageBySupply).forEach(key=>{
+    if(boxes[key]) return;
+    const sep=key.indexOf('|'), ems=sep>=0?key.slice(0,sep):key, sourceCode=sep>=0?key.slice(sep+1):'';
+    if(!実EMS番号_(ems) || !sourceCode) return;
+    boxFor(key,ems,sourceCode,normCode_(sourceCode));
+  });
+  Object.keys(boxes).forEach(key=>{
+    const row=boxes[key], u=summary.usageBySupply[key];
+    row.取り置き中=u?u.取り置き中:0; row.発送済み=u?u.発送済み:0; row.戻し未処理=u?u.戻し未処理:0;
+    row.在庫なし確定=u?u.在庫なし確定:0; row.Yahoo移動済み=u?u.Yahoo移動済み:0;
+    row.余り=row.供給-取り置き_使用合計_(u);
+    row.判定=row.余り<0?'⚠️超過消費':'OK';
+  });
+  const rank={'⚠️超過消費':0,'OK':1};
+  const rows=Object.keys(boxes).map(k=>boxes[k]).sort((a,b)=> (rank[a.判定]-rank[b.判定])
+    || (a.商品コード<b.商品コード?-1:a.商品コード>b.商品コード?1:0)
+    || (a.EMS番号<b.EMS番号?-1:a.EMS番号>b.EMS番号?1:0));
+  const pendingRows=Object.keys(pending).sort().map(k=>pending[k]);
+  const yahooあり=src.yahoo!=null;
+  const products={};
+  Object.keys(boxes).forEach(key=>{
+    const mc=meta[key].matchCode; if(!mc) return;
+    const p=products[mc]||(products[mc]={商品コード:mc,余り:0,'Yahoo a在庫':yahooあり?(Number((src.yahoo||{})[mc])||0):'',差:''});
+    p.余り+=boxes[key].余り;
+  });
+  const productRows=Object.keys(products).sort().map(mc=>{
+    const p=products[mc];
+    if(yahooあり) p.差=(Number(p['Yahoo a在庫'])||0)-p.余り;
+    return p;
+  });
+  const counts={}; rows.forEach(r=>{ counts[r.判定]=(counts[r.判定]||0)+1; });
+  return {rows,pendingRows,productRows,counts,errors};
+}
+
 function 全件検算レポート(){ 直列_(全件検算レポート本体_); }
 function 全件検算レポート本体_(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
@@ -149,48 +218,70 @@ function 全件検算レポート本体_(){
       選択肢:row[M.選択肢], 商品名:M.商品名>=0? row[M.商品名]:'', 入荷日:M.入荷>=0? row[M.入荷]:''});
   }
 
-  // --- 消込台帳の出荷済み(読めない時は0件で続行) ---
+  // --- 取り置き台帳・EMS在庫移動台帳(見出し不足は検算不能として中止) ---
+  let ledgerRows, movementRows;
+  try{ ledgerRows=取り置き台帳_読む_(); movementRows=EMS在庫移動台帳_読む_(); }
+  catch(e){ ui.alert('全件検算を中止しました','取り置き台帳またはEMS在庫移動台帳を読み込めません:\n'+e.message,ui.ButtonSet.OK); return; }
+
+  // --- 消込台帳の出荷済み(参考情報用。読めない時は0件で続行) ---
   let 出荷済=[]; try{ 出荷済=消込台帳_出荷済み行_(); }catch(e){}
 
   // --- Yahoo在庫CSV(読めない時はYahoo照合なしで続行) ---
   const y=Yahoo在庫を読む_();
 
+  // --- 本判定: 取り置き台帳式の箱別検算 ---
+  const t=全件検算_台帳集計_({
+    supply: ems.map(r=>({ems:r.ems, code:r.code, sourceCode:String(r.code==null?'':r.code).trim(),
+      matchCode:normCode_(r.code), qty:r.qty, status:String(r.st||'').trim()||'到着済'})),
+    ledger: ledgerRows, movements: movementRows, yahoo: y.error? null : y.a在庫
+  });
+
+  // --- 参考情報: 旧・日付ベース集計(判定には使わない) ---
   const r=全件検算_集計_({ems:ems, 出荷済:出荷済, 受注:受注,
     a在庫:y.error? null : y.a在庫, 商品名:y.error? null : y.商品名});
 
   // --- 描画(書くのはこのシートだけ) ---
   let rep=ss.getSheetByName(ZENKEN_CFG.シート); if(!rep) rep=ss.insertSheet(ZENKEN_CFG.シート);
   rep.clear();
-  const 判定順=['⚠️超過消費','⚠️入荷日ズレ','📦供給不足','ℹ️箱残>Yahoo','ℹ️EMS外在庫','OK'];
-  const cnt=判定順.filter(k=>r.counts[k]).map(k=>k+' '+r.counts[k]).join(' ／ ');
+  const cnt=['⚠️超過消費','OK'].filter(k=>t.counts[k]).map(k=>k+' '+t.counts[k]).join(' ／ ');
   rep.getRange(1,1).setValue('全件検算(読み取り専用): '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy/MM/dd HH:mm')
     +(y.error? ' ／ ⚠️Yahoo照合なし('+y.error+')' : ' ／ Yahoo CSV: '+y.fileName)
-    +' ／ '+(cnt||'対象コードなし'));
-  const HDR=['商品コード','商品名','判定','EMS到着済','EMS反映済','EMS未着','出荷済(到着箱)','出荷済(過去便)','出荷済(箱不明)','確保済(到着箱)','確保済(過去便)','確保済(ズレ)','待ち(入荷日なし)','到着済残','Yahoo a在庫'];
+    +' ／ '+(cnt||'対象箱なし')
+    +(t.errors.length? ' ／ ⚠️台帳エラー '+t.errors.length+'件(下部参照)':''));
+  const HDR=['EMS番号','商品コード','判定','供給','取り置き中','発送済み','戻し未処理','在庫なし確定','Yahoo移動済み','余り'];
   rep.getRange(2,1,1,HDR.length).setValues([HDR]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff').setFontSize(HIKIATE_CFG.字);
   rep.setFrozenRows(2);
-  const out=r.rows.map(x=>[x.code, x.名, x.判定, x.到着済, x.反映済, x.未着, x.出荷到着, x.出荷過去, x.出荷不明,
-    x.確保到着, x.確保過去, x.確保ズレ, x.待ち, x.残, x.yahooA==null? '—' : x.yahooA]);
+  const out=t.rows.map(x=>[x.EMS番号,x.商品コード,x.判定,x.供給,x.取り置き中,x.発送済み,x.戻し未処理,x.在庫なし確定,x.Yahoo移動済み,x.余り]);
   if(out.length){
     rep.getRange(3,1,out.length,HDR.length).setValues(out).setFontSize(HIKIATE_CFG.字);
-    const bg=r.rows.map(x=>{
-      const c= x.判定.indexOf('⚠️')===0? HIKIATE_CFG.色_赤 : x.判定==='📦供給不足'? HIKIATE_CFG.色_黄 : null;
-      return new Array(HDR.length).fill(c);
-    });
-    rep.getRange(3,1,out.length,HDR.length).setBackgrounds(bg);
+    rep.getRange(3,1,out.length,HDR.length).setBackgrounds(t.rows.map(x=>new Array(HDR.length).fill(x.判定==='⚠️超過消費'? HIKIATE_CFG.色_赤 : null)));
   } else {
-    rep.getRange(3,1).setValue('(対象コードなし: EMSリスト・取り寄せ注文・出荷済みのいずれにも商品がありません)');
+    rep.getRange(3,1).setValue('(対象箱なし: 実EMS番号の供給も台帳の使用もありません)');
   }
   let cur=3+Math.max(out.length,1)+1;
+  const 表を=(title,hdr,rows)=>{
+    rep.getRange(cur,1).setValue(title).setFontWeight('bold').setFontSize(HIKIATE_CFG.字); cur++;
+    rep.getRange(cur,1,1,hdr.length).setValues([hdr]).setFontWeight('bold').setBackground('#d9d9d9').setFontSize(HIKIATE_CFG.字); cur++;
+    if(rows.length){ rep.getRange(cur,1,rows.length,hdr.length).setValues(rows).setFontSize(HIKIATE_CFG.字); cur+=rows.length; }
+    else { rep.getRange(cur,1).setValue('(なし)').setFontSize(HIKIATE_CFG.字); cur++; }
+    cur++;
+  };
+  表を('■ 商品別Yahoo比較(比較のみ・箱別判定には使わない)',['商品コード','余り(箱合算)','Yahoo a在庫','差'],
+    t.productRows.map(p=>[p.商品コード,p.余り,p['Yahoo a在庫']===''?'—':p['Yahoo a在庫'],p.差===''?'—':p.差]));
+  表を('■ 未着の箱(検算対象外)',['EMS番号','商品コード','未着数量'],
+    t.pendingRows.map(p=>[p.EMS番号,p.商品コード,p.未着数量]));
+  if(t.errors.length) 表を('■ ⚠️台帳エラー(取置ID・数量の不備。台帳を直してから再実行)',['内容'],t.errors.map(e=>[e]));
+  const 旧HDR=['商品コード','商品名','判定','EMS到着済','EMS反映済','EMS未着','出荷済(到着箱)','出荷済(過去便)','出荷済(箱不明)','確保済(到着箱)','確保済(過去便)','確保済(ズレ)','待ち(入荷日なし)','到着済残','Yahoo a在庫'];
+  表を('■ 参考情報(旧・日付ベース集計。判定には使わない)',旧HDR,
+    r.rows.map(x=>[x.code, x.名, x.判定, x.到着済, x.反映済, x.未着, x.出荷到着, x.出荷過去, x.出荷不明,
+      x.確保到着, x.確保過去, x.確保ズレ, x.待ち, x.残, x.yahooA==null? '—' : x.yahooA]));
   const 凡例=[
-    '⚠️超過消費: 到着済の箱の個数以上に消費扱い(幽霊スタンプ/記録漏れの疑い) → 🔎整合チェックで行単位を確認',
-    '⚠️入荷日ズレ: 入荷日がどの箱の到着日とも一致しない → 🔎整合チェックで確認(手入力の正しい日付もある)',
-    '📦供給不足: 待ち注文が見えている実EMS供給(EMS未着+到着済残)を超える。棚卸数量やYahoo即納数で補わず、EMSリストを確認',
-    'ℹ️箱残>Yahoo: 締め前の便なら正常(箱の余りは締めでYahooへ反映される)。締めたはずの商品なら未記録出荷の疑い',
-    'ℹ️EMS外在庫: Yahoo自由在庫がEMS由来より多い(免税店買付などがあれば正常)',
+    '⚠️超過消費: 箱の実数量以上を台帳・Yahoo移動が消費扱い(記録漏れ/重複の疑い) → 取り置き台帳の該当EMS番号×商品コードを確認',
+    '余り: 供給−(取り置き中+発送済み+戻し未処理+在庫なし確定+Yahoo移動済み)。締め前の箱の余りは⑤でYahooへ移す',
+    '商品別Yahoo比較の差: Yahoo a在庫−余り合算。プラス=EMS外在庫(免税店買付などがあれば正常)/マイナス=Yahoo未反映の疑い',
     '※ このレポートは何も書き換えない。棚卸・EMS番号空欄は供給対象外。Yahoo即納数は比較だけで引当には使わない'
   ];
   rep.getRange(cur,1,凡例.length,1).setValues(凡例.map(s=>[s])).setFontSize(HIKIATE_CFG.字);
   ss.setActiveSheet(rep);
-  ss.toast('全件検算: '+r.rows.length+'コード'+(cnt? ' ／ '+cnt : ''),'🧮全件検算',8);
+  ss.toast('全件検算: '+t.rows.length+'箱'+(cnt? ' ／ '+cnt : ''),'🧮全件検算',8);
 }
