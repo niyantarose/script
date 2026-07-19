@@ -1,5 +1,7 @@
 # Full Allocation Rebuild v3 Implementation Plan
 
+> 2026-07-19 update: Execute `2026-07-19-full-allocation-rebuild-ledger.md` instead.
+
 > **For Codex:** Execute this plan task-by-task with test-driven development. Do not apply the rebuilt data to the live sheets until the preview has been generated and reviewed.
 
 **Goal:** Replace the synthetic shelf-stock workflow with a source-of-truth rebuild that derives P-column assignments, allocation history, and Korean EMS arrival fields from real EMS rows, GoQ shipped records, current orders, and Yahoo `a` free inventory.
