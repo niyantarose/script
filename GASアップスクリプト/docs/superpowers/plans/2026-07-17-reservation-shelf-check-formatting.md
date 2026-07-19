@@ -1,5 +1,13 @@
 # 取り置き登録・棚確認表示改善 実装計画
 
+> **⚠️ 2026-07-19追記（仕様の上書きあり）:** この計画の「予約中は無条件除外」ルールは
+> 2026-07-18のオンライン改修で**上書きされた**。現行仕様は「予約中でも入荷証拠
+> （旧入荷日・旧EMS・台帳確保数・数量入力）があれば棚確認へ出す」（早着した予約品を
+> 隠さない）。出荷GOの無条件除外は維持。詳細は
+> [2026-07-18-reservation-daily-screen-online.md](2026-07-18-reservation-daily-screen-online.md) と
+> `取り置き_入荷証拠あり_`（Project_24/取り置き台帳.js）を正とする。
+> この計画を根拠に絞り込みを旧仕様へ戻さないこと。
+
 > **For Codex:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task by task with specification review and code-quality review.
 
 **Goal:** 「取り置き登録」で未来発売の予約だけを商品名・選択肢から除外し、過去予約を表示したうえで、注文単位の太線と棚確認ステータス別の即時行色を追加する。
