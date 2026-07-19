@@ -252,7 +252,7 @@ function P列シート識別子_(sheet){
 }
 
 function 発注共有P列計画を反映_(plan){
-  if(plan.error || !plan.writes || !plan.writes.length) return plan.summary||plan;
+  if(plan.error || !plan.writes || (!plan.writes.length && !plan.forceWrite)) return plan.summary||plan;
   plan.sheet.getRange(plan.startRow,plan.colP,plan.rowCount||plan.values.length,1).setValues(plan.values);
   P列背景を反映_(plan.sheet, plan.backgrounds);
   return Object.assign({},plan.summary,{到着実績:plan.到着実績,到着便:plan.到着便,到着実績取得済:plan.到着実績取得済});
@@ -261,6 +261,7 @@ function 発注共有P列計画を反映_(plan){
 function 発注共有P列計画_(options){
   options=options||{};
   const cfg=P_KAKUTEI_CFG, ss=SpreadsheetApp.getActive();
+  const rebuildBlocked=typeof 全件再計算_ブロックSKU集合_==='function'?全件再計算_ブロックSKU集合_():new Set();
   let ems;
   try{ ems=発注共有を開く_().getSheetByName(cfg.シート); }
   catch(e){ return {error:'発注共有ファイルが開けません:\n'+e.message}; }
@@ -331,7 +332,8 @@ function 発注共有P列計画_(options){
   if(hasCurrentP && (!Array.isArray(options.currentP) || options.currentP.length!==n)){
     return {error:'P列プレビュー値の行数がEMSリストと一致しません'};
   }
-  const pColumn=(hasCurrentP?options.currentP:block.map(row=>[at(row,colP)])).map(value=>{
+  const pSource=options.clearCurrentP?Array.from({length:n},()=>['']):(hasCurrentP?options.currentP:block.map(row=>[at(row,colP)]));
+  const pColumn=pSource.map(value=>{
     const cell=Array.isArray(value)?value[0]:value;
     return [String(cell==null?'':cell)];
   });
@@ -349,7 +351,7 @@ function 発注共有P列計画_(options){
     const pOriginal=pColumn[i][0];
     rows.push({
       i,ems:emsNo,code:normCode_(code),sourceCode:code,directBan:注文番号在庫コード_(code)||タグ受注番号_(code),arrival:ymd_(at(row,colA)),qty:Number(at(row,colQ))||0,
-      pOriginal,対象:P列処理対象EMS_(at(row,colSt)),status
+      pOriginal,対象:P列処理対象EMS_(at(row,colSt)),status,全件再計算ブロック:rebuildBlocked.has(全件再計算_SKU正規化_(code,'EMS'))
     });
   }
   const 到着実績=到着実績取得済?EMS到着実績Map_(到着実績Rows):{};
@@ -377,7 +379,9 @@ function 発注共有P列計画_(options){
       (fixedBySupply[key]=fixedBySupply[key]||[]).push({ban:String(r.受注番号||'').trim(),qty:Number(r.取り置き数量)||0});
     });
   });
-  const calculated=P列計画_純計算_(rows.filter(r=>r.対象),lines,fixedBySupply,ledgerSummary.usageBySupply);
+  const calculated=P列計画_純計算_(rows.filter(r=>r.対象&&!r.全件再計算ブロック),lines,fixedBySupply,ledgerSummary.usageBySupply);
+  rows.filter(r=>r.対象&&r.全件再計算ブロック).forEach(r=>calculated.rows.push(Object.assign({},r,{entries:[],left:r.qty,nextP:''})));
+  calculated.rows.sort((a,b)=>a.i-b.i);
   const writes=[];
   calculated.rows.forEach(r=>{
     if(r.nextP===r.pOriginal) return;
@@ -394,7 +398,7 @@ function 発注共有P列計画_(options){
   };
   return {
     error:'',sheet:ems,startRow:hr+1,colP,rowCount:n,values:pColumn,backgrounds,writes,
-    rows:calculated.rows,到着実績,到着便,到着実績取得済,summary
+    rows:calculated.rows,到着実績,到着便,到着実績取得済,summary,forceWrite:!!options.clearCurrentP
   };
 }
 

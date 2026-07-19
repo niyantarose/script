@@ -85,12 +85,12 @@ test('古い入荷日でも到着済P列で確定した行は今回便になる'
   assert.strictEqual(context.今回到着扱い_(line, () => false), true);
 });
 
-test('在庫反映済み履歴だけの行はラベンダーを維持する', () => {
+test('取り置き台帳で確保済みの行はラベンダーを維持する', () => {
   const cfg = { 色_グレー: 'gray', 色_水: 'aqua', 色_橙: 'orange', 色_黄: 'yellow', 色_着: 'lavender' };
   const line = {
     入荷: true,
     入荷日値: '2026-07-09',
-    履歴成立: true,
+    取り置き中数量: 1,
     kbn: '取り寄せ',
     キャンセル: false
   };

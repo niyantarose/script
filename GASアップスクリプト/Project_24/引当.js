@@ -80,6 +80,10 @@ function onOpen(){
     .addItem('🧹 チェック一覧の入荷日をクリア', '入荷日チェック_一覧をクリア')
     .addItem('🧹 旧棚卸割当だけを解除（再引当前）', '旧棚卸割当だけを解除して再引当')
     .addItem('🧮 全件検算レポート(EMS×台帳×受注×Yahooの突き合わせ)', '全件検算レポート')
+    .addItem('🧪 全件再計算プレビュー(事実データから)', '全件再計算プレビュー')
+    .addItem('✅ 全件再計算を反映(要プレビュー)', '全件再計算を反映')
+    .addItem('🔓 全件再計算ガードを解除(復旧用)', '全件再計算ガードを解除')
+    .addItem('🧹 全件再計算のブロックSKUをクリア', '全件再計算ブロックSKUをクリア')
     .addItem('🔍 在庫照合レポート', '在庫照合レポート')
     .addToUi();
 
@@ -1400,6 +1404,7 @@ function 引当計画_行へ反映_(lines,ledgerSummary,projectedSummary,newRows
       const rawSource=String(matched.元EMS商品コード||'').trim();
       const source=normCode_(rawSource);
       l.matchedKey=(注文番号在庫コード_(rawSource)||タグ受注番号_(rawSource))?normCode_(matched.商品コード):source||normCode_(matched.商品コード);
+      l.台帳入荷日=typeof 全件再計算_台帳到着日_==='function'?全件再計算_台帳到着日_(matched):'';
     }
     l.箱EMS=Array.from(new Set(activeRows.map(r=>String(r.元EMS番号||'').trim()).filter(v=>実EMS番号_(v)))).join(', ');
   });
@@ -1500,6 +1505,14 @@ function 引当切替差分を作成(){
 function 引当実行(){ 直列_(()=>引当実行_本体_({preview:false})); }
 function 引当実行_本体_(options){
   options=options||{};
+  if(!options.ignoreRebuildGuard && typeof 全件再計算_通常処理ガード_==='function'){
+    const guard=全件再計算_通常処理ガード_();
+    if(guard){
+      SpreadsheetApp.getUi().alert('通常引当を停止しています',
+        '全件再計算が完了していないため、台帳を保護しています。\n停止段階: '+String(guard.stage||'不明')+'\n'+String(guard.error||''),SpreadsheetApp.getUi().ButtonSet.OK);
+      return {success:false,error:'全件再計算ガード中'};
+    }
+  }
   const 開始ms=Date.now();
   const ss=SpreadsheetApp.getActive(), cfg=HIKIATE_CFG;
   const recv=ss.getSheetByName(cfg.受注);
@@ -1549,7 +1562,9 @@ function 引当実行_本体_(options){
   lines.forEach(l=>{ l.取り置き中数量=ledgerSummary.activeByKey[取り置き_行キー_(l)]||0; });
 
   // A2. 到着実績のある実EMSだけを供給へ変換する。
-  const supplies=EMS供給オブジェクト_(E,EC,到着_);
+  const allSupplies=EMS供給オブジェクト_(E,EC,到着_);
+  const rebuildBlocked=typeof 全件再計算_ブロックSKU集合_==='function'?全件再計算_ブロックSKU集合_():new Set();
+  const supplies=typeof 全件再計算_ブロック供給_==='function'?全件再計算_ブロック供給_(allSupplies,rebuildBlocked):allSupplies;
 
   // A3. 台帳に載らない出荷(週末GoQ直接発送など)を検知し、発送済み行として自動登録する。
   //     箱残を実態へ合わせてから割当・P列計画を作る(旧9a8f8d8の売り越し防止の台帳版)。
@@ -1559,7 +1574,9 @@ function 引当実行_本体_(options){
   const ledgerRowsForPlan=出荷自動.newRows.length? ledgerRows.concat(出荷自動.newRows) : ledgerRows;
 
   // B. P列はここでは書かず、表示計画だけを作る(自動登録分も使用済みとして渡す)。
-  const pPlan=発注共有P列計画_(出荷自動.newRows.length? {追加台帳行:出荷自動.newRows} : {});
+  const pOptions=出荷自動.newRows.length? {追加台帳行:出荷自動.newRows} : {};
+  if(options.clearCurrentP) pOptions.clearCurrentP=true;
+  const pPlan=発注共有P列計画_(pOptions);
   if(pPlan.error){ SpreadsheetApp.getUi().alert(pPlan.error); return; }
 
   // B2. P列の手動名指し(説明文コード等のコード不一致救済)を供給のdirect名指しへ引き継ぐ。
@@ -1778,6 +1795,11 @@ function 引当実行_本体_(options){
         if(l.今回P旧入荷日値 && !l.引当成立){ 入荷col[idx][0]=''; P入荷日訂正++; return; }
         if(l.修復入荷){ 入荷col[idx][0]=l.入荷日値; return; } // ズレ修復(P列に無い注文): 箱の到着日への貼り直しをシートへ反映
         if(l.入荷) return;
+        if(l.台帳入荷日 && 残必要計算_(l)===0){
+          const d=ymd_(l.台帳入荷日);
+          if(/^20\d{2}-\d{2}-\d{2}$/.test(d)){ 入荷col[idx][0]=new Date(d+'T00:00:00'); 自動入荷++; }
+          return;
+        }
         if(l.履歴成立 && l.履歴入荷日値){
           入荷col[idx][0]=l.履歴入荷日値; 自動入荷++;
         } else if(l.引当成立 && l.matchedKey && code到着[l.matchedKey]!==undefined){
@@ -1826,7 +1848,7 @@ function 引当実行_本体_(options){
     // 台帳・P列・受注明細・全出力が成功した最後にだけ整合状態を確定する。
     // 突合せ超過と台帳外出荷の不一致(要確認>0)が残っている間は⑤便締めがブロックされる。
     PropertiesService.getDocumentProperties().setProperty('引当_整合状態',JSON.stringify({ts:Date.now(),要確認:突合超過.length+出荷自動.review.length,台帳版:'v1'}));
-    ui.alert(突合超過.length? '⚠️ 引当完了（要確認 '+突合超過.length+'件）'
+    if(!options.silentSummary) ui.alert(突合超過.length? '⚠️ 引当完了（要確認 '+突合超過.length+'件）'
         : 割当警告.length? '✅ 引当完了（タグ注意 '+割当警告.length+'件）' : '✅ 引当完了（整合OK）',
       '■ 処理時間\n'+処理秒+'秒\n\n■ 突合せ\n'
       +(突合超過.length? '⚠️ 箱の供給を超えた消費 '+突合超過.length+'件（⑤便締めはブロックされます）\n'+突合超過.slice(0,10).join('\n')+(突合超過.length>10?'\n…他'+(突合超過.length-10)+'件':'')
@@ -1838,7 +1860,7 @@ function 引当実行_本体_(options){
       +(emsD.除外? ' ／ 🚫棚卸・EMS番号なしを供給除外 '+emsD.除外+'行':'')
       +(隠れ?'\n\n⚠️ '+隠れ+'：行が隠れています（🔻フィルタ確認/解除で全解除）':''),ui.ButtonSet.OK);
   }
-
+  return {success:true,allocationPlan,pPlan,outputPlan,blockedSkus:Array.from(rebuildBlocked)};
 }
 
 // EMS在庫の引当色分け: 在庫から まず入荷日あり(割当済)を差引き、残りを入荷日なし(未着)の人へ引当
