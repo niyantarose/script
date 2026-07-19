@@ -1,13 +1,14 @@
 const TORIOKI_CFG = Object.freeze({
   台帳:'取り置き台帳', 初期:'取り置き登録', 要確認:'取り置き要確認', 戻し:'キャンセル戻し確認', Yahoo候補:'Yahoo戻し候補', 移動:'EMS在庫移動台帳',
   台帳HDR:['取置ID','状態','受注番号','商品コード','SKU','取り置き数量','取置元種別','元EMS番号','元EMS商品コード','元取置ID','登録日時','更新日時','戻し処理結果','終了理由・メモ'],
-  初期HDR:['取置ID','受注番号','氏名','商品コード','SKU','注文数量','現在の状態','受注ステータス','旧入荷日','旧EMS','棚確認','現物取り置き数量','メモ','判定'],
+  初期HDR:['取置ID','受注番号','氏名','商品コード','SKU','注文数量','現在の状態','受注ステータス','旧入荷日','旧EMS','台帳確保','棚確認','現物取り置き数量','メモ','判定','要対応','処理'],
   要確認HDR:['取置ID','受注番号','商品コード','理由'],
   移動HDR:['処理ID','EMS番号','商品コード','数量','移動先','処理日時']
 });
 const 戻しHDR=['取置ID','受注番号','商品コード','数量','元EMS番号','現物確認','メモ'];
 // 取り置き登録の「棚確認」プルダウン。出荷済み/未着/予約は数量なし(登録しない)の目印
 const TORIOKI_棚確認=Object.freeze(['発送待ち','部分在庫','出荷済み','未着','予約']);
+const TORIOKI_戻し処理=Object.freeze(['棚へ戻した','現物なし']);
 
 function 取り置き_棚確認書式定義_(棚確認列, 開始行){
   let n=棚確認列, 列記号='';
@@ -48,7 +49,7 @@ function 取り置き_登録行書式を更新_(sh, candidates){
   注文罫線_(sh,2,1);
   if(rows.length){
     sh.getRange(2,1,rows.length,幅).setBackgrounds(
-      rows.map(c=>new Array(幅).fill(c.判定==='要棚確認'? '#fff2cc' : null)));
+      rows.map(c=>new Array(幅).fill(c.判定==='棚戻し待ち'? '#f4cccc' : c.判定==='要棚確認'? '#fff2cc' : null)));
   }
   取り置き_棚確認書式を設定_(sh,rows.length);
 }
@@ -74,6 +75,16 @@ function 取り置き_予約判定_(選択肢, 商品名, today){
   if(month!==currentMonth || !m[2]) return false;
   return new Date(base.getFullYear(),month,0).getTime()>base.getTime();
 }
+
+// 予約表記より強い「現物が既に来ている」証拠。早着した予約品を非表示のままにしない。
+function 取り置き_入荷証拠あり_(row){
+  const r=row||{};
+  const qtyText=String(r.現物取り置き数量==null?'':r.現物取り置き数量).trim();
+  return String(r.旧入荷日==null?'':r.旧入荷日).trim()!=='' ||
+    String(r.旧EMS==null?'':r.旧EMS).trim()!=='' ||
+    Number(r.台帳確保数)>0 ||
+    (qtyText!=='' && Number(qtyText)>0);
+}
 const Yahoo候補HDR=['取置ID','商品コード','数量','元EMS番号','処理ID','確認'];
 
 function CSV行を受注行オブジェクトへ_(header, rows){
@@ -88,26 +99,116 @@ function CSV行を受注行オブジェクトへ_(header, rows){
     商品コード:String(row[cCode]||''),SKU:String(row[cSku]||''),個数:Number(row[cQty])||0}));
 }
 
+// 状態遷移の理由は既存の「終了理由・メモ」を消さずに追記する(棚の場所などの手書きメモを守る)。
+// 同じ理由が既に入っていれば足さない=取込のたびにメモが伸びない。
+function 取り置き_メモ追記_(existing, addition){
+  const cur=String(existing==null?'':existing).trim(), add=String(addition==null?'':addition).trim();
+  if(!add) return cur;
+  if(!cur) return add;
+  if(cur.indexOf(add)>=0) return cur;
+  return cur+' / '+add;
+}
+
 function 取り置き_CSV遷移計画_(csvRows, ledgerRows, now){
-  const statuses={}, errors=[], review=[];
+  const groups={}, errors=[], review=[], counts={棚戻し待ち:0,棚戻し数量:0,発送済み:0};
   (csvRows||[]).forEach(r=>{
     const ban=String(r.受注番号||'').replace(/^niyantarose-/i,'').trim();
     const key=取り置き_行キー_({ban,code:r.商品コード,sku:r.SKU});
     if(!ban || !取り置き_商品コード_(r.SKU,r.商品コード)) return;
-    const next=/キャンセル/.test(String(r.受注ステータス||''))?'キャンセル':/処理済|発送済|出荷済/.test(String(r.受注ステータス||''))?'発送済み':'継続';
-    if(statuses[key] && statuses[key]!==next) errors.push('同じ受注行にステータス競合: '+key);
-    statuses[key]=next;
+    if(!groups[key]) groups[key]={発送済み:false,キャンセル:false,生存数量:false,数量既知:false,有効数量:0,処理済数量:0,キャンセル数量:0};
+    const group=groups[key], status=String(r.受注ステータス||'');
+    const shipped=/処理済|発送済|出荷済/.test(status), cancelled=/キャンセル/.test(status);
+    const rawQty=r.個数, qtyKnown=rawQty!==undefined && rawQty!==null && String(rawQty).trim()!=='' && isFinite(Number(rawQty));
+    const qty=qtyKnown?Number(rawQty):0;
+    group.発送済み=group.発送済み||shipped;
+    group.キャンセル=group.キャンセル||cancelled;
+    group.数量既知=group.数量既知||qtyKnown;
+    // キャンセル行の正の数量を注文数へ混ぜない(有効・処理済み・キャンセルを別々に集計)
+    if(qtyKnown){
+      if(cancelled) group.キャンセル数量+=qty;
+      else if(shipped) group.処理済数量+=qty;
+      else group.有効数量+=qty;
+    }
+    // 同じ受注商品が分割され、数量0のキャンセル行と数量1以上の生きた行が共存する場合、
+    // 商品全体の取り置きは解除しない。全分割行が0になったときだけ棚戻しへ進める。
+    if(qtyKnown && qty>0 && !shipped && !cancelled) group.生存数量=true;
   });
-  if(errors.length) return {rows:[],review,errors};
-  const rows=(ledgerRows||[]).map(r=>{
-    const copy=Object.assign({},r); if(copy.状態!==TORIOKI_STATUS.ACTIVE) return copy;
+  const statuses={};
+  Object.keys(groups).forEach(key=>{
+    const group=groups[key];
+    if(group.発送済み && (group.キャンセル||group.生存数量)){
+      errors.push('同じ受注行にステータス競合: '+key); return;
+    }
+    if(group.発送済み){ statuses[key]={状態:'発送済み',理由:'CSV処理済み'}; return; }
+    if(group.生存数量){ statuses[key]={状態:'継続',理由:''}; return; }
+    if(group.キャンセル){ statuses[key]={状態:'キャンセル',理由:'CSV注文キャンセル'}; return; }
+    if(group.数量既知 && group.有効数量+group.処理済数量<=0){ statuses[key]={状態:'キャンセル',理由:'CSV数量0'}; return; }
+    statuses[key]={状態:'継続',理由:''};
+  });
+  if(errors.length) return {rows:[],review,errors,counts};
+  const rows=(ledgerRows||[]).map(r=>Object.assign({},r));
+  // 【先に超過分を分離する】処理済みと数量減が同じCSVで来ても、出荷していない超過分を
+  // 発送済みへ巻き込まず棚戻し待ちへ残すため、状態遷移より前に行う。
+  //   継続:     注文数=有効数量           → 取り置き中(注文数)+棚戻し(超過)
+  //   発送済み: 注文数=処理済数量+有効数量 → 発送済み(注文数)+棚戻し(超過)
+  //   キャンセル: 遷移側で全数棚戻し
+  // 新しい登録から先に外して古い確定を守り、行の途中に掛かる場合は分割する。
+  const 分離キー={};
+  rows.forEach((r,index)=>{
+    if(r.状態!==TORIOKI_STATUS.ACTIVE) return;
+    const key=取り置き_行キー_(r), st=statuses[key];
+    if(!st || (st.状態!=='継続' && st.状態!=='発送済み')) return;
+    if(!groups[key] || !groups[key].数量既知) return; // 数量を読めないCSVでは解除しない
+    (分離キー[key]=分離キー[key]||[]).push(index);
+  });
+  const 既存ID=new Set(rows.map(r=>String(r.取置ID||'')));
+  const 時刻=v=>{ if(v instanceof Date) return v.getTime(); const t=Date.parse(String(v||'')); return isFinite(t)?t:0; };
+  Object.keys(分離キー).forEach(key=>{
+    const indexes=分離キー[key], group=groups[key];
+    const 注文数=Math.max(0, group.有効数量+(statuses[key].状態==='発送済み'? group.処理済数量:0));
+    const 確保=indexes.reduce((sum,i)=>sum+取り置き_整数_(rows[i].取り置き数量),0);
+    let excess=確保-注文数;
+    if(excess<=0) return;
+    const 理由='CSV数量減(注文'+注文数+'/確保'+確保+')（棚戻し待ち）';
+    indexes.sort((a,b)=>時刻(rows[b].登録日時)-時刻(rows[a].登録日時)
+      || String(rows[b].取置ID||'').localeCompare(String(rows[a].取置ID||'')));
+    for(const i of indexes){
+      if(excess<=0) break;
+      const qty=取り置き_整数_(rows[i].取り置き数量);
+      if(qty<=excess){
+        rows[i]=Object.assign({},rows[i],{状態:TORIOKI_STATUS.RETURN,戻し処理結果:TORIOKI_RETURN.UNCHECKED,
+          '終了理由・メモ':取り置き_メモ追記_(rows[i]['終了理由・メモ'],理由),更新日時:now});
+        excess-=qty; counts.棚戻し待ち++; counts.棚戻し数量+=qty;
+      } else {
+        const 分割元=rows[i];
+        rows[i]=Object.assign({},分割元,{取り置き数量:qty-excess,更新日時:now});
+        let id=String(分割元.取置ID||'')+'|RTN', n=1;
+        while(既存ID.has(id)){ n++; id=String(分割元.取置ID||'')+'|RTN'+n; }
+        既存ID.add(id);
+        rows.push(Object.assign({},分割元,{取置ID:id,取り置き数量:excess,状態:TORIOKI_STATUS.RETURN,
+          戻し処理結果:TORIOKI_RETURN.UNCHECKED,'終了理由・メモ':取り置き_メモ追記_(分割元['終了理由・メモ'],理由),
+          登録日時:now,更新日時:now}));
+        counts.棚戻し待ち++; counts.棚戻し数量+=excess;
+        excess=0;
+      }
+    }
+  });
+  // 【状態遷移】分離後に残った取り置き中だけを対象にする
+  rows.forEach(copy=>{
+    if(copy.状態!==TORIOKI_STATUS.ACTIVE) return;
     const key=取り置き_行キー_(copy), next=statuses[key];
-    if(next==='発送済み'){ copy.状態=TORIOKI_STATUS.SHIPPED; copy.更新日時=now; }
-    else if(next==='キャンセル'){ copy.状態=TORIOKI_STATUS.RETURN; copy.戻し処理結果=TORIOKI_RETURN.UNCHECKED; copy.更新日時=now; }
+    if(next&&next.状態==='発送済み'){
+      copy.状態=TORIOKI_STATUS.SHIPPED; copy.更新日時=now;
+      copy['終了理由・メモ']=取り置き_メモ追記_(copy['終了理由・メモ'],next.理由); counts.発送済み++;
+    }
+    else if(next&&next.状態==='キャンセル'){
+      copy.状態=TORIOKI_STATUS.RETURN; copy.戻し処理結果=TORIOKI_RETURN.UNCHECKED; copy.更新日時=now;
+      copy['終了理由・メモ']=取り置き_メモ追記_(copy['終了理由・メモ'],next.理由+'（棚戻し待ち）');
+      counts.棚戻し待ち++; counts.棚戻し数量+=取り置き_整数_(copy.取り置き数量);
+    }
     else if(!next) review.push({取置ID:copy.取置ID,受注番号:copy.受注番号,商品コード:copy.商品コード,理由:'最新CSVに受注行なし'});
-    return copy;
   });
-  return {rows,review,errors:[]};
+  return {rows,review,errors:[],counts};
 }
 
 function 取り置き_CSV遷移を反映_(plan){
@@ -141,7 +242,7 @@ function 取り置き_初期候補_(orders, sources){
     .sort((a,b)=>(rank[byKey[a].state]-rank[byKey[b].state]) || (a<b?-1:a>b?1:0))
     .map(key=>{
       const c=byKey[key], o=c.o, statuses=c.ステータス一覧.join(' / ');
-      const 自動予約=c.予約 && !c.入荷日 && !/部分包装/.test(statuses);
+      const 自動予約=c.予約 && !c.入荷日 && !c.EMS && !/部分包装/.test(statuses);
       return {取置ID:'INIT|'+key,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
         注文数量:c.qty,現在の状態:c.state,受注ステータス:statuses,旧入荷日:c.入荷日,旧EMS:c.EMS,
         棚確認:自動予約?'予約':'',自動予約,現物取り置き数量:'',メモ:'',判定:''};
@@ -153,16 +254,35 @@ function 取り置き_注文単位で並べる_(rows){
   (rows||[]).forEach(row=>{
     const ban=String(row&&row.受注番号!=null?row.受注番号:'');
     let group=byBan.get(ban);
-    if(!group){ group={rows:[],要確認:false,i:groups.length}; byBan.set(ban,group); groups.push(group); }
+    if(!group){ group={rows:[],優先:2,i:groups.length}; byBan.set(ban,group); groups.push(group); }
     group.rows.push(row);
-    if(row && row.判定==='要棚確認') group.要確認=true;
+    if(row && row.判定==='棚戻し待ち') group.優先=0;
+    else if(row && row.判定==='要棚確認') group.優先=Math.min(group.優先,1);
   });
-  groups.sort((a,b)=>(a.要確認?0:1)-(b.要確認?0:1) || a.i-b.i);
+  groups.sort((a,b)=>a.優先-b.優先 || a.i-b.i);
   return groups.reduce((out,group)=>out.concat(group.rows),[]);
 }
 
 function 取り置き_注文境界A1_(rows){
   return 注文境界A1_((rows||[]).map(row=>({ban:row.受注番号})),2,TORIOKI_CFG.初期HDR.length);
+}
+
+// ボタン・メニュー用。取り置き登録の値や色は触らず、受注番号のまとまりごとに罫線だけ引き直す。
+function 取り置き登録の罫線を引く(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const sh=ss.getSheetByName(TORIOKI_CFG.初期);
+  if(!sh){ ui.alert('「'+TORIOKI_CFG.初期+'」タブがありません'); return; }
+  const startRow=2, lastRow=sh.getLastRow(), width=TORIOKI_CFG.初期HDR.length;
+  if(lastRow<startRow){ ui.alert('取り置き登録にデータがありません'); return; }
+  const rowCount=lastRow-startRow+1, banCol=TORIOKI_CFG.初期HDR.indexOf('受注番号')+1;
+  const target=sh.getRange(startRow,1,rowCount,width);
+  target.setBorder(true,true,true,true,true,true,'#cccccc',SpreadsheetApp.BorderStyle.SOLID);
+  const rows=sh.getRange(startRow,banCol,rowCount,1).getDisplayValues().map(row=>({受注番号:String(row[0]||'').trim()}));
+  const borders=取り置き_注文境界A1_(rows);
+  if(borders.length){
+    sh.getRangeList(borders).setBorder(null,null,true,null,null,null,'#000000',SpreadsheetApp.BorderStyle.SOLID_THICK);
+  }
+  ui.alert('✅ 取り置き登録の罫線を引きました\n\n・データ '+rowCount+'行に薄い格子\n・受注番号の境目 '+borders.length+'件に太線');
 }
 
 // 再作成しても確定済みの数量が消えないよう、台帳の開始前在庫(取り置き中)を候補へ差し込む
@@ -182,12 +302,34 @@ function 取り置き_初期候補へ既存数量_(candidates, ledgerRows){
 // 棚まで見に行くべき行の自動判定。
 // 旧帳簿が「着いているはず」(旧入荷日/旧EMSあり)なのに、数量も棚確認も未入力の行だけ「要棚確認」。
 // 数量を入れる or 棚確認(出荷済み/未着など)を選べば解決扱い。
+// 台帳(EMS引当等)が注文の全数を確保済みの行は、棚の現物が④の管理下にあるため対象外。
+// 一部だけ確保済みの行は残りの現物を確かめるべきなので、旧情報が無くても要棚確認に残す。
 function 取り置き_棚確認判定_(c){
   const qty=String(c&&c.現物取り置き数量==null?'':c.現物取り置き数量).trim();
   const check=String(c&&c.棚確認==null?'':c.棚確認).trim();
   if(qty!=='' || check!=='') return '';
+  const ordered=Number(c&&c.注文数量)||0, secured=Number(c&&c.台帳確保数)||0;
+  if(ordered>0 && secured>=ordered) return '';
   const 旧あり=String(c&&c.旧入荷日==null?'':c.旧入荷日).trim()!=='' || String(c&&c.旧EMS==null?'':c.旧EMS).trim()!=='';
-  return 旧あり? '要棚確認' : '';
+  return (旧あり || secured>0)? '要棚確認' : '';
+}
+
+// 台帳確保(取り置き中のEMS引当等)を候補へ重ねる。
+//   全数確保 → 入力欄を空へ戻す(開始前在庫として確定させない=EMS確保分の二重登録防止)
+//   一部確保 → 「残り◯個要確認」を表示し、入力欄はそのまま(残り分だけ登録できる)
+// 台帳の数量を現物取り置き数量へコピーはしない(コピーすると確定でEMS分が開始前在庫へ化ける)。
+function 取り置き_台帳確保を適用_(candidates, securedByKey){
+  return (candidates||[]).map(c=>{
+    const secured=Number(securedByKey&&securedByKey[取り置き_行キー_(c)])||0;
+    if(!secured) return Object.assign({},c,{台帳確保数:0,台帳確保:''});
+    const ordered=Number(c.注文数量)||0, full=ordered>0 && secured>=ordered;
+    return Object.assign({},c,{
+      台帳確保数:secured,
+      台帳確保: full? '台帳確保済み'+secured+'個'
+                    : '台帳確保済み'+secured+'個／残り'+Math.max(0,ordered-secured)+'個要確認',
+      現物取り置き数量: full? '' : c.現物取り置き数量
+    });
+  });
 }
 
 // 棚チェックの候補から、まだ来ない「予約中」と出荷作業に入った「出荷GO」だけを除外する。
@@ -195,8 +337,8 @@ function 取り置き_棚確認判定_(c){
 function 取り置き_登録絞り込み_(rows){
   return (rows||[]).filter(c=>{
     const st=String(c.受注ステータス||'');
-    // 除外は受注ステータスだけで判断する(商品名の予約表記では落とさない=以前の予約の入荷品を巻き込まない)
-    if(st.indexOf('予約中')>=0) return false;
+    // 予約中でも、入荷日・EMS・台帳確保が付いた早着品は棚確認へ出す。
+    if(st.indexOf('予約中')>=0 && !取り置き_入荷証拠あり_(c)) return false;
     if(st.indexOf('出荷GO')>=0) return false;
     return true; // それ以外は表示。判断済み(出荷済み/未着/予約)の非表示は棚確認記憶が担当
   });
@@ -210,9 +352,13 @@ function 取り置き_棚確認記憶を適用_(candidates, store){
     const id=String(c.取置ID||'');
     const qty=String(c.現物取り置き数量==null?'':c.現物取り置き数量).trim();
     let check=String(c.棚確認||'').trim();
+    const arrived=取り置き_入荷証拠あり_(c);
     let autoReservation=c.自動予約===true && check==='予約';
-    if(autoReservation && memo[id]){ check=String(memo[id]); autoReservation=false; } // 手動の過去判断を自動予約より優先
-    else if(!check && memo[id]) check=String(memo[id]); // 過去の判断を復元
+    const stored=String(memo[id]||'');
+    // 以前「予約」と判断していても、到着証拠が付いた時点で記憶を解除して棚へ出す。
+    if(arrived && check==='予約'){ check=''; autoReservation=false; }
+    if(autoReservation && stored && !(arrived&&stored==='予約')){ check=stored; autoReservation=false; } // 手動の過去判断を自動予約より優先
+    else if(!check && stored && !(arrived&&stored==='予約')) check=stored; // 過去の判断を復元
     if(qty==='' && (check==='出荷済み'||check==='未着'||check==='予約')){
       if(!autoReservation) next[id]=check; // 自動予約は現在の判定で隠すだけで永続化しない
       return;
@@ -244,16 +390,40 @@ function 取り置き_登録シート引き継ぎ_(candidates, sheetRows, ledger
   });
 }
 
+// 台帳の未確認キャンセルだけを、日常画面「取り置き登録」の赤い要対応行へ変換する。
+// 取置IDで前回入力を引き継ぐため、CSV取込や手動更新で洗い替えても選択中の処理は消えない。
+function 取り置き_棚戻し候補_(ledgerRows, sheetRows){
+  const previous={};
+  (sheetRows||[]).forEach(row=>{ const id=String(row.取置ID||''); if(id) previous[id]=row; });
+  return (ledgerRows||[])
+    .filter(row=>row.状態===TORIOKI_STATUS.RETURN && row.戻し処理結果===TORIOKI_RETURN.UNCHECKED)
+    .map(row=>{
+      const id=String(row.取置ID||''), prev=previous[id]||{}, qty=取り置き_整数_(row.取り置き数量);
+      const reason=String(row['終了理由・メモ']||'キャンセル').trim();
+      return {
+        取置ID:id,受注番号:String(row.受注番号||''),氏名:String(prev.氏名||''),商品コード:String(row.商品コード||''),SKU:String(row.SKU||''),
+        注文数量:qty,現在の状態:'キャンセル戻し',受注ステータス:reason,旧入荷日:'',旧EMS:String(row.元EMS番号||''),
+        台帳確保:'確保済み'+qty+'個',台帳確保数:qty,棚確認:'',現物取り置き数量:'',
+        メモ:String(prev.メモ||'').trim()||reason,判定:'棚戻し待ち',要対応:'棚へ戻す '+qty+'個',処理:String(prev.処理||'').trim()
+      };
+    });
+}
+
 function 取り置き_初期確定計画_(inputRows, existingRows, now){
   const errors=[], targets={}, inputIds=new Set();
   // 発送済み・解除済みになった開始前在庫行は履歴。再確定で復活も消滅もさせない(誤操作ガード)
   const lockedIds=new Set((existingRows||[]).filter(r=>r.取置元種別==='開始前在庫' && r.状態!==TORIOKI_STATUS.ACTIVE).map(r=>String(r.取置ID||'')));
+  // ④のEMS確保分と合わせた超過を止める(確保済み行へ数量を入れると同じ現物の二重登録になる)
+  const 確保=取り置き_台帳確保集計_(existingRows);
   (inputRows||[]).forEach((r,index)=>{
     inputIds.add(String(r.取置ID||''));
     const raw=r.現物取り置き数量, blank=raw==null || raw==='', entered=blank?0:Number(raw), ordered=Number(r.注文数量)||0;
     if(!blank && (!String(raw).trim() || !Number.isFinite(entered))) errors.push('初期登録'+(index+2)+'行 / 受注'+r.受注番号+': 数量は数値で入力');
     else if(entered<0 || !Number.isInteger(entered)) errors.push('初期登録'+(index+2)+'行: 数量は0以上の整数');
     if(entered>ordered) errors.push('受注'+r.受注番号+': 現物'+entered+'が注文'+ordered+'を超過');
+    const 台帳確保数=Number(確保[取り置き_行キー_(r)])||0;
+    if(entered>0 && 台帳確保数>0 && entered+台帳確保数>ordered)
+      errors.push('受注'+r.受注番号+' '+r.商品コード+': 台帳確保済み'+台帳確保数+'個と合わせて注文'+ordered+'を超えます(④確保分の二重登録の疑い。数量を減らすか空にしてください)');
     if(entered>0 && lockedIds.has(String(r.取置ID||''))) errors.push('受注'+r.受注番号+': 既に発送済み/解除済みの初期登録行は変更できません');
     const check=String(r.棚確認==null?'':r.棚確認).trim();
     if(entered>0 && (check==='出荷済み'||check==='未着'||check==='予約')) errors.push('受注'+r.受注番号+': 棚確認が「'+check+'」なのに数量が入っています(どちらかを直してください)');
@@ -280,6 +450,37 @@ function 取り置き_戻し確認計画_(inputs, ledger, now){
     if(r.状態!=='キャンセル戻し' || r.戻し処理結果!=='未確認'){ errors.push(r.取置ID+': 未確認のキャンセル戻しではない'); return Object.assign({},r); }
     return Object.assign({},r,{戻し処理結果:choice,更新日時:now});
   }),errors};
+}
+
+// 通常の現物取り置き数量と、赤い棚戻し待ち行の処理を一度に検証する。
+// どちらか一方でもエラーなら rows=[] とし、台帳へ部分反映しない。
+function 取り置き_統合反映計画_(inputs, ledger, now){
+  const rows=inputs||[];
+  // 棚戻し行は取置IDの形ではなく台帳の状態で見分ける。開始前在庫(INIT|系ID)が
+  // キャンセルで棚戻し待ちになるケースがあり、ID接頭辞では通常行に誤分類されるため。
+  const 台帳ById={};
+  (ledger||[]).forEach(r=>{ 台帳ById[String(r.取置ID||'')]=r; });
+  const 棚戻し行=r=>{
+    const led=台帳ById[String(r.取置ID||'')];
+    return !!led && led.状態===TORIOKI_STATUS.RETURN && led.戻し処理結果===TORIOKI_RETURN.UNCHECKED;
+  };
+  const normal=rows.filter(r=>!棚戻し行(r));
+  const actions=rows.filter(棚戻し行);
+  const counts={
+    取り置き行:normal.filter(r=>(Number(r.現物取り置き数量)||0)>0).length,
+    取り置き数量:normal.reduce((sum,r)=>sum+(Number(r.現物取り置き数量)||0),0),
+    棚へ戻した:actions.filter(r=>String(r.処理||'').trim()==='棚へ戻した').length,
+    現物なし:actions.filter(r=>String(r.処理||'').trim()==='現物なし').length
+  };
+  const initial=取り置き_初期確定計画_(normal,ledger,now);
+  if(initial.errors.length) return {rows:[],errors:initial.errors,counts};
+  const returnInputs=actions.map(r=>{
+    const choice=String(r.処理||'').trim();
+    return {取置ID:r.取置ID,現物確認:choice==='棚へ戻した'?'現物あり':choice==='現物なし'?'在庫なし':choice};
+  });
+  const returned=取り置き_戻し確認計画_(returnInputs,initial.rows,now);
+  if(returned.errors.length) return {rows:[],errors:returned.errors,counts};
+  return {rows:returned.rows,errors:[],counts};
 }
 
 function EMS在庫移動_追加計画_(candidates, existing, now){
@@ -399,9 +600,10 @@ function 取り置き_受注番号集合_(sheetName){
 // 書き込み系ボタンは全て直列_(DocumentLock)で排他する(①〜④と同じ約束事)。
 // 内部からの再帰呼び出しは本体_を使う(DocumentLockは再入不可のため)。
 function 取り置き初期登録を作成(){ 直列_(取り置き初期登録を作成本体_); }
-function 取り置き初期登録を作成本体_(){
+function 取り置き初期登録を作成本体_(options){
+  const opts=options||{}, silent=opts.silent===true;
   const ss=SpreadsheetApp.getActive(), recv=ss.getSheetByName(HIKIATE_CFG.受注), ui=SpreadsheetApp.getUi();
-  if(!recv){ ui.alert('受注明細がありません'); return; }
+  if(!recv){ if(!silent) ui.alert('受注明細がありません'); return {error:'受注明細がありません'}; }
   const M=列マップ_(recv), values=recv.getDataRange().getValues(), orders=[], 着済スタンプ=new Set(), 部分包装=new Set();
   const 受注head=values[M.hr-1].map(v=>String(v||'').trim()), cステータス=受注head.indexOf('受注ステータス');
   for(let i=M.hr;i<values.length;i++){
@@ -430,10 +632,14 @@ function 取り置き初期登録を作成本体_(){
   ]);
   // 洗い替えでも手入力の数量・棚確認・メモが消えないよう、今のシート(旧名・旧レイアウト含む)から引き継ぐ
   const 読む=(name,headers)=>{ try{ return 取り置き_表を読む_(name,headers); }catch(e){ return []; } };
-  let sheetRows=読む(TORIOKI_CFG.初期,['取置ID','現物取り置き数量','棚確認','メモ']);
+  let sheetRows=読む(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR);
+  if(!sheetRows.length) sheetRows=読む(TORIOKI_CFG.初期,['取置ID','現物取り置き数量','棚確認','メモ']);
   if(!sheetRows.length) sheetRows=読む(TORIOKI_CFG.初期,['取置ID','現物取り置き数量','メモ']);
   if(!sheetRows.length) sheetRows=読む('取り置き初期登録',['取置ID','現物取り置き数量','メモ']); // 旧名からの一度きりの引き継ぎ
-  candidates=取り置き_登録シート引き継ぎ_(candidates,sheetRows,取り置き台帳_読む_());
+  const ledgerRows=取り置き台帳_読む_();
+  candidates=取り置き_登録シート引き継ぎ_(candidates,sheetRows,ledgerRows);
+  // ④が既に台帳(EMS引当等)で確保している分を重ねる(全数確保は入力欄クリア+黄色対象外)
+  candidates=取り置き_台帳確保を適用_(candidates,取り置き_台帳確保集計_(ledgerRows));
   candidates=取り置き_登録絞り込み_(candidates); // 予約中・出荷GOのステータスだけで除外
   // 出荷済み/未着/予約と判断済みの行は記憶して以後表示しない(注文が消えれば記憶も自動掃除)
   let 棚記憶={};
@@ -442,39 +648,66 @@ function 取り置き初期登録を作成本体_(){
   candidates=記憶適用.rows;
   try{ PropertiesService.getDocumentProperties().setProperty('取り置き登録_棚確認済み',JSON.stringify(記憶適用.store)); }catch(e){}
   candidates.forEach(c=>{ c.判定=取り置き_棚確認判定_(c); });
-  // 要棚確認を含む注文を上にし、同じ受注番号の商品行は分断しない
-  candidates=取り置き_注文単位で並べる_(candidates);
+  // 数量0・注文キャンセルで確保を外す必要がある行も同じ画面へ集約する。
+  const 戻し候補=取り置き_棚戻し候補_(ledgerRows,sheetRows);
+  // 棚戻し待ち→要棚確認→通常の順。同じ受注番号の商品行は分断しない。
+  candidates=取り置き_注文単位で並べる_(戻し候補.concat(candidates));
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
   const sh2=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
   // 列の並びが変わっても古い位置のプルダウンが残らないよう、シート全体の入力規則を消してから付け直す
   sh2.getRange(1,1,sh2.getMaxRows(),sh2.getMaxColumns()).clearDataValidations();
   if(candidates.length){
-    // 棚確認列にプルダウン(空欄OK)を付け、要棚確認の行を黄色でマーク
-    const col=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1;
-    sh2.getRange(2,col,candidates.length,1)
-      .setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(TORIOKI_棚確認.slice(),true).setAllowInvalid(true).build());
+    // 通常行は棚確認、赤い棚戻し待ち行は処理のプルダウンを使う。
+    const 棚確認列=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1, 処理列=TORIOKI_CFG.初期HDR.indexOf('処理')+1;
+    const 棚規則=SpreadsheetApp.newDataValidation().requireValueInList(TORIOKI_棚確認.slice(),true).setAllowInvalid(true).build();
+    const 戻し規則=SpreadsheetApp.newDataValidation().requireValueInList(TORIOKI_戻し処理.slice(),true).setAllowInvalid(false).build();
+    sh2.getRange(2,棚確認列,candidates.length,1).setDataValidation(棚規則);
+    candidates.forEach((candidate,index)=>{
+      if(candidate.判定!=='棚戻し待ち') return;
+      sh2.getRange(index+2,棚確認列).clearDataValidations();
+      sh2.getRange(index+2,処理列).setDataValidation(戻し規則);
+    });
   }
+  sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('要対応')+1,220);
+  sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('処理')+1,130);
   取り置き_登録行書式を更新_(sh2,candidates);
   const 入力済=candidates.filter(c=>String(c.現物取り置き数量)!=='').length;
   const 要確認数=candidates.filter(c=>c.判定==='要棚確認').length;
-  ui.alert('取り置き登録を作成しました',
-    '候補'+candidates.length+'行 ／ ⚠️要棚確認 '+要確認数+'行(黄色・上に集めました)\n\n'
-    +'要棚確認=旧帳簿では着いているはずなのに、数量も棚確認も未入力の行です。\n'
-    +'棚を見て、現物があれば「現物取り置き数量」を入力、無ければ「棚確認」で\n'
-    +'出荷済み/未着を選んでください(選ぶと黄色の対象から外れます)。\n'
-    +(入力済? '\n入力済みの数量'+入力済+'行は引き継いで表示しています。':''),ui.ButtonSet.OK);
+  const 戻し待ち数=candidates.filter(c=>c.判定==='棚戻し待ち').length;
+  const 全数確保=candidates.filter(c=>c.判定!=='棚戻し待ち' && (c.台帳確保数||0)>0 && c.判定!=='要棚確認').length;
+  const summary={候補:candidates.length,要棚確認:要確認数,棚戻し待ち:戻し待ち数,入力済};
+  if(!silent) ui.alert('取り置き登録を更新しました',
+    '候補'+candidates.length+'行 ／ 🔴棚戻し待ち '+戻し待ち数+'行 ／ ⚠️要棚確認 '+要確認数+'行\n\n'
+    +(戻し待ち数? '赤い行は棚を確認し、右端の「処理」で「棚へ戻した」または「現物なし」を選びます。\n':'')
+    +'黄色の行は、現物があれば「現物取り置き数量」、無ければ「棚確認」を入力します。\n'
+    +'最後に「取り置き登録を反映」を1回押してください。\n'
+    +(全数確保? '\n「台帳確保済み」'+全数確保+'行は④が確保済みのため数量入力不要です。':'')
+    +(入力済? '\n入力済みの数量'+入力済+'行は引き継いでいます。':''),ui.ButtonSet.OK);
+  return summary;
 }
 
-function 取り置き初期登録を確定(){ 直列_(取り置き初期登録を確定本体_); }
-function 取り置き初期登録を確定本体_(){
+function 取り置き登録を反映(){ 直列_(取り置き登録を反映本体_); }
+// 旧メニュー・既存の図形ボタンに割り当てた関数名も、新しい一括反映へつなぐ。
+function 取り置き初期登録を確定(){ 取り置き登録を反映(); }
+function 取り置き初期登録を確定本体_(){ return 取り置き登録を反映本体_(); }
+function 取り置き登録を反映本体_(){
   const ui=SpreadsheetApp.getUi(), inputs=取り置き_表を読む_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR);
-  const plan=取り置き_初期確定計画_(inputs,取り置き台帳_読む_(),new Date());
-  if(plan.errors.length){ ui.alert('取り置き登録を中止しました',plan.errors.join('\n'),ui.ButtonSet.OK); return; }
-  const selected=inputs.filter(r=>(Number(r.現物取り置き数量)||0)>0), qty=selected.reduce((s,r)=>s+(Number(r.現物取り置き数量)||0),0);
-  const answer=ui.alert('取り置き登録を確定します','対象'+selected.length+'行 / 合計'+qty+'個です。確定しますか？',ui.ButtonSet.OK_CANCEL);
+  const plan=取り置き_統合反映計画_(inputs,取り置き台帳_読む_(),new Date());
+  if(plan.errors.length){ ui.alert('取り置き登録の反映を中止しました',plan.errors.join('\n'),ui.ButtonSet.OK); return; }
+  const c=plan.counts;
+  const answer=ui.alert('取り置き登録を反映します',
+    '通常の取り置き '+c.取り置き行+'行 / '+c.取り置き数量+'個\n'
+    +'棚へ戻した '+c.棚へ戻した+'件\n'
+    +'現物なし '+c.現物なし+'件\n\n台帳へ一括反映しますか？',ui.ButtonSet.OK_CANCEL);
   if(answer!==ui.Button.OK) return;
   取り置き台帳_保存_(plan.rows);
-  SpreadsheetApp.getActive().toast('取り置き登録 '+selected.length+'行 / '+qty+'個を確定しました','取り置き台帳',7);
+  // 旧管理シートは裏側の監査用として同期するが、日常操作は取り置き登録だけで完結する。
+  try{ Yahoo戻し候補を更新_(); }catch(e){}
+  const refreshed=取り置き初期登録を作成本体_({silent:true});
+  SpreadsheetApp.getActive().toast(
+    '通常 '+c.取り置き数量+'個 / 棚戻し '+c.棚へ戻した+'件 / 現物なし '+c.現物なし+'件を反映しました'
+    +(refreshed&&refreshed.棚戻し待ち? '（未処理あと'+refreshed.棚戻し待ち+'件）':''),
+    '取り置き登録',8);
 }
 
 function キャンセル戻し確認を更新(){ 直列_(キャンセル戻し確認を更新本体_); }

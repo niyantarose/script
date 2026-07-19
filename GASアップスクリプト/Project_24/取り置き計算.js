@@ -72,6 +72,19 @@ function 取り置き_今回必要数_(order, summary){
   return Math.max(0,qty-Number(summary&&summary.activeByKey[取り置き_行キー_(order)]||0));
 }
 
+// 台帳がEMS引当・キャンセル再引当で既に確保している数量(行キー単位)。
+// 開始前在庫は取り置き登録シート自身の確定分(洗い替えで数量を引き継いで再確定する)なので含めない。
+// 発送済み・手動解除・キャンセル戻しは現在の確保ではないため数えない(取り置き中のみ)。
+function 取り置き_台帳確保集計_(ledgerRows){
+  const out={};
+  (ledgerRows||[]).forEach(r=>{
+    if(r.状態!==TORIOKI_STATUS.ACTIVE || r.取置元種別==='開始前在庫') return;
+    const key=取り置き_行キー_(r);
+    out[key]=(out[key]||0)+取り置き_整数_(r.取り置き数量);
+  });
+  return out;
+}
+
 function 取り置き_決定ID_(source, ems, sourceCode, key, originId){
   const sourceIdentity=取り置き_供給キー_('',sourceCode).slice(1);
   return [source,String(ems||''),sourceIdentity,String(originId||''),key].join('|');

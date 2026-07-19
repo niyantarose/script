@@ -28,12 +28,16 @@ function onOpen(){
     .addItem('🧾 発送済みCSVを台帳へ一括取込(移行用)', '消込台帳_発送済みCSV取込')
     .addItem('📝 P列に注文番号を自動記入(発注共有へ)', 'P列に注文番号を自動記入')
     .addItem('♻️ P列を書き直す(到着済の残骸を一掃)', 'P列を書き直す')
-    .addItem('📋 取り置き登録を作成(候補の洗い替え)', '取り置き初期登録を作成')
-    .addItem('✅ 取り置き登録を確定', '取り置き初期登録を確定')
-    .addItem('📦 キャンセル戻し確認を更新', 'キャンセル戻し確認を更新')
-    .addItem('✅ キャンセル戻し確認を確定', 'キャンセル戻し確認を確定')
-    .addItem('🛒 Yahoo戻しを反映済みにする', 'キャンセル戻しをYahoo反映済みにする')
-    .addItem('🔓 選択した取り置きを手動解除', '選択した取り置きを手動解除')
+    .addSeparator()
+    .addItem('📋 取り置き登録を更新', '取り置き初期登録を作成')
+    .addItem('✅ 取り置き登録を反映(通常＋棚戻し)', '取り置き登録を反映')
+    .addItem('🧱 取り置き登録の罫線を引き直す', '取り置き登録の罫線を引く')
+    .addSubMenu(ui.createMenu('🔧 取り置き内部管理(通常操作不要)')
+      .addItem('キャンセル戻し確認を更新', 'キャンセル戻し確認を更新')
+      .addItem('キャンセル戻し確認を確定', 'キャンセル戻し確認を確定')
+      .addItem('Yahoo戻しを反映済みにする', 'キャンセル戻しをYahoo反映済みにする')
+      .addItem('選択した取り置きを手動解除', '選択した取り置きを手動解除'))
+    .addSeparator()
     .addItem('🔍 引当切替差分を作成(移行プレビュー)', '引当切替差分を作成')
     .addItem('🧾 引当履歴シートを作成', '引当履歴シートを作成')
     .addItem('🧾 引当履歴へ過去データ取込', '引当履歴_過去データを取込')
@@ -607,6 +611,12 @@ function 取込_実行_(latest){
     try{ props.setProperty('処理済キャンセル番号', JSON.stringify(キャンセル番号)); }catch(e){}
   }
 
+  // 日常画面をCSVの最新状態へ追従させる。数量0/注文キャンセルで確保があった行は、
+  // ここで「取り置き登録」の赤い棚戻し待ちへ自動表示される。
+  let 取り置き登録更新=null, 取り置き登録更新エラー='';
+  try{ 取り置き登録更新=取り置き初期登録を作成本体_({silent:true}); }
+  catch(e){ 取り置き登録更新エラー=String(e&&e.message||e); console.error('取り置き登録の自動更新失敗: '+取り置き登録更新エラー); }
+
   const 処理ms=Date.now()-開始ms, 処理秒=Math.round(処理ms/1000);
   console.log('①受注明細更新 処理時間ms='+処理ms);
   ss.toast('取込完了：'+latest.getName()+' / 受注'+body.length+'行（更新 '+upd+' / 入荷日引継 '+引継+'件'
@@ -614,13 +624,20 @@ function 取込_実行_(latest){
     +(台帳.新規出荷済? ' / 🧾消えた注文の出荷済み検知'+台帳.新規出荷済+'件':'')
     +(処理済結果&&処理済結果.追加? ' / 📦処理済を確定登録'+処理済結果.追加+'件':'')
     +(キャンセル番号.length? ' / 🚫キャンセル'+キャンセル番号.length+'件(新規'+新規キャンセル.length+'件)':'')
+    +(取り置き登録更新? ' / 🔴棚戻し待ち'+取り置き登録更新.棚戻し待ち+'件':'')
+    +(取り置き登録更新エラー? ' / ⚠取り置き登録更新失敗':'')
     +' / 処理 '+処理秒+'秒）','GoQ取込',6);
   if(新規キャンセル.length){
     SpreadsheetApp.getUi().alert('🚫 キャンセルを自動処理しました',
       '新しくキャンセルになった注文 '+新規キャンセル.length+'件を、受注明細に入れず後始末しました:\n'+
       新規キャンセル.slice(0,20).join(', ')+(新規キャンセル.length>20?' …他'+(新規キャンセル.length-20)+'件':'')+
       (キャンセル結果? '\n\n'+キャンセル結果.results.join('\n'):'')+
-      '\n\nこのあと「② 引き当て実行」を回すと、その分の在庫が解放されます。',
+      '\n\n台帳確保がある商品は「取り置き登録」に赤い棚戻し待ちで出ます。棚を確認して右端の処理を選び、「取り置き登録を反映」を押してください。',
+      SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+  if(取り置き登録更新エラー){
+    SpreadsheetApp.getUi().alert('⚠️ 取り置き登録の自動更新だけ失敗しました',
+      'CSV取込と台帳遷移は完了しています。メニューの「取り置き登録を更新」を押してください。\n\n'+取り置き登録更新エラー,
       SpreadsheetApp.getUi().ButtonSet.OK);
   }
 }
@@ -1248,7 +1265,14 @@ function ymd_(v){
     const fromSerial=ymdFromSheetSerial_(parseFloat(s));
     if(fromSerial) return fromSerial;
   }
-  let m=s.match(/(20\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+  // 旧バグがシートへ書いた "46213-01-01" を元のシリアル日へ戻す。
+  // 通常の日付として末尾4桁だけを拾う前に判定する。
+  let m=s.match(/^(\d{5,6})-0?1-0?1$/);
+  if(m){
+    const recovered=ymdFromSheetSerial_(parseFloat(m[1]));
+    if(recovered) return recovered;
+  }
+  m=s.match(/(20\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
   if(m) return 実在YMD_(m[1],m[2],m[3]);
   m=s.match(/(\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
   if(m) return 実在YMD_('20'+m[1],m[2],m[3]);
@@ -1383,29 +1407,51 @@ function 引当計画_行へ反映_(lines,ledgerSummary,projectedSummary,newRows
 }
 
 function 引当切替差分_純計算_(plannedRows,currentRows){
-  const keyOf=r=>[String(r&&r.ban||''),normCode_(r&&r.code),normCode_(r&&r.sku)].join('|');
-  const valueOf=r=>JSON.stringify({qty:Number(r&&r.qty)||0,state:String(r&&r.state||''),ems:String(r&&r.ems||'')});
-  const planned={},current={},order=[];
-  (plannedRows||[]).forEach(r=>{ const key=keyOf(r); if(!(key in planned)) order.push(key); planned[key]=r; });
-  (currentRows||[]).forEach(r=>{ const key=keyOf(r); current[key]=r; });
+  const keyOf=r=>[String(r&&r.ban||''),normCode_(r&&(r.matchCode||r.code)),normCode_(r&&r.sku)].join('|');
+  const valueOf=r=>JSON.stringify({code:normCode_(r&&r.code),qty:Number(r&&r.qty)||0,state:String(r&&r.state||''),ems:String(r&&r.ems||'')});
+  const planned={},current={},keys=[];
+  const add=(groups,row)=>{
+    const key=keyOf(row);
+    if(!(key in groups)){ groups[key]=[]; if(keys.indexOf(key)<0) keys.push(key); }
+    groups[key].push(row);
+  };
+  (plannedRows||[]).forEach(r=>add(planned,r));
+  (currentRows||[]).forEach(r=>add(current,r));
   const out=[];
-  order.forEach(key=>{ if(!(key in current)) out.push({key,change:'追加',before:null,after:planned[key]});
-    else if(valueOf(planned[key])!==valueOf(current[key])) out.push({key,change:'更新',before:current[key],after:planned[key]}); });
-  Object.keys(current).forEach(key=>{ if(!(key in planned)) out.push({key,change:'削除',before:current[key],after:null}); });
+  keys.forEach(key=>{
+    const p=(planned[key]||[]).slice(), c=(current[key]||[]).slice();
+    // 同一行を先に相殺し、同じ受注・商品が複数行あっても上書きで消さない。
+    for(let i=p.length-1;i>=0;i--){
+      const found=c.findIndex(row=>valueOf(row)===valueOf(p[i]));
+      if(found>=0){ p.splice(i,1); c.splice(found,1); }
+    }
+    while(p.length&&c.length){
+      const after=p.shift(),before=c.shift();
+      out.push({key,change:'更新',before,after});
+    }
+    p.forEach((after,index)=>out.push({key:key+'#追加'+index,change:'追加',before:null,after}));
+    c.forEach((before,index)=>out.push({key:key+'#削除'+index,change:'削除',before,after:null}));
+  });
   return out.sort((a,b)=>{ const rank={'更新':0,'追加':1,'削除':2}; return rank[a.change]-rank[b.change]||a.key.localeCompare(b.key); });
 }
 
 function 引当切替_計画行_(lines){
+  const paidByBan={};
+  (lines||[]).forEach(l=>{ if(l&&!l.キャンセル&&l.paid) paidByBan[String(l.ban||'')]=true; });
   return (lines||[]).filter(l=>l&&!l.キャンセル).map(l=>({
     ban:String(l.ban||''),氏名:String(l.氏名||''),code:注文一覧表示コード_(l,false,null),sku:String(l.sku||''),
     商品名:String(l.商品名||''),qty:Number(l.qty)||0,
-    state:引当行状態_(l,HIKIATE_CFG).st,ems:String(l.箱EMS||'')
+    state:引当行状態_(l,HIKIATE_CFG).st+(paidByBan[String(l.ban||'')]?'':'・入金待ち'),ems:String(l.箱EMS||'')
   }));
 }
 
 function 引当切替_現行出力行_(ss,plannedRows){
-  const out=[], byBanCode={},usedByBanCode={};
-  (plannedRows||[]).forEach(r=>{ const key=String(r.ban)+'|'+normCode_(r.code); (byBanCode[key]=byBanCode[key]||[]).push(r); });
+  const out=[],byBanCode={},byBan={},used=new Set();
+  (plannedRows||[]).forEach((r,index)=>{
+    const item={row:r,index},ban=String(r.ban),key=ban+'|'+normCode_(r.code);
+    (byBanCode[key]=byBanCode[key]||[]).push(item);
+    (byBan[ban]=byBan[ban]||[]).push(item);
+  });
   [HIKIATE_CFG.待ち,HIKIATE_CFG.部分,HIKIATE_CFG.取置,HIKIATE_CFG.希望,HIKIATE_CFG.出荷].forEach(name=>{
     const sh=ss.getSheetByName(name); if(!sh) return;
     const values=sh.getDataRange().getValues(),hr=values.findIndex(row=>row.map(v=>String(v||'').trim()).indexOf('受注番号')>=0);
@@ -1416,18 +1462,19 @@ function 引当切替_現行出力行_(ss,plannedRows){
       const ban=String(row[cBan]||'').trim(),code=String(row[cCode]||'').trim(); if(!ban||!code) return;
       const qty=cQty>=0?Number(row[cQty])||0:0,state=cState>=0?String(row[cState]||''):'',ems=cEms>=0?String(row[cEms]||''):'';
       const 氏名=cName>=0?String(row[cName]||'').trim():'',商品名=cItem>=0?String(row[cItem]||'').trim():'';
-      const planKey=ban+'|'+normCode_(code),cand=byBanCode[planKey]||[],used=usedByBanCode[planKey]||(usedByBanCode[planKey]=new Set());
+      const planKey=ban+'|'+normCode_(code);
+      let cand=(byBanCode[planKey]||[]).filter(item=>!used.has(item.index));
+      // 注文番号在庫などで表示コード自体が切り替わる場合は、同じ受注番号の未使用行へフォールバックする。
+      if(!cand.length) cand=(byBan[ban]||[]).filter(item=>!used.has(item.index));
       let sku=cSku>=0?String(row[cSku]||'').trim():'';
-      let index=-1;
-      if(sku) index=cand.findIndex((r,i)=>!used.has(i)&&normCode_(r.sku)===normCode_(sku));
+      let found=null;
+      if(sku) found=cand.find(item=>normCode_(item.row.sku)===normCode_(sku))||null;
       else {
-        const exact=[];
-        cand.forEach((r,i)=>{ if(!used.has(i) && (Number(r.qty)||0)===qty && String(r.state||'')===state && String(r.ems||'')===ems) exact.push(i); });
-        index=exact.length?exact[0]:cand.findIndex((r,i)=>!used.has(i));
-        if(index>=0) sku=String(cand[index].sku||'');
+        found=cand.find(item=>(Number(item.row.qty)||0)===qty&&String(item.row.state||'')===state&&String(item.row.ems||'')===ems)||cand[0]||null;
+        if(found) sku=String(found.row.sku||'');
       }
-      if(index>=0) used.add(index);
-      out.push({ban,氏名,code,sku,商品名,qty,state,ems});
+      if(found) used.add(found.index);
+      out.push({ban,氏名,code,sku,商品名,qty,state,ems,matchCode:found?String(found.row.code||''):''});
     });
   });
   return out;
