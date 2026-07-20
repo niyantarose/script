@@ -92,22 +92,31 @@ function CB_onEdit(e) {
   }
 }
 
-/** ✅毎分起動するランナー（時間主導トリガーで動かす） */
+/** ✅毎分起動するランナー（時間主導トリガーで動かす）
+ *
+ * ★重要（DEADLINE_EXCEEDED / 起動時間超過 対策）:
+ *   キューが空のときはスプレッドシートに一切触らず即終了する。
+ *   以前は毎分 V2 に現在時刻を書き込んでいたため、シートを開いている間じゅう
+ *   1分ごとにドキュメントがサーバー側で更新され、UI側の再読み込みと競合して
+ *   「ストレージからの読み取り中… DEADLINE_EXCEEDED」「起動時間の最大値を超えました」が
+ *   間欠的に発生していた。ジョブがある時だけシートに触る形へ変更し、競合を解消する。
+ */
 function CB_実行ランナー_毎分() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(LOCK_WAIT_MS)) return; // 二重起動を止める
 
   try {
+    // まずキューだけ確認（ScriptProperties・シート未アクセス）。
+    // 空なら毎分の無駄な書き込み＝競合を避けるため、シートに触れずに終了する。
+    const job = dequeueJob_();
+    if (!job) return;
+
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const panelSheet = ss.getSheetByName(PANEL_SHEET_NAME);
     if (!panelSheet) return;
 
-    // 生存確認（任意）
+    // 生存確認（ジョブがある時だけ更新する）
     panelSheet.getRange('V2').setValue(new Date());
-
-    // 1件取り出し（FIFO）
-    const job = dequeueJob_();
-    if (!job) return;
 
     logToX11_(panelSheet, `[実行] START: ${jobLabel_(job)}`);
 
