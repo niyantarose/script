@@ -73,6 +73,7 @@ function onOpen(){
     .addSeparator()
     .addItem('① 前段階チェック(即納に水色＋罫線)', '前段階チェック_即納')
     .addItem('② 引き当て実行(実EMSリストのみ)', '引当実行')
+    .addItem('🔁 更新してから引当(EMS更新→即納→引当を一括)', '更新してから引当')
     .addItem('📦 到着済を在庫反映済みへ(便の締め)', '到着済を在庫反映済みへ')
     .addItem('⚖️ この便の引当をやり直す(到着日指定・複数可)', '便の引当をやり直す')
     .addItem('🔎 引当診断(受注番号で調べる)', '引当診断')
@@ -2090,6 +2091,12 @@ function 全データを消す(){
 }
 
 // 🔄 EMS在庫を更新: 残った色・罫線を全部消して、QUERY(IMPORTRANGE)を再計算させる
+// QUERY/IMPORTRANGE の再計算がまだ終わっていないか。表示値のどこかに "Loading" が残っていれば未完了(2026-07-20)。
+// 先頭セルだけ見る旧判定では、先頭が読めてもJMEE167等の後続行/列がまだLoadingで②が不完全な供給を読む事故が起きた。
+function EMS在庫_読込中_(displayValues){
+  return (displayValues||[]).some(row=>(row||[]).some(cell=>String(cell==null?'':cell).indexOf('Loading')>=0));
+}
+
 function EMS在庫を更新(){ 直列_(EMS在庫を更新_本体_); }
 function EMS在庫を更新_本体_(){
   const ss=SpreadsheetApp.getActive(), cfg=HIKIATE_CFG;
@@ -2108,15 +2115,30 @@ function EMS在庫を更新_本体_(){
   const f=fcell.getFormula();
   if(f){
     fcell.clearContent(); SpreadsheetApp.flush(); fcell.setFormula(f);
-    // IMPORTRANGE/QUERYの再計算完了を待つ(③→④と連続クリックしても④が空/古い在庫を読まないように)
+    // IMPORTRANGE/QUERYの再計算完了を待つ(③→④と連続クリックしても④が空/古い在庫を読まないように)。
+    // 先頭セルだけでなくデータ範囲全体に "Loading" が残っていないかを見る(2026-07-20 ラグ由来の中止対策)。
     SpreadsheetApp.flush();
-    for(let i=0;i<30;i++){
-      const v=String(fcell.getDisplayValue()||'');
-      if(v && v.indexOf('Loading')<0) break; // '#N/A'(0件)も確定として扱う
+    for(let i=0;i<45;i++){
+      const head=String(fcell.getDisplayValue()||''); // '#N/A'(0件)もLoadingでないので確定扱い
+      if(head && head.indexOf('Loading')<0){
+        const last=emv.getLastRow();
+        const vals=last>=ems.offset ? emv.getRange(ems.offset,1,last-ems.offset+1,mc).getDisplayValues() : [[head]];
+        if(!EMS在庫_読込中_(vals)) break; // 範囲全体が読み込み終わった
+      }
       Utilities.sleep(1000); SpreadsheetApp.flush();
     }
   }
   ss.toast('EMS在庫を更新しました(色クリア＋最新化)','🔄EMS更新',6);
+}
+
+// 🔁 更新してから引当(2026-07-20): EMS在庫の堅牢更新→即納チェック→引当実行を1ボタンで順に実行する。
+// 「トーストを待って②を押したのに供給が古かった」ラグ事故を根本回避する(EMS更新の待ちが範囲全体で完了する)。
+// 同一の直列_ロック内で _本体_ を順に呼ぶ(EMS更新が確実に読み込み終わってから引当が供給を読む)。
+function 更新してから引当(){ 直列_(更新してから引当_本体_); }
+function 更新してから引当_本体_(){
+  EMS在庫を更新_本体_();      // ② EMS在庫を確実に最新化(範囲全体が読み込み終わるまで待つ)
+  前段階チェック_即納_本体_(); // ③ 即納チェック(水色＋罫線)
+  引当実行_本体_();           // ④ 引き当て実行(最新の供給で)
 }
 
 // ===== 📦 ダニエルEMS引当(別枠) =====

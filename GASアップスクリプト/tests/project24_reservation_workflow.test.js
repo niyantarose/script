@@ -1758,5 +1758,15 @@ test('一括解除計画は指定IDの取り置き中だけ手動解除にし、
   assert.strictEqual(c.状態,'発送済み','指定でも取り置き中でなければ触らない(冪等)');
 });
 
+// ===== 2026-07-20 EMS在庫更新の堅牢待ち: 読み込み中判定 =====
+
+test('EMS在庫_読込中_は範囲のどこかにLoadingがあればtrue・無ければfalse', () => {
+  assert.strictEqual(context.EMS在庫_読込中_([['EG1','JMEE167','16'],['EG1','ANKI22','Loading...']]),true,'後続行がLoadingなら未完了');
+  assert.strictEqual(context.EMS在庫_読込中_([['EG1','JMEE167','16'],['EG1','ANKI22','8']]),false,'全部読めていれば完了');
+  assert.strictEqual(context.EMS在庫_読込中_([]),false,'空配列は完了扱い');
+  assert.strictEqual(context.EMS在庫_読込中_([['#N/A']]),false,'#N/A(0件)はLoadingでないので完了扱い');
+  assert.strictEqual(context.EMS在庫_読込中_([['a',null,''],['b','c','Loading']]),true,'null/空混じりでもLoadingを検知');
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');
