@@ -529,6 +529,18 @@ function buildJapaneseTitleLookupStatusLabel_(lookupResult) {
     return JAPANESE_TITLE_LOOKUP_FAILED_LABEL + '(' + failedSources.join('/') + ')';
   }
 
+  // 書き込みパスで外部照会を丸ごとスキップした場合は「未照会」にする。
+  // 従来は辞書1件だけ確認して miss でも「登録なし(全サイト)」と確定してしまい、
+  // 実際には照会していないのに再照会対象から外れる誤ラベルになっていた
+  // （MangaUpdatesが403等で詰まった日にこの形の中途半端な行が量産された）。
+  const trace = Array.isArray(result.trace) ? result.trace : [];
+  const 外部照会未実施 = trace.some(function (t) {
+    return String(t || '').indexOf('skip_during_write') >= 0;
+  });
+  if (外部照会未実施) {
+    return JAPANESE_TITLE_NOT_LOOKED_UP_LABEL;
+  }
+
   const checkedSources = uniqNonEmptyTitles_(Array.isArray(result.checkedSources) ? result.checkedSources : []);
   if (checkedSources.length) {
     return JAPANESE_TITLE_NOT_FOUND_ALL_SOURCES_LABEL;
@@ -3641,6 +3653,15 @@ function prepareBookCodeFieldsForItem_(ss, item, runtime) {
   const nextRowData = Object.assign({}, rowData);
   bookCodeSetIfBlank_(nextRowData, '作品ID(W)（自動）', workId);
   bookCodeSetIfBlank_(nextRowData, '作品ID(W)(自動)', workId);
+
+  // 既存作品ならWorksの日本語タイトルを補完する。
+  // 外部照会がスキップ/失敗した回でも、Worksに蓄積済みの正しい日本語題
+  // （例: 惡靈剋星→ファントムバスターズ）が空欄のまま残らないようにする。
+  const workJp = bookCodeUsableJapaneseTitle_(work && work.jp);
+  if (workJp) {
+    bookCodeSetIfBlank_(nextRowData, '日本語タイトル', workJp);
+    bookCodeSetIfBlank_(nextRowData, '作品名（日本語）', workJp);
+  }
 
   const finalCode = bookCodeBuildFinalCode_(sheetName, nextRowData, workId);
   if (finalCode) {
