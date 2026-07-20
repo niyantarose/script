@@ -31,8 +31,11 @@ function Pタッチ印刷用Excelを保存() {
     const code = String(values[i][codeCol] || '').trim();
     if (!code) continue;
     printedRows.push(i + 1);
-    const name = String(values[i][nameCol] || '').trim();
+    let name = String(values[i][nameCol] || '').trim();
     const qty  = parseInt(values[i][qtyCol], 10) || 1;
+
+    // 商品名の個別置換（特定の韓国語文言を英語表記に変換）
+    name = applyNameReplacements_(name);
 
     // スペース有無・大文字小文字を無視してPromotional Item判定
     const codeNormalized = code.replace(/\s/g, '').toLowerCase();
@@ -105,6 +108,19 @@ function Pタッチ印刷用Excelを保存() {
     'シール発行済み：' + printedRows.length + '行(U列に記入)\n\n' +
     'P-touch Editorで「更新」を押してください。'
   );
+}
+
+// 商品名の個別置換ルール（韓国語の特定文言→英語表記など）
+// 増やしたい場合はこの配列に { from, to } を追加していくだけでOK
+function applyNameReplacements_(name) {
+  const replacements = [
+    { from: '케이크받침', to: 'Paperboard for display' }
+  ];
+  let result = name;
+  for (const r of replacements) {
+    result = result.split(r.from).join(r.to);
+  }
+  return result;
 }
 
 function findHeaderColumn_(header, candidates) {
