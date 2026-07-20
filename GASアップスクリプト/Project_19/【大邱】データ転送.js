@@ -437,6 +437,7 @@ function EMS_転送候補_(r, rowNo) {
   const codeRaw = 大邱_表示コード_(r[7]);         // H 商品コード
   if (!track || !codeRaw) return null;
   if (/Tracking|追跡|tracking #/i.test(track)) return null; // ヘッダー除外
+  if (!/[0-9]/.test(track)) return null; // EMS番号が未採番（BOX等、数字を含まない＝実追跡番号でない）→ 転送しない
   const qty = EMS_転送数量キー_(r[8]);            // I 数量
   const purchaseNo = EMS_転送購入Noキー_(r[19]);  // T 購入No
   return {
