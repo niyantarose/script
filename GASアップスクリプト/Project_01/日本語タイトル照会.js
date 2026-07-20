@@ -34,65 +34,97 @@ function 台湾_日本語タイトルを照会() {
   const col日本語 = n日本語 ? 列[n日本語] : 0;
   const col原題 = n原題 ? 列[n原題] : 0;
   const col原題商品 = n原題商品 ? 列[n原題商品] : 0;
+  const n発番 = 台湾書籍系_実列名を取得_(列, [cn.発行チェック, '発番発行']);
+  const col発番 = n発番 ? 列[n発番] : 0;
+  const col作者 = 列['作者'] || 0;
   if (!col日本語 || !col原題) {
     ui.alert('日本語タイトル / 原題タイトル 列が見つかりません');
     return;
   }
 
-  // 選択範囲から対象行を集める（複数範囲・複数行対応）
-  const rangeList = sh.getActiveRangeList();
-  const ranges = rangeList ? rangeList.getRanges() : [sh.getActiveRange()].filter(Boolean);
-  const rowSet = {};
-  ranges.forEach(function (r) {
-    for (let i = r.getRow(); i <= r.getLastRow(); i += 1) {
-      if (i >= 2) rowSet[i] = true;
-    }
-  });
-  const rows = Object.keys(rowSet).map(Number).sort(function (a, b) { return a - b; });
+  // 対象行: 発番発行(A列)にチェックが入った行を優先。1件も無ければ選択範囲で拾う（両対応）。
+  const lastRow = sh.getLastRow();
+  let rows = [];
+  if (col発番 && lastRow >= 2) {
+    const checks = sh.getRange(2, col発番, lastRow - 1, 1).getValues();
+    checks.forEach(function (r, i) { if (r[0] === true) rows.push(i + 2); });
+  }
   if (!rows.length) {
-    ui.alert('2行目以降の行を選択してから実行してください');
+    const rangeList = sh.getActiveRangeList();
+    const ranges = rangeList ? rangeList.getRanges() : [sh.getActiveRange()].filter(Boolean);
+    const rowSet = {};
+    ranges.forEach(function (r) {
+      for (let i = r.getRow(); i <= r.getLastRow(); i += 1) {
+        if (i >= 2) rowSet[i] = true;
+      }
+    });
+    rows = Object.keys(rowSet).map(Number).sort(function (a, b) { return a - b; });
+  }
+  if (!rows.length) {
+    ui.alert('発番発行にチェックを入れる（または行を選択）してから実行してください');
     return;
   }
   if (rows.length > 30) {
-    ui.alert('一度に照会できるのは30行までです（外部API負荷対策）。選択を減らしてください');
+    ui.alert('一度に照会できるのは30行までです（外部API負荷対策）。数を減らしてください');
     return;
   }
 
   const 結果 = [];
   let 取得数 = 0;
+  const 解除行 = []; // 処理できた行（発番発行チェックを外す）
 
   rows.forEach(function (row) {
     const 現況 = String(sh.getRange(row, col日本語).getDisplayValue() || '').trim();
     if (現況 && !/^(登録なし|照会失敗|未照会|MU登録あり)/.test(現況)) {
       結果.push(row + '行: 入力済みのためスキップ（' + 現況 + '）');
+      解除行.push(row); // 既に入っているのでチェックは外す
       return;
     }
-    const 原題 = String(sh.getRange(row, col原題).getDisplayValue() || '').trim()
-      || (col原題商品 ? String(sh.getRange(row, col原題商品).getDisplayValue() || '').trim() : '');
+    const 原題商品 = col原題商品 ? String(sh.getRange(row, col原題商品).getDisplayValue() || '').trim() : '';
+    const 原題 = String(sh.getRange(row, col原題).getDisplayValue() || '').trim() || 原題商品;
     if (!原題) {
       結果.push(row + '行: 原題タイトルが空のためスキップ');
-      return;
+      return; // 未処理なのでチェックは残す
     }
 
     let jp = '';
     let 供給元 = '';
-    const クエリ候補 = 台湾照会_クエリ候補_(原題);
-    for (let q = 0; q < クエリ候補.length && !jp; q += 1) {
-      try {
-        jp = 台湾照会_aniListで日本語題_(クエリ候補[q]);
-        if (jp) 供給元 = 'aniList';
-      } catch (e) { /* 続行してMUへ */ }
-      if (!jp) {
-        try {
-          jp = 台湾照会_MUで日本語題_(クエリ候補[q]);
-          if (jp) 供給元 = 'MangaUpdates';
-        } catch (e) { /* 続行してBangumiへ */ }
+
+    // ① Works照会（通常のonEdit/確定発行と同じくWorks最優先。既存作品なら外部APIを叩かず即補完＝403回避）
+    try {
+      const worksInfo = 台湾書籍系_Worksから同一作品情報を取得_(設定, {
+        原題タイトル: 原題,
+        原題商品タイトル: 原題商品,
+        日本語タイトル: '',
+        作者: col作者 ? String(sh.getRange(row, col作者).getDisplayValue() || '').trim() : ''
+      });
+      const worksJp = worksInfo ? String(worksInfo.日本語タイトル || '').trim() : '';
+      if (worksJp && !/^(登録なし|照会失敗|未照会|MU登録あり)/.test(worksJp)) {
+        jp = worksJp;
+        供給元 = 'Works';
       }
-      if (!jp) {
+    } catch (e) { /* Works照会失敗しても外部へ続行 */ }
+
+    // ② 外部サイト（Worksに無いときだけ aniList → MangaUpdates → Bangumi）
+    if (!jp) {
+      const クエリ候補 = 台湾照会_クエリ候補_(原題);
+      for (let q = 0; q < クエリ候補.length && !jp; q += 1) {
         try {
-          jp = 台湾照会_Bangumiで日本語題_(クエリ候補[q]);
-          if (jp) 供給元 = 'Bangumi';
-        } catch (e) { /* 次の候補へ */ }
+          jp = 台湾照会_aniListで日本語題_(クエリ候補[q]);
+          if (jp) 供給元 = 'aniList';
+        } catch (e) { /* 続行してMUへ */ }
+        if (!jp) {
+          try {
+            jp = 台湾照会_MUで日本語題_(クエリ候補[q]);
+            if (jp) 供給元 = 'MangaUpdates';
+          } catch (e) { /* 続行してBangumiへ */ }
+        }
+        if (!jp) {
+          try {
+            jp = 台湾照会_Bangumiで日本語題_(クエリ候補[q]);
+            if (jp) 供給元 = 'Bangumi';
+          } catch (e) { /* 次の候補へ */ }
+        }
       }
     }
 
@@ -103,16 +135,27 @@ function 台湾_日本語タイトルを照会() {
         台湾書籍系_1行補完_共通_(sh, row, 設定, { Works新規作成: true });
       } catch (e) { /* 補完失敗しても照会結果は残す */ }
       取得数 += 1;
+      解除行.push(row);
       結果.push(row + '行: ✅ ' + jp + '（' + 供給元 + '）');
     } else {
       結果.push(row + '行: ❌ 見つからず（' + 原題 + '）→ DB未収録の可能性。手入力してください');
+      // 見つからない行はチェックを残して気づけるようにする
     }
-    Utilities.sleep(250);
+    if (供給元 !== 'Works') Utilities.sleep(250); // Works命中は外部APIを叩かないのでウェイト不要
   });
 
+  // 処理できた行の発番発行チェックを外す（未取得の行は残す）
+  if (col発番 && 解除行.length) {
+    解除行.forEach(function (row) { sh.getRange(row, col発番).setValue(false); });
+  }
+
+  const 残チェック = rows.filter(function (r) { return 解除行.indexOf(r) < 0; });
   ui.alert(
     '日本語タイトル照会 結果（取得 ' + 取得数 + '/' + rows.length + '件）',
-    結果.join('\n'),
+    結果.join('\n') +
+    (残チェック.length
+      ? '\n\n※ 未取得の ' + 残チェック.length + ' 行はチェックを残しました（手入力などで対応してください）'
+      : '\n\n※ 処理した行の発番発行チェックは外しました'),
     ui.ButtonSet.OK
   );
 }
