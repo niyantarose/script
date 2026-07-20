@@ -3097,9 +3097,16 @@ function 台湾書籍系_ローカル確定発行_(シート名, 設定) {
     // ① まず媒体対応エンジンでコード生成（未登録行として処理）。
     //    1行補完は「登録済み行の鉄則」で確定済みコードは触らないので、
     //    先に生成→後で登録済みに確定する順序が重要。
+    // バッチ高速化: 姉妹バッチ関数と同じく skipFlush/列マップ/lastCol を共有し、
+    //   毎行の flush（getValues が必要時に自動commitするので不要）と
+    //   毎行のヘッダー再読込（列マップを取得_）・getLastColumn を廃止する。
+    const lastCol = sh.getLastColumn();
     対象行.forEach(row => {
       台湾書籍系_1行補完_共通_(sh, row, 設定, {
-        Works新規作成: true
+        Works新規作成: true,
+        skipFlush: true,
+        列マップ: 列,
+        lastCol: lastCol
       });
     });
 
