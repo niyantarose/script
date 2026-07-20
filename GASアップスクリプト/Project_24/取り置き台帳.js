@@ -873,6 +873,26 @@ function キャンセル戻しをYahoo反映済みにする本体_(){
   Yahoo戻し候補を更新_();
 }
 
+// 孤児取り置き一括解除(2026-07-20): 品切れ→代替発送などで受注明細から注文が消えたのに残る取り置きをまとめて掃除する。
+// 孤児 = 状態が取り置き中なのに行キー(受注番号|商品コード|SKU)が今の受注明細に無い取り置き(既存のタグ注意と同じ基準)。
+// 出荷形跡 = その受注番号が消込台帳の出荷済み行に載っている(代替でも受注番号一致で形跡ありと判定=既定チェックの根拠)。
+function 取り置き_孤児取り置き一覧_(ledgerRows, 注文キー集合, 出荷済み受注番号集合){
+  const orderKeys=注文キー集合||new Set(), shippedBans=出荷済み受注番号集合||new Set();
+  return (ledgerRows||[])
+    .filter(r=>String(r.状態||'')===TORIOKI_STATUS.ACTIVE && !orderKeys.has(取り置き_行キー_(r)))
+    .map(r=>({取置ID:String(r.取置ID||''),受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||''),
+      SKU:String(r.SKU||''),取り置き数量:取り置き_整数_(r.取り置き数量),出荷形跡:shippedBans.has(String(r.受注番号||''))}));
+}
+
+// 指定した取置IDの「取り置き中」行だけを手動解除にする(冪等・非指定/取り置き中以外は不変)。
+function 取り置き_一括解除計画_(ledgerRows, 解除ID集合, 理由, now){
+  const ids=解除ID集合||new Set(), reason=String(理由||'').trim();
+  return (ledgerRows||[]).map(r=>{
+    if(!ids.has(String(r.取置ID||'')) || String(r.状態||'')!==TORIOKI_STATUS.ACTIVE) return r;
+    return Object.assign({},r,{状態:TORIOKI_STATUS.RELEASED,'終了理由・メモ':reason,更新日時:now});
+  });
+}
+
 function 選択した取り置きを手動解除(){ 直列_(選択した取り置きを手動解除本体_); }
 function 選択した取り置きを手動解除本体_(){
   const ss=SpreadsheetApp.getActive(), sh=ss.getActiveSheet(), ui=SpreadsheetApp.getUi(), row=sh.getActiveRange().getRow();
@@ -889,4 +909,59 @@ function 選択した取り置きを手動解除本体_(){
   const reason=String(response.getResponseText()||'').trim(); if(!reason){ ui.alert('解除理由は必須です'); return; }
   取り置き台帳_保存_(ledger.map(r=>String(r.取置ID||'')===selectedId
     ? Object.assign({},r,{状態:'手動解除','終了理由・メモ':reason,更新日時:new Date()}) : r));
+}
+
+// 🧹 孤児取り置きをまとめて解除: 孤児を一覧化してチェックで選び、まとめて手動解除する。
+// 読み取り＋ダイアログ表示のみ(書き込みは orphanBulkRelease 側で直列_)。ダニエル引当のダイアログ方式を踏襲。
+function 孤児取り置きをまとめて解除(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const recv=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!recv){ ui.alert('受注明細がありません'); return; }
+  const M=列マップ_(recv), values=recv.getDataRange().getValues(), 注文キー集合=new Set();
+  for(let i=M.hr;i<values.length;i++){
+    const row=values[i], ban=String(row[M.番号]||'').trim(); if(!ban) continue;
+    注文キー集合.add(取り置き_行キー_({受注番号:ban,商品コード:M.コード>=0?row[M.コード]:'',SKU:M.SKU>=0?row[M.SKU]:''}));
+  }
+  let shippedBans=new Set();
+  try{ shippedBans=new Set(消込台帳_出荷済み行_().map(r=>String(r.ban||''))); }catch(e){}
+  const orphans=取り置き_孤児取り置き一覧_(取り置き台帳_読む_(),注文キー集合,shippedBans);
+  if(!orphans.length){ ui.alert('孤児の取り置きはありません','受注明細に注文が無い「取り置き中」は見つかりませんでした。',ui.ButtonSet.OK); return; }
+  let rowsHtml='';
+  orphans.forEach(o=>{
+    rowsHtml+='<label style="display:block;margin:5px 0;padding:5px 6px;border:1px solid #eee;border-radius:4px;cursor:pointer;">'
+      +'<input type="checkbox" class="orphan" value="'+o.取置ID+'"'+(o.出荷形跡?' checked':'')+'> '
+      +'<b>'+o.受注番号+'</b> '+o.商品コード+' <span style="color:#777">('+o.取り置き数量+'個)</span> '
+      +(o.出荷形跡?'<span style="color:#093;font-size:12px;">✔出荷形跡あり</span>':'<span style="color:#999;font-size:12px;">形跡なし</span>')+'</label>';
+  });
+  const html='<div style="font-family:sans-serif;font-size:13px;line-height:1.4;">'
+    +'<p style="margin:0 0 8px;">解除する孤児取り置きにチェック（<b>出荷形跡あり</b>は既定でオン）。品切れ→代替発送などで注文が消えた分を掃除します。</p>'
+    +rowsHtml
+    +'<div style="margin-top:8px;">解除理由: <input type="text" id="reason" value="品切れ・代替品で発送" style="width:60%;padding:3px;"></div>'
+    +'<div style="margin-top:6px;"><button type="button" onclick="all(true)">全部</button> <button type="button" onclick="all(false)">全部外す</button></div>'
+    +'<div style="margin-top:14px;text-align:right;"><button type="button" id="go" style="padding:7px 16px;font-weight:bold;background:#4472c4;color:#fff;border:none;border-radius:4px;cursor:pointer;" onclick="go(this)">選んだ分を解除</button></div>'
+    +'<script>'
+    +'function all(v){var cs=document.querySelectorAll(".orphan");for(var i=0;i<cs.length;i++)cs[i].checked=v;}'
+    +'function go(b){var a=[],cs=document.querySelectorAll(".orphan:checked");for(var i=0;i<cs.length;i++)a.push(cs[i].value);'
+    +'var reason=document.getElementById("reason").value;'
+    +'if(!a.length){alert("解除する行を1つ以上選んでください");return;}'
+    +'if(!reason.trim()){alert("解除理由を入力してください");return;}'
+    +'b.disabled=true;b.textContent="解除中...";'
+    +'google.script.run.withSuccessHandler(function(n){google.script.host.close();})'
+    +'.withFailureHandler(function(e){b.disabled=false;b.textContent="選んだ分を解除";alert("エラー: "+e.message);}).orphanBulkRelease(a,reason);}'
+    +'</script></div>';
+  const out=HtmlService.createHtmlOutput(html).setWidth(480).setHeight(Math.min(150+orphans.length*40,560));
+  ui.showModalDialog(out,'🧹 孤児取り置きをまとめて解除');
+}
+
+// ダイアログから呼ぶ実体(google.script.run対象なので末尾_を付けない=ASCII名で安全に)。選ばれた取置IDの取り置き中だけ手動解除。
+function orphanBulkRelease(ids, reason){
+  return 直列_(()=>{
+    const 理由=String(reason||'').trim(); if(!理由) throw new Error('解除理由が空です');
+    const idSet=new Set((ids||[]).map(x=>String(x))); if(!idSet.size) throw new Error('解除対象がありません');
+    const ledger=取り置き台帳_読む_();
+    const 対象数=ledger.filter(r=>idSet.has(String(r.取置ID||'')) && String(r.状態||'')===TORIOKI_STATUS.ACTIVE).length;
+    取り置き台帳_保存_(取り置き_一括解除計画_(ledger,idSet,理由,new Date()));
+    SpreadsheetApp.getActive().toast(対象数+'件の孤児取り置きを手動解除しました','🧹 孤児解除',6);
+    return 対象数;
+  });
 }
