@@ -49,7 +49,7 @@ function 取り置き_登録行書式を更新_(sh, candidates){
   注文罫線_(sh,2,1);
   if(rows.length){
     sh.getRange(2,1,rows.length,幅).setBackgrounds(
-      rows.map(c=>new Array(幅).fill(c.判定==='棚戻し待ち'? '#f4cccc' : c.判定==='要棚確認'? '#fff2cc' : c.判定==='即納'? '#cfe2f3' : null)));
+      rows.map(c=>new Array(幅).fill(c.判定==='棚戻し待ち'? '#f4cccc' : c.判定==='要棚確認'? '#fff2cc' : c.判定==='即納'? '#cfe2f3' : c.判定==='別ルート'? '#fce5cd' : null)));
   }
   取り置き_棚確認書式を設定_(sh,rows.length);
 }
@@ -299,6 +299,15 @@ function 取り置き_初期候補へ既存数量_(candidates, ledgerRows){
   });
 }
 
+// 全行表示化v2(2026-07-20): 受注明細1行を取り置き登録のどの枠へ入れるかを1か所で決める純粋関数。
+// 台湾/中国(別ルート)は区分に関わらず最優先、指定なしはほぼ即納なので即納扱い。対象外はどの枠にも入れない。
+function 取り置き_明細区分_(kbn, 別ルート){
+  if(別ルート) return '別ルート';
+  if(kbn==='即納' || kbn==='指定なし') return '即納';
+  if(kbn==='取り寄せ') return '取り寄せ';
+  return '対象外';
+}
+
 // 全行表示化(2026-07-20): 取り寄せ候補がある注文の即納行を表示専用で差し込む。
 // 受注明細と同じ水色(判定=即納)で「注文にどの現物が揃うか」を1画面で見せる(例: 10117188の見落とし事故対策)。
 // 数量・棚確認は入力対象外(反映時にガード)。台帳へは載せない=全件再計算の開始前在庫を汚さない。
@@ -321,6 +330,33 @@ function 取り置き_即納行を付与_(candidates, sokunoOrders, sheetRows){
     return {取置ID:id,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
       注文数量:c.qty,現在の状態:'即納',受注ステータス:c.ステータス一覧.join(' / '),旧入荷日:'',旧EMS:'',
       台帳確保:'',台帳確保数:0,棚確認:'',現物取り置き数量:'',メモ:prev?String(prev.メモ==null?'':prev.メモ).trim():'',判定:'即納',要対応:'',処理:''};
+  }));
+}
+
+// 全行表示化v2(2026-07-20): 台湾/中国(別ルート)行を表示専用で差し込む。GoQで部分在庫=別ルートで
+// 現物が到着した合図なのに候補から消えて気づけない、を防ぐ。確保は受注明細の入荷日(別ルート済数量)で
+// 行うため、この画面では数量入力させない(台帳の開始前在庫と二重引当になる)。旧入荷日欄で確保状態が分かる。
+function 取り置き_別ルート行を付与_(candidates, betsuOrders, sheetRows){
+  const list=candidates||[];
+  const bans=new Set(list.map(c=>String(c.受注番号)));
+  const bySheet={};
+  (sheetRows||[]).forEach(r=>{ const id=String(r&&r.取置ID||''); if(id) bySheet[id]=r; });
+  const byKey={}, keys=[];
+  (betsuOrders||[]).forEach(o=>{
+    if(!bans.has(String(o.ban))) return;
+    const key=取り置き_行キー_(o);
+    if(!byKey[key]){ byKey[key]={o,qty:0,入荷日:'',ステータス一覧:[]}; keys.push(key); }
+    byKey[key].qty+=Number(o.qty)||0;
+    if(!byKey[key].入荷日){ const d=ymd_(o.入荷日); if(d) byKey[key].入荷日=d; }
+    const status=String(o.ステータス||'').trim();
+    if(status && byKey[key].ステータス一覧.indexOf(status)<0) byKey[key].ステータス一覧.push(status);
+  });
+  return list.concat(keys.map(key=>{
+    const c=byKey[key], o=c.o, id='別ルート|'+key, prev=bySheet[id];
+    return {取置ID:id,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
+      注文数量:c.qty,現在の状態:'別ルート',受注ステータス:c.ステータス一覧.join(' / '),旧入荷日:c.入荷日,旧EMS:'',
+      台帳確保:'',台帳確保数:0,棚確認:'',現物取り置き数量:'',メモ:prev?String(prev.メモ==null?'':prev.メモ).trim():'',
+      判定:'別ルート',要対応:c.入荷日?'':'入荷日を受注明細に入れて確保',処理:''};
   }));
 }
 
@@ -357,15 +393,14 @@ function 取り置き_台帳確保を適用_(candidates, securedByKey){
   });
 }
 
-// 棚チェックの候補から、まだ来ない「予約中」と出荷作業に入った「出荷GO」だけを除外する。
-// 商品名・選択肢の予約表記、旧入荷日、数量入力の有無はこの自動除外に使わない。
+// 全行表示化v2(2026-07-20): 自動除外は「出荷GO(確定・発送作業中)」だけにする。
+// 予約中は証拠が無くても隠さない=早着して棚にあるのに行が出ない(入れられない)を防ぐ。
+// 候補は既にアクティブ注文の行だけなので、この緩和で純粋予約注文のノイズは増えない。
 function 取り置き_登録絞り込み_(rows){
   return (rows||[]).filter(c=>{
     const st=String(c.受注ステータス||'');
-    // 予約中でも、入荷日・EMS・台帳確保が付いた早着品は棚確認へ出す。
-    if(st.indexOf('予約中')>=0 && !取り置き_入荷証拠あり_(c)) return false;
     if(st.indexOf('出荷GO')>=0) return false;
-    return true; // それ以外は表示。判断済み(出荷済み/未着/予約)の非表示は棚確認記憶が担当
+    return true; // 予約中も表示。判断済み(出荷済み/未着/予約)は棚確認セルに残して条件付き書式で目立たせる
   });
 }
 
@@ -434,9 +469,15 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now){
   const 確保=取り置き_台帳確保集計_(existingRows);
   (inputRows||[]).forEach((r,index)=>{
     const raw=r.現物取り置き数量, blank=raw==null || raw==='';
-    // 即納行は表示専用。数量が入っていたら開始前在庫への誤登録なので反映ごと止める(全件再計算のEMS供給を守る)
-    if(String(r.取置ID||'').indexOf('即納|')===0){
+    // 表示専用行(即納・別ルート)は数量を入れさせない。入っていたら誤登録なので反映ごと止める。
+    //   即納 = 全件再計算の開始前在庫を汚さない / 別ルート = 入荷日ベースの別ルート済数量と二重にしない
+    const id=String(r.取置ID||'');
+    if(id.indexOf('即納|')===0){
       if(!blank) errors.push('受注'+r.受注番号+' '+r.商品コード+': 即納行は表示専用です。数量は取り寄せ行へ入力してください');
+      return;
+    }
+    if(id.indexOf('別ルート|')===0){
+      if(!blank) errors.push('受注'+r.受注番号+' '+r.商品コード+': 台湾/中国(別ルート)行は表示専用です。確保は受注明細に入荷日を入れてください');
       return;
     }
     inputIds.add(String(r.取置ID||''));
@@ -627,25 +668,29 @@ function 取り置き初期登録を作成本体_(options){
   const opts=options||{}, silent=opts.silent===true;
   const ss=SpreadsheetApp.getActive(), recv=ss.getSheetByName(HIKIATE_CFG.受注), ui=SpreadsheetApp.getUi();
   if(!recv){ if(!silent) ui.alert('受注明細がありません'); return {error:'受注明細がありません'}; }
-  const M=列マップ_(recv), values=recv.getDataRange().getValues(), orders=[], 即納orders=[], 着済スタンプ=new Set(), 部分包装=new Set();
+  const M=列マップ_(recv), values=recv.getDataRange().getValues(), orders=[], 即納orders=[], 別ルートorders=[], 着済スタンプ=new Set(), 部分包装=new Set();
   const 受注head=values[M.hr-1].map(v=>String(v||'').trim()), cステータス=受注head.indexOf('受注ステータス');
   for(let i=M.hr;i<values.length;i++){
     const row=values[i], ban=String(row[M.番号]||'').trim(), qty=Number(row[M.個数])||0;
     if(!ban || qty<=0) continue;
     const kbn=区分_(row[M.選択肢]);
+    const 別ルート=引当_別ルート判定_(row[M.選択肢], M.商品名>=0?row[M.商品名]:'');
     const ステータス=cステータス>=0?String(row[cステータス]||''):'';
-    if(kbn==='即納'){ // 全行表示化: 対象注文の即納行を表示専用(水色)で載せるため別枠で集める
-      即納orders.push({ban,氏名:M.氏名>=0?String(row[M.氏名]||''):'',code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty,ステータス});
+    const 入荷日=M.入荷>=0?row[M.入荷]:'';
+    const 氏名=M.氏名>=0?String(row[M.氏名]||''):'', code=String(row[M.コード]||''), sku=M.SKU>=0?String(row[M.SKU]||''):'';
+    const 明細=取り置き_明細区分_(kbn,別ルート);
+    if(明細==='別ルート'){ // 台湾/中国は表示専用。手入力入荷日=確保の証を持って別枠で集める
+      別ルートorders.push({ban,氏名,code,sku,qty,ステータス,入荷日});
       continue;
     }
-    if(kbn!=='取り寄せ') continue;
-    if(引当_別ルート判定_(row[M.選択肢], M.商品名>=0?row[M.商品名]:'')) continue; // 台湾・中国は台帳の対象外
-    const 入荷日=M.入荷>=0?row[M.入荷]:'';
+    if(明細==='即納'){ // 即納(指定なし含む)は表示専用(水色)で別枠で集める
+      即納orders.push({ban,氏名,code,sku,qty,ステータス});
+      continue;
+    }
+    if(明細!=='取り寄せ') continue; // 対象外(通常は発生しない)
     if(String(入荷日==null?'':入荷日).trim()!=='') 着済スタンプ.add(ban); // 旧帳簿では届いているはず=棚を確認すべき注文
     if(/部分包装/.test(ステータス)) 部分包装.add(ban); // 梱包中=現物が必ずある注文(スタンプや一覧に関係なく拾う)
-    orders.push({ban,氏名:M.氏名>=0?String(row[M.氏名]||''):'',code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty,
-      入荷日,EMS:M.EMS>=0?String(row[M.EMS]||''):'',
-      ステータス,
+    orders.push({ban,氏名,code,sku,qty,入荷日,EMS:M.EMS>=0?String(row[M.EMS]||''):'',ステータス,
       予約:取り置き_予約判定_(row[M.選択肢],M.商品名>=0?row[M.商品名]:'')});
   }
   // 出荷GO未入金(未入金滞留)・出荷可能(発送前)も棚に現物がある=候補に含める(空欄なら未取り置き扱い)。
@@ -680,6 +725,8 @@ function 取り置き初期登録を作成本体_(options){
   candidates.forEach(c=>{ c.判定=取り置き_棚確認判定_(c); });
   // 対象注文の即納行を表示専用(水色)で差し込む。数量・棚確認は入力対象外=誤入力は反映時ガードが止める
   candidates=取り置き_即納行を付与_(candidates,即納orders,sheetRows);
+  // 混在注文の台湾/中国(別ルート)行を表示専用(橙)で差し込む。GoQ部分在庫=別ルート到着に気づけるように。
+  candidates=取り置き_別ルート行を付与_(candidates,別ルートorders,sheetRows);
   // 数量0・注文キャンセルで確保を外す必要がある行も同じ画面へ集約する。
   const 戻し候補=取り置き_棚戻し候補_(ledgerRows,sheetRows);
   // 棚戻し待ち→要棚確認→通常の順。同じ受注番号の商品行は分断しない。
@@ -698,8 +745,8 @@ function 取り置き初期登録を作成本体_(options){
       if(candidate.判定==='棚戻し待ち'){
         sh2.getRange(index+2,棚確認列).clearDataValidations();
         sh2.getRange(index+2,処理列).setDataValidation(戻し規則);
-      }else if(candidate.判定==='即納'){
-        sh2.getRange(index+2,棚確認列).clearDataValidations(); // 表示専用行に棚確認は選ばせない
+      }else if(candidate.判定==='即納'||candidate.判定==='別ルート'){
+        sh2.getRange(index+2,棚確認列).clearDataValidations(); // 表示専用行(即納・別ルート)に棚確認は選ばせない
       }
     });
   }
@@ -710,13 +757,16 @@ function 取り置き初期登録を作成本体_(options){
   const 要確認数=candidates.filter(c=>c.判定==='要棚確認').length;
   const 戻し待ち数=candidates.filter(c=>c.判定==='棚戻し待ち').length;
   const 即納行数=candidates.filter(c=>c.判定==='即納').length;
+  const 別ルート行数=candidates.filter(c=>c.判定==='別ルート').length;
+  const 別ルート要対応=candidates.filter(c=>c.判定==='別ルート' && String(c.要対応||'').trim()!=='').length;
   const 全数確保=candidates.filter(c=>c.判定!=='棚戻し待ち' && (c.台帳確保数||0)>0 && c.判定!=='要棚確認').length;
-  const summary={候補:candidates.length,要棚確認:要確認数,棚戻し待ち:戻し待ち数,即納表示:即納行数,入力済};
+  const summary={候補:candidates.length,要棚確認:要確認数,棚戻し待ち:戻し待ち数,即納表示:即納行数,別ルート表示:別ルート行数,入力済};
   if(!silent) ui.alert('取り置き登録を更新しました',
     '候補'+candidates.length+'行 ／ 🔴棚戻し待ち '+戻し待ち数+'行 ／ ⚠️要棚確認 '+要確認数+'行\n\n'
     +(戻し待ち数? '赤い行は棚を確認し、右端の「処理」で「棚へ戻した」または「現物なし」を選びます。\n':'')
     +'黄色の行は、現物があれば「現物取り置き数量」、無ければ「棚確認」を入力します。\n'
     +(即納行数? '水色の「即納」行は表示専用です(そのまま出荷する現物。数量は入れません)。\n':'')
+    +(別ルート行数? '橙色の「別ルート(台湾/中国)」行は表示専用です。確保は受注明細に入荷日を入れてください'+(別ルート要対応? '（入荷日未入力 '+別ルート要対応+'行）':'')+'。\n':'')
     +'最後に「取り置き登録を反映」を1回押してください。\n'
     +(全数確保? '\n「台帳確保済み」'+全数確保+'行は④が確保済みのため数量入力不要です。':'')
     +(入力済? '\n入力済みの数量'+入力済+'行は引き継いでいます。':''),ui.ButtonSet.OK);
