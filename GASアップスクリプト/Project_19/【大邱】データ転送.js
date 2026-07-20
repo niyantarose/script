@@ -655,15 +655,21 @@ function 大邱_EMSリストへ転送() {
     }
 
     SpreadsheetApp.flush();
-    // 発送日では並べ替えない（EMS大邱作業データと同じ追記順を保つ）
     let filled = 0;
     if (typeof EMSリスト_購入No自動補完 === 'function') {
       filled = EMSリスト_購入No自動補完(true) || 0; // silent
     }
+    // 同じ発送日・同じ箱(EMS番号)を隣同士に集める：発送日→EMS番号→No の昇順で自動整列。
+    // 大邱EMSも発送日→EMS番号昇順で並ぶため、この順で大邱の並びとほぼ一致する。
+    // （2026-06-30に一旦廃止したが、バラバラ追記になり手動で毎回並べ替える手間があったため
+    //   転送後の自動整列として復活。手押しの「発送日基準」ボタンと同じ処理。）
+    if (typeof EMSリスト_発送日基準に並べ替え_エディタ実行 === 'function') {
+      EMSリスト_発送日基準に並べ替え_エディタ実行();
+    }
     if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
       発注_EMS発送数数式を一括修正();
     }
-    ss.toast(`EMSリストへ追記 ${rows.length}件 / 購入No更新 ${fixes.length}件 / 日付更新 ${updatedDates}件 / 購入No補完 ${filled}件 / 大邱と差分 ${diffs.length}件（未反映）`);
+    ss.toast(`EMSリストへ追記 ${rows.length}件 / 購入No更新 ${fixes.length}件 / 日付更新 ${updatedDates}件 / 購入No補完 ${filled}件 / 発送日基準で整列済 / 大邱と差分 ${diffs.length}件（未反映）`);
   } finally {
     lock.releaseLock();
   }
@@ -1195,12 +1201,16 @@ function EMSリスト_大邱から不足行を確認して復元() {
     }
 
     SpreadsheetApp.flush();
-    // 発送日では並べ替えない（EMS大邱作業データと同じ追記順を保つ）
+    // 同じ発送日・同じ箱(EMS番号)を隣同士に集める：発送日→EMS番号→No の昇順で自動整列。
+    // （転送と同様、2026-06-30に廃止したものを大邱の並びに合わせるため復活。）
+    if (typeof EMSリスト_発送日基準に並べ替え_エディタ実行 === 'function') {
+      EMSリスト_発送日基準に並べ替え_エディタ実行();
+    }
     if (typeof 発注_EMS発送数数式を一括修正 === 'function') {
       発注_EMS発送数数式を一括修正();
     }
 
-    ss.toast(`EMSリスト同期: 追記 ${rows.length}件 / 削除 ${extraRows.length}件 / EMS番号修正 ${trackUpdates.length}件 / 商品コード修正 ${codeUpdates.length}件 / 数量修正 ${qtyUpdates.length}件 / 日付更新 ${updatedDates}件`);
+    ss.toast(`EMSリスト同期: 追記 ${rows.length}件 / 削除 ${extraRows.length}件 / EMS番号修正 ${trackUpdates.length}件 / 商品コード修正 ${codeUpdates.length}件 / 数量修正 ${qtyUpdates.length}件 / 日付更新 ${updatedDates}件 / 発送日基準で整列済`);
   } finally {
     lock.releaseLock();
   }
