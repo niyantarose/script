@@ -16,7 +16,18 @@ function 取り置き_商品コード_(sku, code){
   return normCode_(sku).replace(/[AB]$/,'');
 }
 
+// 行キー = 受注番号|照合コード。照合コードはSKU優先(枝番a/bもそのまま)、SKUが無い商品だけ商品コード。
+// 商品コードとSKUの両方を比較に使うと親コード/バリエーションの表記差で照合が外れるため使わない(2026-07-21)
 function 取り置き_行キー_(order){
+  const ban=String(order&&order.ban||order&&order.受注番号||'').trim();
+  const sku=normCode_(order&&order.sku||order&&order.SKU);
+  const code=normCode_(order&&order.code||order&&order.商品コード);
+  return ban+'|'+(sku||code);
+}
+
+// 取置IDの組成部(従来の3部形式)。台帳に保存済みのID(INIT|/即納|/別ルート|)との互換のため、
+// 照合用の行キーとは分離して従来形式を維持する(IDは不透明な識別子・照合には使わない)
+function 取り置き_ID部_(order){
   return [
     String(order&&order.ban||order&&order.受注番号||'').trim(),
     取り置き_商品コード_(order&&order.sku||order&&order.SKU, order&&order.code||order&&order.商品コード),

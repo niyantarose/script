@@ -227,7 +227,7 @@ function 取り置き_初期候補_(orders, sources){
   const byKey={}, keys=[];
   (orders||[]).forEach(o=>{
     const state=stateOf(o.ban); if(!state) return;
-    const key=取り置き_行キー_(o);
+    const key=取り置き_ID部_(o); // 取置ID(INIT|…)の互換のため従来3部形式で束ねる
     if(!byKey[key]){ byKey[key]={o,qty:0,state,入荷日:'',EMS:'',予約:false,ステータス一覧:[]}; keys.push(key); }
     byKey[key].qty+=Number(o.qty)||0;
     // 旧帳簿の着済情報(入荷日スタンプ/EMS番号)。棚を確認すべき行の目印として表示する
@@ -319,7 +319,7 @@ function 取り置き_即納行を付与_(candidates, sokunoOrders, sheetRows){
   const byKey={}, keys=[];
   (sokunoOrders||[]).forEach(o=>{
     if(!bans.has(String(o.ban))) return;
-    const key=取り置き_行キー_(o);
+    const key=取り置き_ID部_(o); // 取置ID(即納|…)の互換のため従来3部形式で束ねる
     if(!byKey[key]){ byKey[key]={o,qty:0,ステータス一覧:[]}; keys.push(key); }
     byKey[key].qty+=Number(o.qty)||0;
     const status=String(o.ステータス||'').trim();
@@ -344,7 +344,7 @@ function 取り置き_別ルート行を付与_(candidates, betsuOrders, sheetRo
   const byKey={}, keys=[];
   (betsuOrders||[]).forEach(o=>{
     if(!bans.has(String(o.ban))) return;
-    const key=取り置き_行キー_(o);
+    const key=取り置き_ID部_(o); // 取置ID(別ルート|…)の互換のため従来3部形式で束ねる
     if(!byKey[key]){ byKey[key]={o,qty:0,入荷日:'',ステータス一覧:[]}; keys.push(key); }
     byKey[key].qty+=Number(o.qty)||0;
     if(!byKey[key].入荷日){ const d=ymd_(o.入荷日); if(d) byKey[key].入荷日=d; }

@@ -694,7 +694,7 @@ function 全件再計算を反映本体_(){
     if(plan.applyBlocked) throw new Error('プレビューに反映停止条件があります。「全件再計算_要確認」を解消してプレビューを作り直してください。');
     stage='入力署名の再確認';
     const current=全件再計算_入力を読む_();
-    if(current.signature!==plan.signature) throw new Error('プレビュー後にYahoo・EMS・発送済み・受注明細のいずれかが変わりました。プレビューを作り直してください。');
+    if(current.signature!==plan.signature) throw new Error('プレビュー後にYahoo・EMS・発送済み・受注明細・取り置き台帳・移動台帳のいずれかが変わりました。プレビューを作り直してください。');
     const unresolved=全件再計算_未解決台帳作業_(current.ledger);
     if(unresolved.length) throw new Error('未確認のキャンセル戻しが'+unresolved.length+'件あります。物理作業を完了してから再プレビューしてください。');
 

@@ -278,6 +278,19 @@ test('台帳行: 商品コードは受注側の親コードを保存し行キー
     context.取り置き_行キー_({受注番号: '10116537', 商品コード: 'JMEE-SPKZ-04', SKU: 'JMEE-SPKZ-04-13b'}));
 });
 
+test('行キー: SKUがあればSKUだけで照合し商品コードの親/バリエーション差に影響されない', () => {
+  // ユーザー提案(2026-07-21): 商品コードとSKUの2つを比較に使う理由はない。SKU優先・無い時だけ商品コード
+  const orderKey = context.取り置き_行キー_({受注番号: '10116537', 商品コード: 'JMEE-SPKZ-04', SKU: 'JMEE-SPKZ-04-13b'});
+  assert.strictEqual(orderKey, context.取り置き_行キー_({受注番号: '10116537', 商品コード: 'JMEE-SPKZ-04-13', SKU: 'JMEE-SPKZ-04-13b'}));
+  assert.strictEqual(orderKey, context.取り置き_行キー_({ban: '10116537', code: '', sku: 'JMEE-SPKZ-04-13b'}));
+  // SKUが無い商品(a/b運用外の直販など)は商品コードで照合
+  const noSku = context.取り置き_行キー_({受注番号: '9001', 商品コード: '021224photo01', SKU: ''});
+  assert.strictEqual(noSku, context.取り置き_行キー_({ban: '9001', code: '021224photo01', sku: ''}));
+  assert.notStrictEqual(noSku, context.取り置き_行キー_({ban: '9001', code: '021224photo02', sku: ''}));
+  // SKUあり同士でSKUが違えば別キー
+  assert.notStrictEqual(orderKey, context.取り置き_行キー_({ban: '10116537', code: 'JMEE-SPKZ-04', sku: 'JMEE-SPKZ-04-12b'}));
+});
+
 test('ブロック台帳行除外: SKU正規化で判定し親コード保存でもブロックSKUの取り置きを落とす', () => {
   const rows = [
     {状態: '取り置き中', 取置元種別: 'EMS', 商品コード: 'JMEE-SPKZ-04', SKU: 'JMEE-SPKZ-04-13b'},
