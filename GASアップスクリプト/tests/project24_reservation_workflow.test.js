@@ -41,6 +41,16 @@ function test(name, fn) {
   }
 }
 
+test('代引き判定: 支払方法の値で代引きを見分ける(列が無い時はfalse=従来動作)', () => {
+  assert.strictEqual(context.代引き支払_('代金引換'), true);
+  assert.strictEqual(context.代引き支払_('代引き'), true);
+  assert.strictEqual(context.代引き支払_('商品代引'), true);
+  assert.strictEqual(context.代引き支払_('クレジットカード'), false);
+  assert.strictEqual(context.代引き支払_('銀行振込'), false);
+  assert.strictEqual(context.代引き支払_(''), false);
+  assert.strictEqual(context.代引き支払_(null), false);
+});
+
 test('一覧に載る受注だけを初期候補にし、現在の状態ラベルを付ける', () => {
   const orders=[
     {ban:'101',code:'AAA',sku:'AAAb',qty:2,kbn:'取り寄せ'},

@@ -389,6 +389,7 @@ function 列マップ_(sh){
     選択肢: find('項目・選択肢','項目選択肢'),
     個数: find('個数'),
     入金: find('入金日'),
+    支払: find('お支払い方法','支払方法','支払い方法','決済方法'),
     入荷: find('入荷日'),
     EMS: find('EMS番号'),
     入荷予定: find('入荷予定'),
@@ -851,6 +852,7 @@ const HIKIATE_CFG = {
   E_コード: 1, E_数量: 2,
 
   色_緑:'#b7e1cd', 色_黄:'#fce8b2', 色_グレー:'#efefef', 色_橙:'#fcd5b4', 色_赤:'#f4cccc', 色_水:'#cfe2f3', 色_着:'#d9d2e9',
+  色_代引:'#ffd966', // 代引き注文の受注番号マーク(入金前でも発送対象。未入金の赤と区別する濃いめ黄)
   色_ダ引当:'#ead1dc', 色_ダ着:'#d5a6bd', // ダニエル引当=ピンク系(メインの黄と区別)。ダ着=濃いめピンク(ダニエルの着済)
   色_今着:'#b4a7d6' // 今日到着(入荷日=②実行日=今回入荷)=濃いめ紫で目立たせる。過去の着済は薄ラベンダー(色_着)
 };
@@ -1321,6 +1323,11 @@ function 注文出荷準備OK_(arr){
   const active=(arr||[]).filter(l=>l && !l.キャンセル);
   return active.length>0 && active.every(l=>l.kbn==='即納'||(l.kbn==='取り寄せ'&&残必要計算_(l)===0));
 }
+// 代引き(代金引換)注文の判定。お支払い方法列の値で見る。列が無いシートでは呼び出し側でfalse=従来動作
+function 代引き支払_(value){
+  return /代引|代金引換|コレクト/.test(String(value==null?'':value));
+}
+
 function 注文区分判定_(arr, paid, 入荷消費OK){
   const active=(arr||[]).filter(l=>l && !l.キャンセル);
   const 黄色あり=active.some(l=>今回行判定_(l, 入荷消費OK));
@@ -1444,12 +1451,14 @@ function 引当切替差分_純計算_(plannedRows,currentRows){
 }
 
 function 引当切替_計画行_(lines){
-  const paidByBan={};
-  (lines||[]).forEach(l=>{ if(l&&!l.キャンセル&&l.paid) paidByBan[String(l.ban||'')]=true; });
+  const paidByBan={}, codByBan={};
+  (lines||[]).forEach(l=>{ if(!l||l.キャンセル) return;
+    if(l.paid) paidByBan[String(l.ban||'')]=true;
+    if(l.代引き) codByBan[String(l.ban||'')]=true; });
   return (lines||[]).filter(l=>l&&!l.キャンセル).map(l=>({
     ban:String(l.ban||''),氏名:String(l.氏名||''),code:注文一覧表示コード_(l,false,null),sku:String(l.sku||''),
     商品名:String(l.商品名||''),qty:Number(l.qty)||0,
-    state:引当行状態_(l,HIKIATE_CFG).st+(paidByBan[String(l.ban||'')]?'':'・入金待ち'),ems:String(l.箱EMS||'')
+    state:引当行状態_(l,HIKIATE_CFG).st+(paidByBan[String(l.ban||'')]?'':(codByBan[String(l.ban||'')]?'・代引き':'・入金待ち')),ems:String(l.箱EMS||'')
   }));
 }
 
@@ -1543,7 +1552,8 @@ function 引当実行_本体_(options){
       code, sku:String(row[M.SKU]||'').trim(), qty, kbn,
       日時: c日時>=0? 日付値_(row[c日時]) : null,
       メモ: M.メモ>=0? String(row[M.メモ]==null?'':row[M.メモ]).trim() : '',
-      paid:入金済み_(row[M.入金]), 入荷, 入荷日値, 着, alloc:0, 引当成立:false, キャンセル:qty<=0,
+      paid:入金済み_(row[M.入金]), 代引き:M.支払>=0 && 代引き支払_(row[M.支払]),
+      入荷, 入荷日値, 着, alloc:0, 引当成立:false, キャンセル:qty<=0,
       別ルート, 別ルート済数量: 別ルート && 入荷? qty : 0 });
   }
 
@@ -1641,13 +1651,16 @@ function 引当実行_本体_(options){
   lines.forEach(l=> (byOrder[l.ban]=byOrder[l.ban]||[]).push(l));
   const paidOrder={};
   Object.keys(byOrder).forEach(ban=>{ paidOrder[ban]=byOrder[ban].some(l=>l.paid); });
+  // 代引きは入金前でも発送対象(支払いは受け取り時)。分類だけ入金済み扱いにし、表示は黄色+「代引」で区別する
+  const codOrder={};
+  Object.keys(byOrder).forEach(ban=>{ codOrder[ban]=byOrder[ban].some(l=>l.代引き); });
 
   // 注文を分類:
   //  出荷可能=新規割当あり&全行出せる&入金済 / 希望日待ち=全行出せるが希望日が未来
   //  出荷GO未入金=全行出せるが未入金 / 部分在庫=新規割当あり+不足あり / 引当待ち=新規割当なし
-  const 区分け=ban=> 注文区分判定_(byOrder[ban], paidOrder[ban], 入荷消費OK_);
+  const 区分け=ban=> 注文区分判定_(byOrder[ban], paidOrder[ban]||codOrder[ban], 入荷消費OK_);
   // 引当待ちの「発送可否」(K列): 揃っているのに今回分でない=実は発送できる注文を見分ける
-  const 発送可否_=ban=> 発送可否判定_(byOrder[ban], paidOrder[ban]);
+  const 発送可否_=ban=> 発送可否判定_(byOrder[ban], paidOrder[ban]||codOrder[ban]);
 
   // 出力(行の色=到着状況。未入金は受注番号セルだけ赤)
   // 取り置きメモ(受注明細の手書き列)は各出力の末尾に転記する(毎回作り直しても消えない見せ方)
@@ -1657,16 +1670,16 @@ function 引当実行_本体_(options){
   const seen=new Set(), seq=[]; lines.forEach(l=>{ if(!seen.has(l.ban)){ seen.add(l.ban); seq.push(l.ban);} });
   const waitRows=[], partRows=[], keepRows=[], holdRows=[], shipRows=[];
   seq.forEach(ban=>{
-    const b=区分け(ban), paid=paidOrder[ban];
+    const b=区分け(ban), paid=paidOrder[ban], 代引=codOrder[ban];
     const target = b==='ship'? shipRows : b==='keep'? keepRows : b==='hold'? holdRows : b==='part'? partRows : waitRows;
     const 可否 = (b==='wait')? 発送可否_(ban) : null; // 引当待ちのみK列に発送可否
     byOrder[ban].forEach(l=>{
       const 状態=引当行状態_(l, cfg, 入荷消費OK_);
       let st=状態.st, color=状態.color;
-      if(!l.キャンセル && !paid) st+='・入金待ち';
+      if(!l.キャンセル && !paid) st+=(代引?'・代引き':'・入金待ち');
       const stockKey=keyInStock(l);
       const 表示コード=注文一覧表示コード_(l, l.kbn==='取り寄せ' && l.入荷 && 入荷消費OK_(l), stockKey);
-      const vals=[ban,l.氏名,l.届,表示コード,l.商品名,l.qty,l.kbn,l.入荷日値,paid?'済':'未',st,l.箱EMS||''];
+      const vals=[ban,l.氏名,l.届,表示コード,l.商品名,l.qty,l.kbn,l.入荷日値,paid?'済':(代引?'代引':'未'),st,l.箱EMS||''];
       if(b==='wait') vals.push(可否);
       vals.push(l.計画後取り置き中数量||'');
       vals.push(l.メモ||'');
@@ -1683,7 +1696,7 @@ function 引当実行_本体_(options){
   // ===== 受注明細の色分け: 即納=水/新規割当=黄/既存取り置き=薄紫/未割当=白/指定なし=橙 =====
   const recvStart=受注hdr+1, recvLast=recv.getLastRow();
   if(recvLast>=recvStart){
-    const nc=recv.getLastColumn(), rowColor={}, rowUnpaid={}, rowQty={};
+    const nc=recv.getLastColumn(), rowColor={}, rowUnpaid={}, rowCod={}, rowQty={};
     lines.forEach(l=>{
       let col=null;
       if(l.キャンセル) col=cfg.色_グレー;       // 個数0=キャンセル
@@ -1694,7 +1707,8 @@ function 引当実行_本体_(options){
         // else: 在庫待ち=白(未入金は受注番号だけ赤)
       }
       rowColor[l.i]=col;
-      rowUnpaid[l.i]=!paidOrder[l.ban];
+      rowUnpaid[l.i]=!paidOrder[l.ban] && !codOrder[l.ban];
+      rowCod[l.i]=!paidOrder[l.ban] && codOrder[l.ban];
       rowQty[l.i]=l.qty;
     });
     const bg=[];
@@ -1702,6 +1716,7 @@ function 引当実行_本体_(options){
       const idx=r-1, c=rowColor[idx];
       const arr=new Array(nc).fill(c!==undefined?c:null);
       if(rowUnpaid[idx]) arr[M.番号]=cfg.色_赤;                 // 未入金は受注番号セルを赤
+      else if(rowCod[idx]) arr[M.番号]=cfg.色_代引;             // 代引きは黄(入金前でも発送対象)
       if(rowQty[idx]>=2 && M.個数>=0) arr[M.個数]=cfg.色_緑;    // 個数2以上は個数セル緑
       bg.push(arr);
     }
@@ -1740,7 +1755,7 @@ function 引当実行_本体_(options){
       const vals=['到着済',s.arrival,s.code,s.qty,s.ems,s.surplus>0?s.surplus:'']
         .concat(consumers.map(c=>c.ban+(c.qty>1?'*'+c.qty:'')));
       const bg=[color,color,color,color,color,color]
-        .concat(consumers.map(c=>paidOrder[c.ban]?(c.current?cfg.色_黄:cfg.色_着):cfg.色_赤));
+        .concat(consumers.map(c=>(paidOrder[c.ban]||codOrder[c.ban])?(c.current?cfg.色_黄:cfg.色_着):cfg.色_赤));
       return {vals,bg};
     });
     const maxCols=rows.reduce((m,r)=>Math.max(m,r.vals.length),EHDR.length);
@@ -1778,7 +1793,7 @@ function 引当実行_本体_(options){
   const keep=keepRows.length? new Set(keepRows.map(r=>r.ban)).size:0;
   const hold=holdRows.length? new Set(holdRows.map(r=>r.ban)).size:0;
   const part=partRows.length? new Set(partRows.map(r=>r.ban)).size:0;
-  const mp=Object.keys(paidOrder).filter(b=>!paidOrder[b]).length;
+  const mp=Object.keys(paidOrder).filter(b=>!paidOrder[b] && !codOrder[b]).length; // 代引きは入金待ちに数えない
   // 【入荷日を自動記入】EMS在庫で引き当たった未着の注文へ、その商品のEMS到着日を入荷日として書く(空欄のみ・手入力は上書きしない)
   let 自動入荷=0, 入荷表示統一=0, P入荷日訂正=0;
   if(M.入荷>=0){
@@ -2220,7 +2235,7 @@ function danielHikiateRun(emsList){
     const qty=Number(row[M.個数])||0;
     lines.push({ i, ban, sortKey:番号num_(ban), 氏名:row[M.氏名], 届:row[M.届], 商品名:row[M.商品名],
       code, sku:String(row[M.SKU]||'').trim(), qty, kbn, 入荷, 入荷日値:M.入荷>=0?row[M.入荷]:'',
-      paid:入金済み_(row[M.入金]), キャンセル:qty<=0, dAlloc:0, d成立:false });
+      paid:入金済み_(row[M.入金]), 代引き:M.支払>=0 && 代引き支払_(row[M.支払]), キャンセル:qty<=0, dAlloc:0, d成立:false });
   }
 
   // SKU突合(メインと同じ。枝番SKUは親番へ丸めない)＋ゆる照合(区切り文字を全部除去して表記ゆれを吸収)
@@ -2245,6 +2260,7 @@ function danielHikiateRun(emsList){
   // 注文ごと(入金は注文単位)
   const byOrder={}; lines.forEach(l=> (byOrder[l.ban]=byOrder[l.ban]||[]).push(l));
   const paidOrder={}; Object.keys(byOrder).forEach(b=> paidOrder[b]=byOrder[b].some(l=>l.paid));
+  const codOrder={}; Object.keys(byOrder).forEach(b=> codOrder[b]=byOrder[b].some(l=>l.代引き)); // 代引き=入金前でも発送対象
   const 完成_=arr=> arr.every(l=> l.キャンセル || l.kbn==='即納' || (l.kbn==='取り寄せ' && (l.入荷 || l.d成立)) );
 
   // ダニエルで1つでも引き当たった注文だけを「ダニエル出荷可能」へ。状態列に発送可否(発送可能/入金待ち/希望日待ち/部分)
@@ -2254,8 +2270,8 @@ function danielHikiateRun(emsList){
   seq.forEach(ban=>{
     const arr=byOrder[ban];
     if(!arr.some(l=>l.d成立)) return; // ダニエルで1つも引き当たってない注文は出さない
-    const paid=paidOrder[ban], comp=完成_(arr);
-    let 可否; if(!comp) 可否='部分'; else if(希望日未来_(arr[0].届)) 可否='希望日待ち'; else 可否= paid? '発送可能' : '入金待ち';
+    const paid=paidOrder[ban], 代引=codOrder[ban], comp=完成_(arr);
+    let 可否; if(!comp) 可否='部分'; else if(希望日未来_(arr[0].届)) 可否='希望日待ち'; else 可否= (paid||代引)? '発送可能' : '入金待ち';
     arr.forEach(l=>{
       let st, color;
       if(l.キャンセル){ st='キャンセル'; color=cfg.色_グレー; }
@@ -2264,7 +2280,7 @@ function danielHikiateRun(emsList){
       else if(l.入荷){ st='着済'; color=cfg.色_着; }
       else if(l.d成立){ st='ダニエル引当'; color=cfg.色_黄; } // ダニエルEMSが当たった=今回出せる
       else { st='在庫待ち'; color=null; }                      // ダニエルにも無い=白
-      rows.push({ vals:[ban,l.氏名,l.届,l.code,l.商品名,l.qty,l.kbn,l.入荷日値,paid?'済':'未', st+'／'+可否], color, ban, paid, qty:l.qty });
+      rows.push({ vals:[ban,l.氏名,l.届,l.code,l.商品名,l.qty,l.kbn,l.入荷日値,paid?'済':(代引?'代引':'未'), st+'／'+可否], color, ban, paid, qty:l.qty });
     });
   });
   書き出し_(ss, cfg.ダニエル出荷, HDR, rows, M.hr);
@@ -2303,7 +2319,7 @@ function danielHikiateRun(emsList){
   if(recvLast>=recvStart){
     const rng=recv.getRange(recvStart,1,recvLast-recvStart+1,nc), bgs=rng.getBackgrounds();
     const dCols=[cfg.色_ダ引当.toLowerCase(), cfg.色_ダ着.toLowerCase()];
-    const dHit={}; lines.forEach(l=>{ if(l.d成立) dHit[l.i]={paid:paidOrder[l.ban]}; });
+    const dHit={}; lines.forEach(l=>{ if(l.d成立) dHit[l.i]={paid:paidOrder[l.ban]||codOrder[l.ban]}; }); // 代引きは未入金マークにしない
     for(let r=0;r<bgs.length;r++){
       const idx=recvStart+r-1, hit=dHit[idx];
       if(hit){
