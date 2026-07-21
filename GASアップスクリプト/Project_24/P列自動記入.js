@@ -318,10 +318,33 @@ function P列シート識別子_(sheet){
   }catch(e){ return ''; }
 }
 
+// 受注明細「入荷予定」列を毎回全書き直しする。列が無ければ右端に自動作成
+// (取込_実行_はヘッダー行を保持するため、一度作れば以後の取込でも列は生き残る。値は②のたび再生成)
+function 受注明細入荷予定を更新_(plan){
+  if(!plan || plan.error || !plan.rows) return;
+  const recv=SpreadsheetApp.getActive().getSheetByName(HIKIATE_CFG.受注);
+  if(!recv) return;
+  const M=列マップ_(recv);
+  let col=M.入荷予定;
+  if(col<0){
+    col=recv.getLastColumn();
+    if(recv.getMaxColumns()<col+1) recv.insertColumnsAfter(recv.getMaxColumns(),col+1-recv.getMaxColumns());
+    recv.getRange(M.hr,col+1).setValue('入荷予定');
+  }
+  const last=recv.getLastRow(); if(last<=M.hr) return;
+  const n=last-M.hr;
+  const map=入荷予定マップ_(plan.rows, plan.lines);
+  const values=[];
+  for(let i=0;i<n;i++) values.push([map[M.hr+1+i]||'']);
+  recv.getRange(M.hr+1,col+1,n,1).setValues(values);
+}
+
 function 発注共有P列計画を反映_(plan){
-  if(plan.error || !plan.writes || (!plan.writes.length && !plan.forceWrite)) return plan.summary||plan;
-  plan.sheet.getRange(plan.startRow,plan.colP,plan.rowCount||plan.values.length,1).setValues(plan.values);
-  P列背景を反映_(plan.sheet, plan.backgrounds);
+  if(plan.error || !plan.writes) return plan.summary||plan;
+  if(plan.writes.length || plan.forceWrite)
+    plan.sheet.getRange(plan.startRow,plan.colP,plan.rowCount||plan.values.length,1).setValues(plan.values);
+  P列背景を反映_(plan.sheet, plan.backgrounds); // 背景は毎回自己修復(昇格の青→通常色を含む)
+  受注明細入荷予定を更新_(plan); // 到着日変化など、P列テキスト不変でも予定表示は変わり得る
   return Object.assign({},plan.summary,{到着実績:plan.到着実績,到着便:plan.到着便,到着実績取得済:plan.到着実績取得済});
 }
 
