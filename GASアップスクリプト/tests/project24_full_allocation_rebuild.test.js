@@ -64,15 +64,17 @@ test('GoQ最新化: 同じ最新時刻で内容が競合したキーは要確認
   assert.strictEqual(reduced.issues[0].type, '発送最新競合');
 });
 
-test('再構築: 発送日より後のEMSを発送済みに使わずSKUをブロックする', () => {
+test('再構築: 発送日より後のEMSを発送済みに使わず、供給不足は情報でブロックしない', () => {
+  // 発送供給不足=過去出荷の箱がEMSリストに無い歴史ギャップ(現物は出荷済み=今のリスクなし)。
+  // 2026-07-21計測で1532件がこれでSKU775件をブロックしていた→情報に格下げ(ブロックは到着済の物理矛盾だけ)
   const result = context.全件再計算_再構築_({
     supplies: [{ems: 'EMS-LATE', code: 'TEST-01', qty: 1, arrival: '2026-07-10', row: 2, status: '到着済'}],
     shipped: [{ban: '101', itemId: 'A', sku: 'TEST-01b', code: 'TEST-01', qty: 1, shipDate: '2026-07-01', orderDate: '2026-06-20'}],
-    currentOrders: [], yahooA: {'TEST-01': 0}
+    currentOrders: [], yahooA: {'TEST-01': 1} // 到着済1個はYahoo在庫で説明される(余りなし)
   });
-  assert.ok(result.blockedSkus.indexOf('TEST-01') >= 0);
+  assert.strictEqual(result.blockedSkus.indexOf('TEST-01'), -1);
   assert.strictEqual(result.ledgerRows.filter(r => r.状態 === '発送済み').length, 0);
-  assert.ok(result.issues.some(r => r.type === '発送供給不足'));
+  assert.ok(result.issues.some(r => r.type === '発送供給不足' && r.severity === '情報'));
 });
 
 test('再構築: GoQ発送済みの即納aはEMSを消費せず取寄せbの供給を守る', () => {
@@ -434,13 +436,14 @@ test('再構築: 一部だけ開始前在庫の注文は残り数量だけEMSへ
 });
 
 test('再構築: ブロックSKUでも開始前在庫の引き継ぎ行は消さない', () => {
+  // 到着済2個のうち開始前在庫1個で説明→残り1個が説明不能余り=ブロック。それでも棚の現物行は残る
   const result = context.全件再計算_再構築_({
-    supplies: [],
-    shipped: [{ban:'600',itemId:'IT-600',sku:'BLK-01b',code:'BLK-01',qty:1,shipDate:'2026-07-10',orderDate:'2026-07-01 09:00:00'}],
+    supplies: [{ems:'EMS-B',code:'BLK-01',qty:2,arrival:'2026-07-01',row:2,status:'到着済'}],
+    shipped: [],
     currentOrders: [], yahooA: {},
     initialHolds: [{取置ID:'INIT|601|BLK-01|BLK-01B',状態:'取り置き中',受注番号:'601',商品コード:'BLK-01',SKU:'BLK-01b',取り置き数量:1,取置元種別:'開始前在庫'}]
   });
-  assert.ok(result.blockedSkus.indexOf('BLK-01') >= 0, '発送供給不足でブロック');
+  assert.ok(result.blockedSkus.indexOf('BLK-01') >= 0, '到着済の説明不能余りでブロック');
   assert.ok(result.ledgerRows.some(r => r.取置ID === 'INIT|601|BLK-01|BLK-01B'), '棚確認済みの現物は残す');
 });
 

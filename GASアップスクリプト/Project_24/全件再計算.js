@@ -356,7 +356,9 @@ function 全件再計算_再構築_(input){
     shipped.forEach(demand=>{
       const before=skuAllocations.length,left=take(demand,'発送済み',demand.shipDate);
       skuAllocations.slice(before).forEach(a=>ledgerRows.push(全件再計算_台帳行_(a,'発送済み','全件再計算_出荷実績',++ledgerSequence)));
-      if(left>0){ issues.push({severity:'重要',type:'発送供給不足',sku,qty:left,ban:demand.ban,itemId:demand.itemId}); blocked.add(sku); }
+      // 供給の記録が無い過去出荷(EMSリストの古い行削除等)は歴史ギャップ。現物は出荷済みで現在の
+      // 出荷リスクは無いため情報に留め、SKU(=今の到着済在庫)をブロックしない(2026-07-21 計測1532件)
+      if(left>0) issues.push({severity:'情報',type:'発送供給不足',sku,qty:left,ban:demand.ban,itemId:demand.itemId});
     });
 
     immediate.forEach(demand=>{
