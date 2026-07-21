@@ -41,6 +41,24 @@ function test(name, fn) {
   }
 }
 
+test('今回入荷の黄色: 今日登録された台帳確保は次回以降の②でもcurrent(当日中は黄色が消えない)', () => {
+  // 2026-07-21実例: 確保が全件再計算の反映で作られた後の②で「新規0行」→黄色が全部消えた。
+  // 黄色=「この実行の新規」だけでなく「登録日時が当日」も含める(翌日から薄紫に落ちる従来感覚は維持)
+  const supplies = [{ems: 'EG1', code: 'AAA', sourceCode: 'AAA', qty: 2, arrival: '2026-07-21'}];
+  const today = new Date();
+  const old = new Date(today.getTime() - 3 * 86400000);
+  const ledger = [
+    {状態: '取り置き中', 受注番号: '101', 商品コード: 'AAA', SKU: 'AAAb', 取り置き数量: 1,
+     取置元種別: 'EMS', 元EMS番号: 'EG1', 元EMS商品コード: 'AAA', 取置ID: 'R1', 登録日時: today},
+    {状態: '取り置き中', 受注番号: '102', 商品コード: 'AAA', SKU: 'AAAb', 取り置き数量: 1,
+     取置元種別: 'EMS', 元EMS番号: 'EG1', 元EMS商品コード: 'AAA', 取置ID: 'R2', 登録日時: old}
+  ];
+  const plan = context.引当出力計画_(supplies, {newRows: [], surplus: []}, ledger);
+  const consumers = plan.supplies[0].consumers;
+  assert.strictEqual(consumers.find(c => c.ban === '101').current, true); // 今日の登録=黄色
+  assert.strictEqual(consumers.find(c => c.ban === '102').current, false); // 過去の確保=薄紫のまま
+});
+
 test('代引き判定: 支払方法の値で代引きを見分ける(列が無い時はfalse=従来動作)', () => {
   assert.strictEqual(context.代引き支払_('代金引換'), true);
   assert.strictEqual(context.代引き支払_('代引き'), true);

@@ -1387,11 +1387,13 @@ function 引当出力計画_(supplies,allocationPlan,projectedLedger){
     byKey[key].qty+=Number(s.qty)||0;
   });
   const newIds=new Set((allocationPlan&&allocationPlan.newRows||[]).map(r=>String(r.取置ID||'')));
+  const 当日=ymd_(new Date()); // 黄色=「この実行の新規」だけだと、反映や前の②が作った当日確保が次の②で薄紫に落ちて見失う
   (projectedLedger||[]).forEach(r=>{
     if(String(r.状態||'')!=='取り置き中' || !実EMS番号_(r.元EMS番号)) return;
     const sourceKey=取り置き_供給キー_(r.元EMS番号,r.元EMS商品コード||r.商品コード),owner=String(r.受注番号||'').trim();
     const target=byKey[sourceKey+'|'+owner] || byKey[sourceKey+'|'] || ((bySource[sourceKey]||[]).length===1?bySource[sourceKey][0]:null);
-    if(target) target.consumers.push({ban:String(r.受注番号||''),qty:Number(r.取り置き数量)||0,current:newIds.has(String(r.取置ID||'')),row:r});
+    if(target) target.consumers.push({ban:String(r.受注番号||''),qty:Number(r.取り置き数量)||0,
+      current:newIds.has(String(r.取置ID||'')) || (!!当日 && ymd_(r.登録日時)===当日),row:r});
   });
   (allocationPlan&&allocationPlan.surplus||[]).forEach(s=>{
     const key=取り置き_供給キー_(s.ems,s.sourceCode||s.code)+'|'+String(s.directBan||'').trim(),target=byKey[key];
