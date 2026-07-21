@@ -265,6 +265,31 @@ test('再構築: Yahoo a在庫が負のSKUはYahoo数量不正としてSKU単位
   assert.strictEqual(result.ledgerRows.filter(r => r.状態 === '取り置き中' && r.受注番号 === 'N01').length, 1);
 });
 
+test('台帳行: 商品コードは受注側の親コードを保存し行キーが受注明細行と一致する(JMEE-SPKZ形)', () => {
+  // 実例(2026-07-21): 受注明細は商品コード=JMEE-SPKZ-04(親)/SKU=JMEE-SPKZ-04-13b。
+  // 台帳行が商品コードに正規化SKU(バリエーション水準)を持つと行キー照合(孤児/タグ注意/必要数)が全て外れる
+  const demand = {ban: '10116537', itemId: '1720-1-1', row: 681, code: 'JMEE-SPKZ-04', sku: 'JMEE-SPKZ-04-13b', qty: 1};
+  const supply = {ems: 'EG000000001KR', row: 100, code: 'JMEE-SPKZ-04-13', sourceCode: 'JMEE-SPKZ-04-13', arrival: '2026-06-20'};
+  const row = context.全件再計算_台帳行_({demand, supply, sku: 'JMEE-SPKZ-04-13', qty: 1}, '取り置き中', 'EMS', 1);
+  assert.strictEqual(row.商品コード, 'JMEE-SPKZ-04');
+  assert.strictEqual(row.SKU, 'JMEE-SPKZ-04-13b');
+  assert.strictEqual(
+    context.取り置き_行キー_(row),
+    context.取り置き_行キー_({受注番号: '10116537', 商品コード: 'JMEE-SPKZ-04', SKU: 'JMEE-SPKZ-04-13b'}));
+});
+
+test('ブロック台帳行除外: SKU正規化で判定し親コード保存でもブロックSKUの取り置きを落とす', () => {
+  const rows = [
+    {状態: '取り置き中', 取置元種別: 'EMS', 商品コード: 'JMEE-SPKZ-04', SKU: 'JMEE-SPKZ-04-13b'},
+    {状態: '取り置き中', 取置元種別: '開始前在庫', 商品コード: 'JMEE-SPKZ-04', SKU: 'JMEE-SPKZ-04-13b'},
+    {状態: '取り置き中', 取置元種別: 'EMS', 商品コード: 'AAA', SKU: 'AAAb'},
+    {状態: '発送済み', 取置元種別: 'EMS', 商品コード: 'JMEE-SPKZ-04', SKU: 'JMEE-SPKZ-04-13b'}
+  ];
+  const out = context.全件再計算_ブロック台帳行除外_(rows, ['JMEE-SPKZ-04-13']);
+  assert.deepStrictEqual(out.map(r => r.取置元種別 + ':' + r.状態),
+    ['開始前在庫:取り置き中', 'EMS:取り置き中', 'EMS:発送済み']);
+});
+
 test('反映前検査: 未確認・現物ありのキャンセル戻しは全件置換を止める', () => {
   const rows = [
     {取置ID:'A',状態:'キャンセル戻し',戻し処理結果:'未確認'},

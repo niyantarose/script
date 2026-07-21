@@ -191,10 +191,20 @@ function 全件再計算_台帳行_(allocation, state, source, sequence){
   const kind=state==='発送済み'?'SHIP':'ACTIVE';
   return {
     取置ID:['REBUILD',kind,String(d.ban||''),String(d.itemId||d.row||''),String(s.ems||''),String(s.row||''),String(sequence||0)].join('|'),
-    状態:state,受注番号:String(d.ban||''),商品コード:String(a.sku||''),SKU:String(d.sku||''),
+    // 商品コードは受注側の親コード。行キー(受注番号|商品コード|SKU)の照合先(受注明細/GoQ CSV/通常登録の台帳行)が
+    // 全て親コードなので、正規化SKUを入れると多バリエーション商品(JMEE-SPKZ等)だけ孤児/タグ注意/必要数が外れる
+    状態:state,受注番号:String(d.ban||''),商品コード:String(d.code||a.sku||''),SKU:String(d.sku||''),
     取り置き数量:a.qty,取置元種別:source,元EMS番号:String(s.ems||''),元EMS商品コード:String(s.sourceCode||s.code||''),元取置ID:'',
     登録日時:'',更新日時:'',戻し処理結果:'','終了理由・メモ':'全件再計算v3 / 元EMS到着日='+String(s.arrival||'')
   };
+}
+
+// ブロックSKUの取り置き中行を落とす(開始前在庫は現物事実なので残す)。
+// 商品コードは親コード保存になったため、ブロックSKU(バリエーション水準)とはSKUの正規化で突き合わせる
+function 全件再計算_ブロック台帳行除外_(ledgerRows, blockedSkus){
+  const list=blockedSkus||[];
+  return (ledgerRows||[]).filter(row=>row.状態!=='取り置き中' || row.取置元種別==='開始前在庫' ||
+    list.indexOf(全件再計算_SKU正規化_(row.SKU||row.商品コード,'GoQ'))<0);
 }
 
 function 全件再計算_台帳到着日_(row){
@@ -523,7 +533,7 @@ function 全件再計算_計画を作る_(){
     result.issues.push(issue); if(issue.sku && result.blockedSkus.indexOf(issue.sku)<0) result.blockedSkus.push(issue.sku);
   });
   result.blockedSkus.sort();
-  result.ledgerRows=result.ledgerRows.filter(row=>row.状態!=='取り置き中' || row.取置元種別==='開始前在庫' || result.blockedSkus.indexOf(row.商品コード)<0);
+  result.ledgerRows=全件再計算_ブロック台帳行除外_(result.ledgerRows,result.blockedSkus);
   source.unresolved.forEach(row=>result.issues.push({severity:'停止',type:'未解決キャンセル戻し',sku:'',qty:Number(row.取り置き数量)||0,ban:String(row.受注番号||''),detail:String(row.取置ID||'')}));
   const unidentifiedCritical=result.issues.filter(issue=>(issue.severity==='重要'||issue.severity==='停止') && !String(issue.sku||'').trim());
   return {
