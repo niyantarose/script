@@ -157,6 +157,58 @@ function P列処理対象EMS_(status){
   return String(status==null?'':status).trim()==='到着済';
 }
 
+// 未着(発送前・輸送中・ステータス空欄含む)の計画対象。確定(②)には使わずP列の先行記入だけに使う
+function P列計画対象EMS_(status){
+  const s=String(status==null?'':status).trim();
+  return s!=='到着済' && s!=='在庫反映済み';
+}
+
+// 供給の消費順: 確定対象(到着済)を先に、計画対象(未着)を後に。ブロックSKUと対象外は除く
+function P列計画行順_(rows){
+  const eligible=(rows||[]).filter(r=>r && (r.対象||r.計画) && !r.全件再計算ブロック);
+  return eligible.filter(r=>r.対象).concat(eligible.filter(r=>!r.対象));
+}
+
+// 未着便の入荷予定表記: 「7/23(…9766)+7/26(…9011)ほか」(到着日昇順・最大2便・EMS番号は数字部末尾4桁)
+function 入荷予定表記_(boxes){
+  const seen={}, list=[];
+  (boxes||[]).forEach(b=>{
+    const arrival=String(b&&b.arrival||''), ems=String(b&&b.ems||'');
+    const key=ems+'|'+arrival;
+    if(seen[key]) return; seen[key]=1; list.push({arrival:arrival,ems:ems});
+  });
+  list.sort((a,b)=>a.arrival<b.arrival?-1:a.arrival>b.arrival?1:0);
+  const fmt=b=>{
+    const digits=b.ems.match(/(\d{4})\D*$/);
+    const tail=digits?'…'+digits[1]:b.ems;
+    const d=b.arrival.match(/^\d{4}-(\d{2})-(\d{2})$/);
+    return (d? Number(d[1])+'/'+Number(d[2]) : '')+'('+tail+')';
+  };
+  return list.slice(0,2).map(fmt).join('+')+(list.length>2?'ほか':'');
+}
+
+// 計画対象(未着)行の割当entriesを、受注明細の行番号→入荷予定表記のマップへ変換する純粋関数
+function 入荷予定マップ_(planRows, lines){
+  const byBanCode={}; // 受注番号|正規化コード → [{arrival,ems}]
+  (planRows||[]).forEach(r=>{
+    if(!r || !r.計画) return;
+    (r.entries||[]).forEach(e=>{
+      if(!e || !e.ban) return;
+      const key=String(e.ban)+'|'+String(r.code||'');
+      (byBanCode[key]=byBanCode[key]||[]).push({arrival:String(r.arrival||''),ems:String(r.ems||'')});
+    });
+  });
+  const out={};
+  (lines||[]).forEach(l=>{
+    if(!l || !l.row) return;
+    const keys=l.keys instanceof Set?Array.from(l.keys):(l.keys||[]);
+    let boxes=[];
+    keys.forEach(k=>{ boxes=boxes.concat(byBanCode[String(l.ban)+'|'+k]||[]); });
+    if(boxes.length) out[l.row]=入荷予定表記_(boxes);
+  });
+  return out;
+}
+
 // 実EMSで実際に到着した日付を商品キーごとに保持する。
 // 「在庫反映済み」も含めることで、履歴導入前の旧便を新しい便へ付け替えないための根拠にする。
 function EMS到着実績Map_(rows){
