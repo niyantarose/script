@@ -157,6 +157,8 @@ function P列処理対象EMS_(status){
   return String(status==null?'':status).trim()==='到着済';
 }
 
+const P列予定色='#c9daf8'; // 未着行の先行記入(予定)の印
+
 // 未着(発送前・輸送中・ステータス空欄含む)の計画対象。確定(②)には使わずP列の先行記入だけに使う
 function P列計画対象EMS_(status){
   const s=String(status==null?'':status).trim();
@@ -167,6 +169,19 @@ function P列計画対象EMS_(status){
 function P列計画行順_(rows){
   const eligible=(rows||[]).filter(r=>r && (r.対象||r.計画) && !r.全件再計算ブロック);
   return eligible.filter(r=>r.対象).concat(eligible.filter(r=>!r.対象));
+}
+
+// 【コード不一致の名指し救済】箱コードが説明文(핫 토픽…等)でどの注文とも一致せず、
+// P列に受注番号が手書きされている行は、その番号へのdirect名指しとして扱い、名指しを消さない。
+// (コードが注文と一致する行の手動Pは従来通り計画が正=上書きされ得る)。未着(計画対象)行にも適用
+function P列名指し救済適用_(rows, 全注文キー){
+  (rows||[]).forEach(r=>{
+    if(!r || (!r.対象 && !r.計画) || r.directBan) return;
+    const ban=P手動名指し解析_(r.pOriginal);
+    if(!ban) return;
+    if(全注文キー.has(r.code)) return; // コードが一致する=通常ルートで扱う
+    r.directBan=ban; r.手動名指し=true;
+  });
 }
 
 // 未着便の入荷予定表記: 「7/23(…9766)+7/26(…9011)ほか」(到着日昇順・最大2便・EMS番号は数字部末尾4桁)
@@ -349,7 +364,7 @@ function 発注共有P列計画_(options){
     if(!keys.size) continue;
     const line={
       ban, code, sku, qty, kbn:'取り寄せ', キャンセル:false,
-      keys, need:0, date, seq:lines.length
+      keys, need:0, date, seq:lines.length, row:i+1
     };
     line.need=取り置き_今回必要数_(line,ledgerSummary);
     lines.push(line);
@@ -403,24 +418,15 @@ function 発注共有P列計画_(options){
     const pOriginal=pColumn[i][0];
     rows.push({
       i,ems:emsNo,code:normCode_(code),sourceCode:code,directBan:注文番号在庫コード_(code)||タグ受注番号_(code),arrival:ymd_(at(row,colA)),qty:Number(at(row,colQ))||0,
-      pOriginal,対象:P列処理対象EMS_(at(row,colSt)),status,全件再計算ブロック:rebuildBlocked.has(全件再計算_SKU正規化_(code,'EMS'))
+      pOriginal,対象:P列処理対象EMS_(status),計画:P列計画対象EMS_(status),status,全件再計算ブロック:rebuildBlocked.has(全件再計算_SKU正規化_(code,'EMS'))
     });
   }
   const 到着実績=到着実績取得済?EMS到着実績Map_(到着実績Rows):{};
   const 到着便=到着実績取得済?EMS到着便Map_(到着実績Rows):{};
 
-  // 【コード不一致の名指し救済】箱コードが説明文(핫 토픽…等)でどの注文とも一致せず、
-  // P列に受注番号が手書きされている行は、その番号へのdirect名指しとして扱い、名指しを消さない。
-  // (コードが注文と一致する行の手動Pは従来通り計画が正=上書きされ得る)
   const 全注文キー=new Set();
   lines.forEach(l=>{ (l.keys instanceof Set?Array.from(l.keys):l.keys||[]).forEach(k=>全注文キー.add(k)); });
-  rows.forEach(r=>{
-    if(!r.対象 || r.directBan) return;
-    const ban=P手動名指し解析_(r.pOriginal);
-    if(!ban) return;
-    if(全注文キー.has(r.code)) return; // コードが一致する=通常ルートで扱う
-    r.directBan=ban; r.手動名指し=true;
-  });
+  P列名指し救済適用_(rows, 全注文キー);
 
   const fixedBySupply={};
   Object.keys(ledgerSummary.activeRowsByKey||{}).forEach(orderKey=>{
@@ -431,26 +437,33 @@ function 発注共有P列計画_(options){
       (fixedBySupply[key]=fixedBySupply[key]||[]).push({ban:String(r.受注番号||'').trim(),qty:Number(r.取り置き数量)||0});
     });
   });
-  const calculated=P列計画_純計算_(rows.filter(r=>r.対象&&!r.全件再計算ブロック),lines,fixedBySupply,ledgerSummary.usageBySupply);
-  rows.filter(r=>r.対象&&r.全件再計算ブロック).forEach(r=>calculated.rows.push(Object.assign({},r,{entries:[],left:r.qty,nextP:''})));
+  const calculated=P列計画_純計算_(P列計画行順_(rows),lines,fixedBySupply,ledgerSummary.usageBySupply);
+  rows.filter(r=>(r.対象||r.計画)&&r.全件再計算ブロック).forEach(r=>calculated.rows.push(Object.assign({},r,{entries:[],left:r.qty,nextP:''})));
   calculated.rows.sort((a,b)=>a.i-b.i);
   const writes=[];
   calculated.rows.forEach(r=>{
     if(r.nextP===r.pOriginal) return;
     pColumn[r.i][0]=r.nextP; writes.push(r.i);
   });
-  const backgrounds=calculated.rows.filter(r=>writes.indexOf(r.i)>=0 && r.nextP && (/[:：,、]/.test(r.nextP)||r.left>0))
-    .map(r=>({a1:P列セルA1_(hr+1+r.i,colP),color:'#fff2cc'}));
+  // 背景は毎回全計算行に引き直す(自己修復)。未着→到着済の昇格でテキスト不変でも青が通常色へ戻るように
+  const backgrounds=calculated.rows.map(r=>{
+    const text=writes.indexOf(r.i)>=0? r.nextP : String(r.pOriginal||'');
+    let color=null;
+    if(r.計画) color=text? P列予定色 : null;
+    else if(text && (/[:：,、]/.test(text) || r.left>0)) color='#fff2cc';
+    return {a1:P列セルA1_(hr+1+r.i,colP),color};
+  });
   const summary={
     記入:writes.filter(i=>pColumn[i][0]).length,
     分割:calculated.rows.filter(r=>r.nextP && /[:：,、]/.test(r.nextP)).length,
     在庫:calculated.rows.filter(r=>r.qty>0 && !r.nextP).length,
     既存:calculated.rows.filter(r=>String(r.pOriginal||'').trim()).length,
+    予定:calculated.rows.filter(r=>r.計画 && r.nextP).length,
     過剰除外:0,解析警告:0
   };
   return {
     error:'',sheet:ems,startRow:hr+1,colP,rowCount:n,values:pColumn,backgrounds,writes,
-    rows:calculated.rows,到着実績,到着便,到着実績取得済,summary,forceWrite:!!options.clearCurrentP
+    rows:calculated.rows,lines,到着実績,到着便,到着実績取得済,summary,forceWrite:!!options.clearCurrentP
   };
 }
 
