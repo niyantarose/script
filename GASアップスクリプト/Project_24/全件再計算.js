@@ -331,7 +331,7 @@ function 全件再計算_再構築_(input){
     const immediate=(immediateBySku[sku]||[]).slice().sort(全件再計算_需要並び_);
     const backorders=(backorderBySku[sku]||[]).slice().sort(全件再計算_需要並び_);
     const skuAllocations=[];
-    const take=(demand,kind,cutoff)=>{
+    const take=(demand,kind,cutoff,onlyArrived)=>{
       let left=demand.qty;
       const ordered=supplies.slice().sort((a,b)=>{
         const ap=a.directBan===String(demand.ban||'')?0:a.directBan?2:1;
@@ -340,6 +340,9 @@ function 全件再計算_再構築_(input){
       });
       for(const supply of ordered){
         if(left<=0) break;
+        // 現役の確保は物理現物がある「到着済」からだけ。締め済み(在庫反映済み)箱の説明穴を
+        // 現役注文で埋めると納品書なしの幽霊確保が生まれる(2026-07-21 実例10117699)
+        if(onlyArrived && String(supply.status||'到着済')!=='到着済') continue;
         if(supply.directBan && supply.directBan!==String(demand.ban||'')) continue;
         if(cutoff && supply.arrival>cutoff) continue;
         const qty=Math.min(left,supply._remaining||0); if(qty<=0) continue;
@@ -385,13 +388,17 @@ function 全件再計算_再構築_(input){
       const holdKey=取り置き_行キー_(demand),held=Math.min(demand.qty,holdQtyByKey[holdKey]||0);
       if(held>0){ holdQtyByKey[holdKey]-=held; demand=Object.assign({},demand,{qty:demand.qty-held}); }
       if(demand.qty<=0) return;
-      const before=skuAllocations.length,left=take(demand,'現在取寄せ','');
+      const before=skuAllocations.length,left=take(demand,'現在取寄せ','',true);
       skuAllocations.slice(before).forEach(a=>ledgerRows.push(全件再計算_台帳行_(a,'取り置き中','EMS',++ledgerSequence)));
       if(left>0) issues.push({severity:'情報',type:'現在取寄せ未引当',sku,qty:left,ban:demand.ban,row:demand.row});
     });
 
-    const excess=supplies.reduce((sum,s)=>sum+(s._remaining||0),0);
-    if(excess>0){ issues.push({severity:'重要',type:'EMS説明不能余り',sku,qty:excess}); blocked.add(sku); }
+    const openExcess=supplies.reduce((sum,s)=>sum+(String(s.status||'到着済')==='到着済'?(s._remaining||0):0),0);
+    const closedExcess=supplies.reduce((sum,s)=>sum+(String(s.status||'到着済')==='到着済'?0:(s._remaining||0)),0);
+    const excess=openExcess+closedExcess;
+    if(openExcess>0){ issues.push({severity:'重要',type:'EMS説明不能余り',sku,qty:openExcess}); blocked.add(sku); }
+    // 締め済み箱の歴史ギャップは現物の出荷リスクが無い(④の供給は到着済のみ)ため情報に留めブロックしない
+    if(closedExcess>0) issues.push({severity:'情報',type:'締め済み箱の説明不能余り',sku,qty:closedExcess});
     summary.push({
       sku,EMS到着済:supplies.reduce((n,s)=>n+s.qty,0),発送済:shipped.reduce((n,r)=>n+r.qty,0),発送済即納:shippedImmediate.reduce((n,r)=>n+r.qty,0),
       現在即納:immediate.reduce((n,r)=>n+r.qty,0),Yahoo自由在庫:yahoo[sku]||0,開始前在庫:holdBySku[sku]||0,

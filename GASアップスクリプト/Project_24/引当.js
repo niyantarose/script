@@ -1105,8 +1105,7 @@ function 引当診断(){
         const kind=hc['取込区分']?String(r[hc['取込区分']-1]||''):'', st=hc['EMSリスト状態']?String(r[hc['EMSリスト状態']-1]||''):'',
               code=hc['商品コード']?String(r[hc['商品コード']-1]||''):'', q=hc['引当数']?String(r[hc['引当数']-1]||''):'',
               state=hc['状態']?String(r[hc['状態']-1]||''):'';
-        const 差引き=(state!=='キャンセル済み') && (kind==='過去取込' || st==='在庫反映済み');
-        msg+='・'+code+' x'+q+' / '+kind+' / EMS状態:'+st+' / '+(state||'有効')+(差引き?' ←需要から差引き':'')+'\n';
+        msg+='・'+code+' x'+q+' / '+kind+' / EMS状態:'+st+' / '+(state||'有効')+' (記録のみ・需要には影響しない)\n';
       });
       if(!n) msg+='(記録なし)\n';
     } else msg+='(履歴なし)\n';

@@ -303,6 +303,38 @@ test('ブロック台帳行除外: SKU正規化で判定し親コード保存で
     ['開始前在庫:取り置き中', 'EMS:取り置き中', 'EMS:発送済み']);
 });
 
+test('再構築: 現在取寄せは到着済の箱だけから確保し、締め済み箱の余りは情報でブロックしない', () => {
+  // 幽霊確保防止(2026-07-21 実例10117699): 締め済み(在庫反映済み)箱の説明穴を現役注文で埋めると
+  // 物理裏付けのない「確保済み」が生まれる。現役の確保=到着済の箱+開始前在庫だけ
+  const result = context.全件再計算_再構築_({
+    supplies: [
+      {ems: 'EMS-OLD', code: 'TEST-G', qty: 1, arrival: '2026-07-13', row: 2, status: '在庫反映済み'},
+      {ems: 'EMS-NEW', code: 'TEST-G', qty: 1, arrival: '2026-07-23', row: 3, status: '到着済'}
+    ],
+    shipped: [],
+    currentOrders: [{ban: '901', sku: 'TEST-Gb', code: 'TEST-G', qty: 2, orderDate: '2026-07-13', row: 5, route: '韓国取寄せ'}],
+    yahooA: {}
+  });
+  const holds = result.ledgerRows.filter(r => r.状態 === '取り置き中' && r.受注番号 === '901');
+  assert.strictEqual(holds.length, 1);
+  assert.strictEqual(holds[0].元EMS番号, 'EMS-NEW'); // 到着済からだけ確保
+  assert.strictEqual(holds[0].取り置き数量, 1);
+  assert.ok(result.issues.some(i => i.type === '現在取寄せ未引当' && i.ban === '901' && i.qty === 1)); // 残り1は正直に未引当
+  assert.ok(result.issues.some(i => i.severity === '情報' && i.type === '締め済み箱の説明不能余り' && i.sku === 'TEST-G' && i.qty === 1));
+  assert.strictEqual(result.blockedSkus.indexOf('TEST-G'), -1); // 締め箱の歴史ギャップではブロックしない
+});
+
+test('再構築: 到着済の箱の説明不能余りは従来どおり重要+ブロック', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [{ems: 'EMS-OPEN', code: 'TEST-H', qty: 3, arrival: '2026-07-23', row: 2, status: '到着済'}],
+    shipped: [],
+    currentOrders: [{ban: '902', sku: 'TEST-Hb', code: 'TEST-H', qty: 1, orderDate: '2026-07-20', row: 6, route: '韓国取寄せ'}],
+    yahooA: {}
+  });
+  assert.ok(result.issues.some(i => i.severity === '重要' && i.type === 'EMS説明不能余り' && i.sku === 'TEST-H' && i.qty === 2));
+  assert.ok(result.blockedSkus.indexOf('TEST-H') >= 0);
+});
+
 test('反映前検査: 未確認・現物ありのキャンセル戻しは全件置換を止める', () => {
   const rows = [
     {取置ID:'A',状態:'キャンセル戻し',戻し処理結果:'未確認'},
@@ -324,7 +356,7 @@ test('通常④連携: ブロックSKUのEMS供給だけを除外する', () => 
 
 test('通常④連携: 再構築台帳に元EMS到着日を保持して入荷日を復元できる', () => {
   const result = context.全件再計算_再構築_({
-    supplies: [{ems:'EMS-9',code:'TEST-09',qty:1,arrival:'2026-06-22',row:9,status:'在庫反映済み'}],
+    supplies: [{ems:'EMS-9',code:'TEST-09',qty:1,arrival:'2026-06-22',row:9,status:'到着済'}], // 現役の確保は到着済からだけ(2026-07-21)
     shipped: [],
     currentOrders: [{ban:'900',sku:'TEST-09b',code:'TEST-09',qty:1,orderDate:'2026-06-20 09:00:00',row:90,route:'韓国取寄せ'}],
     yahooA: {'TEST-09':0}
@@ -387,7 +419,7 @@ test('再構築: 開始前在庫がEMSで説明できなくても情報のみで
 
 test('再構築: 一部だけ開始前在庫の注文は残り数量だけEMSへ割り当てる', () => {
   const result = context.全件再計算_再構築_({
-    supplies: [{ems:'EMS-H3',code:'HOLD-03',qty:3,arrival:'2026-07-01',row:1,status:'在庫反映済み'}],
+    supplies: [{ems:'EMS-H3',code:'HOLD-03',qty:3,arrival:'2026-07-01',row:1,status:'到着済'}], // 現役の確保は到着済からだけ(2026-07-21)
     shipped: [],
     currentOrders: [{ban:'502',sku:'HOLD-03b',code:'HOLD-03',qty:3,orderDate:'2026-07-02 10:00:00',row:12,route:'韓国取寄せ'}],
     yahooA: {},
@@ -440,7 +472,7 @@ test('反映日時: 引き継いだ開始前在庫の登録日時は上書きし
 
 test('再構築: EMSリストに無い別便EMS番号付きの取寄せ注文は韓国供給を横取りしない', () => {
   const result = context.全件再計算_再構築_({
-    supplies: [{ems:'EMS-K1',code:'DAN-01',qty:1,arrival:'2026-07-01',row:1,status:'在庫反映済み'}],
+    supplies: [{ems:'EMS-K1',code:'DAN-01',qty:1,arrival:'2026-07-01',row:1,status:'到着済'}], // 現役の確保は到着済からだけ(2026-07-21)
     shipped: [],
     currentOrders: [
       {ban:'700',sku:'DAN-01b',code:'DAN-01',qty:1,orderDate:'2026-07-01 08:00:00',row:20,route:'韓国取寄せ',boxEms:'EJ111111111KR'},

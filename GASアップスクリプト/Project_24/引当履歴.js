@@ -390,39 +390,7 @@ function 到着済を在庫反映済みへ本体_(){
     ui.ButtonSet.OK);
 }
 
-function 引当履歴_反映済み割当マップ_(){
-  const sh=SpreadsheetApp.getActive().getSheetByName(HIKIATE_HISTORY_CFG.シート);
-  if(!sh || sh.getLastRow()<=1) return {};
-  const head=sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0].map(v=>String(v||'').trim());
-  const f=n=>head.indexOf(n);
-  const cKind=f('取込区分'), cStatus=f('EMSリスト状態'), cDate=f('EMS到着日'), cCode=f('商品コード'), cBan=f('受注番号'), cQty=f('引当数'), cState=f('状態');
-  if(cCode<0 || cBan<0 || cQty<0) return {};
-  const vals=sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).getDisplayValues();
-  const map={};
-  vals.forEach(r=>{
-    const kind=cKind>=0?String(r[cKind]||'').trim():'';
-    const status=cStatus>=0?String(r[cStatus]||'').trim():'';
-    const state=cState>=0?String(r[cState]||'').trim():'有効';
-    if(state==='キャンセル済み') return;
-    if(kind!=='過去取込' && status!=='在庫反映済み') return;
-    const ban=String(r[cBan]||'').trim(), key=normCode_(r[cCode]), qty=引当履歴_数値_(r[cQty]);
-    if(!ban || !key || qty<=0) return;
-    (map[ban]=map[ban]||[]).push({key, qty, date:cDate>=0?String(r[cDate]||'').trim():''});
-  });
-  return map;
-}
-
-function 引当履歴_需要を差し引く_(lines){
-  const map=引当履歴_反映済み割当マップ_();
-  lines.forEach(l=>{
-    const q=map[l.ban]||[];
-    q.forEach(e=>{
-      if(l.need<=0 || e.qty<=0) return;
-      let hit=false;
-      l.keys.forEach(k=>{ if(k===e.key || codeKeys_(e.key).indexOf(k)>=0) hit=true; });
-      if(!hit) return;
-      const take=Math.min(l.need, e.qty);
-      l.need-=take; e.qty-=take;
-    });
-  });
-}
+// 【撤去 2026-07-21】引当履歴_反映済み割当マップ_/引当履歴_需要を差し引く_ は削除した。
+// 過去取込の需要差引きは台帳・棚卸(開始前在庫)が無かった時代の仕組みで、古いP列の名指し
+// (納品書=物理ピックの裏付けなし)がユーザーの数えた事実を上書きし、幽霊確保を生んでいた
+// (実例10117699)。「誰が何を持っているか」は取り置き台帳だけが決める。履歴シートは監査記録のみ。
