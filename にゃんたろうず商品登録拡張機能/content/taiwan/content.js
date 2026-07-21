@@ -18,6 +18,33 @@ function isLatinOnlyOriginalTitle(value) {
   return true;
 }
 
+// ===== カテゴリ（パンくず）取得（テスト対象のためトップレベルに定義） =====
+// 正規パンくず（schema.org BreadcrumbList）と詳細資料「本書分類」をコンテナ単位で参照する。
+// 旧実装はページ全体の `.type02_p003 a` 等を無差別に連結しており、作者フォロー窓の
+// 修改/確定/取消ボタンや作者・出版社リンクまでカテゴリ列に混入していた。
+function getCategoryPath() {
+  const singleLine = value => String(value || '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+  const uiNoise = /^(?:博客來|博客来|商品介紹|商品介绍|修改|確定|确定|取消|追蹤作者|追踪作者|新功能介紹|新功能介绍|訂閱出版社新書快訊|订阅出版社新书快讯)$/u;
+  const containerSelectors = ['#breadcrumb-trail', 'ul[typeof="BreadcrumbList"]', '.breadcrumb', '.crumb', 'ul.sort'];
+  for (const selector of containerSelectors) {
+    for (const container of Array.from(document.querySelectorAll(selector))) {
+      const seen = new Set();
+      const texts = [];
+      for (const el of Array.from(container.querySelectorAll('a'))) {
+        const text = singleLine(el.innerText || el.textContent || '');
+        if (!text || uiNoise.test(text) || seen.has(text)) continue;
+        seen.add(text);
+        texts.push(text);
+      }
+      if (texts.length) return texts.join(' > ');
+    }
+  }
+  // 最後の砦: meta description の「類別：X」（例: …出版日期：2026/06/27，類別：心理勵志）
+  const metaDescription = document.querySelector('meta[name="description"]')?.getAttribute('content') || '';
+  const categoryMatch = metaDescription.match(/類別[：:]\s*([^，,]+)/u);
+  return categoryMatch ? singleLine(categoryMatch[1]) : '';
+}
+
 // h1直下のh2（博客來の原文書名欄）テキストを日本語原題として採用してよいか。
 // 出版社入力の原文書名なので信頼できるが、中文副題・韓国語原題は弾く。
 function acceptsTrustedOriginalSubtitle(subtitleText, titleText) {
@@ -561,12 +588,7 @@ const scoreEdgeDistance = edge => {
   };
 
 
-  const getCategoryPath = () => {
-    const linkTexts = Array.from(document.querySelectorAll('.sort li a, .type02_p003 a, .breadcrumb a, .crumb a'))
-      .map(el => toSingleLine(getText(el)))
-      .filter(Boolean);
-    return uniq(linkTexts).join(' > ');
-  };
+  // getCategoryPath はトップレベル定義を使用
   const cleanupOriginalTitleOnce = value => value
     .replace(/^[台臺][湾灣]版\s*/u, '')
     // 1. Bracket noise with edition/bonus keywords (added 獨家/独家/博客來獨家/博客来独家)

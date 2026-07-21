@@ -911,6 +911,7 @@ function classifyBookCategoryText(source, options = {}) {
   if (novelLike) return '小説';
   if (/エッセイ|散文|隨筆|随筆/.test(text)) return 'エッセイ';
   if (/人文社科|社會議題|社会議題|弱勢族群|弱势族群|報導文學|报道文学|紀實|纪实|人物傳記|人物传记|社會觀察|社会观察|議題思辨|议题思辨/.test(text)) return 'エッセイ';
+  if (/心理勵志|心理励志|個人成長|个人成长|人生規劃|人生规划|自我成長|自我成长|勵志|励志/.test(text)) return 'エッセイ';
   if (/雜誌|杂志|雑誌/.test(text)) return '雑誌';
   if (/繪本|绘本|絵本/.test(text)) return '絵本';
   if (/シナリオ|scenario|劇本|剧本/i.test(text)) return 'シナリオ集';
@@ -947,7 +948,11 @@ function getCategoryValue(product) {
   const descriptionLabel = classifyBookCategoryText(product?.商品説明 || '');
   if (descriptionLabel) return descriptionLabel;
 
-  return trimValue(product?.カテゴリ || product?.categoryName || '');
+  // 分類できなかった場合の生値フォールバック。パンくず連結（>区切り）や長文は
+  // シートのカテゴリ列（プルダウン）の入力規則エラーになるため通さない。
+  const fallbackCategory = trimValue(product?.カテゴリ || product?.categoryName || '');
+  if (/[>＞]/.test(fallbackCategory) || fallbackCategory.length > 12) return '';
+  return fallbackCategory;
 }
 
 function getLanguageValue(product) {
