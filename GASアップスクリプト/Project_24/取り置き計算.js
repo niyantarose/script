@@ -262,14 +262,21 @@ function 取り置き_割当計算_(input){
     }
   });
   (input.explicit||[]).forEach(e=>{
-    const order=orders.find(o=>String(o.ban)===String(e.ban) && matches(o,e.code));
+    // 同一商品を複数行に分けた注文(分割行)があるため、最初の1行ではなく一致する全行へ順に配る
+    // (実例 2026-07-21: 10117725 MEDAFB01W 2個+1個の2行に1個×3箱の名指し→3個目が割当0で④中止)
+    const matched=orders.filter(o=>String(o.ban)===String(e.ban) && matches(o,e.code));
     const sourceCode=String(e.sourceCode||'').trim();
     const candidates=supplies.filter(s=>!s.directBan && String(s.ems)===String(e.ems) && normCode_(s.code)===normCode_(e.code) &&
       (!sourceCode || 取り置き_供給キー_(s.ems,s.sourceCode)===取り置き_供給キー_(e.ems,sourceCode)));
     const supply=candidates.length===1?candidates[0]:null;
-    if(!order || !supply) errors.push('P列確定を特定できない: '+e.ban+' '+e.code);
+    if(!matched.length || !supply) errors.push('P列確定を特定できない: '+e.ban+' '+e.code);
     else {
-      const requested=Number(e.qty)||0, taken=takeSupply(supply,order,requested,'EMS');
+      const requested=Number(e.qty)||0;
+      let taken=0;
+      for(const order of matched){
+        if(taken>=requested) break;
+        taken+=takeSupply(supply,order,requested-taken,'EMS');
+      }
       if(taken!==requested) errors.push('P列確定数量を満たせない: '+e.ban+' '+e.code+' 指定'+requested+' / 割当'+taken);
     }
   });
