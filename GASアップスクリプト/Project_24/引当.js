@@ -2146,6 +2146,12 @@ function EMS在庫を更新_本体_(){
       Utilities.sleep(1000); SpreadsheetApp.flush();
     }
   }
+  // 到着日列はQUERYがシリアル数値(46226等)で返すことがあり生数字表示になる。
+  // 計算はymd_が数値も解釈するので実害はないが、表示を日付書式に整える(2026-07-21)
+  if(ems.cols && ems.cols.到着>=0){
+    const last=emv.getLastRow();
+    if(last>=ems.offset) emv.getRange(ems.offset,ems.cols.到着+1,last-ems.offset+1,1).setNumberFormat('yyyy-mm-dd');
+  }
   ss.toast('EMS在庫を更新しました(色クリア＋最新化)','🔄EMS更新',6);
 }
 

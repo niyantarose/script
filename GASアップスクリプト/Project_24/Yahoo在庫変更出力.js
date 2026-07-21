@@ -14,6 +14,7 @@ function Yahoo変更_対象行_(rows, emsSet){
     const qty=Number(r&&r.余り数)||0;
     if(!code || qty<=0) return;
     if(emsSet && emsSet.size && !emsSet.has(ems)) return;
+    if(code==='★コピペ'){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'付属ポスター印(★コピペ)'}); return; }
     if(/promotional/i.test(code)){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'PromotionalItem(贈呈品)'}); return; }
     if(/^\d{7,}$/.test(code)){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'受注番号形式コード'}); return; }
     対象.push({商品コード:code,余り数:qty,EMS番号:ems});

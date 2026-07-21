@@ -31,6 +31,7 @@ const json = value => JSON.parse(JSON.stringify(value)); // vm跨ぎのdeepStric
 test('対象行: EMS番号で絞り、PromotionalItemと受注番号形式を除外し、余り0以下は落とす', () => {
   const rows = [
     {商品コード: 'MOFUN-AS-24-2', 余り数: '2', EMS番号: 'EG1'},
+    {商品コード: '★コピペ', 余り数: 5, EMS番号: 'EG1'},
     {商品コード: 'PromotionalItem', 余り数: 1, EMS番号: 'EG1'},
     {商品コード: '10117508', 余り数: 3, EMS番号: 'EG1'},
     {商品コード: 'KW58-1', 余り数: 1, EMS番号: 'EG2'}, // 便が違う
@@ -39,7 +40,7 @@ test('対象行: EMS番号で絞り、PromotionalItemと受注番号形式を除
   const r = context.Yahoo変更_対象行_(rows, new Set(['EG1']));
   assert.deepStrictEqual(json(r.対象.map(x => x.商品コード)), ['MOFUN-AS-24-2']);
   assert.strictEqual(r.対象[0].余り数, 2);
-  assert.deepStrictEqual(json(r.除外.map(x => x.理由)), ['PromotionalItem(贈呈品)', '受注番号形式コード']);
+  assert.deepStrictEqual(json(r.除外.map(x => x.理由)), ['付属ポスター印(★コピペ)', 'PromotionalItem(贈呈品)', '受注番号形式コード']);
 });
 
 test('対象行: emsSetが空なら全便を対象にする', () => {

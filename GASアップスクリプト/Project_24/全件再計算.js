@@ -52,6 +52,12 @@ function 全件再計算_実EMS番号_(value){
   return !!ems && !/^棚卸/i.test(ems);
 }
 
+// 在庫管理の対象外コード(付属ポスター印・贈呈品)。供給・余り・ブロックのどれにも数えない
+function 全件再計算_在庫対象外コード_(code){
+  const c=String(code==null?'':code).trim();
+  return c==='★コピペ' || /promotional/i.test(c);
+}
+
 function 全件再計算_実EMS行_(row){
   const r=row||{},ems=String(r.ems==null?r.EMS番号:r.ems).trim();
   const code=String(r.code==null?r.商品コード:r.code).trim();
@@ -235,6 +241,12 @@ function 全件再計算_再構築_(input){
   const knownEms=new Set(); // 発注共有EMSリストに載る韓国便のEMS番号(壊れた行も番号は韓国便として扱う)
 
   (input.supplies||[]).forEach((source,index)=>{
+    // 付属ポスター印(★コピペ)・贈呈品(PromotionalItem)は在庫管理対象外。供給にも不正にも数えない(2026-07-21)
+    if(全件再計算_在庫対象外コード_(source&&source.code||source&&source.商品コード)){
+      const 対象外ems=String(source&&source.ems||source&&source.EMS番号||'').trim();
+      if(全件再計算_実EMS番号_(対象外ems)) knownEms.add(対象外ems);
+      return;
+    }
     const normalized=全件再計算_実EMS行_(source);
     if(!normalized){
       const ems=String(source&&source.ems||source&&source.EMS番号||'').trim();
@@ -398,7 +410,9 @@ function 全件再計算_再構築_(input){
     const openExcess=supplies.reduce((sum,s)=>sum+(String(s.status||'到着済')==='到着済'?(s._remaining||0):0),0);
     const closedExcess=supplies.reduce((sum,s)=>sum+(String(s.status||'到着済')==='到着済'?0:(s._remaining||0)),0);
     const excess=openExcess+closedExcess;
-    if(openExcess>0){ issues.push({severity:'重要',type:'EMS説明不能余り',sku,qty:openExcess}); blocked.add(sku); }
+    // 到着済の余り=⑤でYahooへ移す前の正常な状態(検品済みの現物)。ブロックすると④が供給を隠し
+    // ⑤のYahoo移動からも漏れるため情報に留める(2026-07-21)。ブロックは数量不正等のデータ異常だけ
+    if(openExcess>0) issues.push({severity:'情報',type:'到着済の余り',sku,qty:openExcess});
     // 締め済み箱の歴史ギャップは現物の出荷リスクが無い(④の供給は到着済のみ)ため情報に留めブロックしない
     if(closedExcess>0) issues.push({severity:'情報',type:'締め済み箱の説明不能余り',sku,qty:closedExcess});
     summary.push({

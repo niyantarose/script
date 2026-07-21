@@ -169,13 +169,14 @@ test('再構築: 現在受注の正でない整数数量は黙って無視せず
   assert.ok(result.issues.some(r => r.type === '受注数量不正'));
 });
 
-test('再構築: 説明できない到着済みEMS余りはブロックする', () => {
+test('再構築: 説明できない到着済み余りは「到着済の余り」情報にしてブロックしない', () => {
+  // 設計変更(2026-07-21): ⑤でYahooへ移す前の正常な余りをブロックすると④が供給を隠すため情報へ
   const result = context.全件再計算_再構築_({
     supplies: [{ems: 'EMS-1', code: 'TEST-04', qty: 2, arrival: '2026-07-01', row: 2, status: '到着済'}],
     shipped: [], currentOrders: [], yahooA: {'TEST-04': 0}
   });
-  assert.ok(result.blockedSkus.indexOf('TEST-04') >= 0);
-  assert.ok(result.issues.some(r => r.type === 'EMS説明不能余り' && r.qty === 2));
+  assert.strictEqual(result.blockedSkus.indexOf('TEST-04'), -1);
+  assert.ok(result.issues.some(r => r.type === '到着済の余り' && r.severity === '情報' && r.qty === 2));
 });
 
 test('再構築: 現行の取り置き台帳・移動台帳スキーマで行を作る', () => {
@@ -326,15 +327,29 @@ test('再構築: 現在取寄せは到着済の箱だけから確保し、締め
   assert.strictEqual(result.blockedSkus.indexOf('TEST-G'), -1); // 締め箱の歴史ギャップではブロックしない
 });
 
-test('再構築: 到着済の箱の説明不能余りは従来どおり重要+ブロック', () => {
+test('再構築: 到着済の余りは⑤反映待ちの正常状態=情報でブロックしない', () => {
+  // ブロックすると④が供給を隠し⑤のYahoo移動からも漏れる(2026-07-21 84件誤ブロックの教訓)
   const result = context.全件再計算_再構築_({
     supplies: [{ems: 'EMS-OPEN', code: 'TEST-H', qty: 3, arrival: '2026-07-23', row: 2, status: '到着済'}],
     shipped: [],
     currentOrders: [{ban: '902', sku: 'TEST-Hb', code: 'TEST-H', qty: 1, orderDate: '2026-07-20', row: 6, route: '韓国取寄せ'}],
     yahooA: {}
   });
-  assert.ok(result.issues.some(i => i.severity === '重要' && i.type === 'EMS説明不能余り' && i.sku === 'TEST-H' && i.qty === 2));
-  assert.ok(result.blockedSkus.indexOf('TEST-H') >= 0);
+  assert.ok(result.issues.some(i => i.severity === '情報' && i.type === '到着済の余り' && i.sku === 'TEST-H' && i.qty === 2));
+  assert.strictEqual(result.blockedSkus.indexOf('TEST-H'), -1);
+});
+
+test('再構築: ★コピペとPromotionalItemは供給にも不正にも数えない(在庫管理対象外)', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [
+      {ems: 'EMS-X', code: '★コピペ', qty: 5, arrival: '2026-07-23', row: 2, status: '到着済'},
+      {ems: 'EMS-X', code: 'PromotionalItem', qty: 1, arrival: '2026-07-23', row: 3, status: '到着済'}
+    ],
+    shipped: [], currentOrders: [], yahooA: {}
+  });
+  assert.strictEqual(result.summary.length, 0);
+  assert.strictEqual(result.issues.length, 0);
+  assert.strictEqual(result.blockedSkus.length, 0);
 });
 
 test('反映前検査: 未確認・現物ありのキャンセル戻しは全件置換を止める', () => {
@@ -436,14 +451,14 @@ test('再構築: 一部だけ開始前在庫の注文は残り数量だけEMSへ
 });
 
 test('再構築: ブロックSKUでも開始前在庫の引き継ぎ行は消さない', () => {
-  // 到着済2個のうち開始前在庫1個で説明→残り1個が説明不能余り=ブロック。それでも棚の現物行は残る
+  // Yahoo数量不正(データ異常)でブロックされても、棚の現物行(開始前在庫)は残る
   const result = context.全件再計算_再構築_({
-    supplies: [{ems:'EMS-B',code:'BLK-01',qty:2,arrival:'2026-07-01',row:2,status:'到着済'}],
+    supplies: [],
     shipped: [],
-    currentOrders: [], yahooA: {},
+    currentOrders: [], yahooA: {'BLK-01': -1},
     initialHolds: [{取置ID:'INIT|601|BLK-01|BLK-01B',状態:'取り置き中',受注番号:'601',商品コード:'BLK-01',SKU:'BLK-01b',取り置き数量:1,取置元種別:'開始前在庫'}]
   });
-  assert.ok(result.blockedSkus.indexOf('BLK-01') >= 0, '到着済の説明不能余りでブロック');
+  assert.ok(result.blockedSkus.indexOf('BLK-01') >= 0, 'Yahoo数量不正でブロック');
   assert.ok(result.ledgerRows.some(r => r.取置ID === 'INIT|601|BLK-01|BLK-01B'), '棚確認済みの現物は残す');
 });
 
