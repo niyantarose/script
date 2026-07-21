@@ -16,9 +16,10 @@ function P列を書き直す(){ 直列_(P列を書き直す本体_); }
 function P列を書き直す本体_(){
   const ui=SpreadsheetApp.getUi();
   const ans=ui.alert('P列の書き直し(到着済のみ)',
-    'EMSリストの「到着済」行のP列(注文番号)を全部消して、今のロジックで書き直します。\n\n'+
+    'EMSリストの「到着済」行と未着行(実EMS番号あり)のP列(注文番号)を全部消して、今のロジックで書き直します。\n\n'+
     '・バグ時代の古い割当(残骸)が一掃されます\n'+
-    '・手で書いた名指しも消えます(コード末尾の（受注番号）タグは自動で再現)\n'+
+    '・手で書いた名指しも消えます(コード末尾の（受注番号）タグとコード不一致の名指しは自動で再現)\n'+
+    '・未着行には予定(薄青)が入り直します\n'+
     '・在庫反映済みなど過去の行は触りません\n\n実行しますか？',
     ui.ButtonSet.OK_CANCEL);
   if(ans!==ui.Button.OK) return;
@@ -26,6 +27,7 @@ function P列を書き直す本体_(){
   if(r.error){ ui.alert('書き直しでエラー:\n'+r.error); return; }
   SpreadsheetApp.getActive().toast(
     'P列書き直し: クリア'+r.クリア+'行 → 記入'+r.記入+'行'+(r.分割?'（分割'+r.分割+'行）':'')+
+    (r.予定?'（うち予定'+r.予定+'行）':'')+
     ' / 在庫扱い'+r.在庫+'行。仕上げに ②引き当て実行 を回してください','♻️P列',8);
 }
 
@@ -40,16 +42,20 @@ function P列書き直し実行_(){
   if(last<=hr) return {error:'EMSリストにデータがありません'};
   const head=sh.getRange(hr,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
   const f=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
-  const cSt=f('ステータス列','ステータス'), cP=f('注文番号');
+  const cSt=f('ステータス列','ステータス'), cP=f('注文番号'), cE=f('EMS番号');
   if(cP<0) return {error:'EMSリストの'+hr+'行目に「注文番号」見出しがありません'};
   const n=last-hr;
   const st=cSt>=0? sh.getRange(hr+1,cSt+1,n,1).getDisplayValues() : null;
+  const emsNos=cE>=0? sh.getRange(hr+1,cE+1,n,1).getDisplayValues() : null;
   const pv=sh.getRange(hr+1,cP+1,n,1).getDisplayValues();
   const clearedValues=pv.map(row=>[String(!row||row[0]==null?'':row[0])]);
   const clearedRows=[];
   let cleared=0;
   for(let i=0;i<n;i++){
-    if(st && String(st[i][0]||'').trim()!=='到着済') continue; // 到着済だけ(ステータス列が無ければ全行)
+    const status=st? String(st[i][0]||'').trim() : '';
+    const 確定=st? status==='到着済' : true; // ステータス列が無ければ従来どおり全行
+    const 計画=!!(st && emsNos && P列計画対象EMS_(status) && 実EMS番号_(emsNos[i][0])); // 未着は実EMS番号行だけ(在庫反映済みは不変)
+    if(!確定 && !計画) continue;
     if(String(clearedValues[i][0]||'').trim()==='') continue;
     clearedValues[i][0]=''; cleared++; clearedRows.push(i);
   }
@@ -64,7 +70,8 @@ function P列書き直し実行_(){
   const backgrounds=clearedRows.map(i=>({a1:P列セルA1_(plan.startRow+i,plan.colP),color:null}))
     .concat(plan.backgrounds||[]);
   P列背景を反映_(plan.sheet, backgrounds);
-  return {クリア:cleared, 記入:plan.summary.記入, 分割:plan.summary.分割, 在庫:plan.summary.在庫};
+  受注明細入荷予定を更新_(plan);
+  return {クリア:cleared, 記入:plan.summary.記入, 分割:plan.summary.分割, 在庫:plan.summary.在庫, 予定:plan.summary.予定};
 }
 
 // P列の手書き値から単一の受注番号名指しを読む(「10117376」「10117376:1」形式のみ。複数名指しは対象外)
