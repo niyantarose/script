@@ -128,18 +128,21 @@ function 全件再計算_YahooCSV厳密集計_(text){
   const missing=required.filter(name=>header.indexOf(name)<0);
   if(missing.length) return {error:'Yahoo CSVの見出し不足: '+missing.join(','),a在庫:{},商品名:{}};
   const col={code:header.indexOf('code'),name:header.indexOf('name'),sub:header.indexOf('sub-code'),qty:header.indexOf('quantity')};
-  const seen=new Set(),a在庫={},商品名={};
+  const seen=new Set(),a在庫={},商品名={}; let subなし件数=0;
   for(let i=1;i<lines.length;i++){
     if(!String(lines[i]||'').trim()) continue;
     const row=全件再計算_CSV行_(lines[i]);
     const code=String(row[col.code]||'').trim(),sub=String(row[col.sub]||'').trim(),rawQty=String(row[col.qty]||'').trim();
     if(!code && !sub && !rawQty) continue;
     const qty=Number(rawQty);
-    if(!Number.isInteger(qty) || qty<0) return {error:'Yahoo CSV '+(i+1)+'行: quantityは0以上の整数が必要です',a在庫:{},商品名:{}};
-    if(!code || !sub){
-      if(qty>0) return {error:'Yahoo CSV '+(i+1)+'行: codeまたはsub-codeが空です',a在庫:{},商品名:{}};
+    // 負数は在庫切れ承諾(overdraft)で正常発生するため中止しない。数値の妥当性はSKU単位で再構築側(Yahoo数量不正)が判定する
+    if(!Number.isInteger(qty)) return {error:'Yahoo CSV '+(i+1)+'行: quantityが整数ではありません',a在庫:{},商品名:{}};
+    if(!code){
+      if(qty>0) return {error:'Yahoo CSV '+(i+1)+'行: codeが空です',a在庫:{},商品名:{}};
       continue;
     }
+    // sub-code空はa/b運用外の基本商品(親行・直在庫)で正常形。a在庫に数えず件数だけ返す(棚卸のYahooCSV集計_と同じ扱い)
+    if(!sub){ if(qty>0) subなし件数++; continue; }
     const unique=code+'\u0000'+sub;
     if(seen.has(unique)) return {error:'Yahoo CSV '+(i+1)+'行: code+sub-codeが重複しています: '+code+' / '+sub,a在庫:{},商品名:{}};
     seen.add(unique);
@@ -148,7 +151,7 @@ function 全件再計算_YahooCSV厳密集計_(text){
     a在庫[sku]=(a在庫[sku]||0)+qty;
     if(!商品名[sku]) 商品名[sku]=String(row[col.name]||'').trim();
   }
-  return {error:'',a在庫,商品名,rowCount:seen.size};
+  return {error:'',a在庫,商品名,rowCount:seen.size,subなし件数};
 }
 
 function 全件再計算_未解決台帳作業_(rows){

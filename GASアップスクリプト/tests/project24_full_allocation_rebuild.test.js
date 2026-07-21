@@ -214,6 +214,57 @@ test('Yahoo厳密集計: code+sub-code重複と非整数数量は入力エラー
   assert.ok(context.全件再計算_YahooCSV厳密集計_(invalid).error.indexOf('整数') >= 0);
 });
 
+test('Yahoo厳密集計: sub-code空の基本商品行は在庫>0でも中止せず対象外として数える', () => {
+  // 実CSV(yahoo全在庫260720.csv)の3行目と同型。a/b運用外の直在庫商品が605行あり、
+  // 全件検算(棚卸.jsのYahooCSV集計_)は同じ行を要確認リスト行きで通している
+  const csv = [
+    'code,name,sub-code,quantity,allow-overdraft,stock-close',
+    '021224nurie,親商品(在庫0),,0,,',
+    '021224photo01,訳アリ現品(直在庫),,1,,',
+    'TEST-08,商品,TEST-08a,2,,'
+  ].join('\n');
+  const result = context.全件再計算_YahooCSV厳密集計_(csv);
+  assert.strictEqual(result.error, '');
+  assert.strictEqual(result.a在庫['TEST-08'], 2);
+  assert.strictEqual(Object.keys(result.a在庫).length, 1);
+  assert.strictEqual(result.subなし件数, 1); // 在庫>0だけ数える(親行の在庫0は含めない)
+});
+
+test('Yahoo厳密集計: codeが空で在庫>0の行は従来どおり入力エラーにする', () => {
+  const csv = [
+    'code,name,sub-code,quantity,allow-overdraft,stock-close',
+    ',商品,TEST-09a,1,,'
+  ].join('\n');
+  assert.ok(context.全件再計算_YahooCSV厳密集計_(csv).error.indexOf('code') >= 0);
+});
+
+test('Yahoo厳密集計: 負数quantityは中止しない(在庫切れ承諾で正常発生。数値妥当性はSKU単位で再構築側が判定)', () => {
+  // 実CSV(yahoo全在庫260720.csv)の実例: JMEE128b=-1。b枠はa在庫に入らないので影響ゼロで通す
+  const csv = [
+    'code,name,sub-code,quantity,allow-overdraft,stock-close',
+    'JMEE128,商品,JMEE128b,-1,,',
+    'JMEE128,商品,JMEE128a,2,,',
+    'TEST-10,商品,TEST-10a,-3,,'
+  ].join('\n');
+  const result = context.全件再計算_YahooCSV厳密集計_(csv);
+  assert.strictEqual(result.error, '');
+  assert.strictEqual(result.a在庫['JMEE128'], 2);
+  assert.strictEqual(result.a在庫['TEST-10'], -3); // a行の負数はそのまま返し全件再計算_再構築_の「Yahoo数量不正」ガードがSKU単位でブロックする
+});
+
+test('再構築: Yahoo a在庫が負のSKUはYahoo数量不正としてSKU単位でブロックし全体は止めない', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [{ems:'EMS-N',code:'TEST-11',qty:1,arrival:'2026-07-01',row:2,status:'到着済'}],
+    shipped: [],
+    currentOrders: [{ban:'N01',sku:'TEST-11b',code:'TEST-11',qty:1,orderDate:'2026-07-02',row:3,route:'韓国取寄せ'}],
+    yahooA: {'TEST-10': -3, 'TEST-11': 0}
+  });
+  assert.ok(result.blockedSkus.indexOf('TEST-10') >= 0);
+  assert.ok(result.issues.some(r => r.type === 'Yahoo数量不正' && r.sku === 'TEST-10'));
+  assert.ok(result.blockedSkus.indexOf('TEST-11') < 0); // 他SKUの引当は通常どおり
+  assert.strictEqual(result.ledgerRows.filter(r => r.状態 === '取り置き中' && r.受注番号 === 'N01').length, 1);
+});
+
 test('反映前検査: 未確認・現物ありのキャンセル戻しは全件置換を止める', () => {
   const rows = [
     {取置ID:'A',状態:'キャンセル戻し',戻し処理結果:'未確認'},
