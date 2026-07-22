@@ -1314,6 +1314,18 @@ function 引当行状態_(l,cfg){
   if(l.キャンセル) return {st:'キャンセル',color:cfg.色_グレー};
   if(l.kbn==='即納') return {st:'即納',color:cfg.色_水};
   if(l.kbn==='指定なし') return {st:'要確認',color:cfg.色_橙};
+  // 三段階(2026-07-22): 段階付与済みの行は段階から表示を決める。現物=緑 / 先行含み=薄青 / 到着済=ラベンダー / 不足=色なし
+  if(l.段階付与){
+    const qty=Math.max(0,Number(l.qty)||0);
+    const phys=Math.max(0,Number(l.現物確認済み数量)||0);
+    const arrived=Math.max(0,Number(l.到着済引当数量)||0);
+    const planned=Math.max(0,Number(l.先行引当数量)||0);
+    const total=phys+arrived+planned+Math.max(0,Number(l.別ルート済数量)||0);
+    if(total<qty) return {st:'不足'+(qty-total)+'個',color:null};
+    if(phys>=qty) return {st:'現物確認済み',color:cfg.色_緑};
+    if(planned>0) return {st:arrived+phys>0?'一部先行':'先行',color:cfg.色_水};
+    return {st:'到着済',color:cfg.色_着};
+  }
   if((Number(l.alloc)||0)>0) return {st:'引当(今回)',color:cfg.色_黄};
   if((Number(l.取り置き中数量)||0)>0) return {st:'取り置き中',color:cfg.色_着};
   if(l.別ルート && l.入荷) return {st:'着済',color:cfg.色_着}; // 台湾・中国の手入力入荷
@@ -1328,16 +1340,45 @@ function 代引き支払_(value){
   return /代引|代金引換|コレクト/.test(String(value==null?'':value));
 }
 
-function 注文区分判定_(arr, paid, 入荷消費OK){
+// 注文内全行の注文数と三段階数量の集計。段階付与済みの行は段階列を、
+// 未付与の旧経路行は台帳確保(取り置き中数量)+今回割当(alloc)を到着済相当として数える(移行期互換)。
+function 注文充足集計_(arr){
   const active=(arr||[]).filter(l=>l && !l.キャンセル);
-  const 黄色あり=active.some(l=>今回行判定_(l, 入荷消費OK));
-  if(!黄色あり) return 'wait';
-  const 未入荷あり=active.some(l=>l.kbn==='取り寄せ'&&残必要計算_(l)>0);
-  if(未入荷あり) return 'part';
-  if(!注文出荷準備OK_(active)) return 'part';
-  if(!paid) return 'keep';
+  const out={注文数量:0,現物確認済み:0,到着済引当:0,先行引当:0,別ルート済:0,確保総数:0,不足:0,行数:active.length};
+  active.forEach(l=>{
+    const qty=Math.max(0,Number(l.qty)||0);
+    const phys=Math.max(0,Number(l.現物確認済み数量)||0);
+    const planned=Math.max(0,Number(l.先行引当数量)||0);
+    const beturoute=Math.max(0,Number(l.別ルート済数量)||0);
+    const arrived=l.段階付与?Math.max(0,Number(l.到着済引当数量)||0)
+      :Math.max(0,Number(l.取り置き中数量)||0)+Math.max(0,Number(l.alloc)||0);
+    const 即納分=l.kbn==='即納'?qty:0; // 即納は現物が店にある前提(従来どおり確保扱い)
+    const secured=Math.min(qty,phys+arrived+planned+beturoute+即納分);
+    out.注文数量+=qty; out.現物確認済み+=Math.min(qty,phys); out.到着済引当+=arrived;
+    out.先行引当+=planned; out.別ルート済+=beturoute;
+    out.確保総数+=secured; out.不足+=Math.max(0,qty-secured);
+  });
+  return out;
+}
+
+// 分類は「今回新規割当の有無」ではなく先行を含む確保総数で決める(三段階 2026-07-22)。
+// 優先順: 確保0→一部→希望日→代引→未入金→入金済。必ず1分類だけを返す。
+function 注文区分判定_(arr, paid, cod){
+  const s=注文充足集計_(arr);
+  if(s.行数===0 || s.確保総数<=0) return 'wait';
+  if(s.不足>0) return 'part';
+  const active=(arr||[]).filter(l=>l && !l.キャンセル);
   if(active.some(l=>希望日未来_(l.届))) return 'hold';
+  if(cod) return 'ship'; // 代引きは未入金でも出荷対象(受注番号セル黄で表示)
+  if(!paid) return 'keep';
   return 'ship';
+}
+
+// 物理に出荷できる注文=不足0かつ先行0。分類上の「出荷可能」とは独立に持つ
+// (先行だけで揃った注文は分類は出荷可能でも、ピック・納品書には出さない)。
+function 注文物理出荷可_(arr){
+  const s=注文充足集計_(arr);
+  return s.行数>0 && s.不足===0 && s.先行引当===0;
 }
 function 発送可否判定_(arr, paid){
   if(!注文出荷準備OK_(arr)) return '';
@@ -1660,7 +1701,7 @@ function 引当実行_本体_(options){
   // 注文を分類:
   //  出荷可能=新規割当あり&全行出せる&入金済 / 希望日待ち=全行出せるが希望日が未来
   //  出荷GO未入金=全行出せるが未入金 / 部分在庫=新規割当あり+不足あり / 引当待ち=新規割当なし
-  const 区分け=ban=> 注文区分判定_(byOrder[ban], paidOrder[ban]||codOrder[ban], 入荷消費OK_);
+  const 区分け=ban=> 注文区分判定_(byOrder[ban], paidOrder[ban], codOrder[ban]);
   // 引当待ちの「発送可否」(K列): 揃っているのに今回分でない=実は発送できる注文を見分ける
   const 発送可否_=ban=> 発送可否判定_(byOrder[ban], paidOrder[ban]||codOrder[ban]);
 
