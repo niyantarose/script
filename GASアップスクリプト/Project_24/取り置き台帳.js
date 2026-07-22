@@ -6,6 +6,57 @@ const TORIOKI_CFG = Object.freeze({
   移動HDR:['処理ID','EMS番号','商品コード','数量','移動先','処理日時']
 });
 const 戻しHDR=['取置ID','受注番号','商品コード','数量','元EMS番号','現物確認','メモ'];
+// 手入力の永続保存(非表示シート)。GoQ取込・更新・引当・全件再計算で入力を消さないための内部保存。仕様§8
+const TORIOKI_INPUT_CFG=Object.freeze({シート:'取り置き入力保存',履歴:'取り置き入力履歴',
+  HDR:['入力キー','受注番号','SKU','商品コード','棚確認','取り置きメモ','確認メモ','注文作業メモ','未反映現物確認数量','入力エラー','最終表示日時','更新日時']});
+
+// 入力キー=受注番号|正規化SKU(行キーと同じ規則)。取置IDと違い受注明細の再取込で揺れない
+function 取り置き_入力キー_(row){ return 取り置き_行キー_(row); }
+
+// 洗い替え前のシート入力を保存rowsへupsertし、生成行へ復元する(純粋関数)。
+// 生成行に無いキーの保存も消さない(注文が一時的に一覧から消えても入力を失わない)。
+function 取り置き_入力保存マージ_(generatedRows, savedRows, sheetRows, now){
+  const store={};
+  (savedRows||[]).forEach(r=>{ const k=String(r&&r.入力キー||''); if(k) store[k]=Object.assign({},r); });
+  (sheetRows||[]).forEach(r=>{
+    const k=取り置き_入力キー_(r); if(!k||k==='|') return;
+    const cur=store[k]||(store[k]={入力キー:k});
+    cur.受注番号=String(r.受注番号||cur.受注番号||''); cur.SKU=String(r.SKU||cur.SKU||''); cur.商品コード=String(r.商品コード||cur.商品コード||'');
+    const 棚=String(r.棚確認==null?'':r.棚確認).trim(); if(棚) cur.棚確認=棚;
+    const memo=String(r.メモ==null?'':r.メモ).trim(); if(memo) cur.取り置きメモ=memo;
+    const qty=r.現物取り置き数量; if(qty!=null&&String(qty).trim()!=='') cur.未反映現物確認数量=qty;
+    cur.更新日時=now||'';
+  });
+  const rows=(generatedRows||[]).map(g=>{
+    const k=取り置き_入力キー_(g), s=store[k];
+    if(!s) return g;
+    s.最終表示日時=now||'';
+    return Object.assign({},g,{
+      棚確認:String(g.棚確認||'').trim()||String(s.棚確認||''),
+      メモ:String(g.メモ||'').trim()||String(s.取り置きメモ||''),
+      現物取り置き数量:(g.現物取り置き数量!=null&&String(g.現物取り置き数量).trim()!=='')?g.現物取り置き数量
+        :(s.未反映現物確認数量!=null&&String(s.未反映現物確認数量).trim()!==''?s.未反映現物確認数量:g.現物取り置き数量)
+    });
+  });
+  return {rows,store};
+}
+
+// 注文(同一受注番号の候補行の配列)が表示モードの対象か(純粋関数)。既定「要作業」は
+// 部分在庫・要棚確認/棚戻し待ち/要対応あり・現物ありの希望日待ちだけを出す。仕様§10
+function 取り置き_作業対象判定_(rows, viewMode){
+  const arr=rows||[], mode=String(viewMode||'要作業');
+  if(mode==='すべて') return true;
+  const has=f=>arr.some(r=>r&&f(r));
+  const 現物あり=has(r=>(Number(r.台帳確保数)||0)>0||String(r.棚確認||'')==='部分在庫'
+    ||(r.現物取り置き数量!=null&&String(r.現物取り置き数量).trim()!==''&&Number(r.現物取り置き数量)>0));
+  const 部分=has(r=>String(r.現在の状態||'')==='部分在庫');
+  const 希望=has(r=>String(r.現在の状態||'')==='希望日待ち');
+  if(mode==='部分在庫') return 部分;
+  if(mode==='希望日待ち・現物あり') return 希望&&現物あり;
+  if(mode==='先行引当') return has(r=>/先行/.test(String(r.台帳確保||'')+String(r.状態の理由||'')));
+  const 要作業=has(r=>String(r.判定||'')==='要棚確認'||String(r.判定||'')==='棚戻し待ち'||String(r.要対応||'').trim()!=='');
+  return 部分||要作業||(希望&&現物あり);
+}
 // 取り置き登録の「棚確認」プルダウン。出荷済み/未着/予約は数量なし(登録しない)の目印
 const TORIOKI_棚確認=Object.freeze(['発送待ち','部分在庫','出荷済み','未着','予約']);
 const TORIOKI_戻し処理=Object.freeze(['棚へ戻した','現物なし']);
@@ -713,6 +764,14 @@ function 取り置き初期登録を作成本体_(options){
   if(!sheetRows.length) sheetRows=読む('取り置き初期登録',['取置ID','現物取り置き数量','メモ']); // 旧名からの一度きりの引き継ぎ
   const ledgerRows=取り置き台帳_読む_();
   candidates=取り置き_登録シート引き継ぎ_(candidates,sheetRows,ledgerRows);
+  // 入力永続化(2026-07-22 仕様§8): 洗い替え前のシート入力を非表示シートへupsertし、生成行へ復元する。
+  // 全数確保クリアで画面から消える数量も「未反映現物確認数量」として保存され、黙って失われない。
+  const 入力保存=読む(TORIOKI_INPUT_CFG.シート,TORIOKI_INPUT_CFG.HDR);
+  const 保存時刻=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd HH:mm:ss');
+  const 保存マージ=取り置き_入力保存マージ_(candidates,入力保存,sheetRows,保存時刻);
+  candidates=保存マージ.rows;
+  取り置き_表を保存_(TORIOKI_INPUT_CFG.シート,TORIOKI_INPUT_CFG.HDR,Object.keys(保存マージ.store).sort().map(k=>保存マージ.store[k]));
+  try{ ss.getSheetByName(TORIOKI_INPUT_CFG.シート).hideSheet(); }catch(e){}
   // ④が既に台帳(EMS引当等)で確保している分を重ねる(全数確保は入力欄クリア+黄色対象外)
   candidates=取り置き_台帳確保を適用_(candidates,取り置き_台帳確保集計_(ledgerRows));
   candidates=取り置き_登録絞り込み_(candidates); // 予約中・出荷GOのステータスだけで除外
