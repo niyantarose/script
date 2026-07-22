@@ -67,27 +67,32 @@ function Yahoo変更_行変換_(対象, 逆引き){
 
 function Yahoo在庫変更を出力(){ 直列_(Yahoo在庫変更を出力本体_); } // 書き込み系は直列_で排他
 
-function Yahoo在庫変更を出力本体_(){
+// preTargets: ⑤(便の締め)から対象EMSを引き継いで呼ばれる場合はプロンプトを出さない
+function Yahoo在庫変更を出力本体_(preTargets){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
   const sh=ss.getSheetByName(HIKIATE_CFG.純在庫);
   if(!sh || sh.getLastRow()<3){ ui.alert('「'+HIKIATE_CFG.純在庫+'」にデータがありません。②を実行してから使ってください。'); return; }
-  const resp=ui.prompt('📤 Yahoo在庫変更を出力(締める便の余り)',
-    '出力する便のEMS番号を入力してください(カンマ/スペース区切りで複数可)。\n'
-    +'例: EG050152967KR\n\n'
-    +'⚠️ mode「+」は加算です。同じ便を2回貼ると二重加算になります。\n'
-    +'順序: この出力 → ★Yahoo在庫変更.xlsmへ貼ってYahoo反映 → 📦⑤で便を締める',
-    ui.ButtonSet.OK_CANCEL);
-  if(resp.getSelectedButton()!==ui.Button.OK) return;
-  const tokens=String(resp.getResponseText()||'').split(/[,、\s]+/).map(s=>s.trim()).filter(Boolean);
-  if(!tokens.length){ ui.alert('EMS番号が空です'); return; }
+  let tokens;
+  if(preTargets && preTargets.length){ tokens=preTargets.slice(); }
+  else {
+    const resp=ui.prompt('📤 Yahoo在庫変更を出力(締める便の余り)',
+      '出力する便のEMS番号を入力してください(カンマ/スペース区切りで複数可)。\n'
+      +'例: EG050152967KR\n\n'
+      +'⚠️ mode「+」は加算です。同じ便を2回貼ると二重加算になります。\n'
+      +'順序: この出力 → ★Yahoo在庫変更.xlsmへ貼ってYahoo反映 → 📦⑤で便を締める',
+      ui.ButtonSet.OK_CANCEL);
+    if(resp.getSelectedButton()!==ui.Button.OK) return;
+    tokens=String(resp.getResponseText()||'').split(/[,、\s]+/).map(s=>s.trim()).filter(Boolean);
+    if(!tokens.length){ ui.alert('EMS番号が空です'); return; }
+  }
   const emsSet=new Set(tokens);
 
   // 日本在庫(1行目=最終引当メタ / 2行目=見出し / 3行目〜=データ)
   const values=sh.getRange(3,1,sh.getLastRow()-2,5).getDisplayValues();
   const japanRows=values.map(v=>({状態:v[0],到着日:v[1],商品コード:v[2],余り数:v[3],EMS番号:v[4]}));
   const 未知=tokens.filter(t=>!japanRows.some(r=>String(r.EMS番号||'').trim()===t));
-  // 一覧に無いEMS番号は空出力で成功したように見せず中止する(打ち間違い・未着便の防止)
-  if(未知.length){ ui.alert('出力を中止しました','日本在庫にこのEMS番号の行がありません: '+未知.join(', ')+'\n(未着の便は⑤前のYahoo出力対象になりません)',ui.ButtonSet.OK); return; }
+  // 全部が一覧に無い時だけ中止(打ち間違い・未着便の防止)。複数便の一部に余りが無いのは正常
+  if(未知.length===tokens.length){ ui.alert('出力を中止しました','日本在庫にこのEMS番号の行がありません: '+未知.join(', ')+'\n(未着の便は⑤前のYahoo出力対象になりません)',ui.ButtonSet.OK); return; }
   const 振り分け=Yahoo変更_対象行_(japanRows,emsSet,全件再計算_マスタ除外集合_());
 
   // 最新のYahoo全在庫CSVで親コードを逆引き
