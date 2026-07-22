@@ -77,7 +77,7 @@ function 全件再計算_実EMS行_(row){
   const arrival=全件再計算_日付_(r.arrival==null?r.到着日:r.arrival);
   const status=String(r.status==null?r.ステータス:r.status).trim();
   if(!全件再計算_実EMS番号_(ems) || !code || !qty || !arrival) return null;
-  if(status && !/到着済|在庫反映済/.test(status)) return null;
+  // 未着箱も先行引当の供給として受け入れる(段階は全件再計算_供給段階_が決める。2026-07-22)
   return {
     ems,code,sourceCode:code,sku:全件再計算_SKU正規化_(code,'EMS'),qty,arrival,
     row:Number(r.row==null?r.行:r.row)||0,purchaseNo:String(r.purchaseNo==null?r.購入No:r.purchaseNo||''),status,
@@ -204,10 +204,23 @@ function 全件再計算_在庫枝番_(row){
   return '';
 }
 
-function 全件再計算_台帳行_(allocation, state, source, sequence){
+// 供給の三段階: 到着済=現物 / 在庫反映済み=過去締め済み(現役に使わない) / その他の実EMS=先行(帳簿のみ)
+function 全件再計算_供給段階_(status){
+  const text=String(status==null?'':status).trim();
+  if(/到着済/.test(text)) return '到着済';
+  if(/在庫反映済/.test(text)) return '過去締め済み';
+  return '先行';
+}
+
+// 取置IDから末尾の連番を外した素性。連番は他SKUの行数で揺れるため、昇格の同一性判定に使わない
+function 全件再計算_ID素性_(id){
+  return String(id||'').replace(/\|\d+$/,'');
+}
+
+function 全件再計算_台帳行_(allocation, state, source, sequence, stage){
   const a=allocation||{},d=a.demand||{},s=a.supply||{};
   const kind=state==='発送済み'?'SHIP':'ACTIVE';
-  return {
+  const row={
     取置ID:['REBUILD',kind,String(d.ban||''),String(d.itemId||d.row||''),String(s.ems||''),String(s.row||''),String(sequence||0)].join('|'),
     // 商品コードは受注側の親コード。行キー(受注番号|商品コード|SKU)の照合先(受注明細/GoQ CSV/通常登録の台帳行)が
     // 全て親コードなので、正規化SKUを入れると多バリエーション商品(JMEE-SPKZ等)だけ孤児/タグ注意/必要数が外れる
@@ -215,6 +228,23 @@ function 全件再計算_台帳行_(allocation, state, source, sequence){
     取り置き数量:a.qty,取置元種別:source,元EMS番号:String(s.ems||''),元EMS商品コード:String(s.sourceCode||s.code||''),元取置ID:'',
     登録日時:'',更新日時:'',戻し処理結果:'','終了理由・メモ':'全件再計算v3 / 元EMS到着日='+String(s.arrival||'')
   };
+  if(stage){
+    row.引当段階=stage;
+    if(stage==='先行') row.EMS到着予定日=String(s.arrival||'');
+  }
+  return row;
+}
+
+// 確保行の生成。既存先行行と素性が一致すれば取置IDを引き継ぎ(置換ではなく段階更新)、
+// 先行→到着済になった行は昇格として報告する。
+function 全件再計算_確保台帳行_(allocation, stage, sequence, plannedById, promotionRows){
+  const row=全件再計算_台帳行_(allocation,'取り置き中','EMS',sequence,stage);
+  const prev=plannedById?plannedById[全件再計算_ID素性_(row.取置ID)]:null;
+  if(prev){
+    row.取置ID=String(prev.取置ID);
+    if(stage==='到着済' && String(prev.引当段階||'')==='先行' && promotionRows) promotionRows.push(Object.assign({},row));
+  }
+  return row;
 }
 
 // ブロックSKUの取り置き中行を落とす(開始前在庫は現物事実なので残す)。
@@ -249,6 +279,10 @@ function 全件再計算_需要並び_(a,b){
 function 全件再計算_再構築_(input){
   input=input||{};
   const issues=[],allocations=[],ledgerRows=[],movementRows=[],blocked=new Set();
+  const invariantErrors=[],futureReservations=[],promotionRows=[],stageSummary={};
+  // 既存の先行行(現在台帳)。素性一致で取置IDを引き継ぎ、箱到着時の昇格を検出する
+  const plannedById={};
+  (input.currentPlanned||[]).forEach(row=>{ if(row && row.取置ID) plannedById[全件再計算_ID素性_(row.取置ID)]=row; });
   const excludeSet=input.excludeCodes instanceof Set?input.excludeCodes:new Set((input.excludeCodes||[]).map(c=>normCode_(c)));
   const blockedReason={}; // SKU→最初のブロック理由(内訳レポート用)
   const block=(sku,type)=>{ if(!sku) return; blocked.add(sku); if(!(sku in blockedReason)) blockedReason[sku]=type; };
@@ -334,6 +368,19 @@ function 全件再計算_再構築_(input){
     yahoo[sku]=(yahoo[sku]||0)+qty;
   });
 
+  // 現物確認済み(棚で数えた現物)は最優先の需要固定。行は削除・移動せずそのまま引き継ぐ。
+  const physRows=[],physQtyByKey={},physBySku={};
+  (input.physicalRows||[]).forEach(row=>{
+    if(!row || row.状態!=='取り置き中' || String(row.引当段階||'')!=='現物確認済み') return;
+    const qty=取り置き_整数_(row.取り置き数量); if(!qty) return;
+    const sku=全件再計算_需要SKU_(row,'受注'); if(!sku) return;
+    const copy=Object.assign({},row);
+    physRows.push(copy);
+    const key=取り置き_行キー_(row);
+    physQtyByKey[key]=(physQtyByKey[key]||0)+qty;
+    (physBySku[sku]=physBySku[sku]||[]).push(copy);
+  });
+
   // ユーザーが棚確認で確定した開始前在庫(取り置き中)は事実データと同格に扱う。
   // 該当注文の需要から先に差し引き、同数のEMS供給も消費して「説明不能余り」への誤ブロックを防ぐ。
   const holdRows=[],holdQtyByKey={},holdBySku={};
@@ -347,7 +394,7 @@ function 全件再計算_再構築_(input){
     holdBySku[sku]=(holdBySku[sku]||0)+qty;
   });
 
-  const skuSet=new Set([].concat(Object.keys(suppliesBySku),Object.keys(shippedBySku),Object.keys(shippedImmediateBySku),Object.keys(immediateBySku),Object.keys(backorderBySku),Object.keys(yahoo),Object.keys(holdBySku)));
+  const skuSet=new Set([].concat(Object.keys(suppliesBySku),Object.keys(shippedBySku),Object.keys(shippedImmediateBySku),Object.keys(immediateBySku),Object.keys(backorderBySku),Object.keys(yahoo),Object.keys(holdBySku),Object.keys(physBySku)));
   const summary=[];
   let ledgerSequence=0,movementSequence=0;
 
@@ -358,18 +405,19 @@ function 全件再計算_再構築_(input){
     const immediate=(immediateBySku[sku]||[]).slice().sort(全件再計算_需要並び_);
     const backorders=(backorderBySku[sku]||[]).slice().sort(全件再計算_需要並び_);
     const skuAllocations=[];
-    const take=(demand,kind,cutoff,onlyArrived)=>{
+    const take=(demand,kind,cutoff,stageFilter)=>{
       let left=demand.qty;
       const ordered=supplies.slice().sort((a,b)=>{
         const ap=a.directBan===String(demand.ban||'')?0:a.directBan?2:1;
         const bp=b.directBan===String(demand.ban||'')?0:b.directBan?2:1;
         return ap-bp || a.arrival.localeCompare(b.arrival) || (a.row-b.row);
       });
+      const stages=stageFilter?(Array.isArray(stageFilter)?stageFilter:[stageFilter]):null;
       for(const supply of ordered){
         if(left<=0) break;
-        // 現役の確保は物理現物がある「到着済」からだけ。締め済み(在庫反映済み)箱の説明穴を
-        // 現役注文で埋めると納品書なしの幽霊確保が生まれる(2026-07-21 実例10117699)
-        if(onlyArrived && String(supply.status||'到着済')!=='到着済') continue;
+        // 現役の物理確保は「到着済」からだけ(締め済み箱の穴埋め=幽霊確保の防止。2026-07-21 実例10117699)。
+        // 歴史説明(発送済み/即納/Yahoo/開始前在庫)は到着済+過去締め済み、先行引当は「先行」だけを使う
+        if(stages && stages.indexOf(全件再計算_供給段階_(supply.status||'到着済'))<0) continue;
         if(supply.directBan && supply.directBan!==String(demand.ban||'')) continue;
         if(cutoff && supply.arrival>cutoff) continue;
         const qty=Math.min(left,supply._remaining||0); if(qty<=0) continue;
@@ -381,7 +429,7 @@ function 全件再計算_再構築_(input){
     };
 
     shipped.forEach(demand=>{
-      const before=skuAllocations.length,left=take(demand,'発送済み',demand.shipDate);
+      const before=skuAllocations.length,left=take(demand,'発送済み',demand.shipDate,['到着済','過去締め済み']);
       skuAllocations.slice(before).forEach(a=>ledgerRows.push(全件再計算_台帳行_(a,'発送済み','全件再計算_出荷実績',++ledgerSequence)));
       // 供給の記録が無い過去出荷(EMSリストの古い行削除等)は歴史ギャップ。現物は出荷済みで現在の
       // 出荷リスクは無いため情報に留め、SKU(=今の到着済在庫)をブロックしない(2026-07-21 計測1532件)
@@ -389,15 +437,44 @@ function 全件再計算_再構築_(input){
     });
 
     immediate.forEach(demand=>{
-      const before=skuAllocations.length,left=take(demand,'現在即納','');
+      const before=skuAllocations.length,left=take(demand,'現在即納','',['到着済','過去締め済み']);
       skuAllocations.slice(before).forEach(a=>movementRows.push(全件再計算_移動行_(a,'現在即納受注',++movementSequence)));
       if(left>0) issues.push({severity:'情報',type:'即納EMS外在庫',sku,qty:left,ban:demand.ban});
+    });
+
+    // 現物確認済みの供給控除(Yahoo保護より先=§5の順)。供給解放行は箱を消費しない。
+    let physicalTotal=0;
+    (physBySku[sku]||[]).forEach(row=>{
+      const qty=取り置き_整数_(row.取り置き数量); physicalTotal+=qty;
+      if(String(row.供給処理||'')==='供給解放') return;
+      const explicit=String(row.供給控除EMS||row.元EMS番号||'').trim();
+      if(explicit){
+        const box=supplies.find(s=>s.ems===explicit && (!String(row.元EMS商品コード||'').trim() || s.sourceCode===String(row.元EMS商品コード).trim()));
+        if(!box || (box._remaining||0)<qty){
+          issues.push({severity:'重要',type:'現物供給不一致',sku,qty,ban:String(row.受注番号||''),detail:explicit});
+          invariantErrors.push('現物供給不一致: '+sku+' 受注'+String(row.受注番号||'')+' '+qty+'個 (箱'+explicit+')');
+          return; // 現物行自体は維持する(削除・移動しない)
+        }
+        box._remaining-=qty;
+        return;
+      }
+      // 元EMS不明: 同SKUの到着済箱から古い順に控除し、控除先を証跡に残す。控除不能は推測せず停止対象
+      const arrivedBoxes=supplies.filter(s=>全件再計算_供給段階_(s.status||'到着済')==='到着済');
+      const available=arrivedBoxes.reduce((n,s)=>n+(s._remaining||0),0);
+      if(available<qty){
+        issues.push({severity:'重要',type:'現物控除不能',sku,qty,ban:String(row.受注番号||'')});
+        invariantErrors.push('現物控除不能: '+sku+' 受注'+String(row.受注番号||'')+' '+qty+'個(到着済供給'+available+'個)');
+        return;
+      }
+      let left=qty; const sources=[];
+      for(const s of arrivedBoxes){ if(left<=0) break; const n=Math.min(left,s._remaining||0); if(n>0){ s._remaining-=n; left-=n; sources.push(s.ems); } }
+      row.供給控除EMS=sources.join('/');
     });
 
     let yahooLeft=yahoo[sku]||0;
     if(yahooLeft>0){
       const demand={qty:yahooLeft,ban:'',itemId:'YAHOO-A',sku:sku+'a'},before=skuAllocations.length;
-      yahooLeft=take(demand,'Yahoo自由在庫','');
+      yahooLeft=take(demand,'Yahoo自由在庫','',['到着済','過去締め済み']);
       skuAllocations.slice(before).forEach(a=>movementRows.push(全件再計算_移動行_(a,'Yahoo自由在庫',++movementSequence)));
       if(yahooLeft>0) issues.push({severity:'情報',type:'Yahoo自由在庫EMS外',sku,qty:yahooLeft});
     }
@@ -407,29 +484,43 @@ function 全件再計算_再構築_(input){
     let holdLeft=holdBySku[sku]||0;
     if(holdLeft>0){
       const demand={qty:holdLeft,ban:'',itemId:'INITIAL-HOLD',sku},before=skuAllocations.length;
-      holdLeft=take(demand,'開始前在庫','');
+      holdLeft=take(demand,'開始前在庫','',['到着済','過去締め済み']);
       skuAllocations.slice(before).forEach(a=>movementRows.push(全件再計算_移動行_(a,'開始前在庫充当',++movementSequence)));
       if(holdLeft>0) issues.push({severity:'情報',type:'開始前在庫EMS外',sku,qty:holdLeft});
     }
 
+    let arrivedAllocated=0,plannedAllocated=0,unallocated=0;
     backorders.forEach(demand=>{
-      // 開始前在庫が確保している数量は、この再計算では新たに割り当てない(同じ現物の二重確保防止)。
-      const holdKey=取り置き_行キー_(demand),held=Math.min(demand.qty,holdQtyByKey[holdKey]||0);
-      if(held>0){ holdQtyByKey[holdKey]-=held; demand=Object.assign({},demand,{qty:demand.qty-held}); }
+      // 現物確認済み・開始前在庫が確保している数量は、この再計算では新たに割り当てない(同じ現物の二重確保防止)。
+      const rowKey=取り置き_行キー_(demand);
+      const phys=Math.min(demand.qty,physQtyByKey[rowKey]||0);
+      if(phys>0){ physQtyByKey[rowKey]-=phys; demand=Object.assign({},demand,{qty:demand.qty-phys}); }
+      const held=Math.min(demand.qty,holdQtyByKey[rowKey]||0);
+      if(held>0){ holdQtyByKey[rowKey]-=held; demand=Object.assign({},demand,{qty:demand.qty-held}); }
       if(demand.qty<=0) return;
-      const before=skuAllocations.length,left=take(demand,'現在取寄せ','',true);
-      skuAllocations.slice(before).forEach(a=>ledgerRows.push(全件再計算_台帳行_(a,'取り置き中','EMS',++ledgerSequence)));
-      if(left>0) issues.push({severity:'情報',type:'現在取寄せ未引当',sku,qty:left,ban:demand.ban,row:demand.row});
+      // 到着済(物理)→未着(先行=帳簿のみ)の2パスFIFO
+      let before=skuAllocations.length,left=take(demand,'現在取寄せ','','到着済');
+      skuAllocations.slice(before).forEach(a=>{arrivedAllocated+=a.qty;ledgerRows.push(全件再計算_確保台帳行_(a,'到着済',++ledgerSequence,plannedById,promotionRows));});
+      if(left>0){
+        const rest=Object.assign({},demand,{qty:left});
+        before=skuAllocations.length;
+        left=take(rest,'現在取寄せ先行','','先行');
+        skuAllocations.slice(before).forEach(a=>{plannedAllocated+=a.qty;const row=全件再計算_確保台帳行_(a,'先行',++ledgerSequence,plannedById,promotionRows);ledgerRows.push(row);futureReservations.push(row);});
+      }
+      if(left>0){ unallocated+=left; issues.push({severity:'情報',type:'現在取寄せ未引当',sku,qty:left,ban:demand.ban,row:demand.row}); }
     });
 
-    const openExcess=supplies.reduce((sum,s)=>sum+(String(s.status||'到着済')==='到着済'?(s._remaining||0):0),0);
-    const closedExcess=supplies.reduce((sum,s)=>sum+(String(s.status||'到着済')==='到着済'?0:(s._remaining||0)),0);
-    const excess=openExcess+closedExcess;
+    const excessByStage={'到着済':0,'過去締め済み':0,'先行':0};
+    supplies.forEach(s=>{ excessByStage[全件再計算_供給段階_(s.status||'到着済')]+=(s._remaining||0); });
+    const excess=excessByStage['到着済']+excessByStage['過去締め済み']+excessByStage['先行'];
     // 到着済の余り=⑤でYahooへ移す前の正常な状態(検品済みの現物)。ブロックすると④が供給を隠し
     // ⑤のYahoo移動からも漏れるため情報に留める(2026-07-21)。ブロックは数量不正等のデータ異常だけ
-    if(openExcess>0) issues.push({severity:'情報',type:'到着済の余り',sku,qty:openExcess});
+    if(excessByStage['到着済']>0) issues.push({severity:'情報',type:'到着済の余り',sku,qty:excessByStage['到着済']});
     // 締め済み箱の歴史ギャップは現物の出荷リスクが無い(④の供給は到着済のみ)ため情報に留めブロックしない
-    if(closedExcess>0) issues.push({severity:'情報',type:'締め済み箱の説明不能余り',sku,qty:closedExcess});
+    if(excessByStage['過去締め済み']>0) issues.push({severity:'情報',type:'締め済み箱の説明不能余り',sku,qty:excessByStage['過去締め済み']});
+    // 未着の余りは現物ではないためYahoo追加候補にしない(箱が着いてから到着済の余りとして扱う)
+    if(excessByStage['先行']>0) issues.push({severity:'情報',type:'未着の余り',sku,qty:excessByStage['先行']});
+    stageSummary[sku]={現物確認済み:physicalTotal,到着済引当:arrivedAllocated,先行引当:plannedAllocated,未引当:unallocated};
     summary.push({
       sku,EMS到着済:supplies.reduce((n,s)=>n+s.qty,0),発送済:shipped.reduce((n,r)=>n+r.qty,0),発送済即納:shippedImmediate.reduce((n,r)=>n+r.qty,0),
       現在即納:immediate.reduce((n,r)=>n+r.qty,0),Yahoo自由在庫:yahoo[sku]||0,開始前在庫:holdBySku[sku]||0,
@@ -440,9 +531,11 @@ function 全件再計算_再構築_(input){
   const blockedSkus=Array.from(blocked).sort();
   // ブロックSKUに現在取り置きを作ると通常④が供給を止めてもラベンダー表示が残るため除外する。
   const safeLedger=ledgerRows.filter(r=>r.状態!=='取り置き中' || blockedSkus.indexOf(r.商品コード)<0);
-  // 開始前在庫はユーザー確定の事実なので、ブロックSKUでも消さずにそのまま引き継ぐ。
+  // 開始前在庫・現物確認済みはユーザー確定の事実なので、ブロックSKUでも消さずにそのまま引き継ぐ。
   holdRows.forEach(row=>safeLedger.push(Object.assign({},row)));
-  return {ledgerRows:safeLedger,movementRows,allocations,issues,blockedSkus,blockedReason,summary,futureReservations:[]};
+  physRows.forEach(row=>safeLedger.push(Object.assign({},row)));
+  return {ledgerRows:safeLedger,movementRows,allocations,issues,blockedSkus,blockedReason,summary,
+    stageSummary,futureReservations,promotionRows,invariantErrors};
 }
 
 // ===== GASアダプター / プレビュー =====
@@ -565,8 +658,10 @@ function 全件再計算_入力を読む_(){
 
 function 全件再計算_計画を作る_(){
   const source=全件再計算_入力を読む_();
+  // 現在台帳の現物確認済み行は最優先で固定、取り置き中行は先行昇格のID引き継ぎ素性として渡す
+  const activeLedger=(source.ledger||[]).filter(r=>r&&r.状態==='取り置き中');
   const result=全件再計算_再構築_({supplies:source.ems.supplies,shipped:source.shipped.rows,currentOrders:source.orders.rows,yahooA:source.yahoo.a在庫,
-    initialHolds:source.ledger,excludeCodes:全件再計算_マスタ除外集合_()});
+    initialHolds:source.ledger,physicalRows:activeLedger,currentPlanned:activeLedger,excludeCodes:全件再計算_マスタ除外集合_()});
   source.shipped.issues.forEach(issue=>{
     result.issues.push(issue);
     if(issue.sku && result.blockedSkus.indexOf(issue.sku)<0){
@@ -586,7 +681,10 @@ function 全件再計算_計画を作る_(){
     yahooMeta:{fileId:source.yahoo.fileId,fileName:source.yahoo.fileName,updatedAt:source.yahoo.updatedAt,md5:source.yahoo.md5,rowCount:source.yahoo.rowCount},
     ledgerRows:result.ledgerRows,movementRows:result.movementRows,blockedSkus:result.blockedSkus,ブロック内訳,
     summary:result.summary,issues:result.issues,allocations:result.allocations,
-    applyBlocked:source.unresolved.length>0 || unidentifiedCritical.length>0
+    stageSummary:result.stageSummary,futureReservations:result.futureReservations,
+    promotionRows:result.promotionRows,invariantErrors:result.invariantErrors,
+    // 不変条件エラー(現物供給不一致・現物控除不能等)が1件でもあればプレビューのみ=運用台帳を置換しない
+    applyBlocked:source.unresolved.length>0 || unidentifiedCritical.length>0 || (result.invariantErrors||[]).length>0
   };
 }
 

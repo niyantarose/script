@@ -113,7 +113,7 @@ git commit -m "feat(Project_24): 取り置き台帳を三段階管理へ拡張"
 - `全件再計算_現物固定を予約_(physicalRows, orders, supplies)`：現物を元注文へ固定し、元EMSありはその供給を一度消費、元EMS不明は同SKU到着済供給を古い順に控除する。控除不能分は重要issueにする。
 - `全件再計算_再構築_(input)` の戻り値に `stageSummary`、`promotionRows`、`futureReservations`、`invariantErrors` を追加する。
 
-- [ ] **Step 1: 実例を含むREDテストを追加**
+- [x] **Step 1: 実例を含むREDテストを追加**
 
 `tests/project24_full_allocation_rebuild.test.js` へ次を追加する。
 
@@ -127,25 +127,25 @@ git commit -m "feat(Project_24): 取り置き台帳を三段階管理へ拡張"
 8. 元EMS不明現物は最古到着済箱から控除され、到着済箱が無ければ要確認で反映停止。
 9. 先行→現物変換で元の未着供給が解放され、別の残需要へ再配分できる。
 
-- [ ] **Step 2: REDを確認**
+- [x] **Step 2: REDを確認**
 
 Run: `node tests/project24_full_allocation_rebuild.test.js`
 
 Expected: 現行の `futureReservations: []`、到着済だけの割当、開始前在庫の無条件保持に関する新テストがFAIL。
 
-- [ ] **Step 3: 供給を段階化し、現物固定を最初に予約**
+- [x] **Step 3: 供給を段階化し、現物固定を最初に予約**
 
 `全件再計算_実EMS行_` の戻り値へ `stage` と `status` を保持する。SKUごとの処理では、元EMS付き現物行をその供給から先に差し引き、元EMS不明現物は同SKUの到着済供給を到着日・EMS番号順で控除する。控除先は `供給控除EMS` に残し、`元EMS番号` は由来不明のままにする。どの箱からも控除できない数量は推測で外部在庫にせず停止対象へ出す。
 
-- [ ] **Step 4: Yahoo保護・到着済・先行の順で割り当て**
+- [x] **Step 4: Yahoo保護・到着済・先行の順で割り当て**
 
 現物固定後、Yahoo自由在庫の保護を確定し、その後に現在取寄せへ到着済供給、未着供給の2パスで割り当てる。新規台帳行には段階と到着予定日を保存する。`在庫反映済み` 供給は現役注文へ使わない。
 
-- [ ] **Step 5: 停止条件と昇格を実装**
+- [x] **Step 5: 停止条件と昇格を実装**
 
 同じ決定IDが既存先行行にあれば置換ではなく段階更新とし、箱内容不一致、注文超過、現物注文の消失は `重要` issue と `invariantErrors` へ入れる。全件反映アダプターは `invariantErrors` が1件でもあればプレビューのみ作り、運用台帳を置換しない。
 
-- [ ] **Step 6: GREENと回帰を確認**
+- [x] **Step 6: GREENと回帰を確認**
 
 Run:
 
@@ -157,7 +157,12 @@ node tests/project24_yahoo_stock_export.test.js
 
 Expected: 全PASS。
 
-- [ ] **Step 7: コミット**
+- [x] **Step 7: コミット**
+
+> 実装メモ(2026-07-22 Claude): 実EMS行_が未着を捨てる入口を開放。takeは段階フィルタ(単一or配列)化——
+> 歴史説明(発送済み/即納/Yahoo/開始前在庫)は到着済+過去締め済み(旧挙動と同一)、現役取寄せは到着済のみ、
+> 先行パスは未着のみ。現物固定はGASアダプター(計画を作る_)から現在台帳の取り置き中行を
+> physicalRows/currentPlannedへ接続済み。invariantErrorsはapplyBlocked経由で反映を停止する。
 
 ```powershell
 git add Project_24/全件再計算.js tests/project24_full_allocation_rebuild.test.js tests/project24_three_stage_allocation.test.js

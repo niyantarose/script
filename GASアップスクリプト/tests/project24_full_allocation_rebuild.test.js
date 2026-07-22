@@ -526,4 +526,162 @@ test('再構築: EMSリストに無い別便EMS番号付きの取寄せ注文は
   assert.strictEqual(result.blockedSkus.length, 0);
 });
 
+// ===== Task 2: 三段階（現物固定→Yahoo保護→到着済→先行） =====
+
+test('供給段階: 到着済／在庫反映済み／その他実EMSを三段階へ分類する', () => {
+  assert.strictEqual(context.全件再計算_供給段階_('到着済'), '到着済');
+  assert.strictEqual(context.全件再計算_供給段階_('在庫反映済み'), '過去締め済み');
+  assert.strictEqual(context.全件再計算_供給段階_('未着'), '先行');
+  assert.strictEqual(context.全件再計算_供給段階_(''), '先行');
+});
+
+test('三段階: 現物確認済み3は未着EMS2個でも現物のまま残り新割当を作らない(10117428)', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [{ems:'EG050152967KR',code:'MRBLUE42-6',qty:2,arrival:'2026-07-23',row:2,status:'未着'}],
+    shipped: [],
+    currentOrders: [{ban:'10117428',sku:'MRBLUE42-6b',code:'MRBLUE42',qty:3,orderDate:'2026-07-01',row:3,route:'韓国取寄せ'}],
+    yahooA: {'MRBLUE42-6':0},
+    physicalRows: [{取置ID:'PHY-428',状態:'取り置き中',引当段階:'現物確認済み',受注番号:'10117428',商品コード:'MRBLUE42',SKU:'MRBLUE42-6b',取り置き数量:3,取置元種別:'EMS',元EMS番号:'',供給処理:'供給解放'}]
+  });
+  const active = result.ledgerRows.filter(r => r.状態 === '取り置き中' && r.受注番号 === '10117428');
+  assert.strictEqual(active.length, 1);
+  assert.strictEqual(active[0].取置ID, 'PHY-428');
+  assert.strictEqual(active[0].引当段階, '現物確認済み');
+  assert.strictEqual(active[0].取り置き数量, 3);
+  assert.strictEqual((result.futureReservations||[]).length, 0, '需要は現物で満杯=先行を作らない');
+  assert.strictEqual(result.invariantErrors.length, 0);
+});
+
+test('三段階: 現物6+未着8は先行8で全数確保し供給消費は8だけ(10117608)', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [{ems:'EMS-NEW',code:'MRBLUE41',qty:8,arrival:'2026-07-23',row:2,status:'未着'}],
+    shipped: [],
+    currentOrders: [{ban:'10117608',sku:'MRBLUE41b',code:'MRBLUE41',qty:14,orderDate:'2026-07-01',row:3,route:'韓国取寄せ'}],
+    yahooA: {'MRBLUE41':0},
+    physicalRows: [{取置ID:'PHY-608',状態:'取り置き中',引当段階:'現物確認済み',受注番号:'10117608',商品コード:'MRBLUE41',SKU:'MRBLUE41b',取り置き数量:6,取置元種別:'EMS',元EMS番号:'',供給処理:'供給解放'}]
+  });
+  const planned = result.ledgerRows.filter(r => r.状態 === '取り置き中' && r.引当段階 === '先行');
+  assert.strictEqual(planned.reduce((n,r)=>n+r.取り置き数量,0), 8);
+  assert.strictEqual(result.stageSummary['MRBLUE41'].現物確認済み, 6);
+  assert.strictEqual(result.stageSummary['MRBLUE41'].先行引当, 8);
+  assert.strictEqual(result.stageSummary['MRBLUE41'].未引当, 0);
+  assert.ok(!result.issues.some(i => i.type === '未着の余り' && i.sku === 'MRBLUE41'), '未着8は全部先行=余りなし');
+});
+
+test('三段階: 現物固定はYahoo保護より先に到着済供給を控除する(元EMS不明はFIFO控除)', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [{ems:'EMS-OLD',code:'TEST-P1',qty:1,arrival:'2026-07-10',row:2,status:'到着済'}],
+    shipped: [],
+    currentOrders: [{ban:'900',sku:'TEST-P1b',code:'TEST-P1',qty:1,orderDate:'2026-07-01',row:3,route:'韓国取寄せ'}],
+    yahooA: {'TEST-P1':1},
+    physicalRows: [{取置ID:'PHY-900',状態:'取り置き中',引当段階:'現物確認済み',受注番号:'900',商品コード:'TEST-P1',SKU:'TEST-P1b',取り置き数量:1,取置元種別:'EMS',元EMS番号:''}]
+  });
+  const phys = result.ledgerRows.filter(r => r.取置ID === 'PHY-900');
+  assert.strictEqual(phys.length, 1);
+  assert.strictEqual(phys[0].供給控除EMS, 'EMS-OLD', '最古の到着済箱から控除し証跡を残す');
+  assert.ok(result.issues.some(i => i.type === 'Yahoo自由在庫EMS外' && i.sku === 'TEST-P1'), '現物が先に控除しYahoo aはEMS外になる');
+  assert.strictEqual(result.invariantErrors.length, 0);
+});
+
+test('三段階: 到着済を先にFIFOし残需要だけ未着へ先行FIFOする', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [
+      {ems:'EMS-ARR',code:'TEST-F1',qty:1,arrival:'2026-07-20',row:2,status:'到着済'},
+      {ems:'EMS-FUT',code:'TEST-F1',qty:2,arrival:'2026-07-23',row:3,status:'未着'}
+    ],
+    shipped: [],
+    currentOrders: [{ban:'901',sku:'TEST-F1b',code:'TEST-F1',qty:3,orderDate:'2026-07-01',row:4,route:'韓国取寄せ'}],
+    yahooA: {'TEST-F1':0}
+  });
+  const active = result.ledgerRows.filter(r => r.状態 === '取り置き中' && r.受注番号 === '901');
+  const arrived = active.filter(r => r.引当段階 === '到着済');
+  const planned = active.filter(r => r.引当段階 === '先行');
+  assert.strictEqual(arrived.reduce((n,r)=>n+r.取り置き数量,0), 1);
+  assert.strictEqual(arrived[0].元EMS番号, 'EMS-ARR');
+  assert.strictEqual(planned.reduce((n,r)=>n+r.取り置き数量,0), 2);
+  assert.strictEqual(planned[0].元EMS番号, 'EMS-FUT');
+  assert.strictEqual(planned[0].EMS到着予定日, '2026-07-23');
+  assert.deepStrictEqual(json(result.futureReservations.map(r=>r.取置ID)), json(planned.map(r=>r.取置ID)));
+});
+
+test('三段階: 箱到着で先行は同じ取置ID・数量のまま到着済へ昇格する', () => {
+  const base = {
+    shipped: [],
+    currentOrders: [{ban:'902',sku:'TEST-U1b',code:'TEST-U1',qty:1,orderDate:'2026-07-01',row:3,route:'韓国取寄せ'}],
+    yahooA: {'TEST-U1':0}
+  };
+  const before = context.全件再計算_再構築_(Object.assign({}, base, {
+    supplies: [{ems:'EMS-U',code:'TEST-U1',qty:1,arrival:'2026-07-23',row:2,status:'未着'}]
+  }));
+  const plannedRow = before.ledgerRows.find(r => r.状態 === '取り置き中' && r.引当段階 === '先行');
+  assert.ok(plannedRow, '到着前は先行行');
+  const after = context.全件再計算_再構築_(Object.assign({}, base, {
+    supplies: [{ems:'EMS-U',code:'TEST-U1',qty:1,arrival:'2026-07-23',row:2,status:'到着済'}],
+    currentPlanned: [plannedRow]
+  }));
+  const arrivedRow = after.ledgerRows.find(r => r.状態 === '取り置き中' && r.受注番号 === '902');
+  assert.strictEqual(arrivedRow.取置ID, plannedRow.取置ID, '取置IDは昇格で不変');
+  assert.strictEqual(arrivedRow.取り置き数量, plannedRow.取り置き数量);
+  assert.strictEqual(arrivedRow.引当段階, '到着済');
+  assert.ok((after.promotionRows||[]).some(r => r.取置ID === plannedRow.取置ID), '昇格行として報告される');
+});
+
+test('三段階: 現物行の元EMS箱に商品が無ければ現物を維持し差分だけ停止対象へ出す', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [{ems:'BOX-1',code:'TEST-C2',qty:1,arrival:'2026-07-20',row:2,status:'到着済'}],
+    shipped: [],
+    currentOrders: [{ban:'903',sku:'TEST-C1b',code:'TEST-C1',qty:1,orderDate:'2026-07-01',row:3,route:'韓国取寄せ'}],
+    yahooA: {},
+    physicalRows: [{取置ID:'PHY-903',状態:'取り置き中',引当段階:'現物確認済み',受注番号:'903',商品コード:'TEST-C1',SKU:'TEST-C1b',取り置き数量:1,取置元種別:'EMS',元EMS番号:'BOX-1',元EMS商品コード:'TEST-C1'}]
+  });
+  const phys = result.ledgerRows.filter(r => r.取置ID === 'PHY-903');
+  assert.strictEqual(phys.length, 1, '現物行は維持する');
+  assert.ok(result.issues.some(i => i.type === '現物供給不一致' && i.severity === '重要'));
+  assert.ok(result.invariantErrors.length > 0, '反映を止める停止対象になる');
+});
+
+test('三段階: 到着済の余りだけをYahoo追加候補にし未着の余りは候補へ出さない', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [
+      {ems:'EMS-EX1',code:'TEST-E1',qty:1,arrival:'2026-07-20',row:2,status:'到着済'},
+      {ems:'EMS-EX2',code:'TEST-E1',qty:2,arrival:'2026-07-23',row:3,status:'未着'}
+    ],
+    shipped: [], currentOrders: [], yahooA: {'TEST-E1':0}
+  });
+  assert.ok(result.issues.some(i => i.type === '到着済の余り' && i.sku === 'TEST-E1' && i.qty === 1));
+  assert.ok(result.issues.some(i => i.type === '未着の余り' && i.sku === 'TEST-E1' && i.qty === 2));
+  assert.ok(!result.issues.some(i => i.type === '締め済み箱の説明不能余り' && i.sku === 'TEST-E1'), '未着を締め済みギャップ扱いしない');
+});
+
+test('三段階: 元EMS不明現物は到着済箱が無ければ要確認で反映停止する', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [{ems:'EMS-FUT2',code:'TEST-N1',qty:1,arrival:'2026-07-23',row:2,status:'未着'}],
+    shipped: [],
+    currentOrders: [{ban:'904',sku:'TEST-N1b',code:'TEST-N1',qty:1,orderDate:'2026-07-01',row:3,route:'韓国取寄せ'}],
+    yahooA: {},
+    physicalRows: [{取置ID:'PHY-904',状態:'取り置き中',引当段階:'現物確認済み',受注番号:'904',商品コード:'TEST-N1',SKU:'TEST-N1b',取り置き数量:1,取置元種別:'EMS',元EMS番号:''}]
+  });
+  assert.strictEqual(result.ledgerRows.filter(r => r.取置ID === 'PHY-904').length, 1, '現物行自体は維持');
+  assert.ok(result.issues.some(i => i.type === '現物控除不能' && i.severity === '重要'));
+  assert.ok(result.invariantErrors.length > 0);
+});
+
+test('三段階: 先行→現物変換で解放された未着供給は別の残需要へ先行できる', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [{ems:'EMS-REL',code:'TEST-R1',qty:1,arrival:'2026-07-23',row:2,status:'未着'}],
+    shipped: [],
+    currentOrders: [
+      {ban:'905',sku:'TEST-R1b',code:'TEST-R1',qty:1,orderDate:'2026-07-01',row:3,route:'韓国取寄せ'},
+      {ban:'906',sku:'TEST-R1b',code:'TEST-R1',qty:1,orderDate:'2026-07-02',row:4,route:'韓国取寄せ'}
+    ],
+    yahooA: {'TEST-R1':0},
+    physicalRows: [{取置ID:'PHY-905',状態:'取り置き中',引当段階:'現物確認済み',受注番号:'905',商品コード:'TEST-R1',SKU:'TEST-R1b',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EMS-REL',供給処理:'供給解放'}]
+  });
+  const planned = result.ledgerRows.filter(r => r.状態 === '取り置き中' && r.引当段階 === '先行');
+  assert.strictEqual(planned.length, 1, '解放された未着1個は906の先行へ');
+  assert.strictEqual(planned[0].受注番号, '906');
+  assert.strictEqual(planned[0].取り置き数量, 1);
+  assert.strictEqual(result.invariantErrors.length, 0);
+});
+
 if (failures) process.exit(1);
