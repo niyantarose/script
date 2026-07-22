@@ -6,8 +6,9 @@
 const YAHOO_EXPORT_CFG = Object.freeze({ 出力シート: 'Yahoo在庫変更出力' });
 
 // 日本在庫の行を対象/除外へ振り分ける純粋関数。emsSetが空なら全便を対象にする。
-// 除外: PromotionalItem(贈呈品)・受注番号形式コード(例10117508)は Yahoo在庫に足さない(承認済み仕様)
-function Yahoo変更_対象行_(rows, emsSet){
+// 除外: PromotionalItem(贈呈品)・受注番号形式コード(例10117508)・★コピペ・マスタ除外コード(人名等)は
+// Yahoo在庫に足さない(承認済み仕様)
+function Yahoo変更_対象行_(rows, emsSet, excludeSet){
   const 対象=[], 除外=[];
   (rows||[]).forEach(r=>{
     const code=String(r&&r.商品コード||'').trim(), ems=String(r&&r.EMS番号||'').trim();
@@ -17,6 +18,7 @@ function Yahoo変更_対象行_(rows, emsSet){
     if(code==='★コピペ'){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'付属ポスター印(★コピペ)'}); return; }
     if(/promotional/i.test(code)){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'PromotionalItem(贈呈品)'}); return; }
     if(/^\d{7,}$/.test(code)){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'受注番号形式コード'}); return; }
+    if(excludeSet && excludeSet.size && excludeSet.has(normCode_(code))){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'マスタ除外コード'}); return; }
     対象.push({商品コード:code,余り数:qty,EMS番号:ems});
   });
   return {対象,除外};
@@ -81,7 +83,7 @@ function Yahoo在庫変更を出力本体_(){
   const values=sh.getRange(3,1,sh.getLastRow()-2,5).getDisplayValues();
   const japanRows=values.map(v=>({状態:v[0],到着日:v[1],商品コード:v[2],余り数:v[3],EMS番号:v[4]}));
   const 未知=tokens.filter(t=>!japanRows.some(r=>String(r.EMS番号||'').trim()===t));
-  const 振り分け=Yahoo変更_対象行_(japanRows,emsSet);
+  const 振り分け=Yahoo変更_対象行_(japanRows,emsSet,全件再計算_マスタ除外集合_());
 
   // 最新のYahoo全在庫CSVで親コードを逆引き
   let 逆引き={}, csvName='';

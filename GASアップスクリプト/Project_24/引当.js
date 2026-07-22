@@ -336,7 +336,7 @@ function EMS番号書戻し値_(現在値, line){
     if(line.入荷EMS候補.length>1) return ''; // 複数便で特定不能なら誤った番号を残さない
   }
   if(line && 実EMS番号_(line.箱EMS)) return String(line.箱EMS).trim();
-  if(line && (line.入荷 || line.履歴成立) && 実EMS番号_(現在値)) return String(現在値).trim();
+  if(line && line.入荷 && 実EMS番号_(現在値)) return String(現在値).trim();
   return '';
 }
 
@@ -1820,9 +1820,8 @@ function 引当実行_本体_(options){
           if(/^20\d{2}-\d{2}-\d{2}$/.test(d)){ 入荷col[idx][0]=new Date(d+'T00:00:00'); 自動入荷++; }
           return;
         }
-        if(l.履歴成立 && l.履歴入荷日値){
-          入荷col[idx][0]=l.履歴入荷日値; 自動入荷++;
-        } else if(l.引当成立 && l.matchedKey && code到着[l.matchedKey]!==undefined){
+        // 旧履歴ベースのスタンプ(履歴成立)は台帳一本化で廃止(2026-07-21 遺物掃除。代入箇所も既に無い)
+        if(l.引当成立 && l.matchedKey && code到着[l.matchedKey]!==undefined){
           入荷col[idx][0]=code到着[l.matchedKey]; 自動入荷++;
         }
       });

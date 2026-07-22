@@ -52,6 +52,16 @@ test('対象行: emsSetが空なら全便を対象にする', () => {
   assert.strictEqual(r.対象.length, 2);
 });
 
+test('対象行: マスタ除外コード(人名等)は除外一覧へ', () => {
+  const rows = [
+    {商品コード: '吉田富貴子', 余り数: 1, EMS番号: 'EG1'},
+    {商品コード: 'A1', 余り数: 1, EMS番号: 'EG1'}
+  ];
+  const r = context.Yahoo変更_対象行_(rows, new Set(['EG1']), new Set([context.normCode_('吉田富貴子')]));
+  assert.deepStrictEqual(json(r.対象.map(x => x.商品コード)), ['A1']);
+  assert.strictEqual(r.除外[0].理由, 'マスタ除外コード');
+});
+
 test('サブコード逆引き: Yahoo CSVからsub-code→(code,sub)を作る(引用符・BOM・sub空スキップ)', () => {
   const csv = [
     '﻿"code","name","sub-code","quantity","allow-overdraft","stock-close"',

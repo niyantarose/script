@@ -52,10 +52,22 @@ function 全件再計算_実EMS番号_(value){
   return !!ems && !/^棚卸/i.test(ems);
 }
 
-// 在庫管理の対象外コード(付属ポスター印・贈呈品)。供給・余り・ブロックのどれにも数えない
-function 全件再計算_在庫対象外コード_(code){
+// 在庫管理の対象外コード(付属ポスター印・贈呈品・マスタ除外コード)。供給・余り・ブロックのどれにも数えない
+function 全件再計算_在庫対象外コード_(code, excludeSet){
   const c=String(code==null?'':code).trim();
-  return c==='★コピペ' || /promotional/i.test(c);
+  if(c==='★コピペ' || /promotional/i.test(c)) return true;
+  return !!(excludeSet && excludeSet.size && excludeSet.has(normCode_(c)));
+}
+
+// 発注共有「マスタ除外コード」シート(A列2行目以降・P19の商品マスタ除外と共用)を
+// 在庫対象外リストとして読む。人名コード等をユーザーがここに足せば集計から消える
+function 全件再計算_マスタ除外集合_(){
+  try{
+    const sh=発注共有を開く_().getSheetByName('マスタ除外コード');
+    if(!sh || sh.getLastRow()<2) return new Set();
+    return new Set(sh.getRange(2,1,sh.getLastRow()-1,1).getDisplayValues()
+      .map(r=>normCode_(r[0])).filter(Boolean));
+  }catch(e){ return new Set(); }
 }
 
 function 全件再計算_実EMS行_(row){
@@ -237,12 +249,15 @@ function 全件再計算_需要並び_(a,b){
 function 全件再計算_再構築_(input){
   input=input||{};
   const issues=[],allocations=[],ledgerRows=[],movementRows=[],blocked=new Set();
+  const excludeSet=input.excludeCodes instanceof Set?input.excludeCodes:new Set((input.excludeCodes||[]).map(c=>normCode_(c)));
+  const blockedReason={}; // SKU→最初のブロック理由(内訳レポート用)
+  const block=(sku,type)=>{ if(!sku) return; blocked.add(sku); if(!(sku in blockedReason)) blockedReason[sku]=type; };
   const suppliesBySku={},shippedBySku={},shippedImmediateBySku={},immediateBySku={},backorderBySku={},yahoo={};
   const knownEms=new Set(); // 発注共有EMSリストに載る韓国便のEMS番号(壊れた行も番号は韓国便として扱う)
 
   (input.supplies||[]).forEach((source,index)=>{
-    // 付属ポスター印(★コピペ)・贈呈品(PromotionalItem)は在庫管理対象外。供給にも不正にも数えない(2026-07-21)
-    if(全件再計算_在庫対象外コード_(source&&source.code||source&&source.商品コード)){
+    // 付属ポスター印(★コピペ)・贈呈品(PromotionalItem)・マスタ除外コードは在庫管理対象外。供給にも不正にも数えない
+    if(全件再計算_在庫対象外コード_(source&&source.code||source&&source.商品コード, excludeSet)){
       const 対象外ems=String(source&&source.ems||source&&source.EMS番号||'').trim();
       if(全件再計算_実EMS番号_(対象外ems)) knownEms.add(対象外ems);
       return;
@@ -254,7 +269,7 @@ function 全件再計算_再構築_(input){
         knownEms.add(ems);
         const sku=全件再計算_SKU正規化_(source&&source.code||source&&source.商品コード||'','EMS');
         issues.push({severity:'重要',type:'EMS行不正',sku,row:Number(source&&source.row)||index+1});
-        if(sku) blocked.add(sku);
+        block(sku,'EMS行不正');
       }
       return;
     }
@@ -270,7 +285,7 @@ function 全件再計算_再構築_(input){
     const shipDate=全件再計算_日付_(source&&source.shipDate||source&&source.出荷日);
     const sku=全件再計算_需要SKU_(source,'GoQ');
     if(!sku || !qty || !shipDate){
-      issues.push({severity:'重要',type:'発送行不正',sku,row:index+1}); if(sku) blocked.add(sku); return;
+      issues.push({severity:'重要',type:'発送行不正',sku,row:index+1}); block(sku,'発送行不正'); return;
     }
     const orderValue=source.orderDate||source.注文日時||'';
     const row=Object.assign({},source,{qty,shipDate,sku:String(source.sku||source.商品SKU||''),_sku:sku,
@@ -279,7 +294,7 @@ function 全件再計算_再構築_(input){
     const branch=全件再計算_在庫枝番_(source);
     if(branch==='a') (shippedImmediateBySku[sku]=shippedImmediateBySku[sku]||[]).push(row);
     else if(branch==='b') (shippedBySku[sku]=shippedBySku[sku]||[]).push(row);
-    else { issues.push({severity:'重要',type:'発送在庫区分不明',sku,ban:row.ban,itemId:row.itemId}); blocked.add(sku); }
+    else { issues.push({severity:'重要',type:'発送在庫区分不明',sku,ban:row.ban,itemId:row.itemId}); block(sku,'発送在庫区分不明'); }
   });
 
   (input.currentOrders||[]).forEach((source,index)=>{
@@ -297,7 +312,7 @@ function 全件再計算_再構築_(input){
     }
     if((isImmediate||isBackorder) && String(rawQty==null?'':rawQty).trim()!=='' && (!Number.isInteger(numericQty)||numericQty<0)){
       issues.push({severity:'重要',type:'受注数量不正',sku,ban:String(source&&source.ban||''),row:Number(source&&source.row)||index+1});
-      if(sku) blocked.add(sku); return;
+      block(sku,'受注数量不正'); return;
     }
     if(!sku || !qty) return;
     const row=Object.assign({},source,{
@@ -306,7 +321,7 @@ function 全件再計算_再構築_(input){
       orderDate:String(orderValue||''),_orderTime:全件再計算_時刻_(orderValue)
     });
     if((isImmediate||isBackorder) && !isFinite(row._orderTime)){
-      issues.push({severity:'重要',type:'受注日時不正',sku,ban:row.ban,row:row.row}); blocked.add(sku);
+      issues.push({severity:'重要',type:'受注日時不正',sku,ban:row.ban,row:row.row}); block(sku,'受注日時不正');
     }
     if(isImmediate) (immediateBySku[sku]=immediateBySku[sku]||[]).push(row);
     else if(isBackorder) (backorderBySku[sku]=backorderBySku[sku]||[]).push(row);
@@ -315,7 +330,7 @@ function 全件再計算_再構築_(input){
   Object.keys(input.yahooA||{}).forEach(raw=>{
     const sku=全件再計算_SKU正規化_(raw,'Yahoo'),qty=Number(input.yahooA[raw]);
     if(!sku) return;
-    if(!Number.isInteger(qty) || qty<0){ issues.push({severity:'重要',type:'Yahoo数量不正',sku}); blocked.add(sku); return; }
+    if(!Number.isInteger(qty) || qty<0){ issues.push({severity:'重要',type:'Yahoo数量不正',sku}); block(sku,'Yahoo数量不正'); return; }
     yahoo[sku]=(yahoo[sku]||0)+qty;
   });
 
@@ -427,7 +442,7 @@ function 全件再計算_再構築_(input){
   const safeLedger=ledgerRows.filter(r=>r.状態!=='取り置き中' || blockedSkus.indexOf(r.商品コード)<0);
   // 開始前在庫はユーザー確定の事実なので、ブロックSKUでも消さずにそのまま引き継ぐ。
   holdRows.forEach(row=>safeLedger.push(Object.assign({},row)));
-  return {ledgerRows:safeLedger,movementRows,allocations,issues,blockedSkus,summary,futureReservations:[]};
+  return {ledgerRows:safeLedger,movementRows,allocations,issues,blockedSkus,blockedReason,summary,futureReservations:[]};
 }
 
 // ===== GASアダプター / プレビュー =====
@@ -551,18 +566,25 @@ function 全件再計算_入力を読む_(){
 function 全件再計算_計画を作る_(){
   const source=全件再計算_入力を読む_();
   const result=全件再計算_再構築_({supplies:source.ems.supplies,shipped:source.shipped.rows,currentOrders:source.orders.rows,yahooA:source.yahoo.a在庫,
-    initialHolds:source.ledger});
+    initialHolds:source.ledger,excludeCodes:全件再計算_マスタ除外集合_()});
   source.shipped.issues.forEach(issue=>{
-    result.issues.push(issue); if(issue.sku && result.blockedSkus.indexOf(issue.sku)<0) result.blockedSkus.push(issue.sku);
+    result.issues.push(issue);
+    if(issue.sku && result.blockedSkus.indexOf(issue.sku)<0){
+      result.blockedSkus.push(issue.sku);
+      if(!(issue.sku in result.blockedReason)) result.blockedReason[issue.sku]=String(issue.type||'発送取込エラー');
+    }
   });
   result.blockedSkus.sort();
   result.ledgerRows=全件再計算_ブロック台帳行除外_(result.ledgerRows,result.blockedSkus);
   source.unresolved.forEach(row=>result.issues.push({severity:'停止',type:'未解決キャンセル戻し',sku:'',qty:Number(row.取り置き数量)||0,ban:String(row.受注番号||''),detail:String(row.取置ID||'')}));
   const unidentifiedCritical=result.issues.filter(issue=>(issue.severity==='重要'||issue.severity==='停止') && !String(issue.sku||'').trim());
+  // ブロック内訳(理由→件数)。プレビューのダイアログとサマリのメタ欄に表示する
+  const ブロック内訳={};
+  result.blockedSkus.forEach(sku=>{ const 理由=result.blockedReason[sku]||'その他'; ブロック内訳[理由]=(ブロック内訳[理由]||0)+1; });
   return {
     version:ZENKEN_REBUILD_CFG.VERSION,createdAt:new Date(),signature:source.signature,
     yahooMeta:{fileId:source.yahoo.fileId,fileName:source.yahoo.fileName,updatedAt:source.yahoo.updatedAt,md5:source.yahoo.md5,rowCount:source.yahoo.rowCount},
-    ledgerRows:result.ledgerRows,movementRows:result.movementRows,blockedSkus:result.blockedSkus,
+    ledgerRows:result.ledgerRows,movementRows:result.movementRows,blockedSkus:result.blockedSkus,ブロック内訳,
     summary:result.summary,issues:result.issues,allocations:result.allocations,
     applyBlocked:source.unresolved.length>0 || unidentifiedCritical.length>0
   };
@@ -592,7 +614,9 @@ function 全件再計算_プレビューを書く_(plan){
   const summary=全件再計算_表を書く_(ZENKEN_REBUILD_CFG.サマリ,summaryHeaders,summaryRows);
   const metaCol=summaryHeaders.length+2;
   if(summary.getMaxColumns()<metaCol) summary.insertColumnsAfter(summary.getMaxColumns(),metaCol-summary.getMaxColumns());
-  summary.getRange(1,metaCol).setValue('作成: '+Utilities.formatDate(plan.createdAt,'Asia/Tokyo','yyyy-MM-dd HH:mm:ss')+' / Yahoo: '+plan.yahooMeta.fileName+' / ブロックSKU: '+plan.blockedSkus.length+(plan.applyBlocked?' / ⛔反映停止条件あり':''));
+  const ブロック内訳text=Object.keys(plan.ブロック内訳||{}).sort((a,b)=>plan.ブロック内訳[b]-plan.ブロック内訳[a])
+    .map(k=>k+' '+plan.ブロック内訳[k]).join(' / ');
+  summary.getRange(1,metaCol).setValue('作成: '+Utilities.formatDate(plan.createdAt,'Asia/Tokyo','yyyy-MM-dd HH:mm:ss')+' / Yahoo: '+plan.yahooMeta.fileName+' / ブロックSKU: '+plan.blockedSkus.length+(ブロック内訳text?'（'+ブロック内訳text+'）':'')+(plan.applyBlocked?' / ⛔反映停止条件あり':''));
   summary.getRange(2,metaCol).setValue('入力署名: '+plan.signature+' / Yahoo MD5: '+plan.yahooMeta.md5);
   const detailHeaders=['区分','SKU','EMS番号','EMS到着日','EMS元行','EMS商品コード','受注番号','商品ID/受注行','数量'];
   const detailRows=(plan.allocations||[]).map(a=>[a.kind,a.sku,a.supply.ems,a.supply.arrival,a.supply.row,a.supply.sourceCode||a.supply.code,a.demand.ban||'',a.demand.itemId||a.demand.row||'',a.qty]);
@@ -610,8 +634,10 @@ function 全件再計算プレビュー本体_(){
   try{
     const plan=全件再計算_計画を作る_();
     全件再計算_プレビューを書く_(plan); SpreadsheetApp.flush();
+    const 内訳=Object.keys(plan.ブロック内訳||{}).sort((a,b)=>plan.ブロック内訳[b]-plan.ブロック内訳[a])
+      .map(k=>'・'+k+': '+plan.ブロック内訳[k]+'件').join('\n');
     ui.alert('全件再計算プレビューを作成しました',
-      'Yahoo: '+plan.yahooMeta.fileName+'\nブロックSKU: '+plan.blockedSkus.length+'件\n要確認: '+plan.issues.length+'件'+
+      'Yahoo: '+plan.yahooMeta.fileName+'\nブロックSKU: '+plan.blockedSkus.length+'件'+(内訳?'\n'+内訳:'')+'\n要確認: '+plan.issues.length+'件'+
       (plan.applyBlocked?'\n\n⛔ 未解決作業またはSKUを特定できない重要エラーがあるため、現在は反映できません。':''),ui.ButtonSet.OK);
     return plan;
   }catch(error){ ui.alert('全件再計算プレビューを中止しました',error.message,ui.ButtonSet.OK); throw error; }

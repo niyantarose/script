@@ -352,6 +352,27 @@ test('再構築: ★コピペとPromotionalItemは供給にも不正にも数え
   assert.strictEqual(result.blockedSkus.length, 0);
 });
 
+test('再構築: マスタ除外コード(人名等)の供給行は対象外として静かにスキップする', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [
+      {ems: 'EMS-Y', code: '吉田富貴子', qty: 1, arrival: '2026-07-23', row: 2, status: '到着済'},
+      {ems: 'EMS-Y', code: 'REAL01', qty: 1, arrival: '2026-07-23', row: 3, status: '到着済'}
+    ],
+    shipped: [], currentOrders: [], yahooA: {},
+    excludeCodes: ['吉田富貴子']
+  });
+  assert.strictEqual(result.summary.length, 1);
+  assert.strictEqual(result.summary[0].sku, 'REAL01');
+  assert.ok(!result.issues.some(i => String(i.sku || '').indexOf('吉田') >= 0));
+});
+
+test('再構築: ブロック理由をSKU毎に記録して内訳を返す', () => {
+  const result = context.全件再計算_再構築_({
+    supplies: [], shipped: [], currentOrders: [], yahooA: {'BAD-01': -2}
+  });
+  assert.strictEqual(result.blockedReason['BAD-01'], 'Yahoo数量不正');
+});
+
 test('反映前検査: 未確認・現物ありのキャンセル戻しは全件置換を止める', () => {
   const rows = [
     {取置ID:'A',状態:'キャンセル戻し',戻し処理結果:'未確認'},

@@ -327,6 +327,29 @@ function 到着済を在庫反映済みへ本体_(){
   const bad=targets.filter(t=>!counts[t]);
   if(bad.length){ ui.alert('到着済に無いEMS番号があります: '+bad.join(', ')+'\n入力し直してください。'); return; }
 
+  // 【締め前の未ピック確認】この便に紐づく未出荷の確保(取り置き中)を一覧表示。
+  // 希望日待ちは納品書が出ず現物の抜き忘れが起きやすい(2026-07-21 実例10117699の教訓)。
+  // 抜き忘れたまま締めると、確保済みの現物が余りと一緒にYahoo保管へ紛れて宙に浮く。
+  try{
+    const 締めセット=new Set(targets);
+    const 未ピック=取り置き台帳_読む_().filter(r=>String(r.状態||'')==='取り置き中'
+      && 締めセット.has(String(r.元EMS番号||'').trim()));
+    if(未ピック.length){
+      const byBan={};
+      未ピック.forEach(r=>{ const b=String(r.受注番号||'');
+        (byBan[b]=byBan[b]||[]).push(String(r.商品コード||'')+'×'+(Number(r.取り置き数量)||0)); });
+      const bans=Object.keys(byBan);
+      const 一覧=bans.slice(0,25).map(b=>'・'+b+': '+byBan[b].join(', '));
+      const pick=ui.alert('締め前の未ピック確認',
+        'この便には未出荷の確保(取り置き中)が '+未ピック.length+'行・'+bans.length+'注文あります。\n'
+        +'現物を抜いて納品書を出しましたか？（希望日待ちは納品書が出ないので特に注意）\n\n'
+        +一覧.join('\n')+(bans.length>25?'\n…ほか'+(bans.length-25)+'注文':'')
+        +'\n\n抜き終わっていればOK ／ まだならキャンセルして先にピックしてください',
+        ui.ButtonSet.OK_CANCEL);
+      if(pick!==ui.Button.OK) return;
+    }
+  }catch(e){} // 台帳が読めない時は従来どおり進む(締め自体は止めない)
+
   const active=SpreadsheetApp.getActive(), jp=active.getSheetByName(HIKIATE_CFG.純在庫);
   if(!jp || jp.getLastRow()<2){ ui.alert('日本在庫に引当結果がありません。先に② 引き当て実行を正常完了してください。'); return; }
   const jpLastCol=jp.getLastColumn();
