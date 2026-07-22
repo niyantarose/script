@@ -123,4 +123,20 @@ test('反映計画: 不正な選択値はその键だけエラーで他は適用
   assert.strictEqual(plan.rows.find(r=>r.取置ID==='INIT|500|HOLD-01|HOLD-01B').引当段階,'現物確認済み');
 });
 
+test('基準シート(旧14列コピー)を21列ヘッダーで読める(見出し不足で落ちない)', () => {
+  const HDR=vm.runInContext('TORIOKI_CFG.台帳HDR',context);
+  const legacy=Array.prototype.slice.call(HDR,0,14);
+  const data=[legacy,['OLD','取り置き中','900','GONE01','GONE01b',1,'EMS','EG0','GONE01','','2026-07-17','2026-07-17','','']];
+  const sheet={getLastRow:()=>data.length,getLastColumn:()=>legacy.length,
+    getRange:(r)=>({getDisplayValues:()=>[data[0]],getValues:()=>data.slice(1)})};
+  const orig=context.SpreadsheetApp;
+  context.SpreadsheetApp={getActive:()=>({getSheetByName:(n)=>n==='取り置き台帳_全件再計算前_20260721_123350'?sheet:null})};
+  try{
+    const rows=context.取り置き_表を読む_('取り置き台帳_全件再計算前_20260721_123350',HDR);
+    assert.strictEqual(rows.length,1);
+    assert.strictEqual(rows[0].取置ID,'OLD');
+    assert.strictEqual(rows[0].引当段階,'','新列は空として返す');
+  } finally { context.SpreadsheetApp=orig; }
+});
+
 if (failures) process.exit(1);

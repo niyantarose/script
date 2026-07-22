@@ -658,7 +658,10 @@ function 取り置き_表を読む_(sheetName, headers){
   if(!sh || sh.getLastRow()<2) return [];
   const head=sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0].map(v=>String(v||'').trim());
   const index={}; headers.forEach(h=>index[h]=head.indexOf(h));
-  const required=sheetName===TORIOKI_CFG.台帳 ? headers.slice(0,14) : headers;
+  // 台帳本体と台帳のコピー(取り置き台帳_全件再計算前_/移行前_等の監査・基準シート)は
+  // 三段階21列より前の旧14列でも読める(新列は空として返す)
+  const 台帳系=sheetName===TORIOKI_CFG.台帳 || String(sheetName).indexOf(TORIOKI_CFG.台帳+'_')===0;
+  const required=台帳系 ? headers.slice(0,14) : headers;
   if(required.some(h=>index[h]<0)) throw new Error(sheetName+'の見出し不足: '+required.filter(h=>index[h]<0).join(','));
   return sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).getValues().map(row=>{
     const obj={}; headers.forEach(h=>obj[h]=index[h]<0?'':row[index[h]]); return obj;
