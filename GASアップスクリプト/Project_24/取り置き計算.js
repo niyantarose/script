@@ -44,9 +44,9 @@ function 取り置き_供給キー_(ems, code){
 function 取り置き_EMS状態_(emsStatusByNo, ems){
   const value=emsStatusByNo instanceof Map ? emsStatusByNo.get(String(ems||'')) : (emsStatusByNo||{})[String(ems||'')];
   const text=String(value&&value.状態||value&&value.status||value||'').trim();
-  // 未着の証拠がある箱だけ先行。空/不明/在庫反映済みの旧箱は従来どおり物理確保(到着済)へ倒す
+  // 未着・先行の証拠がある箱だけ先行扱い。空/不明/在庫反映済みの旧箱は従来どおり物理確保(到着済)へ倒す
   // (状態不明を先行に落とすと、旧台帳のEMS行が一斉に「物理に無い」扱いになり出荷が止まる)
-  if(/未着/.test(text)) return TORIOKI_STAGE.PLANNED;
+  if(/未着|先行/.test(text)) return TORIOKI_STAGE.PLANNED;
   if(text==='') return TORIOKI_STAGE.ARRIVED;
   return /到着|入荷|現物|反映済|arrived/i.test(text) ? TORIOKI_STAGE.ARRIVED : TORIOKI_STAGE.PLANNED;
 }

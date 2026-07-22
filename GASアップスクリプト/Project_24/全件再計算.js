@@ -204,12 +204,15 @@ function 全件再計算_在庫枝番_(row){
   return '';
 }
 
-// 供給の三段階: 到着済=現物 / 在庫反映済み=過去締め済み(現役に使わない) / その他の実EMS=先行(帳簿のみ)
+// 供給の段階: 到着済=現物 / 在庫反映済み=過去締め済み(現役に使わない) /
+// 先行=ユーザーが箱単位で状態を「先行」にした時だけ(帳簿のみ) / それ以外(未着等)=対象外。
+// 未着を自動で拾わないのはユーザー指示(2026-07-22「あくまで自分で選びたい」)。
 function 全件再計算_供給段階_(status){
   const text=String(status==null?'':status).trim();
   if(/到着済/.test(text)) return '到着済';
   if(/在庫反映済/.test(text)) return '過去締め済み';
-  return '先行';
+  if(/先行/.test(text)) return '先行';
+  return '未着';
 }
 
 // 取置IDから末尾の連番を外した素性。連番は他SKUの行数で揺れるため、昇格の同一性判定に使わない
@@ -512,16 +515,17 @@ function 全件再計算_再構築_(input){
       if(left>0){ unallocated+=left; issues.push({severity:'情報',type:'現在取寄せ未引当',sku,qty:left,ban:demand.ban,row:demand.row}); }
     });
 
-    const excessByStage={'到着済':0,'過去締め済み':0,'先行':0};
+    const excessByStage={'到着済':0,'過去締め済み':0,'先行':0,'未着':0};
     supplies.forEach(s=>{ excessByStage[全件再計算_供給段階_(s.status||'到着済')]+=(s._remaining||0); });
-    const excess=excessByStage['到着済']+excessByStage['過去締め済み']+excessByStage['先行'];
+    const excess=excessByStage['到着済']+excessByStage['過去締め済み']+excessByStage['先行']+excessByStage['未着'];
     // 到着済の余り=⑤でYahooへ移す前の正常な状態(検品済みの現物)。ブロックすると④が供給を隠し
     // ⑤のYahoo移動からも漏れるため情報に留める(2026-07-21)。ブロックは数量不正等のデータ異常だけ
     if(excessByStage['到着済']>0) issues.push({severity:'情報',type:'到着済の余り',sku,qty:excessByStage['到着済']});
     // 締め済み箱の歴史ギャップは現物の出荷リスクが無い(④の供給は到着済のみ)ため情報に留めブロックしない
     if(excessByStage['過去締め済み']>0) issues.push({severity:'情報',type:'締め済み箱の説明不能余り',sku,qty:excessByStage['過去締め済み']});
-    // 未着の余りは現物ではないためYahoo追加候補にしない(箱が着いてから到着済の余りとして扱う)
-    if(excessByStage['先行']>0) issues.push({severity:'情報',type:'未着の余り',sku,qty:excessByStage['先行']});
+    // 未着・先行の余りは現物ではないためYahoo追加候補にしない(箱が着いてから到着済の余りとして扱う)
+    if(excessByStage['先行']>0) issues.push({severity:'情報',type:'先行の余り',sku,qty:excessByStage['先行']});
+    if(excessByStage['未着']>0) issues.push({severity:'情報',type:'未着の余り',sku,qty:excessByStage['未着']});
     stageSummary[sku]={現物確認済み:physicalTotal,到着済引当:arrivedAllocated,先行引当:plannedAllocated,未引当:unallocated};
     summary.push({
       sku,EMS到着済:supplies.reduce((n,s)=>n+s.qty,0),発送済:shipped.reduce((n,r)=>n+r.qty,0),発送済即納:shippedImmediate.reduce((n,r)=>n+r.qty,0),
