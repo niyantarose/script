@@ -10,7 +10,7 @@ const context={
   Utilities:{formatDate:()=>''},Logger:{log:()=>{}}
 };
 vm.createContext(context);
-['Project_24/引当.js','Project_24/取り置き計算.js','Project_24/現物確認移行.js']
+['Project_24/引当.js','Project_24/取り置き計算.js','Project_24/取り置き台帳.js','Project_24/現物確認移行.js']
   .forEach(f=>vm.runInContext(fs.readFileSync(f,'utf8'),context));
 
 let failures=0;
