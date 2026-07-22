@@ -123,6 +123,13 @@ test('反映計画: 不正な選択値はその键だけエラーで他は適用
   assert.strictEqual(plan.rows.find(r=>r.取置ID==='INIT|500|HOLD-01|HOLD-01B').引当段階,'現物確認済み');
 });
 
+test('変換済み(現物確認済み段階)の旧開始前在庫は候補に出し続けない', () => {
+  const converted=Object.assign(開始前行('INIT|500|HOLD-01|HOLD-01B','500','HOLD-01','HOLD-01b',2),
+    {引当段階:'現物確認済み',供給処理:'供給解放',現物確認日時:'2026-07-22'});
+  const c=context.現物確認移行_候補計算_([converted],[],currentOrders);
+  assert.strictEqual(c.length,0,'移行完了行は再表示しない');
+});
+
 test('基準シート(旧14列コピー)を21列ヘッダーで読める(見出し不足で落ちない)', () => {
   const HDR=vm.runInContext('TORIOKI_CFG.台帳HDR',context);
   const legacy=Array.prototype.slice.call(HDR,0,14);

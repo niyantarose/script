@@ -39,6 +39,7 @@ function 現物確認移行_候補計算_(currentLedger, baselineLedger, current
   // 1) 旧開始前在庫: 1行=1候補(取置ID単位。変換/解除の対象を特定できるように)
   (currentLedger||[]).forEach(r=>{
     if(!r || String(r.状態||'')!=='取り置き中' || String(r.取置元種別||'')!=='開始前在庫') return;
+    if(String(r.引当段階||'')==='現物確認済み') return; // 変換済み(移行完了)の行は候補に出し続けない
     const key=取り置き_行キー_(r);
     out.push({入力キー:key,種別:'旧開始前在庫',取置ID:String(r.取置ID||''),受注番号:String(r.受注番号||''),
       商品コード:String(r.商品コード||''),SKU:String(r.SKU||''),以前:'',現在:取り置き_整数_(r.取り置き数量),差:'',
