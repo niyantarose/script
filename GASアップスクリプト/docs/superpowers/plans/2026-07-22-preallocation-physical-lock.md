@@ -47,7 +47,7 @@
 - `取り置き_不変条件検証_(orders, ledgerRows, supplies)`：注文超過、段階重複、EMS供給超過、現物固定注文の消滅・数量減を errors と warnings に分ける。
 - `取り置き_現物確認変換計画_(inputRows, ledgerRows, supplies, now)`：入力数量を新規加算せず、同じ注文・SKUの有効行を現物へ変換する。到着済行は元EMS消費を保持し、先行行は未着供給を解放する。元EMS不明現物は到着済供給をSKU FIFOで控除し、推測控除先は `供給控除EMS` に残す。現物確認済みを減らす入力は拒否し、解除フローへ誘導する。
 
-- [ ] **Step 1: 三段階のREDテストを書く**
+- [x] **Step 1: 三段階のREDテストを書く**
 
 `tests/project24_three_stage_allocation.test.js` に次を追加する。
 
@@ -61,23 +61,23 @@
 8. 先行2個を現物2個へ変換すると未着箱の2個は解放され、台帳合計は2のまま。
 9. 元EMS不明現物1個は同SKUの最古到着済箱から1個を控除し、箱がなければ要確認。
 
-- [ ] **Step 2: REDを確認**
+- [x] **Step 2: REDを確認**
 
 Run: `node tests/project24_three_stage_allocation.test.js`
 
 Expected: 新しい定数・関数が未定義のためFAIL。
 
-- [ ] **Step 3: 台帳スキーマと純粋関数を実装**
+- [x] **Step 3: 台帳スキーマと純粋関数を実装**
 
 `TORIOKI_CFG.台帳HDR` の既存列を維持したまま末尾へ `引当段階`、`EMS到着予定日`、`現物確認日時`、`現物確認メモ`、`供給控除EMS` を追加する。既存14列の読み込みを壊さず、保存時だけ新スキーマへ展開する。新規有効行では `開始前在庫` を生成しない。
 
 `取り置き_集計_` の既存戻り値は維持し、段階別結果を追加する。`activeByKey` は三段階合計を返すため既存の残必要数計算を壊さない。
 
-- [ ] **Step 4: 現物確認変換を実装**
+- [x] **Step 4: 現物確認変換を実装**
 
 変換対象は同じ `取り置き_行キー_` の有効行だけとし、元EMS番号・元EMS商品コード・取置ID・登録日時を維持する。複数行にまたがる場合は既存の行順で必要数だけ変換し、行の一部なら同じ証跡を持つ決定的な分割IDを作る。確認日時・確認メモだけを更新する。
 
-- [ ] **Step 5: GREENと既存ドメイン回帰を確認**
+- [x] **Step 5: GREENと既存ドメイン回帰を確認**
 
 Run:
 
@@ -88,12 +88,15 @@ node tests/project24_reservation_domain.test.js
 
 Expected: 両方 `ALL PASS` または `ALL TESTS PASSED`。
 
-- [ ] **Step 6: コミット**
+- [x] **Step 6: コミット**
 
 ```powershell
 git add Project_24/取り置き計算.js Project_24/取り置き台帳.js tests/project24_reservation_domain.test.js tests/project24_three_stage_allocation.test.js
 git commit -m "feat(Project_24): 取り置き台帳を三段階管理へ拡張"
 ```
+
+> 引き継ぎメモ(2026-07-22 Claude): Codex停止時点の未コミットRED2本（到着予定日の到着済化禁止・空白入力スキップ）を実装してGREEN化。
+> 旧台帳互換（種別ありEMS番号なし行=到着済扱い）を追加して既存workflowテストの回帰2件を解消。旧変換関数2つ（死にコード）を削除。全10スイートPASS。
 
 ---
 

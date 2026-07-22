@@ -68,6 +68,19 @@ test('現物1到着2の目標は既存現物を差し引き、再実行は冪等
   const bad=context.取り置き_現物確認変換計画_(input(4),ledger,sup,new Date());assert.ok(bad.errors.length);assert.deepStrictEqual(JSON.parse(JSON.stringify(bad.rows)),JSON.parse(JSON.stringify(ledger)));
 });
 
+test('到着予定日だけでは到着済にせず、明示状態または到着確認だけを採用する',()=>{
+  const yesterday='2026-07-21';
+  assert.strictEqual(context.取り置き_供給状態マップ_([{ems:'A',code:'X',status:'未着',arrival:yesterday}],new Date('2026-07-22')).A,'未着');
+  assert.strictEqual(context.取り置き_供給状態マップ_([{ems:'B',code:'X',到着予定日:yesterday}],new Date('2026-07-22')).B,'未着');
+  assert.strictEqual(context.取り置き_供給状態マップ_([{ems:'C',code:'X',status:'到着済'}],new Date()).C,'到着済');
+  assert.strictEqual(context.取り置き_供給状態マップ_([{ems:'D',code:'X',isArrived:true}],new Date()).D,'到着済');
+});
+test('現物数量の空欄は未入力として既存現物行を完全スキップする',()=>{
+  const ledger=[active('P',STAGE.PHYSICAL,1,{供給処理:'供給解放'})];
+  const plan=context.取り置き_現物確認変換計画_([{受注番号:'注文14',商品コード:'MRBLUE41',SKU:'MRBLUE41b',現物取り置き数量:' '}],ledger,[],new Date());
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(plan.rows)),JSON.parse(JSON.stringify(ledger)));assert.deepStrictEqual(JSON.parse(JSON.stringify(plan.errors)),[]);assert.deepStrictEqual(JSON.parse(JSON.stringify(plan.review)),[]);
+});
+
 test('既存供給使用を引いたFIFOと衝突しない分割IDを使う',()=>{
   const ledger=[active('USED',STAGE.ARRIVED,1,{受注番号:'別使用',元EMS番号:'OLD'}),active('UNKNOWN',STAGE.PLANNED,1,{取置元種別:'手動',元EMS番号:''}),active('UNKNOWN|現物|2',STAGE.PLANNED,1,{受注番号:'別',商品コード:'X',SKU:'Xb'})];
   const p=context.取り置き_現物確認変換計画_([{受注番号:'注文14',商品コード:'MRBLUE41',SKU:'MRBLUE41b',現物取り置き数量:1}],ledger,[{ems:'OLD',code:'MRBLUE41',qty:1,arrival:'2026-07-20'},{ems:'NEW',code:'MRBLUE41',qty:1,arrival:'2026-07-21'}],new Date('2026-07-22'));
