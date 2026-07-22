@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - 作業場所は worktree `GASアップスクリプト/.worktrees/full-allocation-rebuild-v3/GASアップスクリプト`、ブランチ `codex/full-allocation-rebuild-v3`。
-- 各編集セッション開始前に `git pull origin codex/full-allocation-rebuild-v3` と `powershell -ExecutionPolicy Bypass -File tools\gas_pull_sync.ps1 Project_24` を実行する。身に覚えのないオンライン差分は上書きしない。
+- 各編集セッション開始前に `git pull origin codex/full-allocation-rebuild-v3` を実行する。
+- **警告(2026-07-22判明): この worktree で `gas_pull_sync.ps1 Project_24` を実行してはならない。** 同期基準が旧版（最終push時点）のため、未pushの三段階実装をオンラインの旧コピーで巻き戻して sync コミットしてしまう（Codex セッションで2回、Claude 引き継ぎで1回発生。復元コミット参照）。オンライン編集の取り込みは Task 9 の安全push直前に、`git diff` で「取り込まれた内容が旧版と一致していないか」を確認しながら手動で行う。誤って実行した場合は直前コミットから `Project_24/取り置き計算.js` と `Project_24/取り置き台帳.js` を checkout で復元し、全テストを回す。
 - 素の `clasp push` は禁止。反映は `powershell -ExecutionPolicy Bypass -File tools\gas_safe_push.ps1 Project_24` だけを使う。
 - 実データの反映は必ずプレビュー、4入力（GoQ・EMS・Yahoo・台帳）の署名再検証、バックアップ成功後に行う。テスト中に本番シートへ書かない。
 - 書き込み系公開入口は `直列_` で排他する。内部関数名の末尾 `_` は `google.script.run` の公開入口に使わない。
