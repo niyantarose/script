@@ -78,4 +78,47 @@ test('作業対象判定: 要棚確認・棚戻し待ち・要対応ありは常
   assert.strictEqual(context.取り置き_作業対象判定_([{現在の状態:'出荷可能',判定:'',要対応:''}],'要作業'),false,'確認済み出荷可能は出ない');
 });
 
+test('統合反映: 1入力キーのエラーでも他の有効キーは適用される(全行破棄の廃止)', () => {
+  const inputs=[
+    {取置ID:'INIT|700|AAA|AAAB',受注番号:'700',商品コード:'AAA',SKU:'AAAb',注文数量:1,現物取り置き数量:1,棚確認:'',メモ:''},
+    {取置ID:'INIT|701|BBB|BBBB',受注番号:'701',商品コード:'BBB',SKU:'BBBb',注文数量:1,現物取り置き数量:5,棚確認:'',メモ:''}
+  ];
+  const plan=context.取り置き_統合反映計画_(inputs,[],new Date('2026-07-22'));
+  assert.ok(plan.errors.some(e=>/701/.test(e)),'701の超過はエラー');
+  assert.ok(plan.rows.some(r=>r.取置ID==='INIT|700|AAA|AAAB'&&r.取り置き数量===1),'700は適用');
+  assert.ok(!plan.rows.some(r=>r.受注番号==='701'),'701は未適用');
+  assert.strictEqual(plan.counts.取り置き行,1,'countsは適用分だけ');
+});
+
+test('統合反映: 棚戻しの不正選択はそのIDだけエラーで通常行の適用を妨げない', () => {
+  const ledger=[{取置ID:'RET1',状態:'キャンセル戻し',受注番号:'800',商品コード:'CCC',SKU:'CCCb',取り置き数量:1,取置元種別:'EMS',元EMS番号:'EG1',戻し処理結果:'未確認'}];
+  const inputs=[
+    {取置ID:'RET1',受注番号:'800',商品コード:'CCC',SKU:'CCCb',注文数量:1,現物取り置き数量:'',棚確認:'',メモ:'',処理:'変な値'},
+    {取置ID:'INIT|700|AAA|AAAB',受注番号:'700',商品コード:'AAA',SKU:'AAAb',注文数量:1,現物取り置き数量:1,棚確認:'',メモ:''}
+  ];
+  const plan=context.取り置き_統合反映計画_(inputs,ledger,new Date('2026-07-22'));
+  assert.ok(plan.errors.some(e=>/RET1/.test(e)));
+  assert.ok(plan.rows.some(r=>r.取置ID==='INIT|700|AAA|AAAB'),'通常行は適用');
+  assert.strictEqual(plan.rows.find(r=>r.取置ID==='RET1').戻し処理結果,'未確認','エラーの戻しは未処理のまま');
+});
+
+test('統合反映: エラー行の既存開始前在庫は消えない(誤解除防止)', () => {
+  const ledger=[{取置ID:'INIT|701|BBB|BBBB',状態:'取り置き中',受注番号:'701',商品コード:'BBB',SKU:'BBBb',取り置き数量:1,取置元種別:'開始前在庫'}];
+  const inputs=[{取置ID:'INIT|701|BBB|BBBB',受注番号:'701',商品コード:'BBB',SKU:'BBBb',注文数量:1,現物取り置き数量:'abc',棚確認:'',メモ:''}];
+  const plan=context.取り置き_統合反映計画_(inputs,ledger,new Date('2026-07-22'));
+  assert.ok(plan.errors.length,'数値でない入力はエラー');
+  const kept=plan.rows.find(r=>r.取置ID==='INIT|701|BBB|BBBB');
+  assert.ok(kept,'既存行は維持');
+  assert.strictEqual(kept.取り置き数量,1);
+});
+
+test('統合反映: 空欄クリアによる解除は適用され解除数として数える', () => {
+  const ledger=[{取置ID:'INIT|702|DDD|DDDB',状態:'取り置き中',受注番号:'702',商品コード:'DDD',SKU:'DDDb',取り置き数量:1,取置元種別:'開始前在庫'}];
+  const inputs=[{取置ID:'INIT|702|DDD|DDDB',受注番号:'702',商品コード:'DDD',SKU:'DDDb',注文数量:1,現物取り置き数量:'',棚確認:'',メモ:''}];
+  const plan=context.取り置き_統合反映計画_(inputs,ledger,new Date('2026-07-22'));
+  assert.deepStrictEqual(json(plan.errors),[]);
+  assert.ok(!plan.rows.some(r=>r.取置ID==='INIT|702|DDD|DDDB'),'空欄=解除');
+  assert.strictEqual(plan.counts.解除,1);
+});
+
 if (failures) process.exit(1);
