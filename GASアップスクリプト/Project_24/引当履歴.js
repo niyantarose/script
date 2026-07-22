@@ -371,11 +371,13 @@ function 到着済を在庫反映済みへ本体_(){
     return {ems,code:sourceCode,sourceCode,qty:Number(row[jpQty])||0};
   }).filter(row=>targetSet.has(row.ems)&&row.qty>0);
   // 📤 出力済みかは記録(内容署名)で自動判定する。同じ内容を出力済みなら黙って先へ、
-  // 未出力・内容が変わっていれば聞かずにこの場で出力する(締め後は日本在庫から余りが消えるため)
-  if(surplus.length){
+  // 未出力・内容が変わっていれば聞かずにこの場で出力する(締め後は日本在庫から余りが消えるため)。
+  // typeofガードは単体テストハーネス(出力モジュール未ロード)との互換用。実GASでは常に定義済み
+  if(surplus.length && typeof Yahoo変更_対象行_==='function' && typeof Yahoo在庫変更を出力本体_==='function'){
+    let 除外=null; try{ 除外=全件再計算_マスタ除外集合_(); }catch(e){ 除外=new Set(); }
     const 出力対象=Yahoo変更_対象行_(
       surplus.map(r=>({商品コード:r.sourceCode,余り数:r.qty,EMS番号:r.ems})),
-      targetSet,全件再計算_マスタ除外集合_()).対象;
+      targetSet,除外).対象;
     if(出力対象.length){
       const sig=Yahoo変更_内容署名_(出力対象);
       let 出力済み=false;
