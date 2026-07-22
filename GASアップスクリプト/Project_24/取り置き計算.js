@@ -67,7 +67,7 @@ function 取り置き_段階別集計_(rows, movements, emsStatusByNo){
     else if(r.引当段階===TORIOKI_STAGE.ARRIVED) group.到着済引当数量+=qty; else group.先行引当数量+=qty;
     group.合計確保数量+=qty; group.行内訳.push({取置ID:String(r.取置ID||''),引当段階:r.引当段階,数量:qty});
     out.activeByKey[key]=(out.activeByKey[key]||0)+qty;(out.activeRowsByKey[key]=out.activeRowsByKey[key]||[]).push(r);
-    const ems=r.引当段階===TORIOKI_STAGE.PHYSICAL ? String(r.供給控除EMS||r.元EMS番号||'').trim() : String(r.元EMS番号||'').trim(); if(ems){const supplyKey=取り置き_供給キー_(ems,r.元EMS商品コード||r.商品コード);out.usageBySupply[supplyKey]=(out.usageBySupply[supplyKey]||0)+qty;}
+    const ems=取り置き_実効供給EMS_(r,r.引当段階); if(ems){const supplyKey=取り置き_供給キー_(ems,r.元EMS商品コード||r.商品コード);out.usageBySupply[supplyKey]=(out.usageBySupply[supplyKey]||0)+qty;}
   }); return out;
 }
 
@@ -84,7 +84,7 @@ function 取り置き_集計_(rows, movements, emsStatusByNo){
     else ids.add(id);
     if(!qty) out.errors.push('台帳'+(index+2)+'行: 取り置き数量は正の整数');
     const stage=取り置き_段階正規化_(r,emsStatusByNo);
-    const ems=r.状態===TORIOKI_STATUS.ACTIVE && stage.引当段階===TORIOKI_STAGE.PHYSICAL ? String(r.供給控除EMS||r.元EMS番号||'').trim() : String(r.元EMS番号||'').trim();
+    const ems=r.状態===TORIOKI_STATUS.ACTIVE ? 取り置き_実効供給EMS_(r,stage.引当段階) : String(r.元EMS番号||'').trim();
     if(!ems || !qty || r.状態===TORIOKI_STATUS.RELEASED) return;
     const supplyKey=取り置き_供給キー_(ems,r.元EMS商品コード||r.商品コード);
     const u=usage(supplyKey),owned=ownerUsage(supplyKey+'|'+String(r.受注番号||'').trim());
@@ -140,7 +140,7 @@ function 取り置き_供給状態マップ_(supplies,now){
   const out={},time=now instanceof Date?now.getTime():Date.now();
   (supplies||[]).forEach(s=>{const ems=String(s.ems||s.EMS番号||'').trim(),arrival=Date.parse(String(s.arrival||s.到着日||s.到着予定日||''));out[ems]=/到着|入荷|現物|arrived/i.test(String(s.状態||s.status||''))||(isFinite(arrival)&&arrival<=time)?'到着済':'未着';});return out;
 }
-function 取り置き_実効供給EMS_(row,stage){return stage===TORIOKI_STAGE.PHYSICAL?String(row.供給控除EMS||row.元EMS番号||'').trim():String(row.元EMS番号||'').trim();}
+function 取り置き_実効供給EMS_(row,stage){return stage===TORIOKI_STAGE.PHYSICAL&&row.供給処理==='供給解放'?'':(stage===TORIOKI_STAGE.PHYSICAL?String(row.供給控除EMS||row.元EMS番号||'').trim():String(row.元EMS番号||'').trim());}
 function 取り置き_系譜ID_(row){return String(row.引当系譜ID||row.取置ID||'').trim();}
 function 取り置き_系譜数量_(row){return 取り置き_整数_(row.引当系譜数量)||取り置き_整数_(row.取り置き数量);}
 function 取り置き_不変条件検証_(orders,ledgerRows,supplies){
@@ -172,6 +172,17 @@ function 取り置き_現物確認変換計画_(inputRows,ledgerRows,supplies,no
   rows.forEach(row=>{const key=取り置き_行キー_(row),target=targets[key],stage=取り置き_段階正規化_(row,status),qty=取り置き_整数_(row.取り置き数量);if(!target||row.状態!==TORIOKI_STATUS.ACTIVE||target.convert<=0||stage.引当段階===TORIOKI_STAGE.PHYSICAL||stage.引当段階==='要移行'||stage.引当段階==='要確認'){out.push(row);return;}const take=Math.min(qty,target.convert);target.convert-=take;let ems=stage.引当段階===TORIOKI_STAGE.ARRIVED?String(row.元EMS番号||''):'';if(!ems&&!String(row.元EMS番号||'')){const candidate=arrived.find(s=>取り置き_商品コード_('',s.code||s.商品コード)===取り置き_商品コード_(row.SKU,row.商品コード)&&capacity[取り置き_供給キー_(s.ems||s.EMS番号,s.sourceCode||s.code||s.商品コード)]>=take);if(candidate){ems=String(candidate.ems||candidate.EMS番号);capacity[取り置き_供給キー_(ems,candidate.sourceCode||candidate.code||candidate.商品コード)]-=take;}else review.push({受注番号:row.受注番号,商品コード:row.商品コード,数量:take,理由:'到着済供給控除EMSを特定できません'});}if(take<qty)out.push(Object.assign({},row,{取り置き数量:qty-take}));const id=take===qty?String(row.取置ID||''):split(String(row.取置ID||''),1);out.push(Object.assign({},row,{取置ID:id,取り置き数量:take,引当段階:TORIOKI_STAGE.PHYSICAL,供給控除EMS:ems,元EMS番号:stage.引当段階===TORIOKI_STAGE.PLANNED?'':row.元EMS番号,引当系譜ID:取り置き_系譜ID_(row),引当系譜数量:取り置き_系譜数量_(row),現物確認日時:at,現物確認メモ:String(target.input.現物確認メモ||row.現物確認メモ||''),更新日時:at}));});return {rows:out,errors,review};
 }
 
+// 供給処理を明示し、元EMS不明現物は到着済供給を複数箱FIFOで分割する。
+function 取り置き_現物確認変換計画_(inputs,ledger,supplies,now){
+  const original=(ledger||[]).map(r=>Object.assign({},r)),rows=original.map(r=>Object.assign({},r)),errors=[],review=[],at=now||new Date(),status=取り置き_供給状態マップ_(supplies,at),targets={};
+  (inputs||[]).forEach(i=>{const k=取り置き_行キー_(i),q=取り置き_整数_(i.現物取り置き数量);if(targets[k])errors.push('現物確認の重複入力: '+k);else targets[k]={q,i};});Object.keys(targets).forEach(k=>{const physical=rows.filter(r=>r.状態===TORIOKI_STATUS.ACTIVE&&取り置き_行キー_(r)===k&&取り置き_段階正規化_(r,status).引当段階===TORIOKI_STAGE.PHYSICAL).reduce((n,r)=>n+取り置き_整数_(r.取り置き数量),0);if(targets[k].q<physical)errors.push('解除フローを使用してください: '+k);});if(errors.length)return{rows:original,errors,review};
+  const capacity={};(supplies||[]).forEach(s=>{const k=取り置き_供給キー_(s.ems,s.code);capacity[k]=(capacity[k]||0)+(Number(s.qty)||0);});
+  const out=[];rows.forEach(r=>{const t=targets[取り置き_行キー_(r)],stage=取り置き_段階正規化_(r,status),q=取り置き_整数_(r.取り置き数量);if(!t||stage.引当段階===TORIOKI_STAGE.PHYSICAL||r.状態!==TORIOKI_STATUS.ACTIVE){out.push(r);return;}const take=Math.min(q,t.q);t.q-=take;let parts=[];
+    if(r.元EMS番号)parts=[{ems:String(r.元EMS番号),qty:take,process:stage.引当段階===TORIOKI_STAGE.ARRIVED?'EMS控除':'供給解放'}];
+    else{let left=take;const candidates=(supplies||[]).filter(s=>取り置き_EMS状態_(status,s.ems)===TORIOKI_STAGE.ARRIVED&&取り置き_商品コード_('',s.code)===取り置き_商品コード_(r.SKU,r.商品コード)).sort((a,b)=>String(a.arrival).localeCompare(String(b.arrival))||String(a.ems).localeCompare(String(b.ems)));candidates.forEach(s=>{const k=取り置き_供給キー_(s.ems,s.code),n=Math.min(left,capacity[k]||0);if(n){parts.push({ems:s.ems,qty:n,process:'EMS控除'});capacity[k]-=n;left-=n;}});if(left){errors.push('到着済供給控除EMSを特定できません');review.push({理由:'到着済供給控除EMSを特定できません'});parts=[];}}
+    if(errors.length)return; if(q>take)out.push(Object.assign({},r,{取り置き数量:q-take}));parts.forEach((p,i)=>out.push(Object.assign({},r,{取置ID:q===take&&i===0?r.取置ID:r.取置ID+'|現物|'+(i+1),取り置き数量:p.qty,引当段階:TORIOKI_STAGE.PHYSICAL,供給控除EMS:p.process==='EMS控除'?p.ems:'',供給処理:p.process,引当系譜ID:取り置き_系譜ID_(r),引当系譜数量:取り置き_系譜数量_(r),現物確認日時:at,現物確認メモ:String(t.i.現物確認メモ||r.現物確認メモ||'')})));
+  });return errors.length?{rows:original,errors:[],review}:{rows:out,errors,review};
+}
 function 取り置き_使用合計_(usage){
   return ['取り置き中','発送済み','戻し未処理','在庫なし確定','Yahoo移動済み']
     .reduce((sum,key)=>sum+(Number(usage&&usage[key])||0),0);
