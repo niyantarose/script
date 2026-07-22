@@ -1756,9 +1756,12 @@ function 引当実行_本体_(options){
     const b=区分け(ban), paid=paidOrder[ban], 代引=codOrder[ban];
     const target = b==='ship'? shipRows : b==='keep'? keepRows : b==='hold'? holdRows : b==='part'? partRows : waitRows;
     const 可否 = (b==='wait')? 発送可否_(ban) : null; // 引当待ちのみK列に発送可否
+    // 先行を含んで揃った注文は分類上出荷可能でも現物が未着=納品書・ピック対象外(状態列で明示)
+    const 物理可=注文物理出荷可_(byOrder[ban]);
     byOrder[ban].forEach(l=>{
       const 状態=引当行状態_(l, cfg, 入荷消費OK_);
       let st=状態.st, color=状態.color;
+      if(b==='ship' && !物理可) st+='・先行待ち(現物未着)';
       if(!l.キャンセル && !paid) st+=(代引?'・代引き':'・入金待ち');
       const stockKey=keyInStock(l);
       const 表示コード=注文一覧表示コード_(l, l.kbn==='取り寄せ' && l.入荷 && 入荷消費OK_(l), stockKey);

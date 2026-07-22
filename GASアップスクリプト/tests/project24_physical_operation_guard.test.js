@@ -58,4 +58,14 @@ test('物理出荷対象注文: 全数先行はfalse・到着済+現物で全数
   assert.strictEqual(context.注文物理出荷可_([line({現物確認済み数量:1}),line({到着済引当数量:1})]), true);
 });
 
+test('個別引当の候補は到着済の箱だけ(未着は候補にしない)', () => {
+  const emsRows=[
+    {状態:'到着済',EMS番号:'EG111111111KR',商品コード:'AAA',数量:1},
+    {状態:'未着',EMS番号:'EG222222222KR',商品コード:'AAA',数量:5}
+  ];
+  const cands=context.個別_台帳候補_(emsRows,['AAA'],'',{usageBySupply:{}});
+  assert.strictEqual(cands.length,1);
+  assert.strictEqual(cands[0].item.EMS番号,'EG111111111KR');
+});
+
 if (failures) process.exit(1);
