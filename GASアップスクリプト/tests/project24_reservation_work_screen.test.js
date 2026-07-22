@@ -121,4 +121,17 @@ test('統合反映: 空欄クリアによる解除は適用され解除数とし
   assert.strictEqual(plan.counts.解除,1);
 });
 
+test('反映で作る開始前在庫行は最初から現物確認済み段階を持つ(要移行に戻らない)', () => {
+  const inputs=[{取置ID:'INIT|703|EEE|EEEB',受注番号:'703',商品コード:'EEE',SKU:'EEEb',注文数量:1,現物取り置き数量:1,棚確認:'',メモ:''}];
+  const plan=context.取り置き_統合反映計画_(inputs,[],new Date('2026-07-22'));
+  const row=plan.rows.find(r=>r.取置ID==='INIT|703|EEE|EEEB');
+  assert.strictEqual(row.引当段階,'現物確認済み','棚で数えた現物として登録される');
+  assert.strictEqual(row.供給処理,'供給解放','棚の現物は箱供給を消費しない');
+  assert.ok(row.現物確認日時);
+  assert.strictEqual(context.取り置き_段階正規化_(row,{}).引当段階,'現物確認済み','要移行にならない');
+  // 取り置き登録画面の台帳確保(④確保分)としては数えない=自分の登録が超過エラーにならない
+  const key=context.取り置き_入力キー_(row);
+  assert.strictEqual(context.取り置き_台帳確保集計_(plan.rows)[key]||0,0);
+});
+
 if (failures) process.exit(1);

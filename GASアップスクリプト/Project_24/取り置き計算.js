@@ -131,14 +131,14 @@ function 取り置き_今回必要数_(order, summary){
 // 台帳がEMS引当・キャンセル再引当で既に確保している数量(行キー単位)。
 // 開始前在庫は取り置き登録シート自身の確定分(洗い替えで数量を引き継いで再確定する)なので含めない。
 // 発送済み・手動解除・キャンセル戻しは現在の確保ではないため数えない(取り置き中のみ)。
-// 取り置き登録画面の「④確保分」。開始前在庫(要移行)は登録シート自身の確定分なので従来どおり除く。
+// 取り置き登録画面の「④確保分」。開始前在庫(段階の有無を問わず登録シート自身の確定分)は除く。
+// 除かないと、自分で登録した数量が台帳確保として二重に見え、再反映が超過エラーになる。
 function 取り置き_台帳確保集計_(ledgerRows){
-  const stages=取り置き_段階別集計_(ledgerRows||[],[],{});
   const out={};
-  Object.keys(stages.activeByKey).forEach(key=>{
-    const 要移行=(stages.byKey[key]&&stages.byKey[key].要移行数量)||0;
-    const qty=(stages.activeByKey[key]||0)-要移行;
-    if(qty>0) out[key]=qty;
+  (ledgerRows||[]).forEach(r=>{
+    if(!r || r.状態!==TORIOKI_STATUS.ACTIVE || String(r.取置元種別||'')==='開始前在庫') return;
+    const key=取り置き_行キー_(r);
+    out[key]=(out[key]||0)+取り置き_整数_(r.取り置き数量);
   });
   return out;
 }

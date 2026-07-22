@@ -553,8 +553,10 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now){
   const kept=(existingRows||[]).filter(r=>r.取置元種別!=='開始前在庫' || r.状態!==TORIOKI_STATUS.ACTIVE || !inputIds.has(String(r.取置ID||'')));
   Object.keys(targets).forEach(id=>{
     const r=targets[id];
+    // 新規登録は最初から現物確認済み段階(棚で数えた現物=供給解放)。要移行に戻らず全件反映も塞がない
     kept.push({取置ID:id,状態:TORIOKI_STATUS.ACTIVE,受注番号:r.受注番号,商品コード:r.商品コード,SKU:r.SKU,
-      取り置き数量:r.取り置き数量,取置元種別:'開始前在庫',元EMS番号:'',元EMS商品コード:'',元取置ID:'',登録日時:now,更新日時:now,
+      取り置き数量:r.取り置き数量,取置元種別:'開始前在庫',引当段階:'現物確認済み',供給処理:'供給解放',現物確認日時:now,
+      元EMS番号:'',元EMS商品コード:'',元取置ID:'',登録日時:now,更新日時:now,
       戻し処理結果:'','終了理由・メモ':String(r.メモ||'')});
   });
   return {rows:kept,errors,適用:{行:Object.keys(targets).length,

@@ -386,6 +386,8 @@ function 全件再計算_再構築_(input){
   const holdRows=[],holdQtyByKey={},holdBySku={};
   (input.initialHolds||[]).forEach(row=>{
     if(!row || row.状態!=='取り置き中' || row.取置元種別!=='開始前在庫') return;
+    // 現物確認済み段階を持つ行はphysicalRows側で最優先固定される(二重計上・二重引き継ぎ防止)
+    if(String(row.引当段階||'')==='現物確認済み') return;
     const qty=取り置き_整数_(row.取り置き数量); if(!qty) return;
     const sku=全件再計算_需要SKU_(row,'受注'); if(!sku) return;
     holdRows.push(row);
@@ -672,8 +674,9 @@ function 全件再計算_計画を作る_(){
   result.blockedSkus.sort();
   result.ledgerRows=全件再計算_ブロック台帳行除外_(result.ledgerRows,result.blockedSkus);
   source.unresolved.forEach(row=>result.issues.push({severity:'停止',type:'未解決キャンセル戻し',sku:'',qty:Number(row.取り置き数量)||0,ban:String(row.受注番号||''),detail:String(row.取置ID||'')}));
-  // 旧開始前在庫が残っている間は全件反映を止める(移行=🔄現物確認移行で仕分けしてから)。仕様§13
-  const 未移行=activeLedger.filter(r=>String(r.取置元種別||'')==='開始前在庫').length;
+  // 旧開始前在庫(段階未設定=要移行)が残っている間は全件反映を止める(移行=🔄現物確認移行で仕分けしてから)。
+  // 反映が新規に作る開始前在庫行は最初から現物確認済み段階を持つため対象外。仕様§13
+  const 未移行=activeLedger.filter(r=>String(r.取置元種別||'')==='開始前在庫' && String(r.引当段階||'')!=='現物確認済み').length;
   if(未移行>0) result.issues.push({severity:'停止',type:'現物確認移行が未完了',sku:'',qty:未移行,detail:'🔄現物確認移行を作成→仕分け→反映してから全件反映してください'});
   const unidentifiedCritical=result.issues.filter(issue=>(issue.severity==='重要'||issue.severity==='停止') && !String(issue.sku||'').trim());
   // ブロック内訳(理由→件数)。プレビューのダイアログとサマリのメタ欄に表示する
