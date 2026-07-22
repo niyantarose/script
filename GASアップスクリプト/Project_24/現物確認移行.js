@@ -7,7 +7,9 @@
 const 現物移行_CFG = Object.freeze({
   シート:'現物確認移行', 差分:'現物確認移行_差分',
   基準シート:'取り置き台帳_全件再計算前_20260721_123350',
-  HDR:['入力キー','種別','受注番号','商品コード','SKU','以前','現在','差','移行数量','選択','メモ'],
+  // 作業者目線の3点(注文数・確保済み・不足)で表示する(2026-07-22ユーザー要望)。旧記録=旧④帳簿の主張(参考)
+  HDR:['入力キー','種別','受注番号','商品コード','SKU','注文数','確保済み','不足','移行数量','選択','メモ','旧記録'],
+  旧HDR:['入力キー','種別','受注番号','商品コード','SKU','以前','現在','差','移行数量','選択','メモ'],
   選択肢:['現物確認済みにする','解除','保留']
 });
 
@@ -41,8 +43,10 @@ function 現物確認移行_候補計算_(currentLedger, baselineLedger, current
     if(!r || String(r.状態||'')!=='取り置き中' || String(r.取置元種別||'')!=='開始前在庫') return;
     if(String(r.引当段階||'')==='現物確認済み') return; // 変換済み(移行完了)の行は候補に出し続けない
     const key=取り置き_行キー_(r);
+    const 注文=orderQty[key]||0, 確保=currentActive[key]||0;
     out.push({入力キー:key,種別:'旧開始前在庫',取置ID:String(r.取置ID||''),受注番号:String(r.受注番号||''),
-      商品コード:String(r.商品コード||''),SKU:String(r.SKU||''),以前:'',現在:取り置き_整数_(r.取り置き数量),差:'',
+      商品コード:String(r.商品コード||''),SKU:String(r.SKU||''),
+      注文数:注文,確保済み:確保,不足:Math.max(0,注文-確保),旧記録:'',
       移行数量:取り置き_整数_(r.取り置き数量),選択:'',メモ:''});
     seen.add(key);
   });
@@ -54,9 +58,11 @@ function 現物確認移行_候補計算_(currentLedger, baselineLedger, current
     const before=baseActive[key], now=currentActive[key]||0, diff=before-now;
     if(diff<=0) return;
     const sample=(baselineLedger||[]).find(r=>取り置き_行キー_(r)===key)||{};
+    const 注文=orderQty[key]||0, 不足=Math.max(0,注文-now);
     out.push({入力キー:key,種別:'消えた確保',取置ID:'',受注番号:String(sample.受注番号||''),
-      商品コード:String(sample.商品コード||''),SKU:String(sample.SKU||''),以前:before,現在:now,差:diff,
-      移行数量:diff,選択:'',メモ:''});
+      商品コード:String(sample.商品コード||''),SKU:String(sample.SKU||''),
+      注文数:注文,確保済み:now,不足:不足,旧記録:before,
+      移行数量:Math.min(diff,不足),選択:'',メモ:''});
   });
   return out;
 }
@@ -139,8 +145,10 @@ function 現物確認移行を作成本体_(){
   const ledger=取り置き台帳_読む_();
   const orders=現物移行_受注読む_();
   const candidates=現物確認移行_候補計算_(ledger,baseline,orders);
-  // 前回入力(選択・移行数量・メモ)を入力キーで引き継ぐ(洗い替えで消さない)
-  let prev=[]; try{ prev=取り置き_表を読む_(現物移行_CFG.シート,現物移行_CFG.HDR); }catch(e){}
+  // 前回入力(選択・移行数量・メモ)を入力キーで引き継ぐ(洗い替えで消さない)。旧レイアウトからも読める
+  let prev=[];
+  try{ prev=取り置き_表を読む_(現物移行_CFG.シート,現物移行_CFG.HDR); }
+  catch(e){ try{ prev=取り置き_表を読む_(現物移行_CFG.シート,現物移行_CFG.旧HDR); }catch(e2){} }
   const prevByKey={}; prev.forEach(r=>{ const k=String(r.入力キー||''); if(k) prevByKey[k]=r; });
   candidates.forEach(c=>{
     const p=prevByKey[c.入力キー]; if(!p) return;

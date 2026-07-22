@@ -43,17 +43,22 @@ test('候補計算: 旧開始前在庫は現状のまま候補化し、数量を
   const hold=c.filter(x=>x.種別==='旧開始前在庫');
   assert.strictEqual(hold.length,1);
   assert.strictEqual(hold[0].受注番号,'500');
-  assert.strictEqual(hold[0].現在,2);
+  assert.strictEqual(hold[0].注文数,2);
+  assert.strictEqual(hold[0].確保済み,2);
+  assert.strictEqual(hold[0].不足,0);
+  assert.strictEqual(hold[0].移行数量,2);
   assert.strictEqual(hold[0].選択,'', '既定は未選択(自動で現物にしない)');
 });
 
-test('候補計算: 10117428/MRBLUE42-6b は以前3・現在2で差1を復元候補へ出す', () => {
+test('候補計算: 10117428/MRBLUE42-6b は注文3・確保済み2・不足1を作業者目線で出す', () => {
   const c=context.現物確認移行_候補計算_(currentLedger,baselineLedger,currentOrders);
   const lost=c.find(x=>x.種別==='消えた確保'&&x.受注番号==='10117428');
   assert.ok(lost);
-  assert.strictEqual(lost.以前,3);
-  assert.strictEqual(lost.現在,2);
-  assert.strictEqual(lost.差,1);
+  assert.strictEqual(lost.注文数,3);
+  assert.strictEqual(lost.確保済み,2);
+  assert.strictEqual(lost.不足,1);
+  assert.strictEqual(lost.旧記録,3,'旧④帳簿の主張は参考列へ');
+  assert.strictEqual(lost.移行数量,1,'既定は不足と帳簿差の小さい方');
 });
 
 test('候補計算: 現役注文に無い受注の幽霊確保は候補にしない', () => {
