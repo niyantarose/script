@@ -672,6 +672,9 @@ function 全件再計算_計画を作る_(){
   result.blockedSkus.sort();
   result.ledgerRows=全件再計算_ブロック台帳行除外_(result.ledgerRows,result.blockedSkus);
   source.unresolved.forEach(row=>result.issues.push({severity:'停止',type:'未解決キャンセル戻し',sku:'',qty:Number(row.取り置き数量)||0,ban:String(row.受注番号||''),detail:String(row.取置ID||'')}));
+  // 旧開始前在庫が残っている間は全件反映を止める(移行=🔄現物確認移行で仕分けしてから)。仕様§13
+  const 未移行=activeLedger.filter(r=>String(r.取置元種別||'')==='開始前在庫').length;
+  if(未移行>0) result.issues.push({severity:'停止',type:'現物確認移行が未完了',sku:'',qty:未移行,detail:'🔄現物確認移行を作成→仕分け→反映してから全件反映してください'});
   const unidentifiedCritical=result.issues.filter(issue=>(issue.severity==='重要'||issue.severity==='停止') && !String(issue.sku||'').trim());
   // ブロック内訳(理由→件数)。プレビューのダイアログとサマリのメタ欄に表示する
   const ブロック内訳={};

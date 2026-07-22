@@ -114,3 +114,100 @@ function 現物確認移行_反映計画_(candidates, choices, ledger, orders, s
   });
   return {rows,errors,applied,保留,diff};
 }
+
+// ===== GAS入口 =====
+
+function 現物移行_受注読む_(){
+  const recv=SpreadsheetApp.getActive().getSheetByName(HIKIATE_CFG.受注);
+  if(!recv) throw new Error('受注明細がありません');
+  const M=列マップ_(recv), values=recv.getDataRange().getValues(), out=[];
+  for(let i=M.hr;i<values.length;i++){
+    const row=values[i], ban=String(row[M.番号]||'').trim(), qty=Number(row[M.個数])||0;
+    if(!ban || qty<=0) continue;
+    out.push({ban,code:String(row[M.コード]||''),sku:M.SKU>=0?String(row[M.SKU]||''):'',qty});
+  }
+  return out;
+}
+
+function 現物確認移行を作成(){ 直列_(現物確認移行を作成本体_); }
+function 現物確認移行を作成本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  const base=ss.getSheetByName(現物移行_CFG.基準シート);
+  if(!base){ ui.alert('基準シート「'+現物移行_CFG.基準シート+'」が見つかりません。比較基準(最後の旧④状態)が無いと移行候補を作れません。'); return; }
+  const baseline=取り置き_表を読む_(現物移行_CFG.基準シート,TORIOKI_CFG.台帳HDR);
+  const ledger=取り置き台帳_読む_();
+  const orders=現物移行_受注読む_();
+  const candidates=現物確認移行_候補計算_(ledger,baseline,orders);
+  // 前回入力(選択・移行数量・メモ)を入力キーで引き継ぐ(洗い替えで消さない)
+  let prev=[]; try{ prev=取り置き_表を読む_(現物移行_CFG.シート,現物移行_CFG.HDR); }catch(e){}
+  const prevByKey={}; prev.forEach(r=>{ const k=String(r.入力キー||''); if(k) prevByKey[k]=r; });
+  candidates.forEach(c=>{
+    const p=prevByKey[c.入力キー]; if(!p) return;
+    if(String(p.選択||'').trim()) c.選択=String(p.選択).trim();
+    if(String(p.移行数量||'').trim()!=='') c.移行数量=p.移行数量;
+    if(String(p.メモ||'').trim()) c.メモ=String(p.メモ).trim();
+  });
+  取り置き_表を保存_(現物移行_CFG.シート,現物移行_CFG.HDR,candidates);
+  const sh=ss.getSheetByName(現物移行_CFG.シート);
+  if(candidates.length){
+    const col=現物移行_CFG.HDR.indexOf('選択')+1;
+    sh.getRange(2,col,candidates.length,1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(現物移行_CFG.選択肢.slice(),true).setAllowInvalid(false).build());
+  }
+  // 反映時の署名再検証用に、候補作成時点の台帳署名を保存する
+  PropertiesService.getDocumentProperties().setProperty('現物確認移行_署名',全件再計算_署名_(ledger));
+  const 旧=candidates.filter(c=>c.種別==='旧開始前在庫').length, 消=candidates.filter(c=>c.種別==='消えた確保').length;
+  ui.alert('現物確認移行を作成しました',
+    '旧開始前在庫 '+旧+'件 ／ 消えた確保 '+消+'件\n\n'
+    +'「選択」列で 現物確認済みにする／解除／保留 を選び、復元は「移行数量」を確認してから\n'
+    +'「✅ 現物確認移行を反映」を実行してください。\n'
+    +'※旧開始前在庫が残っている間は全件再計算の反映は停止します。',ui.ButtonSet.OK);
+}
+
+function 現物確認移行を反映(){ 直列_(現物確認移行を反映本体_); }
+function 現物確認移行を反映本体_(){
+  const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
+  let inputs=[]; try{ inputs=取り置き_表を読む_(現物移行_CFG.シート,現物移行_CFG.HDR); }
+  catch(e){ ui.alert('現物確認移行シートがありません。先に「🔄 現物確認移行を作成」を実行してください。'); return; }
+  const choices={};
+  inputs.forEach(r=>{ const k=String(r.入力キー||''),sel=String(r.選択||'').trim();
+    if(k&&sel) choices[k]={選択:sel,数量:r.移行数量}; });
+  if(!Object.keys(choices).length){ ui.alert('選択が1件もありません。「選択」列を入力してください。'); return; }
+  const ledger=取り置き台帳_読む_();
+  // 署名再検証: 候補作成後に台帳が変わっていたら中止(古い候補で上書きしない)
+  const saved=PropertiesService.getDocumentProperties().getProperty('現物確認移行_署名');
+  if(!saved || saved!==全件再計算_署名_(ledger)){
+    ui.alert('反映を中止しました','候補作成後に取り置き台帳が変わっています。「🔄 現物確認移行を作成」からやり直してください。',ui.ButtonSet.OK); return;
+  }
+  const baseline=取り置き_表を読む_(現物移行_CFG.基準シート,TORIOKI_CFG.台帳HDR);
+  const orders=現物移行_受注読む_();
+  const candidates=現物確認移行_候補計算_(ledger,baseline,orders);
+  const now=new Date();
+  const plan=現物確認移行_反映計画_(candidates,choices,ledger,orders,[],now);
+  if(!plan.applied.length){
+    ui.alert('適用できる変更がありません',plan.errors.length?plan.errors.join('\n'):'選択内容を確認してください。',ui.ButtonSet.OK); return;
+  }
+  const 確認=ui.alert('現物確認移行を反映します',
+    '適用 '+plan.applied.length+'キー ／ 保留 '+plan.保留.length+'件 ／ エラー '+plan.errors.length+'件\n'
+    +(plan.errors.length?'\nエラー(この键は適用されません):\n'+plan.errors.slice(0,8).join('\n')+'\n':'')
+    +'\nバックアップを作成してから台帳を保存します。続けますか？',ui.ButtonSet.OK_CANCEL);
+  if(確認!==ui.Button.OK) return;
+  // バックアップ失敗時は保存処理を開始しない
+  const timestamp=Utilities.formatDate(now,'Asia/Tokyo','yyyyMMdd_HHmmss');
+  try{
+    全件再計算_ファイルをバックアップ_(ss.getId(),ss.getName()+'_現物移行前_'+timestamp);
+    const copy=ss.getSheetByName(TORIOKI_CFG.台帳).copyTo(ss);
+    copy.setName(('取り置き台帳_移行前_'+timestamp).slice(0,99)); copy.hideSheet();
+  }catch(e){ ui.alert('バックアップに失敗したため中止しました:\n'+e.message); return; }
+  取り置き台帳_保存_(plan.rows);
+  // 差分を監査シートへ追記(明示消去以外で消さない)
+  let dsh=ss.getSheetByName(現物移行_CFG.差分);
+  if(!dsh){ dsh=ss.insertSheet(現物移行_CFG.差分); dsh.getRange(1,1,1,3).setValues([['日時','入力キー','内容']]).setFontWeight('bold'); dsh.hideSheet(); }
+  if(plan.diff.length){
+    const stamp=Utilities.formatDate(now,'Asia/Tokyo','yyyy-MM-dd HH:mm:ss');
+    dsh.getRange(dsh.getLastRow()+1,1,plan.diff.length,3).setValues(plan.diff.map(d=>[stamp,d.入力キー,d.内容]));
+  }
+  PropertiesService.getDocumentProperties().deleteProperty('現物確認移行_署名');
+  現物確認移行を作成本体_(); // 残候補(保留・エラー・未選択)で作り直す
+  ss.toast('適用'+plan.applied.length+'キー / 保留'+plan.保留.length+' / エラー'+plan.errors.length,'現物確認移行',8);
+}
