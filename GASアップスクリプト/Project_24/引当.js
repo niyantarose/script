@@ -1620,6 +1620,7 @@ function 引当実行_本体_(options){
   const M=列マップ_(recv), 受注hdr=M.hr;
   const 受注head=recv.getRange(M.hr,1,1,recv.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
   const c日時=受注head.indexOf('注文日時'); // 月号照合(定期購読)用
+  const cステータス=受注head.indexOf('受注ステータス'); // 引当状況一覧のGoQ差分用
   const lines=[];
   for(let i=受注hdr;i<R.length;i++){
     const row=R[i];
@@ -1638,6 +1639,7 @@ function 引当実行_本体_(options){
       メモ: M.メモ>=0? String(row[M.メモ]==null?'':row[M.メモ]).trim() : '',
       paid:入金済み_(row[M.入金]), 代引き:M.支払>=0 && 代引き支払_(row[M.支払]),
       入荷, 入荷日値, 着, alloc:0, 引当成立:false, キャンセル:qty<=0,
+      受注ステータス: cステータス>=0? String(row[cステータス]||'') : '',
       別ルート, 別ルート済数量: 別ルート && 入荷? qty : 0 });
   }
 
@@ -1782,6 +1784,26 @@ function 引当実行_本体_(options){
   書き出し_(ss, cfg.取置, HDR_共, keepRows, 受注hdr);
   書き出し_(ss, cfg.希望, HDR_共, holdRows, 受注hdr);
   書き出し_(ss, cfg.出荷, HDR_共, shipRows, 受注hdr);
+
+  // 引当状況一覧(読み取り専用・全注文): 5分類と同じ計画データから生成し別計算をしない
+  try{
+    const 一覧linesByBan={}, 一覧status={};
+    seq.forEach(ban=>{ 一覧linesByBan[ban]=byOrder[ban];
+      一覧status[ban]=(byOrder[ban].find(l=>String(l.受注ステータス||'').trim())||{}).受注ステータス||''; });
+    const 一覧rows=引当状況_一覧行_(一覧linesByBan,paidOrder,codOrder,一覧status);
+    let 一覧sh=ss.getSheetByName(引当状況_CFG.シート); if(!一覧sh) 一覧sh=ss.insertSheet(引当状況_CFG.シート);
+    一覧sh.clearContents();
+    const 一覧HDR=引当状況_CFG.HDR;
+    const 一覧data=[一覧HDR].concat(一覧rows.map(r=>一覧HDR.map(h=>r[h]!=null?r[h]:'')));
+    一覧sh.getRange(1,1,一覧data.length,一覧HDR.length).setValues(一覧data);
+    一覧sh.getRange(1,1,1,一覧HDR.length).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
+    一覧sh.setFrozenRows(1);
+    // 差異ありの行だけ背景を薄橙で目立たせる(範囲一括で適用)
+    if(一覧rows.length){
+      const bg=一覧rows.map(r=>new Array(一覧HDR.length).fill(r.GoQ差分==='差異あり'?cfg.色_橙:null));
+      一覧sh.getRange(2,1,一覧rows.length,一覧HDR.length).setBackgrounds(bg);
+    }
+  }catch(e){ ss.toast('引当状況一覧の生成に失敗: '+e.message,'⚠️',8); }
 
   // ===== 受注明細の色分け: 即納=水/新規割当=黄/既存取り置き=薄紫/未割当=白/指定なし=橙 =====
   const recvStart=受注hdr+1, recvLast=recv.getLastRow();
