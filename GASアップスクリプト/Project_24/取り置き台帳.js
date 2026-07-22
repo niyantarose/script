@@ -801,6 +801,16 @@ function 取り置き初期登録を作成本体_(options){
   const 戻し候補=取り置き_棚戻し候補_(ledgerRows,sheetRows);
   // 棚戻し待ち→要棚確認→通常の順。同じ受注番号の商品行は分断しない。
   candidates=取り置き_注文単位で並べる_(戻し候補.concat(candidates));
+  // 表示モード(2026-07-22 仕様§10): 既定「要作業」は部分在庫・要棚確認/棚戻し/要対応・現物ありの
+  // 希望日待ちだけを表示。非表示になった注文の入力は入力保存シートが保持し、再表示時に復元される。
+  let 表示モード='要作業';
+  try{ 表示モード=PropertiesService.getDocumentProperties().getProperty('取り置き登録_表示モード')||'要作業'; }catch(e){}
+  const 全注文数=new Set(candidates.map(c=>String(c.受注番号))).size;
+  if(表示モード!=='すべて'){
+    const byBan={}; candidates.forEach(c=>{(byBan[String(c.受注番号)]=byBan[String(c.受注番号)]||[]).push(c);});
+    candidates=candidates.filter(c=>取り置き_作業対象判定_(byBan[String(c.受注番号)],表示モード));
+  }
+  const 表示注文数=new Set(candidates.map(c=>String(c.受注番号))).size;
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
   const sh2=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
   // 列の並びが変わっても古い位置のプルダウンが残らないよう、シート全体の入力規則を消してから付け直す
@@ -832,7 +842,8 @@ function 取り置き初期登録を作成本体_(options){
   const 全数確保=candidates.filter(c=>c.判定!=='棚戻し待ち' && (c.台帳確保数||0)>0 && c.判定!=='要棚確認').length;
   const summary={候補:candidates.length,要棚確認:要確認数,棚戻し待ち:戻し待ち数,即納表示:即納行数,別ルート表示:別ルート行数,入力済};
   if(!silent) ui.alert('取り置き登録を更新しました',
-    '候補'+candidates.length+'行 ／ 🔴棚戻し待ち '+戻し待ち数+'行 ／ ⚠️要棚確認 '+要確認数+'行\n\n'
+    '表示モード: '+表示モード+'（全'+全注文数+'注文中 '+表示注文数+'注文を表示。切替はメニュー👀）\n'
+    +'候補'+candidates.length+'行 ／ 🔴棚戻し待ち '+戻し待ち数+'行 ／ ⚠️要棚確認 '+要確認数+'行\n\n'
     +(戻し待ち数? '赤い行は棚を確認し、右端の「処理」で「棚へ戻した」または「現物なし」を選びます。\n':'')
     +'黄色の行は、現物があれば「現物取り置き数量」、無ければ「棚確認」を入力します。\n'
     +(即納行数? '水色の「即納」行は表示専用です(そのまま出荷する現物。数量は入れません)。\n':'')
@@ -842,6 +853,17 @@ function 取り置き初期登録を作成本体_(options){
     +(入力済? '\n入力済みの数量'+入力済+'行は引き継いでいます。':''),ui.ButtonSet.OK);
   return summary;
 }
+
+// 表示モード切替(仕様§10)。設定して即座に更新をかけ直す
+function 取り置き_表示モード設定_(mode){
+  PropertiesService.getDocumentProperties().setProperty('取り置き登録_表示モード',mode);
+  取り置き初期登録を作成();
+}
+function 取り置き表示_要作業(){ 取り置き_表示モード設定_('要作業'); }
+function 取り置き表示_部分在庫(){ 取り置き_表示モード設定_('部分在庫'); }
+function 取り置き表示_希望日現物(){ 取り置き_表示モード設定_('希望日待ち・現物あり'); }
+function 取り置き表示_先行引当(){ 取り置き_表示モード設定_('先行引当'); }
+function 取り置き表示_すべて(){ 取り置き_表示モード設定_('すべて'); }
 
 function 取り置き登録を反映(){ 直列_(取り置き登録を反映本体_); }
 // 旧メニュー・既存の図形ボタンに割り当てた関数名も、新しい一括反映へつなぐ。
