@@ -161,6 +161,30 @@ function 取り置き_新規行_(order, qty, source, ems, originId, sourceCode){
   };
 }
 
+// 物理オペ(納品書ピック・⑤箱締め・Yahoo出力・EMS在庫移動)の対象になれる行。
+// 到着済・現物確認済み・要移行(棚の現物=旧開始前在庫)だけ。先行は帳簿のみで現物が無い。
+function 取り置き_物理オペ対象行_(row, emsStatusByNo){
+  if(!row || row.状態!==TORIOKI_STATUS.ACTIVE) return false;
+  const stage=取り置き_段階正規化_(row,emsStatusByNo||{}).引当段階;
+  return stage===TORIOKI_STAGE.ARRIVED || stage===TORIOKI_STAGE.PHYSICAL || stage==='要移行';
+}
+
+// ⑤締め前の先行残検査。対象EMSに有効な先行行が残っていれば停止理由を返す(無ければ空文字)。
+// 先行行が残ったまま締めると、帳簿だけの確保が余りと一緒にYahooへ流れて宙に浮く。
+function 取り置き_便締め先行残検査_(ledgerRows, targetEmsSet, emsStatusByNo){
+  const hits=[];
+  (ledgerRows||[]).forEach(r=>{
+    if(!r || r.状態!==TORIOKI_STATUS.ACTIVE) return;
+    const ems=String(r.元EMS番号||'').trim();
+    if(!ems || !(targetEmsSet && targetEmsSet.has(ems))) return;
+    if(取り置き_段階正規化_(r,emsStatusByNo||{}).引当段階===TORIOKI_STAGE.PLANNED)
+      hits.push('・'+String(r.受注番号||'')+' '+String(r.商品コード||'')+'×'+(Number(r.取り置き数量)||0));
+  });
+  if(!hits.length) return '';
+  return 'この便には先行引当が'+hits.length+'行残っています。④を実行して到着済へ昇格してから締めてください。\n'
+    +hits.slice(0,10).join('\n')+(hits.length>10?'\n…ほか'+(hits.length-10)+'行':'');
+}
+
 function 取り置き_供給状態マップ_(supplies,now){
   const out={},time=now instanceof Date?now.getTime():Date.now();
   // 到着予定日は予定であり実到着の証拠にしない。明示状態(未着/到着済)と到着確認フラグを優先し、

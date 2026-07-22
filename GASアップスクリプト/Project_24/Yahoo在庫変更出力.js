@@ -15,6 +15,9 @@ function Yahoo変更_対象行_(rows, emsSet, excludeSet){
     const qty=Number(r&&r.余り数)||0;
     if(!code || qty<=0) return;
     if(emsSet && emsSet.size && !emsSet.has(ems)) return;
+    // 未着(先行)の余りは現物ではないためYahooへ足せない(箱が着いて到着済になってから出力する)
+    const status=String(r&&r.状態||'').trim();
+    if(status && status!=='到着済'){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'未着(先行)の余りはYahooへ足せない'}); return; }
     if(code==='★コピペ'){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'付属ポスター印(★コピペ)'}); return; }
     if(/promotional/i.test(code)){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'PromotionalItem(贈呈品)'}); return; }
     if(/^\d{7,}$/.test(code)){ 除外.push({商品コード:code,余り数:qty,EMS番号:ems,理由:'受注番号形式コード'}); return; }
@@ -83,6 +86,8 @@ function Yahoo在庫変更を出力本体_(){
   const values=sh.getRange(3,1,sh.getLastRow()-2,5).getDisplayValues();
   const japanRows=values.map(v=>({状態:v[0],到着日:v[1],商品コード:v[2],余り数:v[3],EMS番号:v[4]}));
   const 未知=tokens.filter(t=>!japanRows.some(r=>String(r.EMS番号||'').trim()===t));
+  // 一覧に無いEMS番号は空出力で成功したように見せず中止する(打ち間違い・未着便の防止)
+  if(未知.length){ ui.alert('出力を中止しました','日本在庫にこのEMS番号の行がありません: '+未知.join(', ')+'\n(未着の便は⑤前のYahoo出力対象になりません)',ui.ButtonSet.OK); return; }
   const 振り分け=Yahoo変更_対象行_(japanRows,emsSet,全件再計算_マスタ除外集合_());
 
   // 最新のYahoo全在庫CSVで親コードを逆引き

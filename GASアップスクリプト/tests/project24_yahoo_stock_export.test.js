@@ -90,5 +90,17 @@ test('行変換: 同一コードを合算し、逆引きヒットは親code+実s
   assert.strictEqual(r.要確認[0].商品コード, 'SHINPIN01');
 });
 
+test('未着(先行)の余り行はYahoo出力の対象にせず除外理由を付ける', () => {
+  const r = context.Yahoo変更_対象行_([
+    {状態:'到着済',商品コード:'ARR01',余り数:1,EMS番号:'EMS-A'},
+    {状態:'未着',商品コード:'FUT01',余り数:2,EMS番号:'EMS-F'}
+  ], new Set(['EMS-A','EMS-F']), new Set());
+  assert.strictEqual(r.対象.length, 1);
+  assert.strictEqual(r.対象[0].商品コード, 'ARR01');
+  assert.strictEqual(r.除外.length, 1);
+  assert.strictEqual(r.除外[0].商品コード, 'FUT01');
+  assert.ok(/未着|先行/.test(r.除外[0].理由));
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `${failures} FAILED` : 'ALL PASS');

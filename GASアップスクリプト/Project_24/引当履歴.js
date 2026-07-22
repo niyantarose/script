@@ -327,13 +327,21 @@ function 到着済を在庫反映済みへ本体_(){
   const bad=targets.filter(t=>!counts[t]);
   if(bad.length){ ui.alert('到着済に無いEMS番号があります: '+bad.join(', ')+'\n入力し直してください。'); return; }
 
-  // 【締め前の未ピック確認】この便に紐づく未出荷の確保(取り置き中)を一覧表示。
+  // 【締め前の先行残検査と未ピック確認】台帳が読めない時は安全側に停止する(2026-07-22 握り潰しcatch廃止)。
   // 希望日待ちは納品書が出ず現物の抜き忘れが起きやすい(2026-07-21 実例10117699の教訓)。
   // 抜き忘れたまま締めると、確保済みの現物が余りと一緒にYahoo保管へ紛れて宙に浮く。
-  try{
+  let 締め台帳;
+  try{ 締め台帳=取り置き台帳_読む_(); }
+  catch(e){ ui.alert('便を締められません','取り置き台帳が読めません(安全のため中止):\n'+e.message,ui.ButtonSet.OK); return; }
+  {
     const 締めセット=new Set(targets);
-    const 未ピック=取り置き台帳_読む_().filter(r=>String(r.状態||'')==='取り置き中'
-      && 締めセット.has(String(r.元EMS番号||'').trim()));
+    // 先行引当(帳簿のみ・現物なし)が対象便に残っていれば締めない。④で到着済へ昇格してから。
+    const 先行残=取り置き_便締め先行残検査_(締め台帳,締めセット,{});
+    if(先行残){ ui.alert('便を締められません',先行残,ui.ButtonSet.OK); return; }
+    // 未ピック一覧は物理対象行(到着済・現物確認済み・要移行)だけを数える
+    const 未ピック=締め台帳.filter(r=>String(r.状態||'')==='取り置き中'
+      && 締めセット.has(String(r.元EMS番号||'').trim())
+      && 取り置き_物理オペ対象行_(r,{}));
     if(未ピック.length){
       const byBan={};
       未ピック.forEach(r=>{ const b=String(r.受注番号||'');
@@ -348,7 +356,7 @@ function 到着済を在庫反映済みへ本体_(){
         ui.ButtonSet.OK_CANCEL);
       if(pick!==ui.Button.OK) return;
     }
-  }catch(e){} // 台帳が読めない時は従来どおり進む(締め自体は止めない)
+  }
 
   const active=SpreadsheetApp.getActive(), jp=active.getSheetByName(HIKIATE_CFG.純在庫);
   if(!jp || jp.getLastRow()<2){ ui.alert('日本在庫に引当結果がありません。先に② 引き当て実行を正常完了してください。'); return; }
