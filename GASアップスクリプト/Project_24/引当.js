@@ -1331,6 +1331,26 @@ function 引当行状態_(l,cfg){
   if(l.別ルート && l.入荷) return {st:'着済',color:cfg.色_着}; // 台湾・中国の手入力入荷
   return {st:'在庫待ち',color:null};
 }
+// 「なぜこの状態なのか」を1列で読める文言にする(分類シートの状態の理由列)。
+function 行状態理由_(l){
+  if(!l || l.キャンセル) return 'キャンセル';
+  if(l.kbn==='即納') return '即納(店頭現物)';
+  if(!l.段階付与) return '';
+  const qty=Math.max(0,Number(l.qty)||0), parts=[];
+  const phys=Math.max(0,Number(l.現物確認済み数量)||0);
+  const arrived=Math.max(0,Number(l.到着済引当数量)||0);
+  const planned=Math.max(0,Number(l.先行引当数量)||0);
+  const beturoute=Math.max(0,Number(l.別ルート済数量)||0);
+  if(phys>0) parts.push('現物'+phys+'個確認済み');
+  if(arrived>0) parts.push('到着済'+arrived+'個');
+  if(planned>0) parts.push('先行'+planned+'個'+(l.先行到着予定?'('+l.先行到着予定+'到着予定)':''));
+  if(beturoute>0) parts.push('別ルート'+beturoute+'個');
+  if(!parts.length) return '未引当';
+  const lack=Math.max(0,qty-(phys+arrived+planned+beturoute));
+  if(lack>0) parts.push(lack+'個不足');
+  return '注文'+qty+'個/'+parts.join('・');
+}
+
 function 注文出荷準備OK_(arr){
   const active=(arr||[]).filter(l=>l && !l.キャンセル);
   return active.length>0 && active.every(l=>l.kbn==='即納'||(l.kbn==='取り寄せ'&&残必要計算_(l)===0));
@@ -1465,6 +1485,10 @@ function 引当計画_行へ反映_(lines,ledgerSummary,projectedSummary,newRows
         +Math.max(0,Number(l.別ルート済数量)||0)+(l.kbn==='即納'?qty:0);
       l.未引当数量=Math.max(0,qty-total);
       l.主段階=qty>0&&l.現物確認済み数量>=qty?'現物確認済み':(l.先行引当数量>0?'先行':(l.到着済引当数量>0?'到着済':''));
+      // 先行行の到着予定日(最小)を表示用に写す
+      const plannedRow=activeRows.filter(r=>String(r.引当段階||'')==='先行'&&String(r.EMS到着予定日||'').trim())
+        .sort((a,b)=>String(a.EMS到着予定日).localeCompare(String(b.EMS到着予定日)))[0];
+      if(plannedRow) l.先行到着予定=String(plannedRow.EMS到着予定日);
     }
     const matched=added[0]||activeRows[0];
     if(matched){
@@ -1722,8 +1746,10 @@ function 引当実行_本体_(options){
   // 出力(行の色=到着状況。未入金は受注番号セルだけ赤)
   // 取り置きメモ(受注明細の手書き列)は各出力の末尾に転記する(毎回作り直しても消えない見せ方)
   const HDR=['受注番号','氏名','お届け日','商品コード','商品名','個数','区分','入荷日','入金','状態','EMS番号'];
-  const HDR_共=HDR.concat(['取り置き中数量','取り置きメモ']);
-  const HDR_待=HDR.concat(['発送可否','取り置き中数量','取り置きメモ']);
+  // 三段階(2026-07-22): 段階別数量と「状態の理由」を全分類シートの共通末尾列へ出す
+  const HDR_段階=['引当段階','現物確認済み','到着済引当','先行引当','不足','状態の理由'];
+  const HDR_共=HDR.concat(['取り置き中数量','取り置きメモ'],HDR_段階);
+  const HDR_待=HDR.concat(['発送可否','取り置き中数量','取り置きメモ'],HDR_段階);
   const seen=new Set(), seq=[]; lines.forEach(l=>{ if(!seen.has(l.ban)){ seen.add(l.ban); seq.push(l.ban);} });
   const waitRows=[], partRows=[], keepRows=[], holdRows=[], shipRows=[];
   seq.forEach(ban=>{
@@ -1740,6 +1766,7 @@ function 引当実行_本体_(options){
       if(b==='wait') vals.push(可否);
       vals.push(l.計画後取り置き中数量||'');
       vals.push(l.メモ||'');
+      vals.push(l.主段階||'', l.現物確認済み数量||'', l.到着済引当数量||'', l.先行引当数量||'', l.未引当数量||'', 行状態理由_(l));
       target.push({ vals, color, ban, paid, qty:l.qty });
     });
   });
