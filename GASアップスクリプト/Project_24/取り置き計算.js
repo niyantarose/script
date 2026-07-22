@@ -160,7 +160,7 @@ function 取り置き_不変条件検証_(orders,ledgerRows,supplies){
   Object.keys(supplyUsed).forEach(key=>{if(!(key in supplyQty))errors.push('EMS供給不在: '+key.replace('|',' '));else if(supplyUsed[key]>supplyQty[key])errors.push('EMS供給超過: '+key.replace('|',' '));});
   stages.要移行行.forEach(r=>warnings.push('旧開始前在庫は要移行: '+String(r.取置ID||'')));return {errors:Array.from(new Set(errors)),warnings:Array.from(new Set(warnings))};
 }
-function 取り置き_現物確認変換計画_(inputRows,ledgerRows,supplies,now){
+function 取り置き_旧現物確認変換計画_(inputRows,ledgerRows,supplies,now){
   const rows=(ledgerRows||[]).map(r=>Object.assign({},r)),errors=[],review=[],at=now||new Date(),status=取り置き_供給状態マップ_(supplies,at),targets={};
   (inputRows||[]).forEach(input=>{const raw=input.現物取り置き数量!=null?input.現物取り置き数量:(input.現物確認数量!=null?input.現物確認数量:input.数量),key=取り置き_行キー_(input);if(raw==null||String(raw).trim()==='')return;if(targets[key]){errors.push('現物確認の重複入力: '+key);return;}const qty=取り置き_整数_(raw);if(!qty)errors.push('現物確認数量は正の整数: '+key);else targets[key]={qty,input};});
   Object.keys(targets).forEach(key=>{const active=rows.filter(r=>r.状態===TORIOKI_STATUS.ACTIVE&&取り置き_行キー_(r)===key).map(r=>取り置き_段階正規化_(r,status)).filter(r=>r.引当段階!=='要移行'&&r.引当段階!=='要確認'),physical=active.filter(r=>r.引当段階===TORIOKI_STAGE.PHYSICAL).reduce((n,r)=>n+取り置き_整数_(r.取り置き数量),0),total=active.reduce((n,r)=>n+取り置き_整数_(r.取り置き数量),0);if(targets[key].qty<physical)errors.push('現物確認済み数量を減らすことはできません。解除フローを使用してください: '+key);if(targets[key].qty>total)errors.push('現物確認数量は既存の有効取り置きを超えています。新規加算はできません: '+key);targets[key].convert=Math.max(0,targets[key].qty-physical);});
@@ -173,7 +173,7 @@ function 取り置き_現物確認変換計画_(inputRows,ledgerRows,supplies,no
 }
 
 // 供給処理を明示し、元EMS不明現物は到着済供給を複数箱FIFOで分割する。
-function 取り置き_現物確認変換計画_(inputs,ledger,supplies,now){
+function 取り置き_旧現物確認変換計画2_(inputs,ledger,supplies,now){
   const original=(ledger||[]).map(r=>Object.assign({},r)),rows=original.map(r=>Object.assign({},r)),errors=[],review=[],at=now||new Date(),status=取り置き_供給状態マップ_(supplies,at),targets={};
   (inputs||[]).forEach(i=>{const k=取り置き_行キー_(i),q=取り置き_整数_(i.現物取り置き数量);if(targets[k])errors.push('現物確認の重複入力: '+k);else targets[k]={q,i};});Object.keys(targets).forEach(k=>{const physical=rows.filter(r=>r.状態===TORIOKI_STATUS.ACTIVE&&取り置き_行キー_(r)===k&&取り置き_段階正規化_(r,status).引当段階===TORIOKI_STAGE.PHYSICAL).reduce((n,r)=>n+取り置き_整数_(r.取り置き数量),0);if(targets[k].q<physical)errors.push('解除フローを使用してください: '+k);});if(errors.length)return{rows:original,errors,review};
   const capacity={};(supplies||[]).forEach(s=>{const k=取り置き_供給キー_(s.ems,s.code);capacity[k]=(capacity[k]||0)+(Number(s.qty)||0);});
@@ -182,6 +182,17 @@ function 取り置き_現物確認変換計画_(inputs,ledger,supplies,now){
     else{let left=take;const candidates=(supplies||[]).filter(s=>取り置き_EMS状態_(status,s.ems)===TORIOKI_STAGE.ARRIVED&&取り置き_商品コード_('',s.code)===取り置き_商品コード_(r.SKU,r.商品コード)).sort((a,b)=>String(a.arrival).localeCompare(String(b.arrival))||String(a.ems).localeCompare(String(b.ems)));candidates.forEach(s=>{const k=取り置き_供給キー_(s.ems,s.code),n=Math.min(left,capacity[k]||0);if(n){parts.push({ems:s.ems,qty:n,process:'EMS控除'});capacity[k]-=n;left-=n;}});if(left){errors.push('到着済供給控除EMSを特定できません');review.push({理由:'到着済供給控除EMSを特定できません'});parts=[];}}
     if(errors.length)return; if(q>take)out.push(Object.assign({},r,{取り置き数量:q-take}));parts.forEach((p,i)=>out.push(Object.assign({},r,{取置ID:q===take&&i===0?r.取置ID:r.取置ID+'|現物|'+(i+1),取り置き数量:p.qty,引当段階:TORIOKI_STAGE.PHYSICAL,供給控除EMS:p.process==='EMS控除'?p.ems:'',供給処理:p.process,引当系譜ID:取り置き_系譜ID_(r),引当系譜数量:取り置き_系譜数量_(r),現物確認日時:at,現物確認メモ:String(t.i.現物確認メモ||r.現物確認メモ||'')})));
   });return errors.length?{rows:original,errors:[],review}:{rows:out,errors,review};
+}
+function 取り置き_現物確認変換計画_(inputs,ledger,supplies,now){
+  const original=(ledger||[]).map(r=>Object.assign({},r)),at=now||new Date(),status=取り置き_供給状態マップ_(supplies,at),targets={},errors=[],review=[];
+  (inputs||[]).forEach(i=>{const k=取り置き_行キー_(i),q=取り置き_整数_(i.現物取り置き数量);if(targets[k])errors.push('現物確認の重複入力: '+k);else targets[k]={q,i};});
+  Object.keys(targets).forEach(k=>{const a=original.filter(r=>r.状態===TORIOKI_STATUS.ACTIVE&&取り置き_行キー_(r)===k),p=a.filter(r=>取り置き_段階正規化_(r,status).引当段階===TORIOKI_STAGE.PHYSICAL).reduce((n,r)=>n+取り置き_整数_(r.取り置き数量),0),t=a.reduce((n,r)=>n+取り置き_整数_(r.取り置き数量),0);if(targets[k].q<p)errors.push('解除フローを使用してください: '+k);if(targets[k].q>t)errors.push('新規加算はできません: '+k);targets[k].convert=targets[k].q-p;});if(errors.length)return{rows:original,errors,review};
+  const cap={},used=取り置き_段階別集計_(original,[],status).usageBySupply;(supplies||[]).forEach(s=>{const k=取り置き_供給キー_(s.ems,s.code);cap[k]=(cap[k]||0)+(Number(s.qty)||0);});Object.keys(used).forEach(k=>cap[k]=Math.max(0,(cap[k]||0)-used[k]));
+  const ids=new Set(original.map(r=>String(r.取置ID||''))),next=(id)=>{let n=1,v;do{v=id+'|現物|'+n++;}while(ids.has(v));ids.add(v);return v;},out=[];
+  for(const r of original){const t=targets[取り置き_行キー_(r)],stage=取り置き_段階正規化_(r,status),q=取り置き_整数_(r.取り置き数量);if(!t||stage.引当段階===TORIOKI_STAGE.PHYSICAL||r.状態!==TORIOKI_STATUS.ACTIVE||!t.convert){out.push(r);continue;}const take=Math.min(q,t.convert);t.convert-=take;let parts=[];
+    if(r.元EMS番号)parts=[{ems:r.元EMS番号,qty:take,process:stage.引当段階===TORIOKI_STAGE.ARRIVED?'EMS控除':'供給解放'}];else{let left=take;for(const s of (supplies||[]).slice().sort((a,b)=>String(a.arrival).localeCompare(String(b.arrival))||String(a.ems).localeCompare(String(b.ems)))){const k=取り置き_供給キー_(s.ems,s.code),n=Math.min(left,cap[k]||0);if(取り置き_EMS状態_(status,s.ems)===TORIOKI_STAGE.ARRIVED&&取り置き_商品コード_('',s.code)===取り置き_商品コード_(r.SKU,r.商品コード)&&n){parts.push({ems:s.ems,qty:n,process:'EMS控除'});cap[k]-=n;left-=n;}}if(left){review.push({理由:'到着済供給控除EMSを特定できません'});return{rows:original,errors,review};}}
+    if(q>take)out.push(Object.assign({},r,{取り置き数量:q-take}));parts.forEach((p,i)=>out.push(Object.assign({},r,{取置ID:q===take&&i===0?r.取置ID:next(r.取置ID),取り置き数量:p.qty,引当段階:TORIOKI_STAGE.PHYSICAL,供給控除EMS:p.process==='EMS控除'?p.ems:'',供給処理:p.process,引当系譜ID:取り置き_系譜ID_(r),引当系譜数量:取り置き_系譜数量_(r),現物確認日時:at,現物確認メモ:String(t.i.現物確認メモ||r.現物確認メモ||'')})));
+  }return{rows:out,errors,review};
 }
 function 取り置き_使用合計_(usage){
   return ['取り置き中','発送済み','戻し未処理','在庫なし確定','Yahoo移動済み']
