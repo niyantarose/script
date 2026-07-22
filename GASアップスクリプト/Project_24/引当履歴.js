@@ -370,15 +370,19 @@ function 到着済を在庫反映済みへ本体_(){
     const ems=String(row[jpEms]||'').trim(), sourceCode=String(row[jpCode]||'').trim();
     return {ems,code:sourceCode,sourceCode,qty:Number(row[jpQty])||0};
   }).filter(row=>targetSet.has(row.ems)&&row.qty>0);
-  // 📤 出力がまだならこの場でできる(締め後は日本在庫からこの便の余りが消えるため、締めの前だけ)
+  // 📤 出力済みかは記録(内容署名)で自動判定する。同じ内容を出力済みなら黙って先へ、
+  // 未出力・内容が変わっていれば聞かずにこの場で出力する(締め後は日本在庫から余りが消えるため)
   if(surplus.length){
-    const doExport=ui.alert('📤 Yahoo在庫変更の出力',
-      'この便の余り'+surplus.length+'行のYahoo出力は済んでいますか？\n\n'
-      +'はい = 出力済み(このまま締めへ)\n'
-      +'いいえ = 今ここで出力する(出力後、xlsmへ貼ってYahoo反映まで済ませてから次へ)\n'
-      +'キャンセル = 中止',ui.ButtonSet.YES_NO_CANCEL);
-    if(doExport===ui.Button.CANCEL || doExport===ui.Button.CLOSE) return;
-    if(doExport===ui.Button.NO) Yahoo在庫変更を出力本体_(targets);
+    const 出力対象=Yahoo変更_対象行_(
+      surplus.map(r=>({商品コード:r.sourceCode,余り数:r.qty,EMS番号:r.ems})),
+      targetSet,全件再計算_マスタ除外集合_()).対象;
+    if(出力対象.length){
+      const sig=Yahoo変更_内容署名_(出力対象);
+      let 出力済み=false;
+      try{ const rec=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null');
+        出力済み=!!rec && rec.sig===sig && sig!==''; }catch(e){}
+      if(!出力済み) Yahoo在庫変更を出力本体_(targets);
+    }
   }
   const moveLines=['EMS番号 / 商品コード / Yahooへ移す数量'].concat(
     surplus.length?surplus.map(row=>row.ems+' / '+row.sourceCode+' / '+row.qty):['(Yahoo移動対象なし)']);

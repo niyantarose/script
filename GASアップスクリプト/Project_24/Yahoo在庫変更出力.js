@@ -127,8 +127,16 @@ function Yahoo在庫変更を出力本体_(preTargets){
     out.getRange(cur,1,rows.length,4).setValues(rows);
   }
   ss.setActiveSheet(out);
+  // ⑤が「出力済みか」を自動判定するための記録(対象行の内容署名)。内容が変われば再出力になる
+  try{ PropertiesService.getDocumentProperties().setProperty('YAHOO出力記録',
+    JSON.stringify({sig:Yahoo変更_内容署名_(振り分け.対象),at:String(new Date())})); }catch(e){}
   ui.alert('Yahoo在庫変更出力を作成しました',
     '出力: '+変換.行.length+'行 / 要確認: '+変換.要確認.length+'件 / 除外: '+振り分け.除外.length+'件'
     +(未知.length?'\n⚠️ 日本在庫にこのEMS番号の行がありません: '+未知.join(', '):'')
     +'\n\nA:D列をxlsmへ貼り付け→Yahoo反映→📦⑤で締めてください。',ui.ButtonSet.OK);
+}
+
+// 出力対象行の内容署名(EMS|コード|数量を整列連結)。⑤が「同じ内容を出力済みか」の判定に使う
+function Yahoo変更_内容署名_(対象){
+  return (対象||[]).map(r=>String(r.EMS番号||'')+'|'+String(r.商品コード||'')+'|'+(Number(r.余り数)||0)).sort().join(';');
 }
