@@ -1452,6 +1452,20 @@ function 引当計画_行へ反映_(lines,ledgerSummary,projectedSummary,newRows
     l.計画後取り置き中数量=projectedSummary.activeByKey[key]||0;
     l.alloc=added.reduce((sum,r)=>sum+(Number(r.取り置き数量)||0),0);
     l.引当成立=l.alloc>0&&残必要計算_(l)===0;
+    // 三段階(2026-07-22): 計画後(このランの新規行込み)の段階別数量を行へ付与する。
+    // 旧開始前在庫(要移行)は移行完了まで物理確保として到着済相当に数える(残必要と同じ根拠)。
+    const stage=(projectedSummary.stageByKey||{})[key];
+    if(stage){
+      l.段階付与=true;
+      l.現物確認済み数量=Number(stage.現物確認済み数量)||0;
+      l.到着済引当数量=(Number(stage.到着済引当数量)||0)+(Number(stage.要移行数量)||0);
+      l.先行引当数量=Number(stage.先行引当数量)||0;
+      const qty=Math.max(0,Number(l.qty)||0);
+      const total=l.現物確認済み数量+l.到着済引当数量+l.先行引当数量
+        +Math.max(0,Number(l.別ルート済数量)||0)+(l.kbn==='即納'?qty:0);
+      l.未引当数量=Math.max(0,qty-total);
+      l.主段階=qty>0&&l.現物確認済み数量>=qty?'現物確認済み':(l.先行引当数量>0?'先行':(l.到着済引当数量>0?'到着済':''));
+    }
     const matched=added[0]||activeRows[0];
     if(matched){
       const rawSource=String(matched.元EMS商品コード||'').trim();

@@ -44,7 +44,11 @@ function 取り置き_供給キー_(ems, code){
 function 取り置き_EMS状態_(emsStatusByNo, ems){
   const value=emsStatusByNo instanceof Map ? emsStatusByNo.get(String(ems||'')) : (emsStatusByNo||{})[String(ems||'')];
   const text=String(value&&value.状態||value&&value.status||value||'').trim();
-  return /到着|入荷|現物|arrived/i.test(text) ? TORIOKI_STAGE.ARRIVED : TORIOKI_STAGE.PLANNED;
+  // 未着の証拠がある箱だけ先行。空/不明/在庫反映済みの旧箱は従来どおり物理確保(到着済)へ倒す
+  // (状態不明を先行に落とすと、旧台帳のEMS行が一斉に「物理に無い」扱いになり出荷が止まる)
+  if(/未着/.test(text)) return TORIOKI_STAGE.PLANNED;
+  if(text==='') return TORIOKI_STAGE.ARRIVED;
+  return /到着|入荷|現物|反映済|arrived/i.test(text) ? TORIOKI_STAGE.ARRIVED : TORIOKI_STAGE.PLANNED;
 }
 function 取り置き_段階正規化_(row, emsStatusByNo){
   const r=row||{}, explicit=String(r.引当段階||'').trim();
@@ -63,9 +67,18 @@ function 取り置き_段階別集計_(rows, movements, emsStatusByNo){
     if(row.状態!==TORIOKI_STATUS.ACTIVE) return;
     const r=取り置き_段階正規化_(row,emsStatusByNo),qty=取り置き_整数_(r.取り置き数量),key=取り置き_行キー_(r);
     if(!qty) return;
-    if(r.引当段階==='要移行'){out.要移行行.push(r);return;}
+    if(r.引当段階==='要移行'){
+      // 旧開始前在庫は移行完了まで「確保」として数える(activeByKeyから消すと④の残必要が二重割当する)。
+      // 段階バケットへは混ぜず、要移行数量として分離して持つ(移行UI・台帳確保集計の除外用)。
+      out.要移行行.push(r);
+      const g=out.byKey[key]||(out.byKey[key]={現物確認済み数量:0,到着済引当数量:0,先行引当数量:0,合計確保数量:0,要移行数量:0,行内訳:[]});
+      g.要移行数量=(g.要移行数量||0)+qty;
+      out.activeByKey[key]=(out.activeByKey[key]||0)+qty;
+      (out.activeRowsByKey[key]=out.activeRowsByKey[key]||[]).push(r);
+      return;
+    }
     if(r.引当段階==='要確認'){out.要確認行.push(r);return;}
-    const group=out.byKey[key]||(out.byKey[key]={現物確認済み数量:0,到着済引当数量:0,先行引当数量:0,合計確保数量:0,行内訳:[]});
+    const group=out.byKey[key]||(out.byKey[key]={現物確認済み数量:0,到着済引当数量:0,先行引当数量:0,合計確保数量:0,要移行数量:0,行内訳:[]});
     if(r.引当段階===TORIOKI_STAGE.PHYSICAL) group.現物確認済み数量+=qty;
     else if(r.引当段階===TORIOKI_STAGE.ARRIVED) group.到着済引当数量+=qty; else group.先行引当数量+=qty;
     group.合計確保数量+=qty; group.行内訳.push({取置ID:String(r.取置ID||''),引当段階:r.引当段階,数量:qty});
@@ -118,8 +131,16 @@ function 取り置き_今回必要数_(order, summary){
 // 台帳がEMS引当・キャンセル再引当で既に確保している数量(行キー単位)。
 // 開始前在庫は取り置き登録シート自身の確定分(洗い替えで数量を引き継いで再確定する)なので含めない。
 // 発送済み・手動解除・キャンセル戻しは現在の確保ではないため数えない(取り置き中のみ)。
+// 取り置き登録画面の「④確保分」。開始前在庫(要移行)は登録シート自身の確定分なので従来どおり除く。
 function 取り置き_台帳確保集計_(ledgerRows){
-  return 取り置き_段階別集計_(ledgerRows||[],[],{}).activeByKey;
+  const stages=取り置き_段階別集計_(ledgerRows||[],[],{});
+  const out={};
+  Object.keys(stages.activeByKey).forEach(key=>{
+    const 要移行=(stages.byKey[key]&&stages.byKey[key].要移行数量)||0;
+    const qty=(stages.activeByKey[key]||0)-要移行;
+    if(qty>0) out[key]=qty;
+  });
+  return out;
 }
 
 function 取り置き_決定ID_(source, ems, sourceCode, key, originId){
@@ -133,7 +154,8 @@ function 取り置き_新規行_(order, qty, source, ems, originId, sourceCode){
   return {
     取置ID:id, 状態:TORIOKI_STATUS.ACTIVE,
     受注番号:String(order.ban), 商品コード:取り置き_商品コード_(order.sku,order.code), SKU:String(order.sku||''),
-    取り置き数量:qty, 取置元種別:source, 引当段階:TORIOKI_STAGE.PLANNED, 引当系譜ID:id, 引当系譜数量:qty, 元EMS番号:String(ems||''), 元EMS商品コード:String(sourceCode||order.code||'').trim(), 元取置ID:String(originId||''),
+    // ④のEMS引当・キャンセル再引当は到着済箱の現物からだけ作られるため段階は到着済(先行は再計算エンジンだけが作る)
+    取り置き数量:qty, 取置元種別:source, 引当段階:TORIOKI_STAGE.ARRIVED, 引当系譜ID:id, 引当系譜数量:qty, 元EMS番号:String(ems||''), 元EMS商品コード:String(sourceCode||order.code||'').trim(), 元取置ID:String(originId||''),
     // 「・」はGASのpush時パーサーが識別子として受け付けない(Nodeは通る)ため、キーは必ず引用符で囲む
     戻し処理結果:'', '終了理由・メモ':''
   };
