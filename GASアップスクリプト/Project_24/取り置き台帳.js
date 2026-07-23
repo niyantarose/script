@@ -394,10 +394,11 @@ function 取り置き_即納行を付与_(candidates, sokunoOrders, sheetRows){
   }));
 }
 
-// 全行表示化v2(2026-07-20): 台湾/中国(別ルート)行を表示専用で差し込む。GoQで部分在庫=別ルートで
-// 現物が到着した合図なのに候補から消えて気づけない、を防ぐ。確保は受注明細の入荷日(別ルート済数量)で
-// 行うため、この画面では数量入力させない(台帳の開始前在庫と二重引当になる)。旧入荷日欄で確保状態が分かる。
-function 取り置き_別ルート行を付与_(candidates, betsuOrders, sheetRows){
+// 全行表示化v2(2026-07-20): 台湾/中国(別ルート)行を橙で差し込む。GoQで部分在庫=別ルートで
+// 現物が到着した合図なのに候補から消えて気づけない、を防ぐ。2026-07-23から差分入力(+−)可能。
+// 確保済み/不足は②の別ルート二重控除_と同じ実効確保=max(台帳の棚登録, 受注明細入荷日ベース)で出す
+// (両方式の併用時に足し算すると二重計上に見えるため大きい方)。
+function 取り置き_別ルート行を付与_(candidates, betsuOrders, sheetRows, securedByKey, 現物登録ByKey){
   const list=candidates||[];
   const bans=new Set(list.map(c=>String(c.受注番号)));
   const bySheet={};
@@ -406,18 +407,25 @@ function 取り置き_別ルート行を付与_(candidates, betsuOrders, sheetRo
   (betsuOrders||[]).forEach(o=>{
     if(!bans.has(String(o.ban))) return;
     const key=取り置き_ID部_(o); // 取置ID(別ルート|…)の互換のため従来3部形式で束ねる
-    if(!byKey[key]){ byKey[key]={o,qty:0,入荷日:'',ステータス一覧:[]}; keys.push(key); }
+    if(!byKey[key]){ byKey[key]={o,qty:0,入荷日:'',入荷日確保:0,ステータス一覧:[]}; keys.push(key); }
     byKey[key].qty+=Number(o.qty)||0;
     if(!byKey[key].入荷日){ const d=ymd_(o.入荷日); if(d) byKey[key].入荷日=d; }
+    // ②と同じ判定(引当実行_本体_: trimが空でなければ入荷=確保)。行ごとに数える(束の一部だけ入荷日ありに対応)
+    if(String(o.入荷日==null?'':o.入荷日).trim()!=='') byKey[key].入荷日確保+=Number(o.qty)||0;
     const status=String(o.ステータス||'').trim();
     if(status && byKey[key].ステータス一覧.indexOf(status)<0) byKey[key].ステータス一覧.push(status);
   });
   return list.concat(keys.map(key=>{
     const c=byKey[key], o=c.o, id='別ルート|'+key, prev=bySheet[id];
+    const rowKey=取り置き_行キー_({ban:o.ban,sku:o.sku,code:o.code});
+    const 台帳確保数=Number(securedByKey&&securedByKey[rowKey])||0;
+    const held=台帳確保数+(Number(現物登録ByKey&&現物登録ByKey[rowKey])||0);
+    const secured=Math.max(held,c.入荷日確保);
+    const shortage=Math.max(0,c.qty-secured);
     return {取置ID:id,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
-      注文数量:c.qty,現在の状態:'別ルート',受注ステータス:c.ステータス一覧.join(' / '),旧入荷日:c.入荷日,旧EMS:'',
-      台帳確保:'',台帳確保数:0,棚確認:'',追加数量:'',マイナス数量:'',メモ:prev?String(prev.メモ==null?'':prev.メモ).trim():'',
-      判定:'別ルート',要対応:c.入荷日?'':'追加数量で棚登録するか、受注明細に入荷日を入れて確保',処理:''};
+      注文数量:c.qty,確保済み:secured,不足:shortage,現在の状態:'別ルート',受注ステータス:c.ステータス一覧.join(' / '),旧入荷日:c.入荷日,旧EMS:'',
+      台帳確保:'',台帳確保数,棚確認:'',追加数量:'',マイナス数量:'',メモ:prev?String(prev.メモ==null?'':prev.メモ).trim():'',
+      判定:'別ルート',要対応:shortage>0?'追加数量で棚登録するか、受注明細に入荷日を入れて確保':'',処理:''};
   }));
 }
 
@@ -810,7 +818,8 @@ function 取り置き初期登録を作成本体_(options){
   取り置き_表を保存_(TORIOKI_INPUT_CFG.シート,TORIOKI_INPUT_CFG.HDR,Object.keys(保存マージ.store).sort().map(k=>保存マージ.store[k]));
   try{ ss.getSheetByName(TORIOKI_INPUT_CFG.シート).hideSheet(); }catch(e){}
   // ④が既に台帳(EMS引当等)で確保している分を重ねる(全数確保は入力欄クリア+黄色対象外)
-  candidates=取り置き_台帳確保を適用_(candidates,取り置き_台帳確保集計_(ledgerRows));
+  const 台帳確保マップ=取り置き_台帳確保集計_(ledgerRows);
+  candidates=取り置き_台帳確保を適用_(candidates,台帳確保マップ);
   // 確保済み/不足の数字列(2026-07-23): 確保済み=④等の台帳確保+自分が登録済みの棚の現物。
   // 入力中でまだ反映していない数量は含めない(反映して初めて確保になる)
   const 現物登録={};
@@ -834,8 +843,9 @@ function 取り置き初期登録を作成本体_(options){
   candidates.forEach(c=>{ c.判定=取り置き_棚確認判定_(c); });
   // 対象注文の即納行を表示専用(水色)で差し込む。数量・棚確認は入力対象外=誤入力は反映時ガードが止める
   candidates=取り置き_即納行を付与_(candidates,即納orders,sheetRows);
-  // 混在注文の台湾/中国(別ルート)行を表示専用(橙)で差し込む。GoQ部分在庫=別ルート到着に気づけるように。
-  candidates=取り置き_別ルート行を付与_(candidates,別ルートorders,sheetRows);
+  // 混在注文の台湾/中国(別ルート)行を橙で差し込む(+−入力可)。GoQ部分在庫=別ルート到着に気づけるように。
+  // 確保済み/不足も出すため④確保と棚登録(開始前在庫)のマップを渡す(実効確保=入荷日方式との大きい方)
+  candidates=取り置き_別ルート行を付与_(candidates,別ルートorders,sheetRows,台帳確保マップ,現物登録);
   // 数量0・注文キャンセルで確保を外す必要がある行も同じ画面へ集約する。
   const 戻し候補=取り置き_棚戻し候補_(ledgerRows,sheetRows);
   // 棚戻し待ち→要棚確認→通常の順。同じ受注番号の商品行は分断しない。
