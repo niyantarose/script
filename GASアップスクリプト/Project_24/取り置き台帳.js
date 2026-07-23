@@ -837,6 +837,11 @@ function 取り置き初期登録を作成本体_(options){
   const 表示注文数=new Set(candidates.map(c=>String(c.受注番号))).size;
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
   const sh2=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
+  // 列数が減った時の旧列残骸(重複した判定/要対応/処理等)を掃除する(表を保存_はatomic契約のため触らない)
+  if(sh2.getLastColumn()>TORIOKI_CFG.初期HDR.length){
+    sh2.getRange(1,TORIOKI_CFG.初期HDR.length+1,Math.max(1,sh2.getLastRow()),sh2.getLastColumn()-TORIOKI_CFG.初期HDR.length)
+      .clearContent().clearFormat();
+  }
   // 列の並びが変わっても古い位置のプルダウンが残らないよう、シート全体の入力規則を消してから付け直す
   sh2.getRange(1,1,sh2.getMaxRows(),sh2.getMaxColumns()).clearDataValidations();
   if(candidates.length){
