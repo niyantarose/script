@@ -5,6 +5,9 @@ const TORIOKI_CFG = Object.freeze({
   // 現物取り置き数量(絶対値入力)と空欄=解除は廃止。空欄=何もしない。
   // 現在の状態・旧入荷日・旧EMSは内部データとしてだけ持ち表示しない。取置IDは列を残して非表示
   初期HDR:['取置ID','受注番号','氏名','商品コード','SKU','注文数量','確保済み','不足','確保内訳','受注ステータス','追加数量','マイナス数量','棚確認','メモ','判定','要対応','処理'],
+  // 取り置き登録のレイアウト(2026-07-23 ユーザー要望「ボタンを置きたい」): 1〜2行目=ボタン置き場、
+  // 3行目=見出し、4行目〜=データ。ボタンは図形で「取り置き初期登録を作成」「取り置き登録を反映」を割り当てる
+  初期HDR行:3,
   要確認HDR:['取置ID','受注番号','商品コード','理由'],
   移動HDR:['処理ID','EMS番号','商品コード','数量','移動先','処理日時']
 });
@@ -107,15 +110,16 @@ function 取り置き_棚確認書式を設定_(sh, rowCount){
   if(rowCount<=0){ sh.setConditionalFormatRules([]); return; }
   const 棚確認列=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1, 幅=TORIOKI_CFG.初期HDR.length;
   const 内訳列=TORIOKI_CFG.初期HDR.indexOf('確保内訳')+1;
-  const target=sh.getRange(2,1,rowCount,幅);
-  const 内訳target=sh.getRange(2,内訳列,rowCount,1);
-  const 内訳rules=取り置き_内訳書式定義_(内訳列,2).map(def=>
+  const データ行=TORIOKI_CFG.初期HDR行+1;
+  const target=sh.getRange(データ行,1,rowCount,幅);
+  const 内訳target=sh.getRange(データ行,内訳列,rowCount,1);
+  const 内訳rules=取り置き_内訳書式定義_(内訳列,データ行).map(def=>
     SpreadsheetApp.newConditionalFormatRule()
       .whenFormulaSatisfied(def.条件)
       .setBackground(def.背景)
       .setRanges([内訳target])
       .build());
-  const rules=取り置き_棚確認書式定義_(棚確認列,2).map(def=>{
+  const rules=取り置き_棚確認書式定義_(棚確認列,データ行).map(def=>{
     let b=SpreadsheetApp.newConditionalFormatRule()
       .whenFormulaSatisfied(def.条件)
       .setBackground(def.背景)
@@ -129,15 +133,16 @@ function 取り置き_棚確認書式を設定_(sh, rowCount){
 
 function 取り置き_登録行書式を更新_(sh, candidates){
   const rows=candidates||[], 幅=TORIOKI_CFG.初期HDR.length;
-  const 管理行数=Math.max(0,sh.getMaxRows()-1);
+  const データ行=TORIOKI_CFG.初期HDR行+1; // 1〜2行目=ボタン置き場、3行目=見出し
+  const 管理行数=Math.max(0,sh.getMaxRows()-データ行+1);
   if(管理行数>0){
-    const 管理範囲=sh.getRange(2,1,管理行数,幅);
+    const 管理範囲=sh.getRange(データ行,1,管理行数,幅);
     管理範囲.setBackground(null);
     管理範囲.setBorder(false,false,false,false,false,false);
   }
-  注文罫線_(sh,2,1);
+  注文罫線_(sh,データ行,1);
   if(rows.length){
-    sh.getRange(2,1,rows.length,幅).setBackgrounds(
+    sh.getRange(データ行,1,rows.length,幅).setBackgrounds(
       rows.map(c=>new Array(幅).fill(c.判定==='棚戻し待ち'? '#f4cccc' : c.判定==='要棚確認'? '#fff2cc' : c.判定==='即納'? '#cfe2f3' : c.判定==='別ルート'? '#fce5cd' : null)));
   }
   取り置き_棚確認書式を設定_(sh,rows.length);
@@ -824,31 +829,40 @@ function EMS在庫移動_戻し計画_(returns, existing, now){
 function 取り置き_表を読む_(sheetName, headers){
   const sh=SpreadsheetApp.getActive().getSheetByName(sheetName);
   if(!sh || sh.getLastRow()<2) return [];
-  const head=sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0].map(v=>String(v||'').trim());
+  // 見出し行は先頭5行から自動検出(取り置き登録は3行目・台帳等は1行目。移行途中の旧レイアウトも読める)
+  const 探索行数=Math.min(5,sh.getLastRow());
+  const 先頭=sh.getRange(1,1,探索行数,sh.getLastColumn()).getDisplayValues()
+    .map(row=>row.map(v=>String(v||'').trim()));
+  let hr=先頭.findIndex(row=>row.indexOf(String(headers[0]))>=0 && row.indexOf(String(headers[1]))>=0);
+  if(hr<0) hr=0;
+  const head=先頭[hr];
   const index={}; headers.forEach(h=>index[h]=head.indexOf(h));
   // 台帳本体と台帳のコピー(取り置き台帳_全件再計算前_/移行前_等の監査・基準シート)は
   // 三段階21列より前の旧14列でも読める(新列は空として返す)
   const 台帳系=sheetName===TORIOKI_CFG.台帳 || String(sheetName).indexOf(TORIOKI_CFG.台帳+'_')===0;
   const required=台帳系 ? headers.slice(0,14) : headers;
   if(required.some(h=>index[h]<0)) throw new Error(sheetName+'の見出し不足: '+required.filter(h=>index[h]<0).join(','));
-  return sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).getValues().map(row=>{
+  const dataStart=hr+2; // 見出しの次の行から(1始まり)
+  if(sh.getLastRow()<dataStart) return [];
+  return sh.getRange(dataStart,1,sh.getLastRow()-dataStart+1,sh.getLastColumn()).getValues().map(row=>{
     const obj={}; headers.forEach(h=>obj[h]=index[h]<0?'':row[index[h]]); return obj;
   }).filter(obj=>String(obj[headers[0]]||'').trim());
 }
 
-function 取り置き_表を保存_(sheetName, headers, rows){
+function 取り置き_表を保存_(sheetName, headers, rows, headerRow){
+  const hr=Math.max(1,Number(headerRow)||1); // 取り置き登録は3(上2行=ボタン置き場)。台帳等は従来どおり1
   const ss=SpreadsheetApp.getActive(); let sh=ss.getSheetByName(sheetName); if(!sh) sh=ss.insertSheet(sheetName);
   if(sh.getMaxColumns()<headers.length) sh.insertColumnsAfter(sh.getMaxColumns(),headers.length-sh.getMaxColumns());
-  if(sh.getMaxRows()<rows.length+1) sh.insertRowsAfter(sh.getMaxRows(),rows.length+1-sh.getMaxRows());
-  sh.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
-  sh.setFrozenRows(1);
-  const dataRows=Math.max(rows.length,Math.max(0,sh.getLastRow()-1)), dataCols=headers.length;
+  if(sh.getMaxRows()<rows.length+hr) sh.insertRowsAfter(sh.getMaxRows(),rows.length+hr-sh.getMaxRows());
+  sh.getRange(hr,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
+  sh.setFrozenRows(hr);
+  const dataRows=Math.max(rows.length,Math.max(0,sh.getLastRow()-hr)), dataCols=headers.length;
   if(dataRows>0){
     const values=Array.from({length:dataRows},(_,rowIndex)=>{
       const source=rows[rowIndex];
       return headers.map(header=>source&&source[header]!=null?source[header]:'');
     });
-    sh.getRange(2,1,dataRows,dataCols).setValues(values);
+    sh.getRange(hr+1,1,dataRows,dataCols).setValues(values);
   }
 }
 
@@ -1010,7 +1024,17 @@ function 取り置き初期登録を作成本体_(options){
     candidates=candidates.filter(c=>取り置き_作業対象判定_(byBan[String(c.受注番号)],表示モード));
   }
   const 表示注文数=new Set(candidates.map(c=>String(c.受注番号))).size;
-  取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates);
+  // 旧レイアウト(1行目見出し)からの一度きりの移行: ボタン置き場になる1〜2行目を掃除してから保存する
+  {
+    const sh0=ss.getSheetByName(TORIOKI_CFG.初期);
+    if(sh0 && TORIOKI_CFG.初期HDR行>1 && sh0.getLastRow()>=1){
+      const r1=sh0.getRange(1,1,1,Math.max(1,sh0.getLastColumn())).getDisplayValues()[0].map(v=>String(v||'').trim());
+      if(r1.indexOf('取置ID')>=0 || r1.indexOf('受注番号')>=0)
+        sh0.getRange(1,1,TORIOKI_CFG.初期HDR行-1,sh0.getMaxColumns()).clearContent().clearFormat();
+    }
+  }
+  取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates,TORIOKI_CFG.初期HDR行);
+  const 初期データ行=TORIOKI_CFG.初期HDR行+1;
   const sh2=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
   // 列数が減った時の旧列残骸(重複した判定/要対応/処理等)を掃除する(表を保存_はatomic契約のため触らない)
   if(sh2.getLastColumn()>TORIOKI_CFG.初期HDR.length){
@@ -1024,13 +1048,13 @@ function 取り置き初期登録を作成本体_(options){
     const 棚確認列=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1, 処理列=TORIOKI_CFG.初期HDR.indexOf('処理')+1;
     const 棚規則=SpreadsheetApp.newDataValidation().requireValueInList(TORIOKI_棚確認.slice(),true).setAllowInvalid(true).build();
     const 戻し規則=SpreadsheetApp.newDataValidation().requireValueInList(TORIOKI_戻し処理.slice(),true).setAllowInvalid(false).build();
-    sh2.getRange(2,棚確認列,candidates.length,1).setDataValidation(棚規則);
+    sh2.getRange(初期データ行,棚確認列,candidates.length,1).setDataValidation(棚規則);
     candidates.forEach((candidate,index)=>{
       if(candidate.判定==='棚戻し待ち'){
-        sh2.getRange(index+2,棚確認列).clearDataValidations();
-        sh2.getRange(index+2,処理列).setDataValidation(戻し規則);
+        sh2.getRange(index+初期データ行,棚確認列).clearDataValidations();
+        sh2.getRange(index+初期データ行,処理列).setDataValidation(戻し規則);
       }else if(candidate.判定==='即納'){
-        sh2.getRange(index+2,棚確認列).clearDataValidations(); // 表示専用行(即納)に棚確認は選ばせない
+        sh2.getRange(index+初期データ行,棚確認列).clearDataValidations(); // 表示専用行(即納)に棚確認は選ばせない
       }
     });
   }
