@@ -581,10 +581,12 @@ function 取り置き_棚戻し候補_(ledgerRows, sheetRows){
 }
 
 function 取り置き_初期確定計画_(inputRows, existingRows, now){
-  const errors=[], targets={}, inputIds=new Set();
+  const errors=[], targets={}, inputIds=new Set(), 自動解除要求=[];
   // 発送済み・解除済みになった開始前在庫行は履歴。再確定で復活も消滅もさせない(誤操作ガード)
   const lockedIds=new Set((existingRows||[]).filter(r=>r.取置元種別==='開始前在庫' && r.状態!==TORIOKI_STATUS.ACTIVE).map(r=>String(r.取置ID||'')));
-  // ④のEMS確保分と合わせた超過を止める(確保済み行へ数量を入れると同じ現物の二重登録になる)
+  // 棚登録優先(2026-07-23 ユーザー要望「取り置き登録だけですませたい」): 棚の現物を登録して注文が
+  // 埋まるなら、④/②の自動確保は同じ反映の中で自動解除して箱へ返す(手動解除→棚登録の二段運用を廃止)。
+  // 棚登録単独で注文を超える入力だけは真の誤入力として従来どおり止める。
   const 確保=取り置き_台帳確保集計_(existingRows);
   // 既存の開始前在庫(自分の棚登録)の数量。差分入力(追加/マイナス)の起点になる
   const initQtyById={};
@@ -615,13 +617,15 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now){
       if(sub>cur) rowErrors.push('受注'+r.受注番号+' '+r.商品コード+': マイナス'+sub+'は自分の棚登録'+cur+'個を超えます(④確保分の解除は「選択した取り置きを手動解除」で)');
       const next=cur+add-sub;
       const 台帳確保数=Number(確保[取り置き_行キー_(r)])||0;
-      if(next+台帳確保数>ordered)
-        rowErrors.push('受注'+r.受注番号+' '+r.商品コード+': 棚登録'+next+'個と台帳確保'+台帳確保数+'個の合計が注文'+ordered+'を超えます');
+      if(next>ordered)
+        rowErrors.push('受注'+r.受注番号+' '+r.商品コード+': 棚登録'+next+'個が注文'+ordered+'を超えます');
+      const 解除必要=Math.max(0,Math.min(next,ordered)+台帳確保数-ordered); // 棚登録で押し出される④確保分
       if(lockedIds.has(id)) rowErrors.push('受注'+r.受注番号+': 既に発送済み/解除済みの初期登録行は変更できません');
       const check=String(r.棚確認==null?'':r.棚確認).trim();
       if(add>0 && (check==='出荷済み'||check==='未着'||check==='予約')) rowErrors.push('受注'+r.受注番号+': 棚確認が「'+check+'」なのに追加数量が入っています(どちらかを直してください)');
       if(rowErrors.length){ rowErrors.forEach(e=>errors.push(e)); return; }
       inputIds.add(id);
+      if(解除必要>0) 自動解除要求.push({key:取り置き_行キー_(r),数量:解除必要,受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||'')});
       if(next>0) targets[id]=Object.assign({},r,{取り置き数量:next});
       // next===0 は解除(inputIdsに入りtargets無し=既存行が外れる)
       return;
@@ -639,8 +643,37 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now){
       元EMS番号:'',元EMS商品コード:'',元取置ID:'',登録日時:now,更新日時:now,
       戻し処理結果:'','終了理由・メモ':String(r.メモ||'')});
   });
+  // 棚登録優先の自動解除: 押し出された④確保を新しい登録から順に解除(棚の現物が正・箱の分は余りへ返す)。
+  // 行の途中までなら分割し、解除分は別行(取置ID+|棚解除)で履歴に残す。
+  const 自動解除=[];
+  自動解除要求.forEach(req=>{
+    let 残り=req.数量;
+    kept.map((row,i)=>({row,i}))
+      .filter(x=>x.row.状態===TORIOKI_STATUS.ACTIVE && String(x.row.取置元種別||'')!=='開始前在庫' && 取り置き_行キー_(x.row)===req.key)
+      .sort((a,b)=>String(b.row.登録日時||'').localeCompare(String(a.row.登録日時||'')))
+      .forEach(x=>{
+        if(残り<=0) return;
+        const qty=取り置き_整数_(x.row.取り置き数量), take=Math.min(qty,残り);
+        if(take<=0) return;
+        残り-=take;
+        const memo='棚登録優先で自動解除';
+        if(take===qty){
+          const 既存メモ=String(x.row['終了理由・メモ']||'').trim();
+          kept[x.i]=Object.assign({},x.row,{状態:TORIOKI_STATUS.RELEASED,更新日時:now,
+            '終了理由・メモ':既存メモ?既存メモ+' / '+memo:memo});
+        }else{
+          kept[x.i]=Object.assign({},x.row,{取り置き数量:qty-take,
+            引当系譜数量:Math.max(0,(取り置き_整数_(x.row.引当系譜数量)||qty)-take),更新日時:now});
+          kept.push(Object.assign({},x.row,{取置ID:String(x.row.取置ID||'')+'|棚解除',取り置き数量:take,
+            引当系譜数量:take,状態:TORIOKI_STATUS.RELEASED,更新日時:now,'終了理由・メモ':memo+'(分割)'}));
+        }
+        自動解除.push({受注番号:req.受注番号,商品コード:req.商品コード,元EMS番号:String(x.row.元EMS番号||''),数量:take});
+      });
+    if(残り>0) errors.push('受注'+req.受注番号+' '+req.商品コード+': ④確保の自動解除が'+残り+'個分見つかりませんでした(台帳を確認してください)');
+  });
   return {rows:kept,errors,適用:{行:Object.keys(targets).length,
-    数量:Object.keys(targets).reduce((n,id)=>n+targets[id].取り置き数量,0),解除:解除数}};
+    数量:Object.keys(targets).reduce((n,id)=>n+targets[id].取り置き数量,0),解除:解除数,
+    自動解除数量:自動解除.reduce((n,d)=>n+d.数量,0),自動解除:自動解除}};
 }
 
 // 行単位適用(2026-07-22): 不正な選択・対象外IDはそのIDだけエラーにし、他の有効な選択は適用する。
@@ -687,6 +720,7 @@ function 取り置き_統合反映計画_(inputs, ledger, now){
   // countsは「実際に適用される」件数(入力意図ではなく)。
   return {rows:returned.rows,errors:initial.errors.concat(returned.errors),
     counts:{取り置き行:initial.適用.行,取り置き数量:initial.適用.数量,解除:initial.適用.解除,
+      自動解除数量:initial.適用.自動解除数量||0,自動解除:initial.適用.自動解除||[],
       棚へ戻した:returned.適用.棚へ戻した,現物なし:returned.適用.現物なし}};
 }
 
@@ -992,6 +1026,8 @@ function 取り置き登録を反映本体_(){
   if(!適用あり){ ui.alert('取り置き登録の反映を中止しました',plan.errors.length?plan.errors.join('\n'):'適用できる入力がありません',ui.ButtonSet.OK); return; }
   const answer=ui.alert('取り置き登録を反映します',
     '通常の取り置き '+c.取り置き行+'行 / '+c.取り置き数量+'個\n'
+    +((c.自動解除数量||0)>0? '⤴️ ④の自動確保 '+c.自動解除数量+'個を解除して箱へ返します(棚登録優先: '
+      +c.自動解除.map(d=>d.元EMS番号||'現物').filter((v,i,a)=>a.indexOf(v)===i).join(', ')+')\n':'')
     +'解除(空欄クリア) '+(c.解除||0)+'件\n'
     +'棚へ戻した '+c.棚へ戻した+'件\n'
     +'現物なし '+c.現物なし+'件\n'
@@ -1004,6 +1040,7 @@ function 取り置き登録を反映本体_(){
   const refreshed=取り置き初期登録を作成本体_({silent:true});
   SpreadsheetApp.getActive().toast(
     '通常 '+c.取り置き数量+'個 / 棚戻し '+c.棚へ戻した+'件 / 現物なし '+c.現物なし+'件を反映しました'
+    +((c.自動解除数量||0)>0? '（④確保'+c.自動解除数量+'個を棚登録優先で自動解除）':'')
     +(refreshed&&refreshed.棚戻し待ち? '（未処理あと'+refreshed.棚戻し待ち+'件）':''),
     '取り置き登録',8);
 }
