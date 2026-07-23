@@ -2614,8 +2614,7 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
   const L = msg => Logger.log('[EMS大邱へ送る] ' + msg);
   L('開始 ' + Utilities.formatDate(t0, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss'));
 
-  // ① ロックを取らずにスキャンして確認ダイアログを出す
-  //（ダイアログ表示中にロックを握って他の処理を止めない）
+  // ① ロックを取らずにスキャンして早期チェック（事前の確認ダイアログは出さない）
   const preScan = 大邱発注_送信対象スキャン_(src, L);
   if (preScan.picked.length === 0) { L('終了: 送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
 
@@ -2623,29 +2622,16 @@ function 大邱発注_チェック行をEMS大邱へ送る() {
   const preNg = 大邱発注_送信前購入No検証_(src, preScan.picked);
   if (preNg) { L('中止: 購入No未確定'); ui.alert('EMS大邱へ送る', preNg, ui.ButtonSet.OK); return; }
 
-  const preview = preScan.picked.slice(0, 12).map(p => `${p.no} / ${p.code} / ${p.qty || 0}個`).join('\n');
-  const noDatePicked = preScan.picked.filter(p => !EMS_値あり_(p.date));
-  const autoFill = noDatePicked.filter(p => 大邱_入荷数値_(p.arrivalQty) > 0).length;
-  const stayEmpty = noDatePicked.length - autoFill;
-  const res = ui.alert('EMS大邱へ送る',
-    `${preScan.picked.length}件をEMS大邱作業データの最終行の下へ送ります。\n\n${preview}` +
-    (preScan.picked.length > 12 ? '\n…ほか' : '') +
-    (autoFill ? `\n\n📅 入荷日(C列)空欄・入荷数あり ${autoFill}件は、送信時に今日の日付を自動で入れます。` : '') +
-    (stayEmpty ? `\n\n⚠ 入荷日・入荷数とも未入力の行が ${stayEmpty}件あります。\n（入荷日は空欄で送られ、後からC列に入れると自動反映されます）` : '') +
-    '\n\n（EMS番号・発送日はEMS担当が記入）\n実行する？',
-    ui.ButtonSet.YES_NO);
-  if (res !== ui.Button.YES) { L('終了: ユーザーがキャンセル'); ui.alert('やめました。'); return; }
-
   // ② ロック取得（自動再計算などが動いていても最大30秒待って順番を取る）
   const lock = 大邱_ロック取得_(30000, 'EMS大邱へ送る');
   if (!lock) { L('中断: ロック取得タイムアウト'); return; }
   try {
-    // ③ ダイアログ中の変更に備えてロック下で再スキャンしてから書き込む
+    // ③ ロック待ちの間の変更に備えてロック下で再スキャンしてから書き込む
     const scan = 大邱発注_送信対象スキャン_(src, L);
     const picked = scan.picked;
     if (picked.length === 0) { L('終了: 再スキャンで送信対象なし'); ss.toast('チェックされた行がありません。'); return; }
 
-    // ダイアログ表示中にF列が変わった場合に備えてロック下でも再検証
+    // ロック待ちの間にF列が変わった場合に備えてロック下でも再検証
     const lockNg = 大邱発注_送信前購入No検証_(src, picked);
     if (lockNg) { L('中止: 購入No未確定(再スキャン)'); ui.alert('EMS大邱へ送る', lockNg, ui.ButtonSet.OK); return; }
 
