@@ -1760,6 +1760,27 @@ test('棚登録優先: 棚登録単独で注文を超える入力は従来どお
   assert.strictEqual(plan.rows.length,0);
 });
 
+test('マイナス解除: 現物ありなら解除分をキャンセル戻し(現物あり)として在庫配管へ流す(幽霊現物防止)', () => {
+  const now='2026-07-23T20:00:00';
+  const ledger=[
+    {取置ID:'INIT|905|AAA|AAAB',状態:'取り置き中',受注番号:'905',商品コード:'AAA',SKU:'AAAb',
+     取り置き数量:2,取置元種別:'開始前在庫',引当段階:'現物確認済み',登録日時:'2026/07/20','終了理由・メモ':''}
+  ];
+  const input=[{取置ID:'INIT|905|AAA|AAAB',受注番号:'905',商品コード:'AAA',SKU:'AAAb',注文数量:2,追加数量:'',マイナス数量:1,棚確認:'',メモ:''}];
+  const normal=context.取り置き_統合反映計画_(input,ledger,now);
+  assert.strictEqual(normal.counts.マイナス数量,1);
+  assert.strictEqual(normal.counts.在庫戻し数量,0,'既定(登録間違い)は帳簿から消すだけ');
+  assert.strictEqual(normal.rows.filter(r=>r.状態==='キャンセル戻し').length,0);
+  const restock=context.取り置き_統合反映計画_(input,ledger,now,{マイナス現物あり:true});
+  assert.strictEqual(restock.counts.在庫戻し数量,1);
+  const ret=restock.rows.find(r=>r.状態==='キャンセル戻し');
+  assert.ok(ret,'解除分がキャンセル戻しとして台帳に残る');
+  assert.strictEqual(ret.戻し処理結果,'現物あり','赤行を経ずに②再引当→残ればYahoo戻し候補の配管へ直行');
+  assert.strictEqual(ret.取り置き数量,1);
+  const active=restock.rows.find(r=>r.取置ID==='INIT|905|AAA|AAAB' && r.状態==='取り置き中');
+  assert.ok(active && active.取り置き数量===1,'残り1個の棚登録は生きる');
+});
+
 test('確保内訳表記: 自動確保は元EMS番号(どの箱か)ごとに出し、先行・現物・棚を区別する', () => {
   const rows=[
     {元EMS番号:'EG050152967KR',引当段階:'到着済',取り置き数量:7},
