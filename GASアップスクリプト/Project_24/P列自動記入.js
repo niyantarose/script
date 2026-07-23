@@ -140,6 +140,9 @@ function 便の引当をやり直す本体_(){
   for(let i=M.hr;i<R.length;i++){
     const row=R[i];
     if(区分_(row[M.選択肢])!=='取り寄せ') continue;
+    // 分割出荷済み(出荷日あり)はもう送った分。P列で名指しすると二重発送・同じ現物の二重計上になる
+    // (②・取り置き登録・全件再計算と同じ判定に揃える 2026-07-23)
+    if(typeof 引当_行出荷済み_==='function' && 引当_行出荷済み_(row,M)) continue;
     const d=ymd_(row[M.入荷]); if(!dateSet[d]) continue;
     const 別ルート=/台湾|中国/.test(String(row[M.選択肢]||'')) || (M.商品名>=0 && /台湾|中国/.test(String(row[M.商品名]||'')));
     if(別ルート) continue;

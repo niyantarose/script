@@ -41,6 +41,7 @@ function onOpen(){
     .addSubMenu(ui.createMenu('🔧 取り置き内部管理(通常操作不要)')
       .addItem('キャンセル戻し確認を更新', 'キャンセル戻し確認を更新')
       .addItem('キャンセル戻し確認を確定', 'キャンセル戻し確認を確定')
+      .addItem('♻️ Yahoo戻し候補を更新', 'Yahoo戻し候補を更新')
       .addItem('Yahoo戻しを反映済みにする', 'キャンセル戻しをYahoo反映済みにする')
       .addItem('選択した取り置きを手動解除', '選択した取り置きを手動解除')
       .addItem('🧹 孤児取り置きをまとめて解除', '孤児取り置きをまとめて解除'))
@@ -86,6 +87,7 @@ function onOpen(){
     .addItem('🔁 更新してから引当(EMS更新→即納→引当を一括)', '更新してから引当')
     .addItem('📦 到着済を在庫反映済みへ(便の締め・📤出力もここから)', '到着済を在庫反映済みへ')
     .addItem('📤 Yahoo在庫変更を出力(出力だけやり直す時用)', 'Yahoo在庫変更を出力')
+    .addItem('♻️ Yahoo戻し分だけ出力(棚へ戻った現物→CSV)', 'Yahoo戻し分を出力')
     .addItem('⚖️ この便の引当をやり直す(到着日指定・複数可)', '便の引当をやり直す')
     .addItem('🔎 引当診断(受注番号で調べる)', '引当診断')
     .addItem('🔎 商品診断(商品コードで調べる)', '商品診断')
@@ -1774,6 +1776,9 @@ function 引当実行_本体_(options){
   // A2. 到着実績のある実EMSだけを供給へ変換する。
   const allSupplies=EMS供給オブジェクト_(E,EC,到着_);
   const rebuildBlocked=typeof 全件再計算_ブロックSKU集合_==='function'?全件再計算_ブロックSKU集合_():new Set();
+  // 在庫対象外(★コピペ・贈呈品・マスタ除外)は供給から落とさない。落とすとP列の手動名指し救済・
+  // P列確定・既存確保が無警告で消え、②とP列/全件検算が非対称になる(2026-07-23レビューで確認)。
+  // 日本在庫シートでは状態を「在庫対象外」と表示して在庫と見分ける(Yahoo出力は従来どおりコードで除外)
   const supplies=typeof 全件再計算_ブロック供給_==='function'?全件再計算_ブロック供給_(allSupplies,rebuildBlocked):allSupplies;
 
   // A3. 台帳に載らない出荷(週末GoQ直接発送など)を検知し、発送済み行として自動登録する。
@@ -1968,7 +1973,19 @@ function 引当実行_本体_(options){
   }
   const 突合式='供給'+突合.供給+'＝取り置き中'+突合.取り置き中+'＋発送済み'+突合.発送済み+'＋戻し未処理'+突合.戻し未処理
     +'＋在庫なし確定'+突合.在庫なし確定+'＋Yahoo移動済み'+突合.Yahoo移動済み+'＋余り'+突合.余り;
-  const jpRows=outputPlan.surplus.map(r=>['到着済',r.arrival,r.code,r.qty,r.ems]);
+  // 日本在庫は「Yahooへ足すべきもの」の一覧。箱の余り→棚へ戻った現物(戻り)→在庫対象外、の順で並べる。
+  // 在庫対象外(★コピペ=コード後貼り待ち・贈呈品・マスタ除外)は状態を分けて在庫と誤読させない(2026-07-23)
+  let 在庫外集合=new Set();
+  try{ if(typeof 全件再計算_マスタ除外集合_==='function') 在庫外集合=全件再計算_マスタ除外集合_(); }catch(e){}
+  const 在庫外判定=c=>typeof 全件再計算_在庫対象外コード_==='function' && 全件再計算_在庫対象外コード_(c,在庫外集合);
+  const jp余り=[], jp対象外=[];
+  outputPlan.surplus.forEach(r=>{
+    const 対象外=在庫外判定(r.sourceCode||r.code);
+    (対象外?jp対象外:jp余り).push([対象外?'在庫対象外':'到着済',r.arrival,r.code,r.qty,r.ems]);
+  });
+  const jpRows=jp余り
+    .concat(typeof 日本在庫_戻り行_==='function'? 日本在庫_戻り行_(projectedLedger) : [])
+    .concat(jp対象外);
 
   // 今回EMS消費者は、同じallocationPlanから作った台帳投影の元EMSで表示する。
   {

@@ -101,6 +101,9 @@ function 取り置き_集計_(rows, movements, emsStatusByNo){
     if(!qty) out.errors.push('台帳'+(index+2)+'行: 取り置き数量は正の整数');
     const stage=取り置き_段階正規化_(r,emsStatusByNo);
     const ems=r.状態===TORIOKI_STATUS.ACTIVE ? 取り置き_実効供給EMS_(r,stage.引当段階) : String(r.元EMS番号||'').trim();
+    // 元EMS番号を持たない戻し(棚登録をマイナス解除した現物など)も再引当の対象にする。
+    // ここで拾わないと confirmedReturns に載らず、②が他の注文へ回せないままYahooへ流れる(売り越し 2026-07-23)
+    if(qty && r.状態===TORIOKI_STATUS.RETURN && String(r.戻し処理結果||'')===TORIOKI_RETURN.PRESENT && !ems) out.confirmedReturns.push(r);
     if(!ems || !qty || r.状態===TORIOKI_STATUS.RELEASED) return;
     const supplyKey=取り置き_供給キー_(ems,r.元EMS商品コード||r.商品コード);
     const u=usage(supplyKey),owned=ownerUsage(supplyKey+'|'+String(r.受注番号||'').trim());
@@ -141,6 +144,32 @@ function 取り置き_台帳確保集計_(ledgerRows){
     out[key]=(out[key]||0)+取り置き_整数_(r.取り置き数量);
   });
   return out;
+}
+
+// 日付だけを 'YYYY-MM-DD' で取り出す(Date・ISO文字列・スラッシュ日付に対応。ymd_に依存しない軽量版)
+function 取り置き_日付部_(value){
+  const p=n=>('0'+Number(n)).slice(-2);
+  if(value instanceof Date) return isNaN(value.getTime())?'':value.getFullYear()+'-'+p(value.getMonth()+1)+'-'+p(value.getDate());
+  const m=String(value==null?'':value).match(/(20\d{2})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  return m? m[1]+'-'+p(m[2])+'-'+p(m[3]) : '';
+}
+
+// 棚に戻った現物(キャンセル戻し・現物あり=Yahooへまだ足していない在庫)を日本在庫シートの行形式へ。
+// 箱の余りと同じ「Yahooへ足すべきもの」として合流表示し、📤出力のCSVに含める(2026-07-23)。
+// EMS番号は空にする: ⑤の便締め(EMS番号一致で対象を絞る)に巻き込まれ、確定前に二重加算されるのを防ぐ。
+// 商品コード+確定日でまとめる。再引当済み・Yahoo反映済みになった行は自動で消える(この状態だけを拾う)
+function 日本在庫_戻り行_(ledgerRows){
+  const byKey={}, order=[];
+  (ledgerRows||[]).forEach(r=>{
+    if(!r || r.状態!==TORIOKI_STATUS.RETURN || r.戻し処理結果!==TORIOKI_RETURN.PRESENT) return;
+    const code=String(r.元EMS商品コード||r.商品コード||'').trim(), qty=取り置き_整数_(r.取り置き数量);
+    if(!code || !qty) return;
+    const day=取り置き_日付部_(r.更新日時)||取り置き_日付部_(r.登録日時)||'';
+    const key=code+'|'+day;
+    if(!(key in byKey)){ byKey[key]={到着日:day,商品コード:code,数量:0}; order.push(key); }
+    byKey[key].数量+=qty;
+  });
+  return order.map(k=>['戻り',byKey[k].到着日,byKey[k].商品コード,byKey[k].数量,'']);
 }
 
 function 取り置き_決定ID_(source, ems, sourceCode, key, originId){

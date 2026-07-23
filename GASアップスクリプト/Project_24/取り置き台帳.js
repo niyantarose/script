@@ -180,6 +180,9 @@ function 取り置き_入荷証拠あり_(row){
     (qtyText!=='' && Number(qtyText)>0);
 }
 const Yahoo候補HDR=['取置ID','商品コード','数量','元EMS番号','処理ID','確認'];
+// 取り置き登録と同じく1〜2行目をボタン置き場にする(2026-07-23)。図形へ
+// 「Yahoo戻し候補を更新」「キャンセル戻しをYahoo反映済みにする」を割り当てる
+const Yahoo候補HDR行=3;
 
 function CSV行を受注行オブジェクトへ_(header, rows){
   const head=(header||[]).map(v=>String(v||'').trim()), index=name=>head.indexOf(name);
@@ -575,8 +578,11 @@ function 取り置き_確保表示整合_(candidates){
       if(check===''||check==='未着'||系) return check===want? c : Object.assign({},c,{棚確認:want});
       return c;
     }
-    if(系) return Object.assign({},c,{棚確認:旧証拠?'':'未着'});
-    if(check==='') return 旧証拠? c : Object.assign({},c,{棚確認:'未着'});
+    // 自動で貼った「未着」も毎回貼り直す/剥がす。到着証拠(旧入荷日/旧EMS)が付いたら空へ戻して
+    // 要棚確認(黄色)に出す。貼る瞬間だけの判定にすると未着が焼き付き、棚を見に行く合図が二度と出ない
+    if(系 || check==='' || check==='未着') return 旧証拠
+      ? (check===''? c : Object.assign({},c,{棚確認:''}))
+      : (check==='未着'? c : Object.assign({},c,{棚確認:'未着'}));
     return c;
   });
 }
@@ -669,8 +675,9 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
     // 行単位適用(仕様§8): この行のエラーは他行の反映を妨げない。エラー行はinputIdsへ入れない
     const rowErrors=[];
     const add=addBlank?0:Number(addRaw), sub=subBlank?0:Number(subRaw);
-    if(!addBlank && (!Number.isFinite(add)||!Number.isInteger(add)||add<=0)) rowErrors.push('初期登録'+(index+2)+'行 / 受注'+r.受注番号+': 追加数量は正の整数で入力');
-    if(!subBlank && (!Number.isFinite(sub)||!Number.isInteger(sub)||sub<=0)) rowErrors.push('初期登録'+(index+2)+'行 / 受注'+r.受注番号+': マイナス数量は正の整数で入力');
+    const シート行=index+TORIOKI_CFG.初期HDR行+1; // 見出し3行目・データ4行目〜(エラー文言の行番号を実シートに合わせる)
+    if(!addBlank && (!Number.isFinite(add)||!Number.isInteger(add)||add<=0)) rowErrors.push('初期登録'+シート行+'行 / 受注'+r.受注番号+': 追加数量は正の整数で入力');
+    if(!subBlank && (!Number.isFinite(sub)||!Number.isInteger(sub)||sub<=0)) rowErrors.push('初期登録'+シート行+'行 / 受注'+r.受注番号+': マイナス数量は正の整数で入力');
     if(!addBlank && !subBlank) rowErrors.push('受注'+r.受注番号+' '+r.商品コード+': 追加とマイナスは同時に入れられません');
     const cur=initQtyById[id]||0, ordered=Number(r.注文数量)||0;
     if(!rowErrors.length){
@@ -682,7 +689,9 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
       const 解除必要=Math.max(0,Math.min(next,ordered)+台帳確保数-ordered); // 棚登録で押し出される④確保分
       if(lockedIds.has(id)) rowErrors.push('受注'+r.受注番号+': 既に発送済み/解除済みの初期登録行は変更できません');
       const check=String(r.棚確認==null?'':r.棚確認).trim();
-      if(add>0 && (check==='出荷済み'||check==='未着'||check==='予約')) rowErrors.push('受注'+r.受注番号+': 棚確認が「'+check+'」なのに追加数量が入っています(どちらかを直してください)');
+      // 「未着」は確保0のとき機械が自動で貼るラベル。棚で現物を見つけた人の入力の方が新しく強い情報なので
+      // 追加数量を止めない(反映後は確保>0になり次の更新で部分在庫へ貼り替わる)。人が選ぶ出荷済み/予約だけ止める
+      if(add>0 && (check==='出荷済み'||check==='予約')) rowErrors.push('受注'+r.受注番号+': 棚確認が「'+check+'」なのに追加数量が入っています(どちらかを直してください)');
       if(rowErrors.length){ rowErrors.forEach(e=>errors.push(e)); return; }
       inputIds.add(id);
       if(解除必要>0) 自動解除要求.push({key:取り置き_行キー_(r),数量:解除必要,受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||'')});
@@ -1189,13 +1198,44 @@ function キャンセル戻し確認を確定本体_(){
   取り置き台帳_保存_(plan.rows); キャンセル戻し確認を更新本体_(); Yahoo戻し候補を更新_();
 }
 
+// ボタン用の公開版(図形へ割り当てる)。内部からは従来どおり Yahoo戻し候補を更新_ を呼ぶ
+function Yahoo戻し候補を更新(){ 直列_(()=>{ Yahoo戻し候補を更新_(); SpreadsheetApp.getActive().toast('Yahoo戻し候補を更新しました','♻️Yahoo戻し',5); }); }
 function Yahoo戻し候補を更新_(){
   const rows=取り置き台帳_読む_().filter(r=>r.状態==='キャンセル戻し'&&r.戻し処理結果==='現物あり').map(r=>({
     取置ID:r.取置ID,商品コード:String(r.元EMS商品コード||r.商品コード||'').trim(),数量:r.取り置き数量,元EMS番号:r.元EMS番号,処理ID:'YAHOO|RETURN|'+r.取置ID,確認:''
   }));
-  取り置き_表を保存_(TORIOKI_CFG.Yahoo候補,Yahoo候補HDR,rows);
+  // 旧レイアウト(1行目見出し)からの一度きりの移行: ボタン置き場になる1〜2行目を掃除する
+  // (補助処理。失敗しても候補の保存は続ける)
+  try{
+    const sh0=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.Yahoo候補);
+    if(sh0 && Yahoo候補HDR行>1 && sh0.getLastRow()>=1){
+      const r1=sh0.getRange(1,1,1,Math.max(1,sh0.getLastColumn())).getDisplayValues()[0].map(v=>String(v||'').trim());
+      if(r1.indexOf('取置ID')>=0) sh0.getRange(1,1,Yahoo候補HDR行-1,sh0.getMaxColumns()).clearContent().clearDataValidations().clearFormat();
+    }
+  }catch(e){}
+  取り置き_表を保存_(TORIOKI_CFG.Yahoo候補,Yahoo候補HDR,rows,Yahoo候補HDR行);
   const sh=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.Yahoo候補);
-  if(rows.length) sh.getRange(2,6,rows.length,1).insertCheckboxes();
+  const 確認列=Yahoo候補HDR.indexOf('確認')+1;
+  // 見出し行や件数が減った後の空行に旧チェックボックスが残らないよう、確認列の入力規則を一度消す
+  try{ sh.getRange(1,確認列,sh.getMaxRows(),1).clearDataValidations(); }catch(e){}
+  if(rows.length) sh.getRange(Yahoo候補HDR行+1,確認列,rows.length,1).insertCheckboxes();
+  日本在庫_戻り行を更新_(); // ②を待たずに日本在庫の「戻り」行を最新へ
+}
+
+// 日本在庫シートの「戻り」行だけを今の台帳へ合わせる(箱の余り行=状態'到着済'は触らない)。
+// ②未実行・シート未作成なら何もしない。補助処理なので失敗しても呼び出し元を止めない
+function 日本在庫_戻り行を更新_(){
+  try{
+    const sh=SpreadsheetApp.getActive().getSheetByName(HIKIATE_CFG.純在庫);
+    if(!sh || sh.getLastRow()<3) return;
+    const 幅=5, 件数=sh.getLastRow()-2;
+    const 既存=sh.getRange(3,1,件数,幅).getDisplayValues()
+      .filter(r=>String(r[0]||'').trim()!=='' && String(r[0]||'').trim()!=='戻り' && String(r[2]||'').trim()!=='');
+    const rows=既存.concat(日本在庫_戻り行_(取り置き台帳_読む_()));
+    sh.getRange(3,1,件数,幅).clearContent();
+    if(rows.length) sh.getRange(3,1,rows.length,幅).setValues(rows);
+    else sh.getRange(3,1).setValue('(日本在庫なし)');
+  }catch(e){}
 }
 
 function キャンセル戻しをYahoo反映済みにする(){ 直列_(キャンセル戻しをYahoo反映済みにする本体_); }
