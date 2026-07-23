@@ -1984,6 +1984,10 @@ function 引当実行_本体_(options){
     // 台帳・P列・受注明細・全出力が成功した最後にだけ整合状態を確定する。
     // 突合せ超過と台帳外出荷の不一致(要確認>0)が残っている間は⑤便締めがブロックされる。
     PropertiesService.getDocumentProperties().setProperty('引当_整合状態',JSON.stringify({ts:Date.now(),要確認:突合超過.length+出荷自動.review.length,台帳版:'v1'}));
+    // 取り置き登録も新しい台帳から作り直す(②のたびに手動で📋更新を押さなくて済むように 2026-07-23)。
+    // 失敗しても②本体の完了は妨げない。直列_の再入不可のため本体_を直接呼ぶ
+    try{ if(typeof 取り置き初期登録を作成本体_==='function') 取り置き初期登録を作成本体_({silent:true}); }
+    catch(e){ ss.toast('取り置き登録の自動更新に失敗: '+e.message,'⚠️',6); }
     if(!options.silentSummary) ui.alert(突合超過.length? '⚠️ 引当完了（要確認 '+突合超過.length+'件）'
         : 割当警告.length? '✅ 引当完了（タグ注意 '+割当警告.length+'件）' : '✅ 引当完了（整合OK）',
       '■ 処理時間\n'+処理秒+'秒\n\n■ 突合せ\n'
