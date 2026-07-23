@@ -1027,9 +1027,16 @@ function 取り置き初期登録を作成本体_(options){
       }
     });
   }
-  sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('要対応')+1,220);
-  sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('処理')+1,130);
-  sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('確保内訳')+1,170); // 自動N(EMS番号)が切れない幅
+  // 列幅は手動調整を尊重し、列構成が変わった時だけ既定幅を当てる(2026-07-23「列幅が自動で戻るのやめて」)
+  try{
+    const 幅props=PropertiesService.getDocumentProperties(), 幅key='取り置き登録_列幅適用済み';
+    if(幅props.getProperty(幅key)!==String(TORIOKI_CFG.初期HDR.length)){
+      sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('要対応')+1,220);
+      sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('処理')+1,130);
+      sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('確保内訳')+1,170); // 自動N(EMS番号)が切れない幅
+      幅props.setProperty(幅key,String(TORIOKI_CFG.初期HDR.length));
+    }
+  }catch(e){}
   sh2.hideColumns(1); // 取置IDは反映処理用の内部キー。表示はしない(列としては保持)
   取り置き_登録行書式を更新_(sh2,candidates);
   const 入力済=candidates.filter(c=>String(c.追加数量||'')!==''||String(c.マイナス数量||'')!=='').length;
