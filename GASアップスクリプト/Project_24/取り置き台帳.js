@@ -505,13 +505,19 @@ function 取り置き_確保内訳表記_(autoRows, shelfQty){
 // 「確保になっているやつは部分在庫になってくれないとわけがわからん」)。
 // ・確保済み>0なのに「未着」は事実と矛盾: 全数確保なら「部分在庫」へ、一部確保なら空欄へ戻す(=要棚確認で残りを確かめる)
 // ・全数確保(不足0)で棚確認が空欄の行は「部分在庫」を自動表示(もう登録不要だと一目で分かる+要作業から片付く)
-// 発送待ち・出荷済み・予約など他の判断は上書きしない。確保が外れれば次の更新で未着扱いには戻さず空欄のまま。
+// ・確保済み0の行は逆に「未着」を自動表示(2026-07-23「確保数がなかったら未着にならないの？」)。
+//   ただし旧入荷日/旧EMSの到着証拠がある行は空欄のままにして従来の「要棚確認」(黄色)に出す
+//   (未着を貼ると要棚確認が消え、着いているはずの現物の登録漏れを見逃すため)。
+// 発送待ち・出荷済み・予約など他の判断は上書きしない。
 function 取り置き_確保表示整合_(candidates){
   return (candidates||[]).map(c=>{
     const check=String(c.棚確認==null?'':c.棚確認).trim();
     const secured=(Number(c.確保済み)||0)>0, full=secured && (Number(c.不足)||0)===0;
+    const 旧証拠=String(c.旧入荷日==null?'':c.旧入荷日).trim()!=='' || String(c.旧EMS==null?'':c.旧EMS).trim()!=='';
     if(check==='未着' && secured) return Object.assign({},c,{棚確認:full?'部分在庫':''});
     if(check==='' && full) return Object.assign({},c,{棚確認:'部分在庫'});
+    if(!secured && check==='部分在庫') return Object.assign({},c,{棚確認:旧証拠?'':'未着'});
+    if(!secured && check==='') return 旧証拠? c : Object.assign({},c,{棚確認:'未着'});
     return c;
   });
 }
