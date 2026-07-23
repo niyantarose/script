@@ -410,6 +410,17 @@ function 列マップ_(sh){
   };
 }
 
+// 台湾/中国(別ルート): 台帳(この画面の棚登録)と受注明細入荷日の二重計上を防ぐ。
+// 台帳で確保した分だけ入荷日ベースの別ルート済数量を目減りさせる(実効確保=両者の大きい方)
+function 別ルート二重控除_(lines, activeByKey){
+  (lines||[]).forEach(l=>{
+    if(!l || !l.別ルート) return;
+    const held=Number(activeByKey&&activeByKey[取り置き_行キー_(l)])||0;
+    if(held>0) l.別ルート済数量=Math.max(0,(Number(l.別ルート済数量)||0)-held);
+  });
+  return lines;
+}
+
 function 残必要計算_(l){
   return Math.max(0,(Number(l&&l.qty)||0)-(Number(l&&l.取り置き中数量)||0)-(Number(l&&l.alloc)||0)-(Number(l&&l.別ルート済数量)||0));
 }
@@ -1666,6 +1677,7 @@ function 引当実行_本体_(options){
   const movementRows=EMS在庫移動台帳_読む_();
   const ledgerSummary=取り置き_集計_(ledgerRows,movementRows);
   lines.forEach(l=>{ l.取り置き中数量=ledgerSummary.activeByKey[取り置き_行キー_(l)]||0; });
+  別ルート二重控除_(lines,ledgerSummary.activeByKey); // 台湾/中国の台帳登録と入荷日方式の二重計上防止
 
   // A2. 到着実績のある実EMSだけを供給へ変換する。
   const allSupplies=EMS供給オブジェクト_(E,EC,到着_);
