@@ -478,20 +478,24 @@ function 取り置き_登録絞り込み_(rows){
 
 // 確保内訳の表記(2026-07-23 ユーザー要望「自動ってどこの箱からとっているかわからん」)。
 // ④/②の自動確保は元EMS番号ごとに「自動N(箱番号)」で出し、どの箱を開ければ現物があるか分かるようにする。
-// 元EMS番号が無い自動確保(移行復元などの現物確認済み)は「自動N(現物)」=棚にあり箱は開けない。
-// 引当段階=先行は帳簿のみで現物が無いため「先行N(箱番号)」と区別する。自分の棚登録は従来どおり「棚N」。
+// 引当段階=現物確認済み(現物確認移行・復元を含む)は棚で数えた現物なので、元EMS番号が記録に残っていても
+// 箱番号は出さず「現物N」(=棚にある・箱は開けない)。引当段階=先行は帳簿のみ(現物なし)で「先行N(箱番号)」。
+// 自分がこの画面の追加数量で登録した分は従来どおり「棚N」。
 function 取り置き_確保内訳表記_(autoRows, shelfQty){
   const byLabel={}, order=[];
   (autoRows||[]).forEach(r=>{
-    const ems=String(r&&r.元EMS番号||'').trim()||'現物';
-    const kind=String(r&&r.引当段階||'').trim()==='先行'?'先行':'自動';
-    const label=kind+'|'+ems;
+    const stage=String(r&&r.引当段階||'').trim();
+    const ems=String(r&&r.元EMS番号||'').trim();
+    let label;
+    if(stage===TORIOKI_STAGE.PLANNED) label='先行|'+(ems||'?');
+    else if(stage===TORIOKI_STAGE.PHYSICAL || !ems) label='現物|';
+    else label='自動|'+ems;
     if(!(label in byLabel)){ byLabel[label]=0; order.push(label); }
     byLabel[label]+=取り置き_整数_(r&&r.取り置き数量);
   });
   const parts=order.filter(l=>byLabel[l]>0).map(l=>{
     const kind=l.slice(0,2), ems=l.slice(3);
-    return kind+byLabel[l]+'('+ems+')';
+    return kind==='現物'? kind+byLabel[l] : kind+byLabel[l]+'('+ems+')';
   });
   if(shelfQty>0) parts.push('棚'+shelfQty);
   return parts.join('+');
@@ -874,7 +878,7 @@ function 取り置き初期登録を作成本体_(options){
     c.確保済み=secured;
     c.不足=Math.max(0,(Number(c.注文数量)||0)-secured);
     // 「俺が確保したものじゃない」を見分ける列: 自動N(箱番号)=④/②が台帳で確保した分(その箱にある)、
-    // 自動N(現物)=移行復元などの現物確認済み(棚にある)、棚N=この画面の追加数量で自分が登録した分
+    // 現物N=現物確認済み(移行・復元含む。棚にある)、棚N=この画面の追加数量で自分が登録した分
     c.確保内訳=取り置き_確保内訳表記_(自動確保行[key],shelf);
   });
   candidates=取り置き_登録絞り込み_(candidates); // 予約中・出荷GOのステータスだけで除外
