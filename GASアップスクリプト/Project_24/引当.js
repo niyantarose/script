@@ -540,10 +540,11 @@ function 取込_実行_(latest){
   let sh=ss.getSheetByName(cfg.受注シート); if(!sh) sh=ss.insertSheet(cfg.受注シート);
   const hdrRow=受注ヘッダー行_(sh);       // 例:6行目(無ければ1)
   const startRow=hdrRow+1;               // データ開始行
-  // CSVで列がズレないよう、取込前に既存の「EMS番号」列(前回②が個数の隣に作った分)を一旦削除する。
-  // 取込の最後に個数の隣へ作り直す→常に「個数の隣」に固定される。
-  { const h0=sh.getRange(hdrRow,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
-    const e=h0.indexOf('EMS番号'); if(e>=0) sh.deleteColumn(e+1); }
+  // CSVで列がズレないよう、取込前に既存の「EMS番号」「確保済み」「不足」「確保内訳」列
+  // (前回②/取り置き登録が個数の隣に作った分)を一旦削除する。取込の最後に個数の隣へ作り直す。
+  { ['EMS番号','確保済み','不足','確保内訳'].forEach(name=>{
+      const h0=sh.getRange(hdrRow,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'').trim());
+      const e=h0.indexOf(name); if(e>=0) sh.deleteColumn(e+1); }); }
   // 【入荷日を引き継ぐ】上書き前に、今の入荷日を 受注番号+商品コード+SKU をキーに退避(取込で消えないように)
   // 【取り置きメモも引き継ぐ】同じキーで退避→取込後に貼り直す(手書きメモが取込で消えないように)
   const 退避入荷={}; const 退避メモ={}; let メモ列あり=false;
@@ -593,6 +594,7 @@ function 取込_実行_(latest){
     sh.getRange(startRow, 入荷C+1, out.length, 1).setValues(out);
   }
   EMS番号列を用意_(sh); // 個数の隣に「EMS番号」列を作り直す(中身は②が書く)。取込のたびに個数の隣に固定される
+  受注明細_確保列を用意_(sh); // 個数の隣に確保済み/不足/確保内訳を作り直す(中身は取り置き登録の更新が書く)
 
   // 【取り置きメモを引き継ぐ】列を末尾に確保し直して、同じキーの行へ貼り直す
   let メモ引継=0;
@@ -755,6 +757,54 @@ function EMS番号列を用意_(recv){
   recv.insertColumnAfter(g+1);
   recv.getRange(hr, g+2).setValue('EMS番号').setFontWeight('bold');
   return g+2;
+}
+
+// 受注明細に「確保済み」「不足」「確保内訳」列を個数の隣へ用意する(2026-07-23 ユーザー要望
+// 「受注明細でもこの3列を確認したい。注文数量の近くに」)。取込で削除→ここで作り直し=常に個数の隣。
+// 逆順に挿すので並びは 個数|確保済み|不足|確保内訳|EMS番号 (取り置き登録と同じ順)。
+function 受注明細_確保列を用意_(recv){
+  const hr=受注ヘッダー行_(recv);
+  const read=()=>recv.getRange(hr,1,1,Math.max(recv.getLastColumn(),1)).getValues()[0].map(v=>String(v||'').trim());
+  const names=['確保済み','不足','確保内訳'];
+  if(names.some(n=>read().indexOf(n)<0)){
+    names.forEach(n=>{ const i=read().indexOf(n); if(i>=0) recv.deleteColumn(i+1); }); // 中途半端な残骸は作り直す
+    let g=read().indexOf('個数'); if(g<0) g=read().length-1;
+    ['確保内訳','不足','確保済み'].forEach(n=>{
+      recv.insertColumnAfter(g+1);
+      recv.getRange(hr,g+2).setValue(n).setFontWeight('bold');
+    });
+  }
+  const head=read();
+  return {確保済み:head.indexOf('確保済み')+1,不足:head.indexOf('不足')+1,確保内訳:head.indexOf('確保内訳')+1};
+}
+
+// 取り置き登録の候補(確保済み/不足/確保内訳を計算済み)を受注明細の同キー行へ書き戻す。
+// 取り置き登録の更新のたびに呼ばれ、受注明細でも同じ数字が見える。候補に無い行(出荷GO等)は空欄。
+// 同一キーの分割行には同じ集計値が入る(取り置き登録側で受注番号|SKU単位に束ねているため)。
+function 受注明細_確保列を書く_(candidates){
+  const ss=SpreadsheetApp.getActive(), recv=ss.getSheetByName(HIKIATE_CFG.受注);
+  if(!recv) return;
+  const M=列マップ_(recv), last=recv.getLastRow();
+  if(last<=M.hr) return;
+  const cols=受注明細_確保列を用意_(recv);
+  const byKey={};
+  (candidates||[]).forEach(c=>{
+    if(String(c.判定||'')==='棚戻し待ち') return; // キャンセル戻し行は受注明細に無い
+    const k=取り置き_行キー_(c);
+    if(!(k in byKey)) byKey[k]=c;
+  });
+  const R=recv.getRange(M.hr+1,1,last-M.hr,recv.getLastColumn()).getValues();
+  const 確保out=[],不足out=[],内訳out=[];
+  R.forEach(row=>{
+    const ban=String(row[M.番号]||'').trim();
+    const c=ban? byKey[取り置き_行キー_({ban,sku:M.SKU>=0?row[M.SKU]:'',code:row[M.コード]})] : null;
+    確保out.push([c&&c.確保済み!=null&&c.確保済み!==''?c.確保済み:'']);
+    不足out.push([c&&c.不足!=null&&c.不足!==''?c.不足:'']);
+    内訳out.push([c?String(c.確保内訳||''):'']);
+  });
+  recv.getRange(M.hr+1,cols.確保済み,確保out.length,1).setValues(確保out);
+  recv.getRange(M.hr+1,cols.不足,不足out.length,1).setValues(不足out);
+  recv.getRange(M.hr+1,cols.確保内訳,内訳out.length,1).setValues(内訳out);
 }
 
 // 注文ごと(受注番号が変わる境目)に太い下線を引く。全体には薄い格子。
