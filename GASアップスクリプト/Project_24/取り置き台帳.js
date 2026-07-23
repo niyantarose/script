@@ -476,6 +476,27 @@ function 取り置き_登録絞り込み_(rows){
   });
 }
 
+// 確保内訳の表記(2026-07-23 ユーザー要望「自動ってどこの箱からとっているかわからん」)。
+// ④/②の自動確保は元EMS番号ごとに「自動N(箱番号)」で出し、どの箱を開ければ現物があるか分かるようにする。
+// 元EMS番号が無い自動確保(移行復元などの現物確認済み)は「自動N(現物)」=棚にあり箱は開けない。
+// 引当段階=先行は帳簿のみで現物が無いため「先行N(箱番号)」と区別する。自分の棚登録は従来どおり「棚N」。
+function 取り置き_確保内訳表記_(autoRows, shelfQty){
+  const byLabel={}, order=[];
+  (autoRows||[]).forEach(r=>{
+    const ems=String(r&&r.元EMS番号||'').trim()||'現物';
+    const kind=String(r&&r.引当段階||'').trim()==='先行'?'先行':'自動';
+    const label=kind+'|'+ems;
+    if(!(label in byLabel)){ byLabel[label]=0; order.push(label); }
+    byLabel[label]+=取り置き_整数_(r&&r.取り置き数量);
+  });
+  const parts=order.filter(l=>byLabel[l]>0).map(l=>{
+    const kind=l.slice(0,2), ems=l.slice(3);
+    return kind+byLabel[l]+'('+ems+')';
+  });
+  if(shelfQty>0) parts.push('棚'+shelfQty);
+  return parts.join('+');
+}
+
 // 確保の証拠と矛盾する古い棚確認の自己修復＋全数確保の自動表示(2026-07-23 ユーザー要望
 // 「確保になっているやつは部分在庫になってくれないとわけがわからん」)。
 // ・確保済み>0なのに「未着」は事実と矛盾: 全数確保なら「部分在庫」へ、一部確保なら空欄へ戻す(=要棚確認で残りを確かめる)
@@ -840,17 +861,21 @@ function 取り置き初期登録を作成本体_(options){
   candidates=取り置き_台帳確保を適用_(candidates,台帳確保マップ);
   // 確保済み/不足の数字列(2026-07-23): 確保済み=④等の台帳確保+自分が登録済みの棚の現物。
   // 入力中でまだ反映していない数量は含めない(反映して初めて確保になる)
-  const 現物登録={};
+  const 現物登録={}, 自動確保行={};
   ledgerRows.forEach(r=>{
-    if(!r || r.状態!==TORIOKI_STATUS.ACTIVE || String(r.取置元種別||'')!=='開始前在庫') return;
-    const k=取り置き_行キー_(r); 現物登録[k]=(現物登録[k]||0)+取り置き_整数_(r.取り置き数量);
+    if(!r || r.状態!==TORIOKI_STATUS.ACTIVE) return;
+    const k=取り置き_行キー_(r);
+    if(String(r.取置元種別||'')==='開始前在庫'){ 現物登録[k]=(現物登録[k]||0)+取り置き_整数_(r.取り置き数量); return; }
+    (自動確保行[k]=自動確保行[k]||[]).push(r); // ④/②の自動確保。確保内訳で元EMS番号(どの箱か)を出す
   });
   candidates.forEach(c=>{
-    const auto=Number(c.台帳確保数)||0, shelf=現物登録[取り置き_行キー_(c)]||0, secured=auto+shelf;
+    const key=取り置き_行キー_(c);
+    const auto=Number(c.台帳確保数)||0, shelf=現物登録[key]||0, secured=auto+shelf;
     c.確保済み=secured;
     c.不足=Math.max(0,(Number(c.注文数量)||0)-secured);
-    // 「俺が確保したものじゃない」を見分ける列: 自動=④/②が台帳で確保した分、棚=この画面の追加数量で自分が登録した分
-    c.確保内訳=[auto?'自動'+auto:'',shelf?'棚'+shelf:''].filter(String).join('+');
+    // 「俺が確保したものじゃない」を見分ける列: 自動N(箱番号)=④/②が台帳で確保した分(その箱にある)、
+    // 自動N(現物)=移行復元などの現物確認済み(棚にある)、棚N=この画面の追加数量で自分が登録した分
+    c.確保内訳=取り置き_確保内訳表記_(自動確保行[key],shelf);
   });
   candidates=取り置き_登録絞り込み_(candidates); // 予約中・出荷GOのステータスだけで除外
   // 全行表示化(2026-07-20): 判断済みも隠さない。旧版が残した非表示スイッチの記憶は
@@ -908,6 +933,7 @@ function 取り置き初期登録を作成本体_(options){
   }
   sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('要対応')+1,220);
   sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('処理')+1,130);
+  sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('確保内訳')+1,170); // 自動N(EMS番号)が切れない幅
   sh2.hideColumns(1); // 取置IDは反映処理用の内部キー。表示はしない(列としては保持)
   取り置き_登録行書式を更新_(sh2,candidates);
   const 入力済=candidates.filter(c=>String(c.追加数量||'')!==''||String(c.マイナス数量||'')!=='').length;
