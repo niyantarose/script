@@ -54,7 +54,7 @@ function 取り置き_作業対象判定_(rows, viewMode){
   const arr=rows||[], mode=String(viewMode||'要作業');
   if(mode==='すべて') return true;
   const has=f=>arr.some(r=>r&&f(r));
-  const 現物あり=has(r=>(Number(r.確保済み)||0)>0||(Number(r.台帳確保数)||0)>0||String(r.棚確認||'')==='部分在庫');
+  const 現物あり=has(r=>(Number(r.確保済み)||0)>0||(Number(r.台帳確保数)||0)>0||TORIOKI_部分在庫系.indexOf(String(r.棚確認||''))>=0);
   const 部分=has(r=>String(r.現在の状態||'')==='部分在庫');
   const 希望=has(r=>String(r.現在の状態||'')==='希望日待ち');
   if(mode==='部分在庫') return 部分;
@@ -68,10 +68,11 @@ function 取り置き_作業対象判定_(rows, viewMode){
   return 部分||要作業||(希望&&現物あり&&未判断あり);
 }
 // 取り置き登録の「棚確認」プルダウン。出荷済み/未着/予約は数量なし(登録しない)の目印。
-// 部分在庫は確保の時期で3種類(2026-07-23 ユーザー設計): 部分在庫=今日より前からの確保(緑)、
+// 部分在庫は確保の時期で3種類(2026-07-23 ユーザー設計): 過去部分在庫=今日より前からの確保(緑)、
 // 当日部分在庫=今日届いた箱からの確保(青緑・箱を開ける)、先行部分在庫=先行引当のみ(薄紫・現物まだ無い)
-const TORIOKI_棚確認=Object.freeze(['発送待ち','部分在庫','当日部分在庫','先行部分在庫','出荷済み','未着','予約']);
-const TORIOKI_部分在庫系=Object.freeze(['部分在庫','当日部分在庫','先行部分在庫']);
+const TORIOKI_棚確認=Object.freeze(['発送待ち','過去部分在庫','当日部分在庫','先行部分在庫','出荷済み','未着','予約']);
+// 旧名「部分在庫」も系として認識し、更新時に確保表示整合_が現行名へ貼り替える
+const TORIOKI_部分在庫系=Object.freeze(['部分在庫','過去部分在庫','当日部分在庫','先行部分在庫']);
 const TORIOKI_戻し処理=Object.freeze(['棚へ戻した','現物なし']);
 
 function 取り置き_棚確認書式定義_(棚確認列, 開始行){
@@ -79,8 +80,8 @@ function 取り置き_棚確認書式定義_(棚確認列, 開始行){
   while(n>0){ n--; 列記号=String.fromCharCode(65+n%26)+列記号; n=Math.floor(n/26); }
   return [
     {値:'発送待ち',背景:'#cfe2f3'},
-    {値:'部分在庫',背景:'#d9ead3'},        // 今日より前からの確保(緑)
-    {値:'当日部分在庫',背景:'#a2c4c9'},    // 今日届いた箱からの確保(青緑・箱を開ける)
+    {値:'過去部分在庫',背景:'#d9ead3'},    // 今日より前からの確保(緑)
+    {値:'当日部分在庫',背景:'#f6b26b'},    // 今日届いた箱からの確保(オレンジ・箱を開ける)
     {値:'先行部分在庫',背景:'#ead1dc'},    // 先行引当のみ(薄紫・現物まだ無い)
     {値:'出荷済み',背景:'#f4cccc',文字色:'#990000',太字:true},
     {値:'未着',背景:'#d9d9d9'},
@@ -88,10 +89,32 @@ function 取り置き_棚確認書式定義_(棚確認列, 開始行){
   ].map(def=>Object.assign({条件:'=$'+列記号+開始行+'="'+def.値+'"'},def));
 }
 
+// 確保内訳(I列)のセル色(2026-07-23 ユーザー要望): 誰が確保したか色でも見分ける。
+// 先行を含む=薄紫(現物まだ無い)、自動を含む=薄オレンジ(俺が数えたものじゃない)、現物だけ=緑(俺が数えた)。
+// 行全体の棚確認色より先に並べてI列のセルだけ内訳色が勝つようにする。
+function 取り置き_内訳書式定義_(内訳列, 開始行){
+  let n=内訳列, 列記号='';
+  while(n>0){ n--; 列記号=String.fromCharCode(65+n%26)+列記号; n=Math.floor(n/26); }
+  const cell='$'+列記号+開始行;
+  return [
+    {条件:'=ISNUMBER(SEARCH("先行",'+cell+'))',背景:'#ead1dc'},
+    {条件:'=ISNUMBER(SEARCH("自動",'+cell+'))',背景:'#fce5cd'},
+    {条件:'=ISNUMBER(SEARCH("現物",'+cell+'))',背景:'#d9ead3'}
+  ];
+}
+
 function 取り置き_棚確認書式を設定_(sh, rowCount){
   if(rowCount<=0){ sh.setConditionalFormatRules([]); return; }
   const 棚確認列=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1, 幅=TORIOKI_CFG.初期HDR.length;
+  const 内訳列=TORIOKI_CFG.初期HDR.indexOf('確保内訳')+1;
   const target=sh.getRange(2,1,rowCount,幅);
+  const 内訳target=sh.getRange(2,内訳列,rowCount,1);
+  const 内訳rules=取り置き_内訳書式定義_(内訳列,2).map(def=>
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(def.条件)
+      .setBackground(def.背景)
+      .setRanges([内訳target])
+      .build());
   const rules=取り置き_棚確認書式定義_(棚確認列,2).map(def=>{
     let b=SpreadsheetApp.newConditionalFormatRule()
       .whenFormulaSatisfied(def.条件)
@@ -101,7 +124,7 @@ function 取り置き_棚確認書式を設定_(sh, rowCount){
     if(def.太字) b=b.setBold(true);
     return b.build();
   });
-  sh.setConditionalFormatRules(rules);
+  sh.setConditionalFormatRules(内訳rules.concat(rules));
 }
 
 function 取り置き_登録行書式を更新_(sh, candidates){
@@ -429,7 +452,7 @@ function 取り置き_別ルート行を付与_(candidates, betsuOrders, sheetRo
     const secured=Math.max(held,c.入荷日確保);
     const shortage=Math.max(0,c.qty-secured);
     // 内訳は事実の列挙(・区切り)。確保済みは大きい方なので足し算に見える+は使わない
-    const 内訳=[c.入荷日確保?'入荷日'+c.入荷日確保:'',shelf?'棚'+shelf:'',台帳確保数?'自動'+台帳確保数:''].filter(String).join('・');
+    const 内訳=[c.入荷日確保?'入荷日'+c.入荷日確保:'',shelf?'現物'+shelf:'',台帳確保数?'自動'+台帳確保数:''].filter(String).join('・');
     return {取置ID:id,受注番号:String(o.ban),氏名:String(o.氏名||''),商品コード:取り置き_商品コード_(o.sku,o.code),SKU:String(o.sku||''),
       注文数量:c.qty,確保済み:secured,不足:shortage,確保内訳:内訳,現在の状態:'別ルート',受注ステータス:c.ステータス一覧.join(' / '),旧入荷日:c.入荷日,旧EMS:'',
       台帳確保:'',台帳確保数,棚確認:'',追加数量:'',マイナス数量:'',メモ:prev?String(prev.メモ==null?'':prev.メモ).trim():'',
@@ -485,7 +508,7 @@ function 取り置き_登録絞り込み_(rows){
 // ④/②の自動確保は元EMS番号ごとに「自動N(箱番号)」で出し、どの箱を開ければ現物があるか分かるようにする。
 // 引当段階=現物確認済み(現物確認移行・復元を含む)は棚で数えた現物なので、元EMS番号が記録に残っていても
 // 箱番号は出さず「現物N」(=棚にある・箱は開けない)。引当段階=先行は帳簿のみ(現物なし)で「先行N(箱番号)」。
-// 自分がこの画面の追加数量で登録した分は従来どおり「棚N」。
+// この画面の追加数量で登録した分も「現物N」へ合算する(現物確認移行も棚登録も「俺が数えた棚の現物」で同じ)。
 function 取り置き_確保内訳表記_(autoRows, shelfQty){
   const byLabel={}, order=[];
   (autoRows||[]).forEach(r=>{
@@ -498,11 +521,15 @@ function 取り置き_確保内訳表記_(autoRows, shelfQty){
     if(!(label in byLabel)){ byLabel[label]=0; order.push(label); }
     byLabel[label]+=取り置き_整数_(r&&r.取り置き数量);
   });
+  if(shelfQty>0){
+    const l='現物|';
+    if(!(l in byLabel)){ byLabel[l]=0; order.push(l); }
+    byLabel[l]+=shelfQty;
+  }
   const parts=order.filter(l=>byLabel[l]>0).map(l=>{
     const kind=l.slice(0,2), ems=l.slice(3);
     return kind==='現物'? kind+byLabel[l] : kind+byLabel[l]+'('+ems+')';
   });
-  if(shelfQty>0) parts.push('棚'+shelfQty);
   return parts.join('+');
 }
 
@@ -520,25 +547,21 @@ function 取り置き_確保時期_(autoRows, todayYmd){
 
 // 確保の証拠と矛盾する古い棚確認の自己修復＋確保状態の自動表示(2026-07-23 ユーザー要望
 // 「確保になっているやつは部分在庫になってくれないとわけがわからん」「時期で色を分けよう」)。
-// ・全数確保(不足0)の行は確保時期に応じて「部分在庫(過去)／当日部分在庫／先行部分在庫」を自動表示。
-//   空欄・未着・古い部分在庫系はその日の分類へ貼り替える(日をまたげば当日→部分在庫へ自動で落ち着く)
-// ・一部確保の「未着」「部分在庫系」は空欄へ戻す(=要棚確認で残りを確かめる)
+// ・確保済み>0の行(全数・一部どちらも)は確保時期に応じて「過去部分在庫／当日部分在庫／先行部分在庫」を
+//   自動表示。空欄・未着・古い部分在庫系(旧名「部分在庫」含む)はその日の分類へ貼り替える
+//   (日をまたげば当日→過去部分在庫へ自動で落ち着く)。残りが要るかは不足列の数字で見る。
 // ・確保済み0の行は「未着」を自動表示。ただし旧入荷日/旧EMSの到着証拠がある行は空欄のまま=要棚確認(黄色)
 //   (未着を貼ると要棚確認が消え、着いているはずの現物の登録漏れを見逃すため)。
 // 発送待ち・出荷済み・予約など他の判断は上書きしない。
 function 取り置き_確保表示整合_(candidates){
   return (candidates||[]).map(c=>{
     const check=String(c.棚確認==null?'':c.棚確認).trim();
-    const secured=(Number(c.確保済み)||0)>0, full=secured && (Number(c.不足)||0)===0;
+    const secured=(Number(c.確保済み)||0)>0;
     const 旧証拠=String(c.旧入荷日==null?'':c.旧入荷日).trim()!=='' || String(c.旧EMS==null?'':c.旧EMS).trim()!=='';
     const 系=TORIOKI_部分在庫系.indexOf(check)>=0;
-    if(full){
-      const want=c.確保時期==='先行'?'先行部分在庫':c.確保時期==='当日'?'当日部分在庫':'部分在庫';
-      if(check===''||check==='未着'||系) return check===want? c : Object.assign({},c,{棚確認:want});
-      return c;
-    }
     if(secured){
-      if(check==='未着'||系) return Object.assign({},c,{棚確認:''});
+      const want=c.確保時期==='先行'?'先行部分在庫':c.確保時期==='当日'?'当日部分在庫':'過去部分在庫';
+      if(check===''||check==='未着'||系) return check===want? c : Object.assign({},c,{棚確認:want});
       return c;
     }
     if(系) return Object.assign({},c,{棚確認:旧証拠?'':'未着'});
@@ -943,7 +966,7 @@ function 取り置き初期登録を作成本体_(options){
     c.確保済み=secured;
     c.不足=Math.max(0,(Number(c.注文数量)||0)-secured);
     // 「俺が確保したものじゃない」を見分ける列: 自動N(箱番号)=④/②が台帳で確保した分(その箱にある)、
-    // 現物N=現物確認済み(移行・復元含む。棚にある)、棚N=この画面の追加数量で自分が登録した分
+    // 現物N=現物確認済み(移行・復元)+この画面の追加数量で登録した分(どちらも俺が数えた棚の現物)
     c.確保内訳=取り置き_確保内訳表記_(自動確保行[key],shelf);
     // 確保の時期(過去/当日/先行)。確保表示整合_が部分在庫の3色ステータスに使う
     c.確保時期=取り置き_確保時期_(自動確保行[key],保存時刻.slice(0,10));
