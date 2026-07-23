@@ -476,6 +476,21 @@ function 取り置き_登録絞り込み_(rows){
   });
 }
 
+// 確保の証拠と矛盾する古い棚確認の自己修復＋全数確保の自動表示(2026-07-23 ユーザー要望
+// 「確保になっているやつは部分在庫になってくれないとわけがわからん」)。
+// ・確保済み>0なのに「未着」は事実と矛盾: 全数確保なら「部分在庫」へ、一部確保なら空欄へ戻す(=要棚確認で残りを確かめる)
+// ・全数確保(不足0)で棚確認が空欄の行は「部分在庫」を自動表示(もう登録不要だと一目で分かる+要作業から片付く)
+// 発送待ち・出荷済み・予約など他の判断は上書きしない。確保が外れれば次の更新で未着扱いには戻さず空欄のまま。
+function 取り置き_確保表示整合_(candidates){
+  return (candidates||[]).map(c=>{
+    const check=String(c.棚確認==null?'':c.棚確認).trim();
+    const secured=(Number(c.確保済み)||0)>0, full=secured && (Number(c.不足)||0)===0;
+    if(check==='未着' && secured) return Object.assign({},c,{棚確認:full?'部分在庫':''});
+    if(check==='' && full) return Object.assign({},c,{棚確認:'部分在庫'});
+    return c;
+  });
+}
+
 // 全行表示化(2026-07-20): 判断済み(出荷済み/未着/予約)も隠さず、判断は棚確認列に残して条件付き書式で目立たせる。
 // 記憶はシートの棚確認列の引き継ぎ(取り置き_登録シート引き継ぎ_)に一本化し、DocumentPropertiesの
 // 非表示スイッチは廃止(セルを空にすれば次回から消える)。旧版が残した記憶は既定値として一度だけ復元する。
@@ -845,6 +860,8 @@ function 取り置き初期登録を作成本体_(options){
   const 記憶適用=取り置き_棚確認記憶を適用_(candidates,棚記憶);
   candidates=記憶適用.rows;
   try{ PropertiesService.getDocumentProperties().setProperty('取り置き登録_棚確認済み',JSON.stringify(記憶適用.store)); }catch(e){}
+  // 確保済みの行へ「部分在庫」を自動表示し、矛盾した「未着」を直す(判定の前に走らせて要棚確認と整合させる)
+  candidates=取り置き_確保表示整合_(candidates);
   candidates.forEach(c=>{ c.判定=取り置き_棚確認判定_(c); });
   // 対象注文の即納行を表示専用(水色)で差し込む。数量・棚確認は入力対象外=誤入力は反映時ガードが止める
   candidates=取り置き_即納行を付与_(candidates,即納orders,sheetRows);
