@@ -700,5 +700,36 @@ test('未台帳出荷: 名指し箱はコード不一致でもその注文の出
   assert.strictEqual(r.newRows[0].元EMS番号,'EG1');
 });
 
+// ===== 2026-07-23 商品コード別名(旧コード→現行コード): 韓国側が旧コードで書き続けても引き当てる =====
+
+test('コード別名: AISTALT01S(旧)とAISTALT01S-0(現行)を双方向で同一商品として照合する', () => {
+  assert.ok(context.codeKeys_('AISTALT01S').includes('AISTALT01S-0'),'旧コードの照合キーに現行コードが入る');
+  assert.ok(context.codeKeys_('AISTALT01S-0').includes('AISTALT01S'),'現行コードの照合キーに旧コードが入る');
+  const keys=context.引当用照合キー一覧_('AISTALT01S-0b','AISTALT01S-0');
+  assert.ok(keys.includes('AISTALT01S'),'受注側キーにも旧コードが入り、旧コードのEMS供給と出会える');
+  assert.ok(context.取り置き_注文照合_({keys},'AISTALT01S'),'②の照合が旧コードのEMS行を引き当てる');
+});
+
+test('コード別名: 宣言していないコードには広がらない(-11/-12等の実バリエーション保護)', () => {
+  assert.strictEqual(context.codeKeys_('MRBLUE44-11').includes('MRBLUE44-12'),false);
+  assert.strictEqual(context.codeKeys_('MRBLUE44-11').includes('MRBLUE44'),false,'末尾落としの推測はしない');
+  const keys=context.引当用照合キー一覧_('MRBLUE44-11b','MRBLUE44');
+  assert.strictEqual(keys.includes('AISTALT01S'),false,'無関係コードに別名は付かない');
+});
+
+test('コード別名: 旧コード供給×現行コード注文で割当計算が成立する(FIFOで最古の注文へ)', () => {
+  const orders=[
+    {ban:'10117631',code:'AISTALT01S-0',sku:'AISTALT01S-0b',qty:1,sortKey:10117631,i:1,keys:context.引当用照合キー一覧_('AISTALT01S-0b','AISTALT01S-0'),paid:true},
+    {ban:'10117673',code:'AISTALT01S-0',sku:'AISTALT01S-0b',qty:1,sortKey:10117673,i:2,keys:context.引当用照合キー一覧_('AISTALT01S-0b','AISTALT01S-0'),paid:true}
+  ];
+  const supplies=[{ems:'EG050152967KR',code:'AISTALT01S',sourceCode:'AISTALT01S',qty:1,arrival:'2026-07-23'}];
+  const result=context.取り置き_割当計算_({orders,ledger:[],movements:[],supplies,explicit:[]});
+  assert.strictEqual(result.errors.length,0);
+  const rows=result.newRows.filter(r=>r.状態==='取り置き中');
+  assert.strictEqual(rows.length,1,'1冊だけなので1件');
+  assert.strictEqual(rows[0].受注番号,'10117631','受注番号順で最古へ');
+  assert.strictEqual(rows[0].元EMS商品コード,'AISTALT01S','台帳の元EMS商品コードはEMS行のraw表記を維持(箱残照合を壊さない)');
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');

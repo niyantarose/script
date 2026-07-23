@@ -13,6 +13,11 @@ function 全件再計算_SKU正規化_(value, source){
   const kind=String(source||'').toLowerCase();
   // a/bはYahoo・GoQ・受注のSKUにだけ付く在庫区分。EMS商品コードの実在末尾は守る。
   if(kind==='yahoo' || kind==='goq' || kind==='受注' || kind==='order') code=code.replace(/[AB]$/,'');
+  // 旧コード別名(例 AISTALT01S→AISTALT01S-0)は現行コードへ寄せ、供給と需要を同じバケットで出会わせる。
+  // 台帳へ書く元EMS商品コードはsourceCode(raw)のままなので、②の箱残・供給キー照合とはズレない。
+  if(typeof 引当_コード別名マップ_==='function'){
+    try{ const to=引当_コード別名マップ_()[code]; if(to) code=to; }catch(e){}
+  }
   return code;
 }
 

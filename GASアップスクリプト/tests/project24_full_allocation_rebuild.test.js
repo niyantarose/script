@@ -697,4 +697,17 @@ test('三段階: 先行→現物変換で解放された未着供給は別の残
   assert.strictEqual(result.invariantErrors.length, 0);
 });
 
+test('SKU正規化: 引当_コード別名マップ_があれば旧コードを現行コードのバケットへ寄せる', () => {
+  context.引当_コード別名マップ_ = () => ({'AISTALT01S': 'AISTALT01S-0'});
+  try {
+    assert.strictEqual(context.全件再計算_SKU正規化_('AISTALT01S', 'EMS'), 'AISTALT01S-0', 'EMS側の旧コードが現行バケットへ');
+    assert.strictEqual(context.全件再計算_SKU正規化_('AISTALT01S-0b', '受注'), 'AISTALT01S-0', '受注側は従来どおり');
+    assert.strictEqual(context.全件再計算_SKU正規化_('MRBLUE44-11', 'EMS'), 'MRBLUE44-11', '宣言していないコードは変えない');
+  } finally { delete context.引当_コード別名マップ_; }
+});
+
+test('SKU正規化: 別名マップが無い環境では従来どおり動く(typeofガード)', () => {
+  assert.strictEqual(context.全件再計算_SKU正規化_('AISTALT01S', 'EMS'), 'AISTALT01S');
+});
+
 if (failures) process.exit(1);

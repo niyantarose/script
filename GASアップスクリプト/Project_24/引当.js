@@ -1191,8 +1191,38 @@ function 受注候補コード_(sku, code){
   push(normCode_(c).replace(/[A-Za-z]$/,''));
   return out;
 }
+// ===== 商品コード別名(旧コード→現行コード) =====
+// 韓国側の発注リスト/EMSリストが旧コードのまま書いてくる商品を、現行コードとして全照合系
+// (②EMS引当・P列計画・入荷日チェック・全件再計算・商品診断)で同一商品と認識させる。
+// 機械的な末尾落としは別バリエーション(例 MRBLUE44-11/-12)を誤引当するため、宣言した組だけを対象にする。
+// 追加は発注共有「コード別名」シート(A列=旧コード / B列=現行コード、2行目以降)か、下の既定マップへ。
+let _コード別名キャッシュ=null;
+function 引当_コード別名マップ_(){
+  if(_コード別名キャッシュ) return _コード別名キャッシュ;
+  const map={'AISTALT01S':'AISTALT01S-0'}; // エイリアンステージ アートブック(特別版): 韓国側は旧コードで書いてくる(2026-07-23)
+  try{
+    if(typeof 発注共有を開く_==='function'){
+      const sh=発注共有を開く_().getSheetByName('コード別名');
+      if(sh && sh.getLastRow()>=2){
+        sh.getRange(2,1,sh.getLastRow()-1,2).getValues().forEach(r=>{
+          const from=normCode_(r[0]), to=normCode_(r[1]);
+          if(from && to && from!==to) map[from]=to;
+        });
+      }
+    }
+  }catch(e){} // 発注共有を開けない時は既定マップだけで動く(照合が狭くなるだけで安全側)
+  _コード別名キャッシュ=map;
+  return map;
+}
+// 照合キー配列へ別名を双方向(旧→現行・現行→旧)で追加する。どちら側が旧コードでも出会える
+function 引当_コード別名展開_(keys){
+  const map=引当_コード別名マップ_();
+  keys.slice().forEach(k=>{ const to=map[k]; if(to && keys.indexOf(to)<0) keys.push(to); });
+  keys.slice().forEach(k=>{ Object.keys(map).forEach(from=>{ if(map[from]===k && keys.indexOf(from)<0) keys.push(from); }); });
+  return keys;
+}
 // 新しい取り置き割当/P列計画では、推測による複合・月号コード展開を行わない。
-// 販売SKUの末尾a/bだけを在庫基底へ寄せ、商品コード自体は完全一致だけを許可する。
+// 販売SKUの末尾a/bだけを在庫基底へ寄せ、商品コード自体は完全一致(＋宣言済み別名)だけを許可する。
 function 引当用照合キー一覧_(sku, code){
   const out=[];
   const add=v=>{ const key=normCode_(v); if(key && out.indexOf(key)<0) out.push(key); };
@@ -1200,7 +1230,7 @@ function 引当用照合キー一覧_(sku, code){
   add(salesSku);
   if(/[AB]$/.test(salesSku)) add(salesSku.slice(0,-1));
   add(code);
-  return out;
+  return 引当_コード別名展開_(out);
 }
 function codeKeys_(code){
   const c=normCode_(code); const keys=[c];
@@ -1210,7 +1240,7 @@ function codeKeys_(code){
   // GoQ側は月号なし(EBS1504B)で登録されているため。YY=2x・MM=01〜12の形だけ対象(巻数セット等の誤爆防止)
   const mg=c.match(/^(.+?)-(?:20)?(2\d)(0[1-9]|1[0-2])$/);
   if(mg){ const base=mg[1].replace(/-+$/,''); if(base && keys.indexOf(base)<0) keys.push(base); }
-  return keys;
+  return 引当_コード別名展開_(keys);
 }
 // ===== 定期購読の月号照合(例: EBS1504B_2607=7月号) =====
 // 商品ページのルール「ご注文月の翌月号をお届け」に合わせて、
