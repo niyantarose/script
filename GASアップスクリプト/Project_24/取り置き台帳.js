@@ -180,12 +180,16 @@ function CSV行を受注行オブジェクトへ_(header, rows){
   const head=(header||[]).map(v=>String(v||'').trim()), index=name=>head.indexOf(name);
   const cBan=index('受注番号'), cStatus=index('受注ステータス'), cCode=index('商品コード'), cQty=index('個数');
   const cSku=index('商品SKU')>=0?index('商品SKU'):index('SKU');
+  const cShipU=index('出荷日');
+  const cShipW=index('出荷日(複数時には配送先毎)')>=0?index('出荷日(複数時には配送先毎)'):index('出荷日（複数時には配送先毎）');
   const missing=[];
   if(cBan<0) missing.push('受注番号'); if(cStatus<0) missing.push('受注ステータス');
   if(cCode<0) missing.push('商品コード'); if(cQty<0) missing.push('個数'); if(cSku<0) missing.push('商品SKU/SKU');
   if(missing.length) throw new Error('全ステータスCSVの見出し不足: '+missing.join(','));
   return (rows||[]).map(row=>({受注番号:String(row[cBan]||'').replace(/^niyantarose-/i,''),受注ステータス:String(row[cStatus]||''),
-    商品コード:String(row[cCode]||''),SKU:String(row[cSku]||''),個数:Number(row[cQty])||0}));
+    商品コード:String(row[cCode]||''),SKU:String(row[cSku]||''),個数:Number(row[cQty])||0,
+    // 分割出荷済み行(出荷日あり)。ステータスが注文単位のままでも行単位で「もう送った」が分かる
+    行出荷済み:(cShipU>=0&&String(row[cShipU]==null?'':row[cShipU]).trim()!=='')||(cShipW>=0&&String(row[cShipW]==null?'':row[cShipW]).trim()!=='')}));
 }
 
 // 状態遷移の理由は既存の「終了理由・メモ」を消さずに追記する(棚の場所などの手書きメモを守る)。
@@ -207,6 +211,8 @@ function 取り置き_CSV遷移計画_(csvRows, ledgerRows, now){
     if(!groups[key]) groups[key]={発送済み:false,キャンセル:false,生存数量:false,数量既知:false,有効数量:0,処理済数量:0,キャンセル数量:0};
     const group=groups[key], status=String(r.受注ステータス||'');
     const shipped=/処理済|発送済|出荷済/.test(status), cancelled=/キャンセル/.test(status);
+    // 分割出荷済み(行の出荷日あり)は処理済み扱いで需要から外す。ただし注文全体の発送済み遷移には使わない
+    const 行出荷=!!r.行出荷済み && !shipped && !cancelled;
     const rawQty=r.個数, qtyKnown=rawQty!==undefined && rawQty!==null && String(rawQty).trim()!=='' && isFinite(Number(rawQty));
     const qty=qtyKnown?Number(rawQty):0;
     group.発送済み=group.発送済み||shipped;
@@ -215,12 +221,12 @@ function 取り置き_CSV遷移計画_(csvRows, ledgerRows, now){
     // キャンセル行の正の数量を注文数へ混ぜない(有効・処理済み・キャンセルを別々に集計)
     if(qtyKnown){
       if(cancelled) group.キャンセル数量+=qty;
-      else if(shipped) group.処理済数量+=qty;
+      else if(shipped || 行出荷) group.処理済数量+=qty;
       else group.有効数量+=qty;
     }
     // 同じ受注商品が分割され、数量0のキャンセル行と数量1以上の生きた行が共存する場合、
     // 商品全体の取り置きは解除しない。全分割行が0になったときだけ棚戻しへ進める。
-    if(qtyKnown && qty>0 && !shipped && !cancelled) group.生存数量=true;
+    if(qtyKnown && qty>0 && !shipped && !cancelled && !行出荷) group.生存数量=true;
   });
   const statuses={};
   Object.keys(groups).forEach(key=>{
@@ -903,6 +909,7 @@ function 取り置き初期登録を作成本体_(options){
     const row=values[i], ban=String(row[M.番号]||'').trim(), qty=Number(row[M.個数])||0;
     if(!ban || qty<=0) continue;
     const kbn=区分_(row[M.選択肢]);
+    if(typeof 引当_行出荷済み_==='function' && 引当_行出荷済み_(row,M)) continue; // 分割出荷済みの行は取り置き対象外
     const 別ルート=引当_別ルート判定_(row[M.選択肢], M.商品名>=0?row[M.商品名]:'');
     const ステータス=cステータス>=0?String(row[cステータス]||''):'';
     const 入荷日=M.入荷>=0?row[M.入荷]:'';

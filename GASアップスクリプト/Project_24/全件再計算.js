@@ -640,6 +640,8 @@ function 全件再計算_現在受注を読む_(){
   const M=列マップ_(sh),width=sh.getLastColumn(),values=sh.getDataRange().getValues();
   const header=sh.getRange(M.hr,1,1,width).getDisplayValues()[0].map(v=>String(v||'').trim());
   const cOrder=header.indexOf('注文日時'),cItem=header.indexOf('商品ID');
+  const cShipU=header.indexOf('出荷日');
+  let cShipW=header.indexOf('出荷日(複数時には配送先毎)'); if(cShipW<0) cShipW=header.indexOf('出荷日（複数時には配送先毎）');
   if(M.番号<0 || M.コード<0 || M.個数<0 || M.選択肢<0) throw new Error('受注明細の必須見出しが不足しています');
   const rows=[],signatureRows=[];
   for(let i=M.hr;i<values.length;i++){
@@ -648,11 +650,14 @@ function 全件再計算_現在受注を読む_(){
     const rawQty=row[M.個数],qty=Number(rawQty)||0,choice=String(row[M.選択肢]||''),name=M.商品名>=0?String(row[M.商品名]||''):'';
     const kind=区分_(choice),other=引当_別ルート判定_(choice,name);
     const route=kind==='即納'?'即納':kind==='取り寄せ'?(other?'台湾中国取寄せ':'韓国取寄せ'):kind;
+    // 分割出荷済み(行の出荷日あり)はもう送った分=需要に数えない(②と同じ判定 2026-07-23)
+    const shippedSplit=(cShipU>=0&&String(row[cShipU]==null?'':row[cShipU]).trim()!=='')
+      ||(cShipW>=0&&String(row[cShipW]==null?'':row[cShipW]).trim()!=='');
     const source={row:i+1,ban,itemId:cItem>=0?String(row[cItem]||''):'',code,sku:M.SKU>=0?String(row[M.SKU]||''):'',qty:rawQty,
       orderDate:cOrder>=0?row[cOrder]:'',route,choice,name,
-      boxEms:M.EMS>=0?String(row[M.EMS]||'').trim():''};
+      boxEms:M.EMS>=0?String(row[M.EMS]||'').trim():'',shippedSplit};
     signatureRows.push(source);
-    if(qty>0 && (route==='即納' || route==='韓国取寄せ')) rows.push(source);
+    if(qty>0 && !shippedSplit && (route==='即納' || route==='韓国取寄せ')) rows.push(source);
   }
   return {rows,signatureRows};
 }
