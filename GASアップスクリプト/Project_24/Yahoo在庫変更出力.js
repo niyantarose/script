@@ -14,10 +14,11 @@ function Yahoo変更_対象行_(rows, emsSet, excludeSet, opts){
     const code=String(r&&r.商品コード||'').trim(), ems=String(r&&r.EMS番号||'').trim();
     const qty=Number(r&&r.余り数)||0;
     if(!code || qty<=0) return;
-    // 戻り行(棚へ戻ったキャンセル現物)は特定の便に属さないため、便の指定に関係なく常に対象にする。
-    // 戻りのみモード(ボタン用)では箱の余りを出さず、戻り分だけをCSVにする(2026-07-23)
+    // 戻り行(棚へ戻ったキャンセル現物)は特定の便に属さない。便を指定した出力(⑤の便締め・従来の📤)には
+    // 含めず、日本在庫のCSVボタン(便指定なし)だけで出す。⑤に混ざると出力日時が付かず二重加算になるため
     const 戻り=String(r&&r.状態||'').trim()==='戻り';
     if(戻りのみ && !戻り) return;
+    if(戻り && emsSet && emsSet.size) return;
     if(!戻り && emsSet && emsSet.size && !emsSet.has(ems)) return;
     // 未着(先行)の余りは現物ではないためYahooへ足せない(箱が着いて到着済になってから出力する)
     const status=String(r&&r.状態||'').trim();
@@ -70,18 +71,19 @@ function Yahoo変更_行変換_(対象, 逆引き){
 }
 
 function Yahoo在庫変更を出力(){ 直列_(Yahoo在庫変更を出力本体_); } // 書き込み系は直列_で排他
-// 棚へ戻った現物(戻り行)だけをCSVにする。Yahoo戻し候補/日本在庫シートの図形ボタン用(プロンプトなし)
-function Yahoo戻し分を出力(){ 直列_(()=>Yahoo在庫変更を出力本体_(null,{戻りのみ:true})); }
+// 旧名の互換(図形ボタンに割り当て済みの場合用)。中身は日本在庫のCSVデータ作成と同じ
+function Yahoo戻し分を出力(){ 日本在庫CSVを作成(); }
 
 // preTargets: ⑤(便の締め)から対象EMSを引き継いで呼ばれる場合はプロンプトを出さない
-// opts.戻りのみ: 箱の余りを出さず、戻り行だけを出力する(ボタン用。便の指定も不要)
+// opts.全便: プロンプトを出さず日本在庫にあるもの(箱の余り＋戻り)を丸ごと出す。日本在庫のCSVボタン用
+// opts.戻りのみ: 箱の余りを出さず、戻り行だけを出力する(旧ボタン互換)
 function Yahoo在庫変更を出力本体_(preTargets, opts){
-  const 戻りのみ=!!(opts&&opts.戻りのみ);
+  const 戻りのみ=!!(opts&&opts.戻りのみ), 全便=!!(opts&&opts.全便);
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi();
   const sh=ss.getSheetByName(HIKIATE_CFG.純在庫);
   if(!sh || sh.getLastRow()<3){ ui.alert('「'+HIKIATE_CFG.純在庫+'」にデータがありません。②を実行してから使ってください。'); return; }
   let tokens;
-  if(戻りのみ){ tokens=[]; }
+  if(戻りのみ || 全便){ tokens=[]; }
   else if(preTargets && preTargets.length){ tokens=preTargets.slice(); }
   else {
     const resp=ui.prompt('📤 Yahoo在庫変更を出力(締める便の余り)',
@@ -101,8 +103,24 @@ function Yahoo在庫変更を出力本体_(preTargets, opts){
   const japanRows=values.map(v=>({状態:v[0],到着日:v[1],商品コード:v[2],余り数:v[3],EMS番号:v[4]}));
   const 未知=tokens.filter(t=>!japanRows.some(r=>String(r.EMS番号||'').trim()===t));
   // 全部が一覧に無い時だけ中止(打ち間違い・未着便の防止)。複数便の一部に余りが無いのは正常
-  if(未知.length===tokens.length){ ui.alert('出力を中止しました','日本在庫にこのEMS番号の行がありません: '+未知.join(', ')+'\n(未着の便は⑤前のYahoo出力対象になりません)',ui.ButtonSet.OK); return; }
-  const 振り分け=Yahoo変更_対象行_(japanRows,emsSet,全件再計算_マスタ除外集合_());
+  if(tokens.length && 未知.length===tokens.length){ ui.alert('出力を中止しました','日本在庫にこのEMS番号の行がありません: '+未知.join(', ')+'\n(未着の便は⑤前のYahoo出力対象になりません)',ui.ButtonSet.OK); return; }
+  const 振り分け=Yahoo変更_対象行_(japanRows,emsSet,全件再計算_マスタ除外集合_(),{戻りのみ});
+  if(!振り分け.対象.length){
+    ui.alert('CSVに出すものがありません','日本在庫に出力できる行がありません(余り0・在庫対象外だけ等)。',ui.ButtonSet.OK); return;
+  }
+  // 前回と同じ内容ならmode「+」で二重加算になるため必ず聞く(⑤からの自動呼び出しは呼ぶ前に判定済み)
+  if(!(preTargets && preTargets.length)){
+    const sig=Yahoo変更_内容署名_(振り分け.対象);
+    let 前回=null;
+    try{ 前回=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null'); }catch(e){}
+    if(前回 && sig!=='' && 前回.sig===sig){
+      const 再=ui.alert('同じ内容を既に出力しています',
+        '前回の出力('+String(前回.at||'')+')と中身が同じです。\n'
+        +'mode「+」は加算なので、もう一度Yahooへ貼ると二重加算になります。\n\n'
+        +'既に貼り付け済みなら「いいえ」。作り直すだけなら「はい」。',ui.ButtonSet.YES_NO);
+      if(再!==ui.Button.YES) return;
+    }
+  }
 
   // 最新のYahoo全在庫CSVで親コードを逆引き
   let 逆引き={}, csvName='';
@@ -142,7 +160,9 @@ function Yahoo在庫変更を出力本体_(preTargets, opts){
   ui.alert('Yahoo在庫変更出力を作成しました',
     '出力: '+変換.行.length+'行 / 要確認: '+変換.要確認.length+'件 / 除外: '+振り分け.除外.length+'件'
     +(未知.length?'\n⚠️ 日本在庫にこのEMS番号の行がありません: '+未知.join(', '):'')
-    +'\n\nA:D列をxlsmへ貼り付け→Yahoo反映→📦⑤で締めてください。',ui.ButtonSet.OK);
+    +'\n\nA:D列をxlsmへ貼り付け→Yahoo反映'+(tokens.length?'→📦⑤で締めてください。':'。出した分は日本在庫から外れます。'),ui.ButtonSet.OK);
+  return {ok:true,出力:変換.行.length,要確認:変換.要確認.length,除外:振り分け.除外.length,
+    要確認コード:変換.要確認.map(r=>String(r.商品コード||''))};
 }
 
 // 出力対象行の内容署名(EMS|コード|数量を整列連結)。⑤が「同じ内容を出力済みか」の判定に使う

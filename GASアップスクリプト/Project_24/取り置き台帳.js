@@ -1319,15 +1319,17 @@ function キャンセル戻しをYahoo反映済みにする本体_(){
 // 箱の余りは⑤便締めが自動で出力するため、ここでは扱わない(便ごとの二重加算を防ぐ)
 function 日本在庫CSVを作成(){ 直列_(日本在庫CSVを作成本体_); }
 function 日本在庫CSVを作成本体_(){
-  const ui=SpreadsheetApp.getUi();
   const 待ち=日本在庫_戻り待ち_読む_(), 未出力=待ち.filter(r=>!String(r.出力日時||'').trim());
-  if(!未出力.length){ ui.alert('CSVを作る戻り分がありません',
-    '日本在庫に「戻り」行がありません。\n(Yahoo戻し候補でチェック→「日本在庫へ移す」を先に行ってください。\n 箱の余りは📦⑤の便締めで自動出力されます)',ui.ButtonSet.OK); return; }
-  const 結果=Yahoo在庫変更を出力本体_(null,{戻りのみ:true});
-  if(!結果 || !結果.ok) return; // 出力を中止した場合は出力日時を入れない(次回も出せる)
+  const 結果=Yahoo在庫変更を出力本体_(null,{全便:true}); // 日本在庫にあるもの(箱の余り＋戻り)を丸ごと
+  if(!結果 || !結果.ok || !結果.出力) return; // 中止・CSV0行なら何も記録しない(次回も出せる)
+  if(!未出力.length) return;
+  // 実際にCSVへ出た戻り分だけ出力済みにする。逆引き失敗で「要確認」に落ちた分は日本在庫に残す
+  // (残さないとYahooへ入っていないのにリストから消える=売り損ね 2026-07-24)
+  const 要確認=new Set((結果.要確認コード||[]).map(c=>normCode_(c)));
+  const 出た=new Set(未出力.filter(r=>!要確認.has(normCode_(r.商品コード))).map(r=>String(r.処理ID||'')));
+  if(!出た.size) return;
   const 出力日時=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd HH:mm:ss');
-  const 未出力ID=new Set(未出力.map(r=>String(r.処理ID||'')));
-  日本在庫_戻り待ち_保存_(待ち.map(r=>未出力ID.has(String(r.処理ID||''))?Object.assign({},r,{出力日時}):r));
+  日本在庫_戻り待ち_保存_(待ち.map(r=>出た.has(String(r.処理ID||''))?Object.assign({},r,{出力日時}):r));
   日本在庫_戻り行を更新_(); // CSVにした分は日本在庫から外れる
 }
 

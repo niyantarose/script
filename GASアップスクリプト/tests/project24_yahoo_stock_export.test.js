@@ -124,17 +124,6 @@ test('日本在庫_戻り行: CSVを作った(出力日時あり)分はリスト
   assert.strictEqual(context.日本在庫_戻り行_(出力後).length, 0, 'Yahooへ渡した分は日本在庫から外れる');
 });
 
-test('対象行: 戻り行は便の指定に関係なく常に対象(未着チェックにも掛からない)', () => {
-  const r = context.Yahoo変更_対象行_([
-    {状態:'到着済',商品コード:'ARR01',余り数:1,EMS番号:'EG1'},
-    {状態:'到着済',商品コード:'OTHER',余り数:1,EMS番号:'EG9'},
-    {状態:'戻り',商品コード:'RET01',余り数:2,EMS番号:''}
-  ], new Set(['EG1']), new Set());
-  assert.deepStrictEqual(json(r.対象.map(x => x.商品コード)), ['ARR01', 'RET01'],
-    '別便EG9は落ち、戻りは便指定に関わらず出る');
-  assert.strictEqual(r.除外.length, 0, '戻りを未着扱いで除外しない');
-});
-
 test('対象行: 戻りのみモードは箱の余りを出さず戻り行だけをCSVにする', () => {
   const r = context.Yahoo変更_対象行_([
     {状態:'到着済',商品コード:'ARR01',余り数:1,EMS番号:'EG1'},
@@ -152,6 +141,27 @@ test('対象行: 戻りのみモードでない従来呼び出しは挙動が変
     {商品コード:'B2',余り数:1,EMS番号:'EG2'}
   ], new Set());
   assert.strictEqual(r.対象.length, 2);
+});
+
+test('対象行: 戻り行は便を指定した出力(⑤便締め・従来📤)には混ざらない', () => {
+  const rows=[
+    {状態:'到着済',商品コード:'ARR01',余り数:1,EMS番号:'EG1'},
+    {状態:'戻り',商品コード:'RET01',余り数:2,EMS番号:''}
+  ];
+  const 便指定 = context.Yahoo変更_対象行_(rows, new Set(['EG1']), new Set());
+  assert.deepStrictEqual(json(便指定.対象.map(x=>x.商品コード)), ['ARR01'],
+    '⑤に混ざると出力日時が付かず二重加算になるため戻りは出さない');
+  const 全便 = context.Yahoo変更_対象行_(rows, new Set(), new Set());
+  assert.deepStrictEqual(json(全便.対象.map(x=>x.商品コード)), ['ARR01','RET01'],
+    '便指定なし(日本在庫のCSVボタン)なら箱の余りも戻りも出す');
+});
+
+test('対象行: 戻りのみモードは箱の余りを出さず戻り行だけ(旧ボタン互換)', () => {
+  const r = context.Yahoo変更_対象行_([
+    {状態:'到着済',商品コード:'ARR01',余り数:1,EMS番号:'EG1'},
+    {状態:'戻り',商品コード:'RET01',余り数:2,EMS番号:''}
+  ], new Set(), new Set(), {戻りのみ:true});
+  assert.deepStrictEqual(json(r.対象.map(x=>x.商品コード)), ['RET01']);
 });
 
 process.exitCode = failures ? 1 : 0;
