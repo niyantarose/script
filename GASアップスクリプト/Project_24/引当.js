@@ -806,9 +806,11 @@ function 受注明細_現在確保を行配分_(rows, totalSecured){
 function 受注明細_確保列を書く_(candidates){
   const ss=SpreadsheetApp.getActive(), recv=ss.getSheetByName(HIKIATE_CFG.受注);
   if(!recv) return;
-  const M=列マップ_(recv), last=recv.getLastRow();
+  let M=列マップ_(recv); const last=recv.getLastRow();
   if(last<=M.hr) return;
   const cols=受注明細_確保列を用意_(recv), emsCol=EMS番号列を用意_(recv);
+  // 欠落列の再作成で後続列が移動するため、実データを読む前に最新の列位置へ更新する。
+  M=列マップ_(recv);
   const byKey={};
   (candidates||[]).forEach(c=>{
     if(String(c.判定||'')==='棚戻し待ち') return; // キャンセル戻し行は受注明細に無い
