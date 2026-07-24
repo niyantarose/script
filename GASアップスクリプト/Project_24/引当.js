@@ -808,8 +808,10 @@ function 受注明細_確保列を書く_(candidates){
   if(!recv) return;
   let M=列マップ_(recv); const last=recv.getLastRow();
   if(last<=M.hr) return;
+  // EMS列を先に作る。続く確保3列の作成でEMS列が右へ動く場合があるため、最後に位置を再取得する。
+  EMS番号列を用意_(recv);
   const cols=受注明細_確保列を用意_(recv), emsCol=EMS番号列を用意_(recv);
-  // 欠落列の再作成で後続列が移動するため、実データを読む前に最新の列位置へ更新する。
+  // 欠落列の再作成で後続列が移動するため、実データを読む前に全列を最新位置へ更新する。
   M=列マップ_(recv);
   const byKey={};
   (candidates||[]).forEach(c=>{
