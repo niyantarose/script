@@ -87,7 +87,7 @@ function onOpen(){
     .addItem('🔁 更新してから引当(EMS更新→即納→引当を一括)', '更新してから引当')
     .addItem('📦 到着済を在庫反映済みへ(便の締め・📤出力もここから)', '到着済を在庫反映済みへ')
     .addItem('📤 Yahoo在庫変更を出力(出力だけやり直す時用)', 'Yahoo在庫変更を出力')
-    .addItem('♻️ Yahoo戻し分だけ出力(棚へ戻った現物→CSV)', 'Yahoo戻し分を出力')
+    .addItem('📤 日本在庫のCSVデータ作成(戻り分)', '日本在庫CSVを作成')
     .addItem('⚖️ この便の引当をやり直す(到着日指定・複数可)', '便の引当をやり直す')
     .addItem('🔎 引当診断(受注番号で調べる)', '引当診断')
     .addItem('🔎 商品診断(商品コードで調べる)', '商品診断')
@@ -1984,7 +1984,7 @@ function 引当実行_本体_(options){
     (対象外?jp対象外:jp余り).push([対象外?'在庫対象外':'到着済',r.arrival,r.code,r.qty,r.ems]);
   });
   const jpRows=jp余り
-    .concat(typeof 日本在庫_戻り行_==='function'? 日本在庫_戻り行_(projectedLedger) : [])
+    .concat(typeof 日本在庫_戻り待ち行_==='function'? 日本在庫_戻り待ち行_() : [])
     .concat(jp対象外);
 
   // 今回EMS消費者は、同じallocationPlanから作った台帳投影の元EMSで表示する。

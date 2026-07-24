@@ -154,17 +154,17 @@ function 取り置き_日付部_(value){
   return m? m[1]+'-'+p(m[2])+'-'+p(m[3]) : '';
 }
 
-// 棚に戻った現物(キャンセル戻し・現物あり=Yahooへまだ足していない在庫)を日本在庫シートの行形式へ。
-// 箱の余りと同じ「Yahooへ足すべきもの」として合流表示し、📤出力のCSVに含める(2026-07-23)。
-// EMS番号は空にする: ⑤の便締め(EMS番号一致で対象を絞る)に巻き込まれ、確定前に二重加算されるのを防ぐ。
-// 商品コード+確定日でまとめる。再引当済み・Yahoo反映済みになった行は自動で消える(この状態だけを拾う)
-function 日本在庫_戻り行_(ledgerRows){
+// 「日本在庫へ移す」で確定した戻り現物(=Yahooへ足す待ち)を日本在庫シートの行形式へ。
+// 日本在庫が『Yahooへ足すものリスト』の唯一の場所になる運用(2026-07-24)。
+// EMS番号は空にする: ⑤の便締め(EMS番号一致で対象を絞る)に巻き込まれ二重加算されるのを防ぐ。
+// 商品コード+確定日でまとめる。CSVを作ると出力日時が入り、このリストから自動で消える
+function 日本在庫_戻り行_(待ちRows){
   const byKey={}, order=[];
-  (ledgerRows||[]).forEach(r=>{
-    if(!r || r.状態!==TORIOKI_STATUS.RETURN || r.戻し処理結果!==TORIOKI_RETURN.PRESENT) return;
-    const code=String(r.元EMS商品コード||r.商品コード||'').trim(), qty=取り置き_整数_(r.取り置き数量);
+  (待ちRows||[]).forEach(r=>{
+    if(!r || String(r.出力日時||'').trim()) return; // CSVを作った分はYahooへ渡したのでリストから外れる
+    const code=String(r.商品コード||'').trim(), qty=取り置き_整数_(r.数量);
     if(!code || !qty) return;
-    const day=取り置き_日付部_(r.更新日時)||取り置き_日付部_(r.登録日時)||'';
+    const day=取り置き_日付部_(r.確定日時)||'';
     const key=code+'|'+day;
     if(!(key in byKey)){ byKey[key]={到着日:day,商品コード:code,数量:0}; order.push(key); }
     byKey[key].数量+=qty;
