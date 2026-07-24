@@ -706,14 +706,49 @@
     return hit;
   }
 
+  // 2つの題が「同じ作品名の表記違い」か（漢字集合がほぼ一致するか）。
+  // K-9 の「K-9 警視庁公安部公安第9課異能対策係」と
+  // 「ケーナイン　警視庁公安部公安第９課異能対策係」は表記が違うだけなので true。
+  function isSameTitleInDifferentScript_(a, b) {
+    const aChars = _collectHanChars(a);
+    const bChars = _collectHanChars(b);
+    if (!aChars.length || !bChars.length) return false;
+    const aSet = new Set(aChars);
+    const bSet = new Set(bChars);
+    let shared = 0;
+    for (const ch of aSet) if (bSet.has(ch)) shared += 1;
+    const smaller = Math.min(aSet.size, bSet.size);
+    return smaller > 0 && shared / smaller >= 0.8;
+  }
+
   /**
    * GAS等から取得した日本語タイトル候補が、元のクエリと整合しているか検証する。
    * 全球高考 → 週刊ダイヤモンド のような漢字ゼロ重なりの誤マッチを弾く。
+   *
+   * @param {string[]} [siblingTitles] 同じ照会結果に含まれる他の候補
+   *   （MU の matchedTitles / lookup.candidates）。
+   *   漢字のみの候補は単独では中文題（日出之家）と日本語漢字題（K-9 …）を
+   *   区別できないため、「他にかな入りの候補があるか」を判断材料に使う。
    * @returns {boolean} 採用してよいなら true
    */
-  function validateJapaneseTitleAgainstQuery_(jpTitle, originalQueries, provider) {
+  function validateJapaneseTitleAgainstQuery_(jpTitle, originalQueries, provider, siblingTitles) {
     const jp = compactSpaces(jpTitle);
     if (!jp) return false;
+
+    // 漢字のみの候補で、同じ照会結果に「別題の」かな入り候補があるなら、
+    // こちらは中文題の可能性が高いので却下する（かな入り候補が本命）。
+    // かな入り兄弟が無ければ従来どおり通す（K-9 のようなかな無し日本語題を守る）。
+    if (Array.isArray(siblingTitles) && siblingTitles.length && !_hasJapaneseKana(jp)) {
+      const hasKanaSibling = siblingTitles.some(sibling => {
+        const s = compactSpaces(sibling);
+        if (!s || s === jp) return false;
+        if (!_hasJapaneseKana(s)) return false;
+        // 同一題のカナ読み別名は「別の候補」ではないので却下材料にしない
+        return !isSameTitleInDifferentScript_(jp, s);
+      });
+      if (hasKanaSibling) return false;
+    }
+
     // 信頼度の高いプロバイダーは検証スキップ（辞書一致など）
     const trustedProviders = new Set(['titleAliasDictionary', '自社タイトル別名辞書', 'chilchil']);
     if (trustedProviders.has(String(provider || ''))) return true;

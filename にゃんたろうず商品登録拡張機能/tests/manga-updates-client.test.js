@@ -344,4 +344,53 @@ if (pickAni(unrelatedMedia, ['全球高考']) !== '') {
   throw new Error(`AniList: unrelated work should be rejected, got: ${pickAni(unrelatedMedia, ['全球高考'])}`);
 }
 
+// === 〇(U+3007) は中国語の数字表記に日常的に使われるので「かな」扱いしない ===
+// 〇 をかな扱いすると、中文題がエコー除外を免除された上で
+// かな優先の恩恵まで受けて、本物の日本語題を押しのける。
+const maruDetail = {
+  title: 'Snow 2008',
+  associated: [
+    { title: '二〇〇八年的第一場雪' },
+    { title: '二千八年の初雪' },
+  ],
+};
+const maruPicked = t.pickJapaneseFromDetail(maruDetail, ['二〇〇八年的第一場雪'], {
+  seriesVerified: true,
+  echoQueries: ['二〇〇八年的第一場雪'],
+});
+if (maruPicked !== '二千八年の初雪') {
+  throw new Error(`〇 should not count as kana. expected 二千八年の初雪, got: ${maruPicked}`);
+}
+
+// === スコア経路（seriesVerified でない）にもエコー除外とかな優先を効かせる ===
+// 現状ここを本番から呼ぶ経路は無いが、__test で公開されており将来の地雷。
+const scoreDetail = {
+  title: 'Our Sunny Days',
+  associated: [
+    { title: '日出之家' },
+    { title: '日昇之屋' },
+    { title: sunnyJp },
+  ],
+};
+const scorePicked = t.pickJapaneseFromDetail(scoreDetail, ['日昇之屋'], {
+  seriesVerified: false,
+  echoQueries: ['日昇之屋'],
+});
+if (scorePicked !== sunnyJp) {
+  throw new Error(`score path should exclude echo and prefer kana. expected ${sunnyJp}, got: ${scorePicked}`);
+}
+
+// === pickJapaneseTitle（公開名が最も紛らわしい関数）も同じ規則に従う ===
+const legacyPick = t.pickJapaneseTitle;
+if (typeof legacyPick !== 'function') {
+  throw new Error('pickJapaneseTitle が __test に公開されていない');
+}
+const legacyPicked = legacyPick(
+  ['Our Sunny Days', '日出之家', '日昇之屋', sunnyJp],
+  ['日昇之屋']
+);
+if (legacyPicked !== sunnyJp) {
+  throw new Error(`pickJapaneseTitle should prefer kana JP title, got: ${legacyPicked}`);
+}
+
 console.log('manga-updates-client.test.js: ok');

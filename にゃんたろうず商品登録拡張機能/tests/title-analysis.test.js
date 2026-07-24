@@ -284,4 +284,54 @@ for (const c of valCases) {
   }
 }
 
+// 兄弟候補ガード: 漢字のみの候補は、同じ照会結果にかな入り候補があるなら却下する。
+// 単独では中文題（日出之家）と日本語漢字題（K-9 …）を区別できないため、
+// 「他にかな入りの候補があるか」を判断材料に使う。
+const siblingCases = [
+  {
+    name: '中文題: かな入り兄弟がいるので却下',
+    jp: '日出之家',
+    q: ['日昇之屋'],
+    siblings: ['日出之家', '日昇之屋', '陽が昇る家〜田舎で出会った俺たち〜'],
+    expected: false,
+  },
+  {
+    name: '正解のかな入り題は採用',
+    jp: '陽が昇る家〜田舎で出会った俺たち〜',
+    q: ['日昇之屋'],
+    siblings: ['日出之家', '日昇之屋', '陽が昇る家〜田舎で出会った俺たち〜'],
+    expected: true,
+  },
+  {
+    name: 'K-9型: かな入り兄弟が無いので漢字のみでも採用',
+    jp: 'K-9 警視庁公安部公安第9課異能対策係',
+    q: ['K-9 警視廳公安部公安第9課異能對策組'],
+    siblings: ['K-9 警視庁公安部公安第9課異能対策係', 'K-9: Public Security Bureau'],
+    expected: true,
+  },
+  {
+    name: 'K-9型: カナ読み別名は同一題なので却下材料にしない',
+    jp: 'K-9 警視庁公安部公安第9課異能対策係',
+    q: ['K-9 警視廳公安部公安第9課異能對策組'],
+    siblings: ['K-9 警視庁公安部公安第9課異能対策係', 'ケーナイン　警視庁公安部公安第９課異能対策係'],
+    expected: true,
+  },
+  {
+    name: '兄弟候補が無ければ従来どおり（後方互換）',
+    jp: '日出之家',
+    q: ['日昇之屋'],
+    siblings: undefined,
+    expected: true,
+  },
+];
+for (const c of siblingCases) {
+  const actual = vfn(c.jp, c.q, 'mangaUpdates(extension)', c.siblings);
+  if (actual !== c.expected) {
+    failed += 1;
+    console.error(`[NG] validateJapaneseTitleAgainstQuery(${c.name}): expected=${c.expected} actual=${actual}`);
+  } else {
+    console.log(`[OK] validateJapaneseTitleAgainstQuery: ${c.name}`);
+  }
+}
+
 process.exit(failed ? 1 : 0);

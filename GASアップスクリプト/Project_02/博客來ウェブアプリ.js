@@ -895,9 +895,16 @@ function cascadeLookupJapaneseTitleResult_(language, category, originalTitle, au
   const validationQueries = buildLookupValidationQueriesFromContext_(context);
   const bestCandidate = pickBestCandidate_(result.candidates, validationQueries) || '';
   if (bestCandidate) {
-    result.japaneseTitle = bestCandidate;
-    result.source = '候補';
-    result.trace.push('candidate:hit');
+    // 全プロバイダが miss した後の最後の拾い上げなので、確度が低い。
+    // 漢字のみの候補は中文題と区別できないため「解決」に昇格させない
+    // （中国語題を resolved と称さない、という pickJapaneseMangaUpdatesTitle_ と同じ方針）。
+    if (hasKanaJapaneseSignal_(bestCandidate)) {
+      result.japaneseTitle = bestCandidate;
+      result.source = '候補';
+      result.trace.push('candidate:hit');
+    } else {
+      result.trace.push('candidate:skip(kanji_only)');
+    }
   }
 
   return result;
@@ -1355,15 +1362,19 @@ function extractMangaUpdatesSiteDetailTitles_(html) {
 
 function pickMatchingMangaUpdatesSiteJapaneseTitle_(titles, queryKeys, language, category, originalProductTitle) {
   const uniqueTitles = uniqNonEmptyTitles_(titles || []);
-  const japaneseTitles = uniqueTitles.filter(function(title) {
-    return hasJapaneseTitleSignal_(title);
+  if (!uniqueTitles.length) return '';
+
+  // (1) 作品同定: このページの題名のどれかがクエリに一致すれば対象作品と確定。
+  //     クエリは台湾商品なので中国語であり、一致するのは原題エコーになる。
+  const seriesMatched = uniqueTitles.some(function(title) {
+    return doesMangaUpdatesTitleMatchQuery_(title, queryKeys, language, category, originalProductTitle);
   });
+  if (!seriesMatched) return '';
 
-  for (let i = 0; i < japaneseTitles.length; i += 1) {
-    if (doesMangaUpdatesTitleMatchQuery_(japaneseTitles[i], queryKeys, language, category, originalProductTitle)) return japaneseTitles[i];
-  }
-
-  return '';
+  // (2) 同定できたページの題名列から日本語題を選ぶ。
+  //     同定に使ったエコー（中国語題そのもの）は「訳」ではないので除外し、
+  //     漢字のみ候補より別題のかな入り候補を優先する（pickBestCandidate_ と共通の規則）。
+  return pickBestCandidate_(uniqueTitles, uniqNonEmptyTitles_([originalProductTitle]));
 }
 
 function decodeHtmlEntities_(value) {
@@ -2976,6 +2987,28 @@ function buildLookupValidationQueries_(titleAnalysis, rowData) {
 function validateClientJapaneseTitleLookup_(lookup, titleAnalysis, rowData) {
   const jp = String(lookup && lookup.japaneseTitle || '').trim();
   if (!jp) return false;
+
+  // 漢字のみの候補で、同じ照会結果に「別題の」かな入り候補があるなら、
+  // こちらは中文題の可能性が高いので却下する（漢字重なり率では区別できない）。
+  // かな入り候補が無ければ従来判定へ（K-9 のようなかな無し日本語題を守る）。
+  if (!hasKanaJapaneseSignal_(jp)) {
+    const siblings = uniqNonEmptyTitles_(
+      []
+        .concat(Array.isArray(lookup && lookup.candidates) ? lookup.candidates : [])
+        .concat(Array.isArray(lookup && lookup.matchedTitles) ? lookup.matchedTitles : [])
+        .map(function(c) {
+          return String((c && typeof c === 'object' ? (c.title || c.name) : c) || '').trim();
+        })
+    );
+    const hasKanaSibling = siblings.some(function(sibling) {
+      if (!sibling || sibling === jp) return false;
+      if (!hasKanaJapaneseSignal_(sibling)) return false;
+      // 同一題のカナ読み別名は「別の候補」ではないので却下材料にしない
+      return !muIsSameTitleInDifferentScript_(jp, sibling);
+    });
+    if (hasKanaSibling) return false;
+  }
+
   const queries = buildLookupValidationQueries_(titleAnalysis, rowData);
   if (!queries.length) return true;
   var queryHan = '';

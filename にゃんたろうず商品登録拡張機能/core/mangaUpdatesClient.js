@@ -119,8 +119,12 @@
     return result;
   }
 
+  // \u3072\u3089\u304C\u306A\u30FB\u30AB\u30BF\u30AB\u30CA\u30FB\u9577\u97F3\u30FB\u8E0A\u308A\u5B57\uFF08\u3005\u3006\uFF09\u3002
+  // \u3007(U+3007) \u306F\u4E2D\u56FD\u8A9E\u306E\u6570\u5B57\u8868\u8A18\uFF08\u4E8C\u3007\u3007\u516B\u5E74\u2026\uFF09\u306B\u65E5\u5E38\u7684\u306B\u4F7F\u308F\u308C\u308B\u305F\u3081\u542B\u3081\u306A\u3044\u3002
+  // \u542B\u3081\u308B\u3068\u4E2D\u6587\u984C\u304C\u300C\u304B\u306A\u5165\u308A\uFF1D\u65E5\u672C\u8A9E\u539F\u984C\u300D\u3068\u8AA4\u8A8D\u3055\u308C\u3001\u30A8\u30B3\u30FC\u9664\u5916\u3092\u514D\u9664\u3055\u308C\u305F\u4E0A\u306B
+  // \u304B\u306A\u512A\u5148\u306E\u6069\u6075\u307E\u3067\u53D7\u3051\u3066\u672C\u7269\u306E\u65E5\u672C\u8A9E\u984C\u3092\u62BC\u3057\u306E\u3051\u308B\u3002
   function hasKanaJapaneseSignal(value) {
-    return /[\u3041-\u3096\u30A1-\u30FA\u30FC\u309D\u309E\u3005\u3006\u3007]/.test(String(value || ''));
+    return /[\u3041-\u3096\u30A1-\u30FA\u30FC\u309D\u309E\u3005\u3006]/.test(String(value || ''));
   }
 
   function hasJapaneseTitleSignal(value) {
@@ -491,13 +495,16 @@
     return '';
   }
 
-  function pickJapaneseTitle(values) {
+  // 候補列から日本語題を選ぶ汎用版。名前が紛らわしく将来誤用されやすいので、
+  // 素朴な「最初の日本語シグナル」ではなく本命の選定規則に委譲する。
+  function pickJapaneseTitle(values, echoQueries) {
+    var candidates = [];
     var i;
     for (i = 0; i < (values || []).length; i += 1) {
       var t = asTitleText(values[i]);
-      if (hasJapaneseTitleSignal(t)) return t;
+      if (t && hasJapaneseTitleSignal(t)) candidates.push(t);
     }
-    return '';
+    return pickPreferredJapaneseCandidate(candidates, echoQueries);
   }
 
   function normalizeTitleKey(value) {
@@ -709,15 +716,34 @@
       return pickPreferredJapaneseCandidate(jpCandidates, options.echoQueries);
     }
 
+    // スコア経路もクエリのエコー（中文原題そのもの）を先に落とす。
+    // scoreTitleMatchWithKeys はキー完全一致に最高得点を与えるため、
+    // 除外しないとクエリの中文題が必ず勝つ。
+    var scored = [];
+    for (i = 0; i < jpCandidates.length; i += 1) {
+      if (isChineseEchoOfQueries(jpCandidates[i], options.echoQueries)) continue;
+      scored.push(jpCandidates[i]);
+    }
+    if (!scored.length) scored = jpCandidates;
+
     // クエリや英題（Saving My Sweetheart など）に最も近い日本語候補を優先する
-    var best = jpCandidates[0];
+    var best = scored[0];
     var bestScore = scoreTitleMatchWithKeys(best, preferKeys || []);
-    for (i = 1; i < jpCandidates.length; i += 1) {
-      var c = jpCandidates[i];
+    for (i = 1; i < scored.length; i += 1) {
+      var c = scored[i];
       var s = scoreTitleMatchWithKeys(c, preferKeys || []);
       if (s > bestScore) {
         best = c;
         bestScore = s;
+      }
+    }
+
+    // 先頭が漢字のみなら、別題のかな入り候補を優先（seriesVerified 経路と同じ規則）
+    if (!hasKanaJapaneseSignal(best)) {
+      for (i = 0; i < scored.length; i += 1) {
+        if (hasKanaJapaneseSignal(scored[i]) && !isSameTitleInDifferentScript(best, scored[i])) {
+          return String(scored[i]).trim();
+        }
       }
     }
     return String(best || '').trim();
@@ -1090,6 +1116,8 @@
       pickJapaneseFromDetail: pickJapaneseFromDetail,
       pickAniListJapaneseFromMedia: pickAniListJapaneseFromMedia,
       pickPreferredJapaneseCandidate: pickPreferredJapaneseCandidate,
+      pickJapaneseTitle: pickJapaneseTitle,
+      hasKanaJapaneseSignal: hasKanaJapaneseSignal,
       collectTitlesForMatch: collectTitlesForMatch,
       normalizeTitleKey: normalizeTitleKey,
       base36SlugToDecimalString: base36SlugToDecimalString,

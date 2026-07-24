@@ -341,9 +341,14 @@ async function enrichItemWithTaiwanMangaUpdates(item) {
     const validationQueries = typeof buildMuQueryVariants === 'function'
       ? buildMuQueryVariants(analysis, rawItem)
       : queries;
+    // 同じ照会結果の他候補（associated 全件）。漢字のみの候補が中文題かどうかの
+    // 判断材料として検証側へ渡す。
+    const siblingTitles = Array.isArray(muResult?.matchedTitles)
+      ? muResult.matchedTitles.map(normalizeTaiwanLookupText).filter(Boolean)
+      : [];
     if (japaneseTitle
       && typeof validateJapaneseTitleAgainstQuery === 'function'
-      && !validateJapaneseTitleAgainstQuery(japaneseTitle, validationQueries, muResult?.provider || 'mangaUpdates(extension)')) {
+      && !validateJapaneseTitleAgainstQuery(japaneseTitle, validationQueries, muResult?.provider || 'mangaUpdates(extension)', siblingTitles)) {
       japaneseTitle = '';
     }
     const status = japaneseTitle ? 'resolved' : (muResult?.status === 'series_found_no_japanese' ? 'series_found_no_japanese' : 'not_found');

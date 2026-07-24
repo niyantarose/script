@@ -199,5 +199,80 @@ if (typeof pickBest !== 'function') {
   eq('候補列: 空なら空文字', pickBest([], ['なにか']), '');
 }
 
+// ============================================================
+// pickMatchingMangaUpdatesSiteJapaneseTitle_ : MUサイト検索結果の題名列から選ぶ。
+// クエリは台湾商品なので常に中国語。「クエリと一致する候補」を返す構造だと
+// 原題エコーがそのまま日本語タイトルになる。
+// ============================================================
+const pickSite = ctx.pickMatchingMangaUpdatesSiteJapaneseTitle_;
+if (typeof pickSite !== 'function') {
+  console.error('[NG] pickMatchingMangaUpdatesSiteJapaneseTitle_ が未定義');
+  failed++;
+} else {
+  const siteKeys = ctx.buildMangaUpdatesTitleKeys_('日昇之屋', '台湾', 'まんが', '日昇之屋');
+
+  eq('サイト検索: クエリのエコーを日本語タイトルにしない',
+     pickSite(['日昇之屋'], siteKeys, '台湾', 'まんが', '日昇之屋'),
+     '');
+
+  eq('サイト検索: かな入り日本語題があればそれを採る',
+     pickSite(['日昇之屋', '日出之家', '陽が昇る家〜田舎で出会った俺たち〜'],
+              siteKeys, '台湾', 'まんが', '日昇之屋'),
+     '陽が昇る家〜田舎で出会った俺たち〜');
+
+  // 字体差でキー一致しない題は、この関数では従来から採用されない（''）。
+  // 別経路（MU API の associated / 漢字重なり判定）で拾う設計なので、
+  // 今回のガード追加でこの挙動が変わっていないことだけ確認する。
+  const k9Keys = ctx.buildMangaUpdatesTitleKeys_(
+    'K-9 警視廳公安部公安第9課異能對策組', '台湾', 'まんが', 'K-9 警視廳公安部公安第9課異能對策組');
+  eq('サイト検索: 字体差でキー不一致なら従来どおり採用しない',
+     pickSite(['K-9 警視庁公安部公安第9課異能対策係'],
+              k9Keys, '台湾', 'まんが', 'K-9 警視廳公安部公安第9課異能對策組'),
+     '');
+}
+
+// ============================================================
+// validateClientJapaneseTitleLookup_ : 拡張機能が送ってきた照会結果をGAS側で検算する
+// 唯一の関門。漢字重なり率だけで判定していると、中文題（原題と重なりが高い）を止められない。
+// ============================================================
+const validateClient = ctx.validateClientJapaneseTitleLookup_;
+if (typeof validateClient !== 'function') {
+  console.error('[NG] validateClientJapaneseTitleLookup_ が未定義');
+  failed++;
+} else {
+  const rowData = { 原題タイトル: '日昇之屋', 商品名: '台湾版 まんが 日昇之屋' };
+  const analysis = { extractedWorkTitle: '日昇之屋', normalizedSearchTitle: '日昇之屋' };
+
+  eq('クライアント検算: 中文題は候補にかな入りがあるので却下',
+     validateClient({
+       japaneseTitle: '日出之家',
+       provider: 'mangaUpdates',
+       candidates: ['日出之家', '日昇之屋', '陽が昇る家〜田舎で出会った俺たち〜'],
+     }, analysis, rowData),
+     false);
+
+  eq('クライアント検算: 正解のかな入り題は通す',
+     validateClient({
+       japaneseTitle: '陽が昇る家〜田舎で出会った俺たち〜',
+       provider: 'mangaUpdates',
+       candidates: ['日出之家', '日昇之屋', '陽が昇る家〜田舎で出会った俺たち〜'],
+     }, analysis, rowData),
+     true);
+
+  eq('クライアント検算: かな入り候補が無ければ漢字のみでも通す(K-9型)',
+     validateClient({
+       japaneseTitle: 'K-9 警視庁公安部公安第9課異能対策係',
+       provider: 'mangaUpdates',
+       candidates: ['K-9 警視庁公安部公安第9課異能対策係'],
+     },
+     { extractedWorkTitle: 'K-9 警視廳公安部公安第9課異能對策組' },
+     { 原題タイトル: 'K-9 警視廳公安部公安第9課異能對策組' }),
+     true);
+
+  eq('クライアント検算: 候補列が無ければ従来判定（後方互換）',
+     validateClient({ japaneseTitle: '日出之家', provider: 'mangaUpdates' }, analysis, rowData),
+     true);
+}
+
 process.exitCode = failed ? 1 : 0;
 console.log(failed ? `\n${failed} failed` : '\nall passed');

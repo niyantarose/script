@@ -384,6 +384,31 @@ function save() {
   });
 }
 
+// 照会結果(resolved)の日本語タイトルをシートへ書いてよいか。
+// 同じ照会結果の他候補（candidates / matchedTitles）を渡して、漢字のみの候補が
+// 中文題かどうかを判定させる。検証関数が無い環境では従来どおり素通しする。
+function isAcceptableLookupJapaneseTitle_(jp, lookup, analysis, product) {
+  if (typeof validateJapaneseTitleAgainstQuery !== 'function') return true;
+
+  const queries = typeof buildMuQueryVariants === 'function'
+    ? buildMuQueryVariants(analysis, product)
+    : [String(product?.原題タイトル || product?.商品名 || '').trim()].filter(Boolean);
+  if (!queries.length) return true;
+
+  const siblings = []
+    .concat(Array.isArray(lookup?.candidates) ? lookup.candidates : [])
+    .concat(Array.isArray(lookup?.matchedTitles) ? lookup.matchedTitles : [])
+    .map(c => String((c && typeof c === 'object' ? (c.title || c.name) : c) || '').trim())
+    .filter(Boolean);
+
+  return validateJapaneseTitleAgainstQuery(
+    jp,
+    queries,
+    lookup?.provider || 'mangaUpdates(extension)',
+    siblings
+  );
+}
+
 function productForSheetRowBuild_(product) {
   // 商品ページのタイトル直下から取得できた日本語タイトルが最優先（最も信頼できる）。
   const pageTrustedJp = String(product?.日本語タイトル取得元 || '') === 'page_trusted'
@@ -397,19 +422,23 @@ function productForSheetRowBuild_(product) {
       '作品名（日本語）': product['作品名（日本語）'] || pageTrustedJp,
     };
   }
-  const lookup = product?.japaneseTitleLookup || null;
-  if (lookup?.status === 'resolved' && String(lookup.japaneseTitle || '').trim()) {
-    const jp = String(lookup.japaneseTitle).trim();
-    return {
-      ...product,
-      日本語タイトル: jp,
-      作品名日本語: product.作品名日本語 || jp,
-      '作品名（日本語）': product['作品名（日本語）'] || jp,
-    };
-  }
   const analysis = product?.titleAnalysis || (typeof analyzeProductTitle === 'function'
     ? analyzeProductTitle({ ...product, source: 'books_tw' })
     : null);
+  const lookup = product?.japaneseTitleLookup || null;
+  if (lookup?.status === 'resolved' && String(lookup.japaneseTitle || '').trim()) {
+    const jp = String(lookup.japaneseTitle).trim();
+    // resolved を無検証で採用しない。storage には照会側の修正前に入った
+    // 誤値（中文題）が残っていることがあり、ここが最後の関門になる。
+    if (isAcceptableLookupJapaneseTitle_(jp, lookup, analysis, product)) {
+      return {
+        ...product,
+        日本語タイトル: jp,
+        作品名日本語: product.作品名日本語 || jp,
+        '作品名（日本語）': product['作品名（日本語）'] || jp,
+      };
+    }
+  }
   return stripInvalidPageJapaneseTitle_(product, analysis);
 }
 
