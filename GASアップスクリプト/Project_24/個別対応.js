@@ -351,8 +351,14 @@ function 個別対応_同商品有効割当あり_(ban, code){
       if(個別対応_P注文展開_(r.注文番号,r.数量).some(e=>e.ban===ban && e.qty>0)) return true;
     }
   }
-  const hist=引当履歴_反映済み割当マップ_();
-  return (hist[ban]||[]).some(e=>e.qty>0 && targetKeys.indexOf(e.key)>=0);
+  // 引当履歴の過去取込は帳簿記録に過ぎない(物理ピックの裏付けなし)ため見ない。
+  // 台帳の取り置き中だけを有効割当とする(2026-07-21 幽霊確保対策)
+  try{
+    return 取り置き台帳_読む_().some(r=>r.状態==='取り置き中'
+      && String(r.受注番号||'').trim()===String(ban||'').trim()
+      && (codeKeys_(String(r.SKU||'')).some(k=>targetKeys.indexOf(k)>=0)
+        || codeKeys_(String(r.商品コード||'')).some(k=>targetKeys.indexOf(k)>=0)));
+  }catch(e){ return false; }
 }
 
 function 個別対応_日付キー_(v){

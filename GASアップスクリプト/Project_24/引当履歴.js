@@ -327,6 +327,37 @@ function 到着済を在庫反映済みへ本体_(){
   const bad=targets.filter(t=>!counts[t]);
   if(bad.length){ ui.alert('到着済に無いEMS番号があります: '+bad.join(', ')+'\n入力し直してください。'); return; }
 
+  // 【締め前の先行残検査と未ピック確認】台帳が読めない時は安全側に停止する(2026-07-22 握り潰しcatch廃止)。
+  // 希望日待ちは納品書が出ず現物の抜き忘れが起きやすい(2026-07-21 実例10117699の教訓)。
+  // 抜き忘れたまま締めると、確保済みの現物が余りと一緒にYahoo保管へ紛れて宙に浮く。
+  let 締め台帳;
+  try{ 締め台帳=取り置き台帳_読む_(); }
+  catch(e){ ui.alert('便を締められません','取り置き台帳が読めません(安全のため中止):\n'+e.message,ui.ButtonSet.OK); return; }
+  {
+    const 締めセット=new Set(targets);
+    // 先行引当(帳簿のみ・現物なし)が対象便に残っていれば締めない。④で到着済へ昇格してから。
+    const 先行残=取り置き_便締め先行残検査_(締め台帳,締めセット,{});
+    if(先行残){ ui.alert('便を締められません',先行残,ui.ButtonSet.OK); return; }
+    // 未ピック一覧は物理対象行(到着済・現物確認済み・要移行)だけを数える
+    const 未ピック=締め台帳.filter(r=>String(r.状態||'')==='取り置き中'
+      && 締めセット.has(String(r.元EMS番号||'').trim())
+      && 取り置き_物理オペ対象行_(r,{}));
+    if(未ピック.length){
+      const byBan={};
+      未ピック.forEach(r=>{ const b=String(r.受注番号||'');
+        (byBan[b]=byBan[b]||[]).push(String(r.商品コード||'')+'×'+(Number(r.取り置き数量)||0)); });
+      const bans=Object.keys(byBan);
+      const 一覧=bans.slice(0,25).map(b=>'・'+b+': '+byBan[b].join(', '));
+      const pick=ui.alert('締め前の未ピック確認',
+        'この便には未出荷の確保(取り置き中)が '+未ピック.length+'行・'+bans.length+'注文あります。\n'
+        +'現物を抜いて納品書を出しましたか？（希望日待ちは納品書が出ないので特に注意）\n\n'
+        +一覧.join('\n')+(bans.length>25?'\n…ほか'+(bans.length-25)+'注文':'')
+        +'\n\n抜き終わっていればOK ／ まだならキャンセルして先にピックしてください',
+        ui.ButtonSet.OK_CANCEL);
+      if(pick!==ui.Button.OK) return;
+    }
+  }
+
   const active=SpreadsheetApp.getActive(), jp=active.getSheetByName(HIKIATE_CFG.純在庫);
   if(!jp || jp.getLastRow()<2){ ui.alert('日本在庫に引当結果がありません。先に② 引き当て実行を正常完了してください。'); return; }
   const jpLastCol=jp.getLastColumn();
@@ -335,12 +366,51 @@ function 到着済を在庫反映済みへ本体_(){
   if(jpCode<0 || jpQty<0 || jpEms<0){ ui.alert('日本在庫の見出しが不足しています。先に② 引き当て実行をやり直してください。'); return; }
   const targetSet=new Set(targets), jpLast=jp.getLastRow();
   const jpData=jpLast>2?jp.getRange(3,1,jpLast-2,jpLastCol).getDisplayValues():[];
-  const surplus=jpData.map(row=>{
+  const 箱余り=jpData.map(row=>{
     const ems=String(row[jpEms]||'').trim(), sourceCode=String(row[jpCode]||'').trim();
     return {ems,code:sourceCode,sourceCode,qty:Number(row[jpQty])||0};
   }).filter(row=>targetSet.has(row.ems)&&row.qty>0);
+  // 📤 ⑤からCSVは自動作成しない。日本在庫を目視確認してCSVボタンを押した記録が、
+  // 今締める便のEMS・商品コード・数量と一致する場合だけ先へ進む。
+  let 除外理由={}; // 商品コード→Yahooへ入らなかった理由(移動台帳へ記録しない根拠)
+  let surplus=箱余り;
+  if(箱余り.length){
+    let 除外=null; try{ 除外=全件再計算_マスタ除外集合_(); }catch(e){ 除外=new Set(); }
+    const 振り分け=Yahoo変更_対象行_(
+      箱余り.map(r=>({商品コード:r.sourceCode,余り数:r.qty,EMS番号:r.ems})),
+      targetSet,除外);
+    振り分け.除外.forEach(r=>{ 除外理由[normCode_(r.商品コード)]=r.理由; });
+    const 出力対象=振り分け.対象;
+    if(出力対象.length){
+      let 記録=null;
+      try{ 記録=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null'); }catch(e){}
+      const 出力済み=Yahoo変更_出力記録が対象を含む_(出力対象,記録);
+      if(!出力済み){
+        ui.alert('便を締められません',
+          '日本在庫を確認してから「📤 CSVデータ作成」ボタンを押してください。\n'+
+          'CSV作成後に数量が変わった場合も、もう一度日本在庫を確認してCSVを作り直してください。',
+          ui.ButtonSet.OK);
+        return;
+      }
+    }
+    // Yahooへ出せないコード(親コードを逆引きできない=未出品)はその場で計算する。保存済み記録から
+    // 読むと、要確認コードを持たない古い記録を「要確認0件」と誤読して元の不具合が再発する(2026-07-24レビュー)
+    let 要確認コード=[];
+    try{ if(typeof Yahoo変更_要確認コード_==='function') 要確認コード=Yahoo変更_要確認コード_(出力対象)||[]; }catch(e){}
+    要確認コード.forEach(c=>{ 除外理由[normCode_(c)]='Yahoo全在庫CSVに無くCSVへ出せていない'; });
+    // Yahooへ実際に入らなかった分(在庫対象外・要確認)は「Yahoo移動済み」にしない。
+    // 記録すると現物は日本にあるのに帳簿から消える(2026-07-24 ★コピペ5・PromotionalItem5で発生)
+    surplus=箱余り.filter(r=>!除外理由[normCode_(r.sourceCode)]);
+  }
+  const 除外行=箱余り.filter(r=>除外理由[normCode_(r.sourceCode)]);
+  // 未出品(要確認)= Yahooに出品されればCSVへ出せる分。締めると日本在庫から消えるので持ち越す
+  const 未出品行=除外行.filter(r=>/Yahoo全在庫CSVに無く/.test(除外理由[normCode_(r.sourceCode)]||''));
   const moveLines=['EMS番号 / 商品コード / Yahooへ移す数量'].concat(
-    surplus.length?surplus.map(row=>row.ems+' / '+row.sourceCode+' / '+row.qty):['(Yahoo移動対象なし)']);
+    surplus.length?surplus.map(row=>row.ems+' / '+row.sourceCode+' / '+row.qty):['(Yahoo移動対象なし)'])
+    .concat(除外行.length?['','■ Yahooへ入れないので移動記録しません(現物は日本にあります)',
+      '※ 締めるとこの箱は日本在庫シートから消え、⑤の対象(到着済)でもなくなります。']
+      .concat(未出品行.length?['　 未出品の分は日本在庫の「戻り」行へ持ち越すので、Yahoo出品後にCSVを作れます。']:[])
+      .concat(除外行.map(r=>r.sourceCode+' / '+r.qty+' / '+除外理由[normCode_(r.sourceCode)])):[]);
   const confirm=ui.alert('Yahoo移動の最終確認',moveLines.join('\n')+'\n\nYahoo在庫への反映が完了している場合だけOK',ui.ButtonSet.OK_CANCEL);
   if(confirm!==ui.Button.OK) return;
 
@@ -348,6 +418,25 @@ function 到着済を在庫反映済みへ本体_(){
   try{ movementPlan=EMS在庫移動_箱計画_(surplus,EMS在庫移動台帳_読む_(),new Date()); }
   catch(error){ ui.alert('Yahoo移動を中止しました',error.message,ui.ButtonSet.OK); return; }
   if(movementPlan.errors.length){ ui.alert('Yahoo移動を中止しました',movementPlan.errors.join('\n'),ui.ButtonSet.OK); return; }
+
+  // 未出品(要確認)の現物は締めると日本在庫から消えるため、戻り待ちへ持ち越して追えるようにする。
+  // Yahoo出品後に「📤 CSVデータ作成」で出力すると出力日時が入り、自動的にこの一覧から外れる。
+  // ★コピペ・贈呈品などの在庫対象外はCSVに永久に出ないので積まない(溜まり続けるため 2026-07-24)
+  if(未出品行.length){
+    try{
+      if(typeof 日本在庫_戻り待ち_読む_==='function' && typeof 日本在庫_戻り待ち_保存_==='function'){
+        const 待ち=日本在庫_戻り待ち_読む_(), 既存=new Set(待ち.map(r=>String(r.処理ID||'')));
+        const 確定日時=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd HH:mm:ss');
+        未出品行.forEach(r=>{
+          const id='締め残|'+r.ems+'|'+normCode_(r.sourceCode);
+          if(既存.has(id)) return;
+          待ち.push({処理ID:id,商品コード:r.sourceCode,数量:r.qty,確定日時,出力日時:''});
+        });
+        日本在庫_戻り待ち_保存_(待ち);
+      }
+    }catch(e){ ui.alert('未出品分の持ち越しに失敗しました',e.message+'\n(締めは続行します。'
+      +未出品行.map(r=>r.sourceCode+'×'+r.qty).join(', ')+' を控えてください)',ui.ButtonSet.OK); }
+  }
 
   try{ 引当履歴_今回到着分を記録_(true); }catch(error){}
 
@@ -380,49 +469,17 @@ function 到着済を在庫反映済みへ本体_(){
 
   let up={追加:0,重複:0,対象:0};
   try{ const r=引当履歴_EMSリストから記録_(['在庫反映済み'],'過去取込'); if(r && !r.error) up=r; }catch(error){}
-  try{ EMS在庫を更新_本体_(); }catch(error){}
+  const sync=引当_数値変更後全同期_({理由:'便締め',EMS更新:true});
+  if(!sync.success) return;
 
   ui.alert('✅ 便の締め 完了',
     '在庫反映済みへ: '+flipA1.length+'行（'+targets.join(', ')+'）\n'+
     '引当履歴: 過去取込へ昇格・追加'+(up.追加||0)+'件/既存更新'+(up.重複||0)+'件\n'+
-    'EMS在庫: 最新化済み\n\n'+
-    'このあと「② 引き当て実行」を回すと、締めた便の分は需要から差し引かれます。',
+    'EMS在庫・引当・取り置き・分類シート: 全同期済み',
     ui.ButtonSet.OK);
 }
 
-function 引当履歴_反映済み割当マップ_(){
-  const sh=SpreadsheetApp.getActive().getSheetByName(HIKIATE_HISTORY_CFG.シート);
-  if(!sh || sh.getLastRow()<=1) return {};
-  const head=sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0].map(v=>String(v||'').trim());
-  const f=n=>head.indexOf(n);
-  const cKind=f('取込区分'), cStatus=f('EMSリスト状態'), cDate=f('EMS到着日'), cCode=f('商品コード'), cBan=f('受注番号'), cQty=f('引当数'), cState=f('状態');
-  if(cCode<0 || cBan<0 || cQty<0) return {};
-  const vals=sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).getDisplayValues();
-  const map={};
-  vals.forEach(r=>{
-    const kind=cKind>=0?String(r[cKind]||'').trim():'';
-    const status=cStatus>=0?String(r[cStatus]||'').trim():'';
-    const state=cState>=0?String(r[cState]||'').trim():'有効';
-    if(state==='キャンセル済み') return;
-    if(kind!=='過去取込' && status!=='在庫反映済み') return;
-    const ban=String(r[cBan]||'').trim(), key=normCode_(r[cCode]), qty=引当履歴_数値_(r[cQty]);
-    if(!ban || !key || qty<=0) return;
-    (map[ban]=map[ban]||[]).push({key, qty, date:cDate>=0?String(r[cDate]||'').trim():''});
-  });
-  return map;
-}
-
-function 引当履歴_需要を差し引く_(lines){
-  const map=引当履歴_反映済み割当マップ_();
-  lines.forEach(l=>{
-    const q=map[l.ban]||[];
-    q.forEach(e=>{
-      if(l.need<=0 || e.qty<=0) return;
-      let hit=false;
-      l.keys.forEach(k=>{ if(k===e.key || codeKeys_(e.key).indexOf(k)>=0) hit=true; });
-      if(!hit) return;
-      const take=Math.min(l.need, e.qty);
-      l.need-=take; e.qty-=take;
-    });
-  });
-}
+// 【撤去 2026-07-21】引当履歴_反映済み割当マップ_/引当履歴_需要を差し引く_ は削除した。
+// 過去取込の需要差引きは台帳・棚卸(開始前在庫)が無かった時代の仕組みで、古いP列の名指し
+// (納品書=物理ピックの裏付けなし)がユーザーの数えた事実を上書きし、幽霊確保を生んでいた
+// (実例10117699)。「誰が何を持っているか」は取り置き台帳だけが決める。履歴シートは監査記録のみ。
