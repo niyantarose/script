@@ -188,7 +188,7 @@ function 選択行を個別引当_本体_(){
   try{ ledgerRows=取り置き台帳_読む_(); movementRows=EMS在庫移動台帳_読む_(); }
   catch(e){ ui.alert('取り置き台帳を読み込めません:\n'+e.message); return; }
   const R=sh.getDataRange().getValues();
-  const results=[]; let 変更あり=false;
+  const results=[];
   rows.forEach(rowNo=>{
     const l=受注個別_行情報_(R[rowNo-1], M);
     const label=l.ban+' '+(l.code||l.sku);
@@ -231,7 +231,6 @@ function 選択行を個別引当_本体_(){
     if(applied.error){ results.push(label+': '+applied.error); return; }
     try{ 取り置き台帳_保存_(applied.rows); }
     catch(e){ results.push(label+': 台帳保存に失敗 '+e.message); return; }
-    変更あり=true;
     ledgerRows=applied.rows; // 連続操作は保存済みの台帳を引き継ぐ
     try{ 引当履歴_個別記録_(個別対応_履歴Rec_(pick.item, l.ban, take, '個別引当')); }catch(e){}
     let msg=label+': OK '+take+'個 → '+pick.item.EMS番号+'（台帳登録）';
@@ -243,10 +242,6 @@ function 選択行を個別引当_本体_(){
     受注個別_台帳更新_(ss, pick.item, 受注個別_台帳消費者_(ledgerRows, pick.item), R, M); // 今回入荷EMSの在庫の該当行も連動更新
     results.push(msg);
   });
-  if(変更あり){
-    const sync=引当_数値変更後全同期_({理由:'受注明細の個別引当'});
-    if(!sync.success) results.push('⚠️ 元データは保存済みですが全シート同期に失敗しました');
-  }
   ui.alert('個別引当の結果', results.join('\n'), ui.ButtonSet.OK);
 }
 
@@ -264,7 +259,7 @@ function 選択行の引当キャンセル_本体_(){
   try{ ledgerRows=取り置き台帳_読む_(); }
   catch(e){ ui.alert('取り置き台帳を読み込めません:\n'+e.message); return; }
   const R=sh.getDataRange().getValues();
-  const results=[]; let 変更あり=false;
+  const results=[];
   rows.forEach(rowNo=>{
     const l=受注個別_行情報_(R[rowNo-1], M);
     const label=l.ban+' '+(l.code||l.sku);
@@ -283,7 +278,6 @@ function 選択行の引当キャンセル_本体_(){
     const plan=個別_台帳解除計画_(ledgerRows, key, '個別ボタンからキャンセル', now);
     try{ 取り置き台帳_保存_(plan.rows); }
     catch(e){ results.push(label+': 台帳保存に失敗 '+e.message); return; }
-    変更あり=true;
     ledgerRows=plan.rows; // 連続操作は保存済みの台帳を引き継ぐ
     // 履歴・今回入荷EMSの在庫の表示も追随(読めない環境では黙ってスキップ。④が正)
     targets.forEach(r=>{
@@ -302,9 +296,5 @@ function 選択行の引当キャンセル_本体_(){
     受注個別_行色_(sh, M, rowNo, null); // キャンセルした行は色をクリア(未入金の赤・個数の緑マークは残す)
     results.push(label+': 手動解除 '+plan.qty+'個'+(cleared?' / 入荷日クリア':''));
   });
-  if(変更あり){
-    const sync=引当_数値変更後全同期_({理由:'受注明細の個別引当解除'});
-    if(!sync.success) results.push('⚠️ 元データは保存済みですが全シート同期に失敗しました');
-  }
   ui.alert('引当キャンセルの結果', results.join('\n'), ui.ButtonSet.OK);
 }

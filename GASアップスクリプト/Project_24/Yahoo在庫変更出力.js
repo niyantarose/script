@@ -82,55 +82,6 @@ function Yahoo変更_行変換_(対象, 逆引き){
   return {行,要確認};
 }
 
-// 最新のYahoo全在庫CSVを1回読み、親コード逆引きとファイル名を返す。
-function Yahoo変更_最新逆引き_(){
-  let 逆引き={}, csvName='';
-  const folders=DriveApp.getFoldersByName(TANAOROSHI_CFG.フォルダ名);
-  if(folders.hasNext()){
-    const it=folders.next().getFiles(); let newest=null;
-    while(it.hasNext()){
-      const f=it.next();
-      if(!/\.csv$/i.test(f.getName())) continue;
-      if(!newest || f.getLastUpdated().getTime()>newest.getLastUpdated().getTime()) newest=f;
-    }
-    if(newest){
-      逆引き=Yahoo変更_サブコード逆引き_(newest.getBlob().getDataAsString('Shift_JIS'));
-      csvName=newest.getName();
-    }
-  }
-  return {逆引き,csvName};
-}
-
-// ⑤便締めでも「その場の最新Yahoo CSV」で未出品を判定する。
-function Yahoo変更_要確認コード_(対象){
-  const latest=Yahoo変更_最新逆引き_();
-  return Yahoo変更_行変換_(対象,latest.逆引き).要確認.map(r=>String(r.商品コード||''));
-}
-
-function Yahoo変更_数量マップ_(rows){
-  const map={};
-  (rows||[]).forEach(r=>{
-    const ems=String(r&&r.EMS番号||'').trim(), code=normCode_(r&&r.商品コード), qty=Number(r&&r.余り数)||0;
-    if(!code || qty<=0) return;
-    const key=ems+'\u001f'+code;
-    map[key]=(map[key]||0)+qty;
-  });
-  return map;
-}
-
-// 日本在庫のCSVボタンで作った全便記録の中に、⑤で締める便の対象が同数量で含まれるか。
-// 関係ない便や戻り行は記録に含まれていてよい。対象便の数量が変わったらfalseにして再確認を促す。
-function Yahoo変更_出力記録が対象を含む_(対象,記録){
-  if(!対象 || !対象.length) return true;
-  if(!記録) return false;
-  if(Array.isArray(記録.対象)){
-    const want=Yahoo変更_数量マップ_(対象), saved=Yahoo変更_数量マップ_(記録.対象);
-    return Object.keys(want).length>0 && Object.keys(want).every(k=>saved[k]===want[k]);
-  }
-  // 旧記録は⑤の自動出力で作られた可能性があるため、手動確認済みとは扱わない。
-  return false;
-}
-
 function Yahoo在庫変更を出力(){ 直列_(Yahoo在庫変更を出力本体_); } // 書き込み系は直列_で排他
 // 旧名の互換(図形ボタンに割り当て済みの場合用)。中身は日本在庫のCSVデータ作成と同じ
 function Yahoo戻し分を出力(){ 日本在庫CSVを作成(); }
@@ -184,8 +135,15 @@ function Yahoo在庫変更を出力本体_(preTargets, opts){
   }
 
   // 最新のYahoo全在庫CSVで親コードを逆引き
-  const latest=Yahoo変更_最新逆引き_(), csvName=latest.csvName;
-  const 変換=Yahoo変更_行変換_(振り分け.対象,latest.逆引き);
+  let 逆引き={}, csvName='';
+  const folders=DriveApp.getFoldersByName(TANAOROSHI_CFG.フォルダ名);
+  if(folders.hasNext()){
+    const it=folders.next().getFiles(); let newest=null;
+    while(it.hasNext()){ const f=it.next(); if(!/\.csv$/i.test(f.getName())) continue;
+      if(!newest || f.getLastUpdated().getTime()>newest.getLastUpdated().getTime()) newest=f; }
+    if(newest){ 逆引き=Yahoo変更_サブコード逆引き_(newest.getBlob().getDataAsString('Shift_JIS')); csvName=newest.getName(); }
+  }
+  const 変換=Yahoo変更_行変換_(振り分け.対象,逆引き);
 
   // 出力シート(毎回置換)
   let out=ss.getSheetByName(YAHOO_EXPORT_CFG.出力シート); if(!out) out=ss.insertSheet(YAHOO_EXPORT_CFG.出力シート);
@@ -195,7 +153,7 @@ function Yahoo在庫変更を出力本体_(preTargets, opts){
   out.getRange(1,1,1,4).setFontWeight('bold');
   let cur=data.length+2;
   out.getRange(cur,1).setValue('作成: '+Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd HH:mm')
-    +' / 便: '+(tokens.length?tokens.join(', '):(全便?'全便＋戻り':'戻り分のみ'))+' / 照合CSV: '+(csvName||'なし(全件が要確認になります)')); cur++;
+    +' / 便: '+(tokens.length?tokens.join(', '):'戻り分のみ')+' / 照合CSV: '+(csvName||'なし(全件が要確認になります)')); cur++;
   out.getRange(cur,1).setValue('手順: 上のA:D列を ★Yahoo在庫変更.xlsm(Z:\\業務\\■在庫管理\\Yahoo在庫作業)へ貼り付け → Yahoo反映 → 📦⑤で便を締める。mode「+」=加算のため二重貼り禁止'); cur+=2;
   if(変換.要確認.length){
     out.getRange(cur,1).setValue('■ 要確認(出力していません)'); out.getRange(cur,1).setFontWeight('bold'); cur++;
@@ -213,7 +171,6 @@ function Yahoo在庫変更を出力本体_(preTargets, opts){
   // Yahooへ入っていない分を移動台帳へ記録しないための根拠として読む(2026-07-24)
   try{ PropertiesService.getDocumentProperties().setProperty('YAHOO出力記録',
     JSON.stringify({sig:Yahoo変更_内容署名_(振り分け.対象),at:String(new Date()),
-      対象:振り分け.対象.map(r=>({EMS番号:String(r.EMS番号||''),商品コード:String(r.商品コード||''),余り数:Number(r.余り数)||0})),
       要確認コード:変換.要確認.map(r=>String(r.商品コード||''))})); }catch(e){}
   ui.alert('Yahoo在庫変更出力を作成しました',
     '出力: '+変換.行.length+'行 / 要確認: '+変換.要確認.length+'件 / 除外: '+振り分け.除外.length+'件'

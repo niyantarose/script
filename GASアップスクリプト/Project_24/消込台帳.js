@@ -147,8 +147,7 @@ function 取り置き出荷_(l){ return /取り?置き|取置/.test(String(l&&l.
 // GoQで「出荷日を期間指定」して出力した発送済みCSVを、いつものドライブフォルダに入れてから実行。
 // CSV内の「取り寄せ」行を全部「出荷済み」として台帳へ追加する(受注明細は触らない)。
 // 台帳が生まれる前に発送されて自動検知できなかった分(移行期の隙間)を一括で埋めるためのもの。
-function 消込台帳_発送済みCSV取込(){ 直列_(消込台帳_発送済みCSV取込本体_); }
-function 消込台帳_発送済みCSV取込本体_(){
+function 消込台帳_発送済みCSV取込(){
   const ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi(), gcfg=GOQ_CFG, cfg=KESHIKOMI_CFG;
 
   // いつものGoQフォルダから最新CSVを選ぶ(取込前にファイル名を確認できる)
@@ -211,13 +210,11 @@ function 消込台帳_発送済みCSV取込本体_(){
     sh.getRange(start,1,add.length,cfg.HDR.length).setValues(add)
       .setBackgrounds(add.map(()=>new Array(cfg.HDR.length).fill('#efefef')));
     sh.getRange(start,5,add.length,1).setNumberFormat('yyyy-mm-dd');
-    const sync=引当_数値変更後全同期_({理由:'発送済みCSV取込'});
-    if(!sync.success) return;
   }
   ss.setActiveSheet(sh);
   ui.alert('移行取込 完了',
     '出荷済みとして追加：'+add.length+'件\n既に台帳にいた：'+既存+'件\n取り寄せ以外(対象外)：'+対象外+'行\n\n'+
-    (add.length?'全シートを同じ計算結果へ同期しました。':'追加が無いため在庫計算は変更していません。'),
+    'このあと「② 引き当て実行」で在庫から差し引かれます。',
     ui.ButtonSet.OK);
 }
 
@@ -236,12 +233,8 @@ function 注文をキャンセル扱い本体_(){
   const bans=String(resp.getResponseText()||'').split(/[,、\s]+/).map(s=>s.trim()).filter(s=>/^\d{5,}$/.test(s));
   if(!bans.length){ ui.alert('受注番号が読めません。'); return; }
   const r=キャンセル処理_(bans);
-  if((r.台帳更新||0)+(r.P除去||0)+(r.取り置き更新||0)>0){
-    const sync=引当_数値変更後全同期_({理由:'注文キャンセル処理'});
-    if(!sync.success) return;
-  }
   ui.alert('🚫 キャンセル扱い 完了',
-    bans.join(', ')+'\n\n'+r.results.join('\n')+'\n\n全シートを同じ計算結果へ同期しました。',
+    bans.join(', ')+'\n\n'+r.results.join('\n')+'\n\nこのあと「② 引き当て実行」を回すと、その分の在庫が解放されます。',
     ui.ButtonSet.OK);
 }
 
@@ -250,7 +243,7 @@ function 注文をキャンセル扱い本体_(){
 //  ①消込台帳を「キャンセル」へ ②EMSリストP列から名指し除去 ③引当履歴キャンセル ④今回入荷EMSの在庫を連動更新
 function キャンセル処理_(bans, options){
   const ss=SpreadsheetApp.getActive();
-  const results=[]; let 台帳更新=0, P除去=0, 取り置き更新=0;
+  const results=[]; let 台帳更新=0, P除去=0;
 
   // ① 消込台帳の状態を「キャンセル」へ
   const tsh=ss.getSheetByName(KESHIKOMI_CFG.シート);
@@ -297,7 +290,7 @@ function キャンセル処理_(bans, options){
 
   if(!options || options.取り置き台帳を更新!==false){
     const ledger=取り置き台帳_読む_();
-    const now=new Date();
+    const now=new Date(); let 取り置き更新=0;
     const rows=ledger.map(r=>{
       if(r.状態!=='取り置き中' || bans.indexOf(String(r.受注番号))<0) return r;
       取り置き更新++;
@@ -306,7 +299,7 @@ function キャンセル処理_(bans, options){
     if(取り置き更新) 取り置き台帳_保存_(rows);
   }
 
-  return {results, 台帳更新, P除去, 取り置き更新};
+  return {results, 台帳更新, P除去};
 }
 
 // 取込で仕分けた「処理済(発送済み)」行を消込台帳へ「出荷済み(確定)」として登録する。
@@ -396,11 +389,9 @@ function 消込台帳のCSV処理済をクリア本体_(){
     sh.getRange(2,1,keep.length,cfg.HDR.length).setBackgrounds(bg);
     sh.getRange(2,5,keep.length,1).setNumberFormat('yyyy-mm-dd');
   }
-  const sync=引当_数値変更後全同期_({理由:'消込台帳CSV処理済クリア'});
-  if(!sync.success) return;
   ui.alert('🧹 消込台帳のCSV処理済をクリア',
     '削除: '+removed+'行 / 残り: '+keep.length+'行\n\n'+
-    '全シートを同じ計算結果へ同期しました。\nこのあと「① 受注明細を更新」(処理済を含むCSV)を取り込むと、出荷日が直近'+cfg.有効日数+'日の発送だけ登録し直されます。',
+    'このあと「① 受注明細を更新」(処理済を含むCSV)を取り込むと、出荷日が直近'+cfg.有効日数+'日の発送だけ登録し直されます。',
     ui.ButtonSet.OK);
 }
 
@@ -428,13 +419,8 @@ function 出荷済み重複排除_(rows){
 }
 
 // メニュー用: 台帳を更新してシートを開く
-function 消込台帳を更新(){ 直列_(消込台帳を更新本体_); }
-function 消込台帳を更新本体_(){
+function 消込台帳を更新(){
   const r=消込台帳更新_();
-  if((Number(r.新規出荷済)||0)+(Number(r.復活)||0)>0){
-    const sync=引当_数値変更後全同期_({理由:'消込台帳更新'});
-    if(!sync.success) return;
-  }
   const ss=SpreadsheetApp.getActive();
   const sh=ss.getSheetByName(KESHIKOMI_CFG.シート);
   if(sh) ss.setActiveSheet(sh);

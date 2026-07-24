@@ -370,11 +370,12 @@ function 到着済を在庫反映済みへ本体_(){
     const ems=String(row[jpEms]||'').trim(), sourceCode=String(row[jpCode]||'').trim();
     return {ems,code:sourceCode,sourceCode,qty:Number(row[jpQty])||0};
   }).filter(row=>targetSet.has(row.ems)&&row.qty>0);
-  // 📤 ⑤からCSVは自動作成しない。日本在庫を目視確認してCSVボタンを押した記録が、
-  // 今締める便のEMS・商品コード・数量と一致する場合だけ先へ進む。
+  // 📤 出力済みかは記録(内容署名)で自動判定する。同じ内容を出力済みなら黙って先へ、
+  // 未出力・内容が変わっていれば聞かずにこの場で出力する(締め後は日本在庫から余りが消えるため)。
+  // typeofガードは単体テストハーネス(出力モジュール未ロード)との互換用。実GASでは常に定義済み
   let 除外理由={}; // 商品コード→Yahooへ入らなかった理由(移動台帳へ記録しない根拠)
   let surplus=箱余り;
-  if(箱余り.length){
+  if(箱余り.length && typeof Yahoo変更_対象行_==='function' && typeof Yahoo在庫変更を出力本体_==='function'){
     let 除外=null; try{ 除外=全件再計算_マスタ除外集合_(); }catch(e){ 除外=new Set(); }
     const 振り分け=Yahoo変更_対象行_(
       箱余り.map(r=>({商品コード:r.sourceCode,余り数:r.qty,EMS番号:r.ems})),
@@ -382,16 +383,11 @@ function 到着済を在庫反映済みへ本体_(){
     振り分け.除外.forEach(r=>{ 除外理由[normCode_(r.商品コード)]=r.理由; });
     const 出力対象=振り分け.対象;
     if(出力対象.length){
-      let 記録=null;
-      try{ 記録=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null'); }catch(e){}
-      const 出力済み=Yahoo変更_出力記録が対象を含む_(出力対象,記録);
-      if(!出力済み){
-        ui.alert('便を締められません',
-          '日本在庫を確認してから「📤 CSVデータ作成」ボタンを押してください。\n'+
-          'CSV作成後に数量が変わった場合も、もう一度日本在庫を確認してCSVを作り直してください。',
-          ui.ButtonSet.OK);
-        return;
-      }
+      const sig=Yahoo変更_内容署名_(出力対象);
+      let 出力済み=false;
+      try{ const 記録=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null');
+        出力済み=!!記録 && 記録.sig===sig && sig!==''; }catch(e){}
+      if(!出力済み) Yahoo在庫変更を出力本体_(targets);
     }
     // Yahooへ出せないコード(親コードを逆引きできない=未出品)はその場で計算する。保存済み記録から
     // 読むと、要確認コードを持たない古い記録を「要確認0件」と誤読して元の不具合が再発する(2026-07-24レビュー)
@@ -469,13 +465,13 @@ function 到着済を在庫反映済みへ本体_(){
 
   let up={追加:0,重複:0,対象:0};
   try{ const r=引当履歴_EMSリストから記録_(['在庫反映済み'],'過去取込'); if(r && !r.error) up=r; }catch(error){}
-  const sync=引当_数値変更後全同期_({理由:'便締め',EMS更新:true});
-  if(!sync.success) return;
+  try{ EMS在庫を更新_本体_(); }catch(error){}
 
   ui.alert('✅ 便の締め 完了',
     '在庫反映済みへ: '+flipA1.length+'行（'+targets.join(', ')+'）\n'+
     '引当履歴: 過去取込へ昇格・追加'+(up.追加||0)+'件/既存更新'+(up.重複||0)+'件\n'+
-    'EMS在庫・引当・取り置き・分類シート: 全同期済み',
+    'EMS在庫: 最新化済み\n\n'+
+    'このあと「② 引き当て実行」を回すと、締めた便の分は需要から差し引かれます。',
     ui.ButtonSet.OK);
 }
 

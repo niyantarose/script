@@ -25,12 +25,10 @@ function P列を書き直す本体_(){
   if(ans!==ui.Button.OK) return;
   const r=P列書き直し実行_();
   if(r.error){ ui.alert('書き直しでエラー:\n'+r.error); return; }
-  const sync=引当_数値変更後全同期_({理由:'P列書き直し'});
-  if(!sync.success) return;
   SpreadsheetApp.getActive().toast(
     'P列書き直し: クリア'+r.クリア+'行 → 記入'+r.記入+'行'+(r.分割?'（分割'+r.分割+'行）':'')+
     (r.予定?'（うち予定'+r.予定+'行）':'')+
-    ' / 在庫扱い'+r.在庫+'行。全シート同期済みです','♻️P列',8);
+    ' / 在庫扱い'+r.在庫+'行。仕上げに ②引き当て実行 を回してください','♻️P列',8);
 }
 
 // P列書き直しの本体(ダイアログなし)。到着済行のP列クリア→自動記入。⚖️便の引き直しからも使う
@@ -162,7 +160,7 @@ function 便の引当をやり直す本体_(){
   SpreadsheetApp.flush();
   const r=P列書き直し実行_();
   if(r.error){ ui.alert('P列書き直しでエラー:\n'+r.error); return; }
-  引当_数値変更後全同期_({理由:'便の引当やり直し'}); // ②と全派生シートまで一気に揃える
+  引当実行_本体_(); // ②まで一気に。完了ダイアログの突合せで結果を確認
 }
 
 function P列処理対象EMS_(status){
