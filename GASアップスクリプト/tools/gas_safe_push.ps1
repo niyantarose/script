@@ -8,9 +8,17 @@
 #   初回実行（基準ファイルなし）では、オンライン版の内容がgit履歴に存在すれば
 #   「ローカルが新しい」と自動判定し、未知の内容なら対話で確認する。
 #
+#   push後、固定デプロイ(Webアプリ)が1つだけあるプロジェクトは本番デプロイまで自動実行する。
+#   （/exec URL は「デプロイした版」を実行する仕様で、push だけでは反映されないため）
+#
 #   使い方: powershell -ExecutionPolicy Bypass -File tools\gas_safe_push.ps1 Project_19
+#           powershell -ExecutionPolicy Bypass -File tools\gas_safe_push.ps1 Project_19 -SkipDeploy
 # ============================================================
-param([Parameter(Mandatory = $true)][string]$Project)
+param(
+  [Parameter(Mandatory = $true)][string]$Project,
+  # Webアプリの本番デプロイまで自動で行う。反映したくないときだけ -SkipDeploy を付ける。
+  [switch]$SkipDeploy
+)
 $ErrorActionPreference = 'Stop'
 
 $dir = Join-Path (Split-Path $PSScriptRoot -Parent) $Project
@@ -142,3 +150,42 @@ Pop-Location
 
 Remove-Item -Recurse -Force $tmp
 Write-Host "✅ 安全push完了 [$Project]（オンライン取り込み $($absorbed.Count)件 / ローカル反映 $($pushing.Count)件）"
+
+# 7) Webアプリの本番デプロイ（push だけでは /exec に反映されないため）
+#    /exec URL は「デプロイした版」を実行する仕様で、HEAD を自動追従しない。
+#    HEAD 追従するのは /dev だが編集権限が要るので拡張機能からは使えない。
+#    → 固定デプロイが1つだけあるプロジェクトは、ここで自動的に版を上げる。
+if (-not $SkipDeploy) {
+  Push-Location $dir
+  try {
+    $deployOutput = & npx clasp deployments 2>&1 | Out-String
+    # 「- <deploymentId> @<version> - <説明>」の形式。@HEAD（テストデプロイ）は対象外。
+    $versioned = [regex]::Matches($deployOutput, '(?m)^-\s+(?<id>AK\S+)\s+@(?<ver>\d+)') |
+      ForEach-Object { $_.Groups['id'].Value } | Select-Object -Unique
+
+    if ($versioned.Count -eq 0) {
+      Write-Host "ℹ $Project に固定デプロイはありません（デプロイ不要）"
+    }
+    elseif ($versioned.Count -gt 1) {
+      # どれを更新すべきか機械的に決められないので、勝手に本番を書き換えない
+      Write-Host "⚠ $Project に固定デプロイが複数あります。自動デプロイをスキップしました:"
+      $versioned | ForEach-Object { Write-Host "    $_" }
+      Write-Host "  必要なら手動で: npx clasp deploy -i <デプロイID> -d `"説明`""
+    }
+    else {
+      $deployId = $versioned[0]
+      $desc = "auto: safe_push $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+      Write-Host "本番デプロイを実行します [$Project] $deployId"
+      $result = & npx clasp deploy -i $deployId -d $desc 2>&1 | Out-String
+      Write-Host $result.Trim()
+      if ($result -notmatch 'Deployed') {
+        Write-Host "⚠ デプロイ結果に 'Deployed' がありません。反映されたか確認してください。"
+      }
+    }
+  } catch {
+    Write-Host "⚠ 自動デプロイでエラー: $($_.Exception.Message)"
+    Write-Host "  手動で Project フォルダから: npx clasp deploy -i <デプロイID> -d `"説明`""
+  } finally {
+    Pop-Location
+  }
+}
