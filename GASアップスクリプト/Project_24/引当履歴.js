@@ -382,24 +382,30 @@ function 到着済を在庫反映済みへ本体_(){
       targetSet,除外);
     振り分け.除外.forEach(r=>{ 除外理由[normCode_(r.商品コード)]=r.理由; });
     const 出力対象=振り分け.対象;
-    let 要確認コード=[];
     if(出力対象.length){
       const sig=Yahoo変更_内容署名_(出力対象);
-      let 出力済み=false, 記録=null;
-      try{ 記録=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null');
+      let 出力済み=false;
+      try{ const 記録=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null');
         出力済み=!!記録 && 記録.sig===sig && sig!==''; }catch(e){}
-      const 結果=出力済み? null : Yahoo在庫変更を出力本体_(targets);
-      要確認コード=(結果&&結果.要確認コード)||(出力済み&&記録&&記録.要確認コード)||[];
+      if(!出力済み) Yahoo在庫変更を出力本体_(targets);
     }
+    // Yahooへ出せないコード(親コードを逆引きできない=未出品)はその場で計算する。保存済み記録から
+    // 読むと、要確認コードを持たない古い記録を「要確認0件」と誤読して元の不具合が再発する(2026-07-24レビュー)
+    let 要確認コード=[];
+    try{ if(typeof Yahoo変更_要確認コード_==='function') 要確認コード=Yahoo変更_要確認コード_(出力対象)||[]; }catch(e){}
     要確認コード.forEach(c=>{ 除外理由[normCode_(c)]='Yahoo全在庫CSVに無くCSVへ出せていない'; });
     // Yahooへ実際に入らなかった分(在庫対象外・要確認)は「Yahoo移動済み」にしない。
     // 記録すると現物は日本にあるのに帳簿から消える(2026-07-24 ★コピペ5・PromotionalItem5で発生)
     surplus=箱余り.filter(r=>!除外理由[normCode_(r.sourceCode)]);
   }
   const 除外行=箱余り.filter(r=>除外理由[normCode_(r.sourceCode)]);
+  // 未出品(要確認)= Yahooに出品されればCSVへ出せる分。締めると日本在庫から消えるので持ち越す
+  const 未出品行=除外行.filter(r=>/Yahoo全在庫CSVに無く/.test(除外理由[normCode_(r.sourceCode)]||''));
   const moveLines=['EMS番号 / 商品コード / Yahooへ移す数量'].concat(
     surplus.length?surplus.map(row=>row.ems+' / '+row.sourceCode+' / '+row.qty):['(Yahoo移動対象なし)'])
-    .concat(除外行.length?['','■ Yahooへ入れないので移動記録しません(日本在庫に残ります)']
+    .concat(除外行.length?['','■ Yahooへ入れないので移動記録しません(現物は日本にあります)',
+      '※ 締めるとこの箱は日本在庫シートから消え、⑤の対象(到着済)でもなくなります。']
+      .concat(未出品行.length?['　 未出品の分は日本在庫の「戻り」行へ持ち越すので、Yahoo出品後にCSVを作れます。']:[])
       .concat(除外行.map(r=>r.sourceCode+' / '+r.qty+' / '+除外理由[normCode_(r.sourceCode)])):[]);
   const confirm=ui.alert('Yahoo移動の最終確認',moveLines.join('\n')+'\n\nYahoo在庫への反映が完了している場合だけOK',ui.ButtonSet.OK_CANCEL);
   if(confirm!==ui.Button.OK) return;
@@ -408,6 +414,25 @@ function 到着済を在庫反映済みへ本体_(){
   try{ movementPlan=EMS在庫移動_箱計画_(surplus,EMS在庫移動台帳_読む_(),new Date()); }
   catch(error){ ui.alert('Yahoo移動を中止しました',error.message,ui.ButtonSet.OK); return; }
   if(movementPlan.errors.length){ ui.alert('Yahoo移動を中止しました',movementPlan.errors.join('\n'),ui.ButtonSet.OK); return; }
+
+  // 未出品(要確認)の現物は締めると日本在庫から消えるため、戻り待ちへ持ち越して追えるようにする。
+  // Yahoo出品後に「📤 CSVデータ作成」で出力すると出力日時が入り、自動的にこの一覧から外れる。
+  // ★コピペ・贈呈品などの在庫対象外はCSVに永久に出ないので積まない(溜まり続けるため 2026-07-24)
+  if(未出品行.length){
+    try{
+      if(typeof 日本在庫_戻り待ち_読む_==='function' && typeof 日本在庫_戻り待ち_保存_==='function'){
+        const 待ち=日本在庫_戻り待ち_読む_(), 既存=new Set(待ち.map(r=>String(r.処理ID||'')));
+        const 確定日時=Utilities.formatDate(new Date(),'Asia/Tokyo','yyyy-MM-dd HH:mm:ss');
+        未出品行.forEach(r=>{
+          const id='締め残|'+r.ems+'|'+normCode_(r.sourceCode);
+          if(既存.has(id)) return;
+          待ち.push({処理ID:id,商品コード:r.sourceCode,数量:r.qty,確定日時,出力日時:''});
+        });
+        日本在庫_戻り待ち_保存_(待ち);
+      }
+    }catch(e){ ui.alert('未出品分の持ち越しに失敗しました',e.message+'\n(締めは続行します。'
+      +未出品行.map(r=>r.sourceCode+'×'+r.qty).join(', ')+' を控えてください)',ui.ButtonSet.OK); }
+  }
 
   try{ 引当履歴_今回到着分を記録_(true); }catch(error){}
 
