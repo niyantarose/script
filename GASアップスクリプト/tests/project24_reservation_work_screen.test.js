@@ -169,4 +169,21 @@ test('別ルート二重控除: 台帳で確保した分だけ入荷日ベース
   assert.strictEqual(韓国.別ルート済数量,0,'韓国ルートは対象外');
 });
 
+test('入力保存マージ: 画面に出ていた行の空欄は入力の取り消しとして保存も消す(2026-07-24)', () => {
+  const key='700|AAAB';
+  const saved=[{入力キー:key,受注番号:'700',SKU:'AAAb',商品コード:'AAA',未反映マイナス数量:2}];
+  const 生成=[{受注番号:'700',SKU:'AAAb',商品コード:'AAA',追加数量:'',マイナス数量:''}];
+  // 画面でセルを消した状態(行はあるが空欄)で更新
+  const r=context.取り置き_入力保存マージ_(生成,saved,[{受注番号:'700',SKU:'AAAb',商品コード:'AAA',追加数量:'',マイナス数量:''}],'now');
+  assert.strictEqual(String(r.rows[0].マイナス数量||''),'','手で消した入力は復活しない');
+  assert.strictEqual(String(r.store[key].未反映マイナス数量||''),'','保存側からも消える');
+});
+
+test('入力保存マージ: 画面に出ていない行(表示モードで非表示)の保存は消さない', () => {
+  const key='701|BBBB';
+  const saved=[{入力キー:key,受注番号:'701',SKU:'BBBb',商品コード:'BBB',未反映追加数量:3}];
+  const r=context.取り置き_入力保存マージ_([{受注番号:'701',SKU:'BBBb',商品コード:'BBB'}],saved,[],'now');
+  assert.strictEqual(String(r.rows[0].追加数量||''),'3','非表示中の入力は保持して復元する');
+});
+
 if (failures) process.exit(1);

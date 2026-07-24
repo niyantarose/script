@@ -31,8 +31,11 @@ function 取り置き_入力保存マージ_(generatedRows, savedRows, sheetRows
     cur.受注番号=String(r.受注番号||cur.受注番号||''); cur.SKU=String(r.SKU||cur.SKU||''); cur.商品コード=String(r.商品コード||cur.商品コード||'');
     const 棚=String(r.棚確認==null?'':r.棚確認).trim(); if(棚) cur.棚確認=棚;
     const memo=String(r.メモ==null?'':r.メモ).trim(); if(memo) cur.取り置きメモ=memo;
-    const add=r.追加数量; if(add!=null&&String(add).trim()!=='') cur.未反映追加数量=add;
-    const sub=r.マイナス数量; if(sub!=null&&String(sub).trim()!=='') cur.未反映マイナス数量=sub;
+    // 画面に出ていた行はシートの値を正とする(空欄=入力の取り消し)。空欄で上書きしないと、
+    // 手で消してもこの保存から復元されて何度も出てくる(2026-07-24)。
+    // 表示モードで画面に出ていない行はそもそもsheetRowsに無いので、保存はそのまま残る
+    cur.未反映追加数量=(r.追加数量==null?'':String(r.追加数量).trim());
+    cur.未反映マイナス数量=(r.マイナス数量==null?'':String(r.マイナス数量).trim());
     cur.更新日時=now||'';
   });
   const rows=(generatedRows||[]).map(g=>{
