@@ -987,7 +987,22 @@ function 取り置き_受注番号集合_(sheetName){
 // 書き込み系ボタンは全て直列_(DocumentLock)で排他する(①〜④と同じ約束事)。
 // 内部からの再帰呼び出しは本体_を使う(DocumentLockは再入不可のため)。
 function 取り置き初期登録を作成(){ 直列_(取り置き初期登録を作成本体_); }
+
+// 候補行と前回の管理行数から、棚確認列・処理列へ一括設定する入力規則の二次元配列を作る。
+// 候補より後ろの旧行はnullで規則を消す。行単位のSpreadsheet呼び出しは行わない。
+function 取り置き_入力規則計画_(candidates,rowCount,棚規則,戻し規則){
+  const rows=candidates||[], count=Math.max(rows.length,Math.max(0,Number(rowCount)||0));
+  const 棚確認=[],処理=[];
+  for(let i=0;i<count;i++){
+    const c=rows[i], judge=String(c&&c.判定||'');
+    棚確認.push([c&&judge!=='棚戻し待ち'&&judge!=='即納'?棚規則:null]);
+    処理.push([c&&judge==='棚戻し待ち'?戻し規則:null]);
+  }
+  return {棚確認,処理};
+}
+
 function 取り置き初期登録を作成本体_(options){
+  const 処理開始ms=Date.now();
   const opts=options||{}, silent=opts.silent===true;
   const ss=SpreadsheetApp.getActive(), recv=ss.getSheetByName(HIKIATE_CFG.受注), ui=SpreadsheetApp.getUi();
   if(!recv){ if(!silent) ui.alert('受注明細がありません'); return {error:'受注明細がありません'}; }
@@ -1114,6 +1129,8 @@ function 取り置き初期登録を作成本体_(options){
     candidates=candidates.filter(c=>取り置き_作業対象判定_(byBan[String(c.受注番号)],表示モード));
   }
   const 表示注文数=new Set(candidates.map(c=>String(c.受注番号))).size;
+  const 旧登録シート=ss.getSheetByName(TORIOKI_CFG.初期);
+  const 旧管理行数=旧登録シート?Math.max(0,旧登録シート.getLastRow()-TORIOKI_CFG.初期HDR行):0;
   // 旧レイアウト(1行目見出し)からの一度きりの移行: ボタン置き場になる1〜2行目を掃除してから保存する
   {
     const sh0=ss.getSheetByName(TORIOKI_CFG.初期);
@@ -1123,6 +1140,8 @@ function 取り置き初期登録を作成本体_(options){
         sh0.getRange(1,1,TORIOKI_CFG.初期HDR行-1,sh0.getMaxColumns()).clearContent().clearFormat();
     }
   }
+  const データ収集ms=Date.now()-処理開始ms;
+  const 値書込開始ms=Date.now();
   取り置き_表を保存_(TORIOKI_CFG.初期,TORIOKI_CFG.初期HDR,candidates,TORIOKI_CFG.初期HDR行);
   const 初期データ行=TORIOKI_CFG.初期HDR行+1;
   const sh2=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
@@ -1131,27 +1150,33 @@ function 取り置き初期登録を作成本体_(options){
     sh2.getRange(1,TORIOKI_CFG.初期HDR.length+1,Math.max(1,sh2.getLastRow()),sh2.getLastColumn()-TORIOKI_CFG.初期HDR.length)
       .clearContent().clearFormat();
   }
-  // 列の並びが変わっても古い位置のプルダウンが残らないよう、シート全体の入力規則を消してから付け直す
-  sh2.getRange(1,1,sh2.getMaxRows(),sh2.getMaxColumns()).clearDataValidations();
-  if(candidates.length){
-    // 通常行は棚確認、赤い棚戻し待ち行は処理のプルダウンを使う。
-    const 棚確認列=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1, 処理列=TORIOKI_CFG.初期HDR.indexOf('処理')+1;
+  const 値書込ms=Date.now()-値書込開始ms;
+  const 入力規則開始ms=Date.now();
+  // 通常行は棚確認、赤い棚戻し待ち行は処理のプルダウンを使う。
+  // 現在候補と前回行の管理範囲だけを一括更新し、見出し・ボタン・管理対象外セルには触れない。
+  const 棚確認列=TORIOKI_CFG.初期HDR.indexOf('棚確認')+1, 処理列=TORIOKI_CFG.初期HDR.indexOf('処理')+1;
+  const 規則行数=Math.max(candidates.length,旧管理行数);
+  if(規則行数>0){
     const 棚規則=SpreadsheetApp.newDataValidation().requireValueInList(TORIOKI_棚確認.slice(),true).setAllowInvalid(true).build();
     const 戻し規則=SpreadsheetApp.newDataValidation().requireValueInList(TORIOKI_戻し処理.slice(),true).setAllowInvalid(false).build();
-    sh2.getRange(初期データ行,棚確認列,candidates.length,1).setDataValidation(棚規則);
-    candidates.forEach((candidate,index)=>{
-      if(candidate.判定==='棚戻し待ち'){
-        sh2.getRange(index+初期データ行,棚確認列).clearDataValidations();
-        sh2.getRange(index+初期データ行,処理列).setDataValidation(戻し規則);
-      }else if(candidate.判定==='即納'){
-        sh2.getRange(index+初期データ行,棚確認列).clearDataValidations(); // 表示専用行(即納)に棚確認は選ばせない
-      }
-    });
+    const plan=取り置き_入力規則計画_(candidates,規則行数,棚規則,戻し規則);
+    sh2.getRange(初期データ行,1,規則行数,TORIOKI_CFG.初期HDR.length).clearDataValidations();
+    sh2.getRange(初期データ行,棚確認列,規則行数,1).setDataValidations(plan.棚確認);
+    sh2.getRange(初期データ行,処理列,規則行数,1).setDataValidations(plan.処理);
   }
+  const 入力規則ms=Date.now()-入力規則開始ms;
   // 列幅・行の高さ・文字サイズは一切触らない(手動調整を常に尊重 2026-07-24)。
   // 既定幅に戻したいときはメニュー「📐 取り置き登録の列幅を既定に戻す」を押す
   try{ if(!sh2.isColumnHiddenByUser(1)) sh2.hideColumns(1); }catch(e){ try{ sh2.hideColumns(1); }catch(e2){} }
+  const 書式開始ms=Date.now();
   取り置き_登録行書式を更新_(sh2,candidates);
+  const 書式ms=Date.now()-書式開始ms;
+  const 合計ms=Date.now()-処理開始ms;
+  console.log('取り置き登録更新 処理時間ms='+合計ms
+    +' データ収集='+データ収集ms
+    +' 値書込='+値書込ms
+    +' 入力規則='+入力規則ms
+    +' 書式='+書式ms);
   const 入力済=candidates.filter(c=>String(c.追加数量||'')!==''||String(c.マイナス数量||'')!=='').length;
   const 要確認数=candidates.filter(c=>c.判定==='要棚確認').length;
   const 戻し待ち数=candidates.filter(c=>c.判定==='棚戻し待ち').length;
