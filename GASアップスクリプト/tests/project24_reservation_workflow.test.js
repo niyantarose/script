@@ -2118,5 +2118,41 @@ test('P列計画: 分割出荷済み(出荷日あり)の行を需要から外す
     'P列だけが出荷済み分割へ名指しすると同じ現物の二重計上になる');
 });
 
+// ===== 2026-07-24 マイナス数量で④/②の自動確保も外せる(手動解除メニューの二段運用を廃止) =====
+
+const 自動確保台帳_=(qty,登録日時)=>[{取置ID:'EMS|EG1|AAA||501|AAA|AAAB',状態:'取り置き中',受注番号:'501',
+  商品コード:'AAA',SKU:'AAAb',取り置き数量:qty,取置元種別:'EMS',元EMS番号:'EG1',引当段階:'到着済',
+  引当系譜数量:qty,登録日時:登録日時||'2026/07/24','終了理由・メモ':''}];
+const マイナス入力_=sub=>[{取置ID:'INIT|501|AAA|AAAB',受注番号:'501',商品コード:'AAA',SKU:'AAAb',
+  注文数量:1,追加数量:'',マイナス数量:sub,棚確認:'',メモ:''}];
+
+test('マイナス: 棚登録が無くても④の自動確保を外せる(既定=登録間違い→箱へ返す)', () => {
+  const plan=context.取り置き_統合反映計画_(マイナス入力_(2),自動確保台帳_(3),'2026-07-24T15:00:00');
+  assert.strictEqual(plan.errors.length,0,'「自分の棚登録0個を超えます」で止めない');
+  const 残=plan.rows.find(r=>r.取置ID==='EMS|EG1|AAA||501|AAA|AAAB');
+  assert.strictEqual(残.状態,'取り置き中');
+  assert.strictEqual(残.取り置き数量,1,'3個中2個を外して1個残る');
+  const 外し=plan.rows.find(r=>r.取置ID==='EMS|EG1|AAA||501|AAA|AAAB|棚解除');
+  assert.ok(外し,'外した分は別行で履歴に残る');
+  assert.strictEqual(外し.状態,'手動解除','登録間違い(出荷済み等)は箱へ返す=供給が空く');
+  assert.strictEqual(外し.取り置き数量,2);
+  assert.strictEqual(plan.counts.マイナス数量,2,'現物の有無を聞く対象に入る');
+});
+
+test('マイナス: 「現物あり」を選ぶと④確保分もキャンセル戻し(現物あり)として在庫配管へ', () => {
+  const plan=context.取り置き_統合反映計画_(マイナス入力_(3),自動確保台帳_(3),'2026-07-24T15:00:00',{マイナス現物あり:true});
+  assert.strictEqual(plan.errors.length,0);
+  const 外し=plan.rows.find(r=>r.状態==='キャンセル戻し');
+  assert.ok(外し,'棚にある現物として②の再引当→Yahoo戻し候補へ流す');
+  assert.strictEqual(外し.戻し処理結果,'現物あり');
+  assert.strictEqual(外し.取り置き数量,3);
+});
+
+test('マイナス: この行の確保合計(棚+自動)を超える入力は従来どおりエラー', () => {
+  const plan=context.取り置き_統合反映計画_(マイナス入力_(5),自動確保台帳_(3),'2026-07-24T15:00:00');
+  assert.ok(plan.errors.some(e=>/確保3個/.test(e)&&/超えます/.test(e)),'誤入力は止める: '+plan.errors.join(' / '));
+  assert.strictEqual(plan.rows.filter(r=>r.状態!=='取り置き中').length,0,'エラー時は台帳を変えない');
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');

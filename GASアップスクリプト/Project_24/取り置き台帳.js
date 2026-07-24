@@ -692,12 +692,17 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
     if(!addBlank && !subBlank) rowErrors.push('受注'+r.受注番号+' '+r.商品コード+': 追加とマイナスは同時に入れられません');
     const cur=initQtyById[id]||0, ordered=Number(r.注文数量)||0;
     if(!rowErrors.length){
-      if(sub>cur) rowErrors.push('受注'+r.受注番号+' '+r.商品コード+': マイナス'+sub+'は自分の棚登録'+cur+'個を超えます(④確保分の解除は「選択した取り置きを手動解除」で)');
-      const next=cur+add-sub;
       const 台帳確保数=Number(確保[取り置き_行キー_(r)])||0;
+      // マイナスは まず自分の棚登録から、足りない分は④/②の自動確保から外す(2026-07-24)。
+      // 「④確保分は手動解除メニューで」の二段運用を廃止し、この画面だけで完結させる
+      const 棚マイナス=Math.min(sub,cur), 自動マイナス=Math.max(0,sub-cur);
+      if(自動マイナス>台帳確保数)
+        rowErrors.push('受注'+r.受注番号+' '+r.商品コード+': マイナス'+sub+'はこの行の確保'+(cur+台帳確保数)+'個(棚'+cur+'+自動'+台帳確保数+')を超えます');
+      const next=Math.max(0,cur+add-棚マイナス);
       if(next>ordered)
         rowErrors.push('受注'+r.受注番号+' '+r.商品コード+': 棚登録'+next+'個が注文'+ordered+'を超えます');
-      const 解除必要=Math.max(0,Math.min(next,ordered)+台帳確保数-ordered); // 棚登録で押し出される④確保分
+      const 押し出し=Math.max(0,Math.min(next,ordered)+台帳確保数-ordered); // 棚登録で押し出される④確保分
+      const 解除必要=Math.max(押し出し,自動マイナス);
       if(lockedIds.has(id)) rowErrors.push('受注'+r.受注番号+': 既に発送済み/解除済みの初期登録行は変更できません');
       const check=String(r.棚確認==null?'':r.棚確認).trim();
       // 「未着」は確保0のとき機械が自動で貼るラベル。棚で現物を見つけた人の入力の方が新しく強い情報なので
@@ -705,8 +710,9 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
       if(add>0 && (check==='出荷済み'||check==='予約')) rowErrors.push('受注'+r.受注番号+': 棚確認が「'+check+'」なのに追加数量が入っています(どちらかを直してください)');
       if(rowErrors.length){ rowErrors.forEach(e=>errors.push(e)); return; }
       inputIds.add(id);
-      if(解除必要>0) 自動解除要求.push({key:取り置き_行キー_(r),数量:解除必要,受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||'')});
-      if(sub>0 && cur>0) マイナス適用.push({id,数量:Math.min(sub,cur),受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||''),SKU:String(r.SKU||'')});
+      if(解除必要>0) 自動解除要求.push({key:取り置き_行キー_(r),数量:解除必要,受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||''),
+        マイナス:自動マイナス>0});
+      if(棚マイナス>0) マイナス適用.push({id,数量:棚マイナス,受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||''),SKU:String(r.SKU||'')});
       if(next>0) targets[id]=Object.assign({},r,{取り置き数量:next});
       // next===0 は解除(inputIdsに入りtargets無し=既存行が外れる)
       return;
@@ -737,16 +743,21 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
         const qty=取り置き_整数_(x.row.取り置き数量), take=Math.min(qty,残り);
         if(take<=0) return;
         残り-=take;
-        const memo='棚登録優先で自動解除';
+        // マイナス入力で外す分は「現物あり」ならキャンセル戻し(現物あり)にして在庫の配管へ、
+        // 登録間違い(既定)なら手動解除にして供給を箱へ返す。棚登録で押し出された分は常に箱へ返す
+        const 現物へ=!!req.マイナス && !!設定.マイナス現物あり;
+        const memo=req.マイナス? (現物へ?'マイナス解除(現物あり→在庫へ戻す)':'マイナス解除(登録間違い)') : '棚登録優先で自動解除';
+        const 新状態=現物へ?TORIOKI_STATUS.RETURN:TORIOKI_STATUS.RELEASED;
+        const 戻し結果=現物へ?TORIOKI_RETURN.PRESENT:'';
         if(take===qty){
           const 既存メモ=String(x.row['終了理由・メモ']||'').trim();
-          kept[x.i]=Object.assign({},x.row,{状態:TORIOKI_STATUS.RELEASED,更新日時:now,
+          kept[x.i]=Object.assign({},x.row,{状態:新状態,戻し処理結果:戻し結果,更新日時:now,
             '終了理由・メモ':既存メモ?既存メモ+' / '+memo:memo});
         }else{
           kept[x.i]=Object.assign({},x.row,{取り置き数量:qty-take,
             引当系譜数量:Math.max(0,(取り置き_整数_(x.row.引当系譜数量)||qty)-take),更新日時:now});
           kept.push(Object.assign({},x.row,{取置ID:String(x.row.取置ID||'')+'|棚解除',取り置き数量:take,
-            引当系譜数量:take,状態:TORIOKI_STATUS.RELEASED,更新日時:now,'終了理由・メモ':memo+'(分割)'}));
+            引当系譜数量:take,状態:新状態,戻し処理結果:戻し結果,更新日時:now,'終了理由・メモ':memo+'(分割)'}));
         }
         自動解除.push({受注番号:req.受注番号,商品コード:req.商品コード,元EMS番号:String(x.row.元EMS番号||''),数量:take});
       });
@@ -773,7 +784,9 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
   return {rows:kept,errors,適用:{行:Object.keys(targets).length,
     数量:Object.keys(targets).reduce((n,id)=>n+targets[id].取り置き数量,0),解除:解除数,
     自動解除数量:自動解除.reduce((n,d)=>n+d.数量,0),自動解除:自動解除,
-    マイナス数量:マイナス適用.reduce((n,m)=>n+m.数量,0),
+    // 「現物ありますか？」を聞く対象=棚登録から外す分＋マイナス入力で外す④確保分
+    マイナス数量:マイナス適用.reduce((n,m)=>n+m.数量,0)
+      +自動解除要求.filter(q=>q.マイナス).reduce((n,q)=>n+q.数量,0),
     在庫戻し数量:在庫戻し.reduce((n,m)=>n+m.数量,0)}};
 }
 
