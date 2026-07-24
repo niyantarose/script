@@ -1226,32 +1226,22 @@ function 取り置き登録を反映本体_(){
   取り置き台帳_保存_(plan.rows);
   // 反映できた入力欄を消す(残すと次の反映で同じ数量をもう一度適用してしまう 2026-07-24)
   取り置き_反映済み入力を消す_(c.適用ID,c.適用キー);
-  // 旧管理シートは裏側の監査用として同期するが、日常操作は取り置き登録だけで完結する。
-  try{ Yahoo戻し候補を更新_(); }catch(e){}
-  const refreshed=取り置き初期登録を作成本体_({silent:true});
   SpreadsheetApp.getActive().toast(
     '通常 '+c.取り置き数量+'個 / 棚戻し '+c.棚へ戻した+'件 / 現物なし '+c.現物なし+'件を反映しました'
-    +((c.自動解除数量||0)>0? '（④確保'+c.自動解除数量+'個を棚登録優先で自動解除）':'')
-    +(refreshed&&refreshed.棚戻し待ち? '（未処理あと'+refreshed.棚戻し待ち+'件）':''),
+    +((c.自動解除数量||0)>0? '（④確保'+c.自動解除数量+'個を棚登録優先で自動解除）':''),
     '取り置き登録',8);
-  // 台帳が変わったら必ず再引当する(2026-07-24「取り置き反映したら再引当するようにしてくれ」)。
-  // 外した確保を他の注文へ回す・余りと日本在庫を計算し直す・引当状況一覧や色を作り直すのは②だけ。
-  // 直列_(DocumentLock)は再入不可のため、ロックを取らない本体_を直接呼ぶ
-  SpreadsheetApp.getActive().toast('続けて②引当を実行します(30秒ほど)…','🏠再引当',10);
-  try{ 引当実行_本体_({preview:false}); }
-  catch(e){ ui.alert('②の実行に失敗しました',
-    e.message+'\n\n取り置き台帳の反映は完了しています。メニューから②を実行し直してください。',ui.ButtonSet.OK); }
+  引当_数値変更後全同期_({理由:'取り置き登録反映'});
 }
 
 function キャンセル戻し確認を更新(){ 直列_(キャンセル戻し確認を更新本体_); }
-function キャンセル戻し確認を更新本体_(){
+function キャンセル戻し確認を更新本体_(options){
   const rows=取り置き台帳_読む_().filter(r=>r.状態==='キャンセル戻し'&&r.戻し処理結果==='未確認').map(r=>({
     取置ID:r.取置ID,受注番号:r.受注番号,商品コード:r.商品コード,数量:r.取り置き数量,元EMS番号:r.元EMS番号,現物確認:'',メモ:r['終了理由・メモ']||''
   }));
   取り置き_表を保存_(TORIOKI_CFG.戻し,戻しHDR,rows);
   const sh=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.戻し);
   if(rows.length) sh.getRange(2,6,rows.length,1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['現物あり','在庫なし'],true).setAllowInvalid(false).build());
-  SpreadsheetApp.getActive().toast('未確認のキャンセル戻し '+rows.length+'件','取り置き台帳',6);
+  if(!(options&&options.silent)) SpreadsheetApp.getActive().toast('未確認のキャンセル戻し '+rows.length+'件','取り置き台帳',6);
 }
 
 function キャンセル戻し確認を確定(){ 直列_(キャンセル戻し確認を確定本体_); }
@@ -1261,7 +1251,8 @@ function キャンセル戻し確認を確定本体_(){
   if(plan.errors.length){ ui.alert('キャンセル戻しを確定できません',plan.errors.join('\n'),ui.ButtonSet.OK); return; }
   const answer=ui.alert('現物確認を確定します','入力済み'+inputs.filter(r=>r.現物確認).length+'件を台帳へ反映します。',ui.ButtonSet.OK_CANCEL);
   if(answer!==ui.Button.OK) return;
-  取り置き台帳_保存_(plan.rows); キャンセル戻し確認を更新本体_(); Yahoo戻し候補を更新_();
+  取り置き台帳_保存_(plan.rows);
+  引当_数値変更後全同期_({理由:'キャンセル戻し確認'});
 }
 
 // ボタン用の公開版(図形へ割り当てる)。内部からは従来どおり Yahoo戻し候補を更新_ を呼ぶ
@@ -1428,14 +1419,15 @@ function キャンセル戻しをYahoo反映済みにする本体_(){
     });
     日本在庫_戻り待ち_保存_(待ち);
   }catch(e){ ui.alert('日本在庫への追加に失敗しました',e.message+'\n(台帳の確定は完了しています)',ui.ButtonSet.OK); }
-  Yahoo戻し候補を更新_();
+  const sync=引当_数値変更後全同期_({理由:'Yahoo戻し確定'});
+  if(!sync.success) return;
   const 残=日本在庫_戻り待ち_読む_().filter(r=>!String(r.出力日時||'').trim()).length;
   SpreadsheetApp.getActive().toast(candidates.length+'件を日本在庫へ移しました（Yahoo待ち '+残+'件）'
     +'／日本在庫シートの「📤 CSVデータ作成」でCSVを作ってください','♻️Yahoo戻し',8);
 }
 
-// 日本在庫シートの「📤 CSVデータ作成」ボタン。戻り分(Yahooへ足す待ち)をCSVにして出力日時を入れる。
-// 箱の余りは⑤便締めが自動で出力するため、ここでは扱わない(便ごとの二重加算を防ぐ)
+// 日本在庫シートの「📤 CSVデータ作成」ボタン。
+// 作業者が日本在庫を確認してから、箱の余り＋戻り分をまとめて手動出力する。⑤便締めはCSVを自動作成しない。
 function 日本在庫CSVを作成(){ 直列_(日本在庫CSVを作成本体_); }
 function 日本在庫CSVを作成本体_(){
   const 待ち=日本在庫_戻り待ち_読む_(), 未出力=待ち.filter(r=>!String(r.出力日時||'').trim());
@@ -1488,6 +1480,7 @@ function 選択した取り置きを手動解除本体_(){
   const reason=String(response.getResponseText()||'').trim(); if(!reason){ ui.alert('解除理由は必須です'); return; }
   取り置き台帳_保存_(ledger.map(r=>String(r.取置ID||'')===selectedId
     ? Object.assign({},r,{状態:'手動解除','終了理由・メモ':reason,更新日時:new Date()}) : r));
+  引当_数値変更後全同期_({理由:'取り置き手動解除'});
 }
 
 // 🧹 孤児取り置きをまとめて解除: 孤児を一覧化してチェックで選び、まとめて手動解除する。
@@ -1540,6 +1533,7 @@ function orphanBulkRelease(ids, reason){
     const ledger=取り置き台帳_読む_();
     const 対象数=ledger.filter(r=>idSet.has(String(r.取置ID||'')) && String(r.状態||'')===TORIOKI_STATUS.ACTIVE).length;
     取り置き台帳_保存_(取り置き_一括解除計画_(ledger,idSet,理由,new Date()));
+    if(対象数) 引当_数値変更後全同期_({理由:'孤児取り置き一括解除'});
     SpreadsheetApp.getActive().toast(対象数+'件の孤児取り置きを手動解除しました','🧹 孤児解除',6);
     return 対象数;
   });

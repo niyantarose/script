@@ -888,7 +888,7 @@ function 全件再計算を反映本体_(){
     _発注共有SS_キャッシュ=null; EMS在庫を更新_本体_();
 
     stage='既存④で派生データ再生成'; 全件再計算_ガード更新_({startedAt:new Date(),stage,backups,archives});
-    const allocation=引当実行_本体_({preview:false,ignoreRebuildGuard:true,clearCurrentP:true,silentSummary:true});
+    const allocation=引当実行_本体_({preview:false,ignoreRebuildGuard:true,clearCurrentP:true,silentSummary:true,requireAllSheetSync:true});
     if(!allocation || allocation.success!==true) throw new Error('既存④が完了結果を返しませんでした。ガードを残して停止します。');
 
     PropertiesService.getDocumentProperties().deleteProperty(ZENKEN_REBUILD_CFG.ガードキー);
