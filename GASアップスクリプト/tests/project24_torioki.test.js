@@ -187,6 +187,19 @@ test('候補0行でも旧管理行数をnullで消せる', () => {
   });
 });
 
+test('取り置き登録の完了通知は実行を止めないtoastを使う', () => {
+  const calls = [];
+  const ss = {toast: (message, title, seconds) => calls.push({message, title, seconds})};
+
+  context.取り置き_更新完了を通知_(ss, '完了内容', false);
+
+  assert.deepStrictEqual(calls, [{
+    message:'完了内容',
+    title:'取り置き登録を更新しました',
+    seconds:10
+  }]);
+});
+
 // ===== 取り置き出荷_: 台帳メモによる人為オーバーライド =====
 
 test('台帳メモに「取り置き」がある出荷済み行を判定できる', () => {
