@@ -2154,5 +2154,17 @@ test('マイナス: この行の確保合計(棚+自動)を超える入力は従
   assert.strictEqual(plan.rows.filter(r=>r.状態!=='取り置き中').length,0,'エラー時は台帳を変えない');
 });
 
+test('反映ガード: ④確保だけを外すマイナスも「適用できる入力」として通す(2026-07-24)', () => {
+  // 棚登録0の行へマイナスを入れると targets も 解除数 も0になり、旧ガードでは
+  // 自動解除が起きているのに「適用できる入力がありません」で中止されていた
+  const plan=context.取り置き_統合反映計画_(マイナス入力_(2),自動確保台帳_(3),'2026-07-24T15:30:00');
+  assert.strictEqual(plan.counts.取り置き行,0,'棚登録は増えない');
+  assert.strictEqual(plan.counts.解除||0,0,'開始前在庫の解除も0');
+  assert.ok((plan.counts.自動解除数量||0)>0,'④確保の自動解除だけが起きるケース');
+  const src=require('fs').readFileSync('Project_24/取り置き台帳.js','utf8');
+  const gate=src.split(/\r?\n/).find(l=>l.indexOf('const 適用あり=')>=0)||'';
+  assert.ok(gate.indexOf('自動解除数量')>=0,'反映ガードが自動解除を数えている: '+gate.trim());
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');
