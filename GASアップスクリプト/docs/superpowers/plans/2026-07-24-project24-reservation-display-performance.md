@@ -366,8 +366,8 @@ Run:
 
 ```powershell
 node tests/project24_torioki.test.js
-node tests/project24_zenken.test.js
-node tests/project24_daniel.test.js
+node tests/project24_zenken_kensan.test.js
+node tests/project24_daniel_amari.test.js
 node --check "Project_24\引当.js"
 node --check "Project_24\取り置き台帳.js"
 ```
