@@ -851,7 +851,7 @@ function 便締めモック_(options){
   options=options||{};
   const externalHeader=['ステータス列','EMS番号','商品コード','数量'];
   const externalRows=[['到着済','EG1','AAA',2],['到着済','EG2','BBB',1]];
-  const state={statusWrites:[],externalAttempts:0,movementSaves:0,savedMoves:null,promotions:0,refreshes:0,alerts:[],flushes:0};
+  const state={statusWrites:[],externalAttempts:0,movementSaves:0,savedMoves:null,promotions:0,refreshes:0,syncs:0,alerts:[],flushes:0};
   const externalSheet={
     getLastRow:()=>1+externalRows.length,
     getLastColumn:()=>externalHeader.length,
@@ -889,8 +889,12 @@ function 便締めモック_(options){
   };
   const consistency=Object.prototype.hasOwnProperty.call(options,'consistency')
     ? options.consistency : {ts:Date.now(),要確認:0,台帳版:'v1'};
+  const yahooRecord=options.Yahoo出力未実施?null:{対象:jpRows.filter(r=>String(r[4])==='EG1'&&Number(r[3])>0)
+    .map(r=>({EMS番号:r[4],商品コード:r[2],余り数:Number(r[3])}))};
   context.P_KAKUTEI_CFG={シート:'EMSリスト',ヘッダー行:1};
-  context.PropertiesService={getDocumentProperties:()=>({getProperty:()=>consistency?JSON.stringify(consistency):''})};
+  context.PropertiesService={getDocumentProperties:()=>({getProperty:key=>key==='引当_整合状態'
+    ? (consistency?JSON.stringify(consistency):'')
+    : key==='YAHOO出力記録'&&yahooRecord?JSON.stringify(yahooRecord):''})};
   context.SpreadsheetApp.getUi=()=>ui;
   context.SpreadsheetApp.getActive=()=>({getSheetByName:name=>name==='日本在庫'?jpSheet:null});
   context.SpreadsheetApp.flush=()=>{
@@ -901,6 +905,7 @@ function 便締めモック_(options){
   context.引当履歴_今回到着分を記録_=()=>({追加:0,重複:0,対象:0});
   context.引当履歴_EMSリストから記録_=()=>{ state.promotions++; return {追加:0,重複:0,対象:1}; };
   context.EMS在庫を更新_本体_=()=>{ state.refreshes++; };
+  context.引当_数値変更後全同期_=opt=>{ state.syncs++; if(opt&&opt.EMS更新) state.refreshes++; return {success:true}; };
   context.EMS在庫移動台帳_読む_=()=>[];
   context.EMS在庫移動台帳_保存_=rows=>{
     state.movementSaves++;
@@ -919,6 +924,12 @@ function 便締めモック_(options){
   };
   context.Yahoo変更_内容署名_=対象=>JSON.stringify(対象);
   context.Yahoo在庫変更を出力本体_=()=>{ state.exportCalls++; return {ok:true}; };
+  context.Yahoo変更_出力記録が対象を含む_=(targets,record)=>{
+    if(!record||!Array.isArray(record.対象)) return false;
+    const key=r=>String(r.EMS番号||'')+'|'+String(r.商品コード||'').toUpperCase()+'|'+(Number(r.余り数)||0);
+    const saved=new Set(record.対象.map(key));
+    return (targets||[]).every(r=>saved.has(key(r)));
+  };
   // 出力済み記録に頼らず、その場で要確認(Yahooに出せないコード)を計算する経路
   context.Yahoo変更_要確認コード_=()=>(options.要確認||[]).slice();
   context.全件再計算_マスタ除外集合_=()=>new Set();
@@ -943,6 +954,19 @@ test('便締めは選択EMSの日本在庫だけを確認してYahoo移動台帳
   assert.strictEqual(state.savedMoves[0].処理ID,'YAHOO|EMS|EG1|AAA');
   assert.strictEqual(state.promotions,1);
   assert.strictEqual(state.refreshes,1);
+  assert.strictEqual(state.syncs,1);
+  assert.strictEqual(state.exportCalls,0,'⑤からYahoo CSVを自動作成しない');
+});
+
+test('便締めは日本在庫CSVの手動出力記録が無ければ一切変更しない', () => {
+  const state=便締めモック_({Yahoo出力未実施:true});
+  state.execute();
+  const alertText=state.alerts.map(args=>args.join('\n')).join('\n');
+  assert.match(alertText,/日本在庫.*確認|CSV.*作成/);
+  assert.strictEqual(state.exportCalls,0);
+  assert.strictEqual(state.externalAttempts,0);
+  assert.strictEqual(state.movementSaves,0);
+  assert.strictEqual(state.syncs,0);
 });
 
 test('便締めは整合状態が欠落・不正・古い・未来・要確認あり・非v1なら一切変更しない', () => {
