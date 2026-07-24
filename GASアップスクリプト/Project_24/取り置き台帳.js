@@ -937,7 +937,11 @@ function 取り置き_表を保存_(sheetName, headers, rows, headerRow){
 }
 
 function 取り置き台帳_読む_(){ return 取り置き_表を読む_(TORIOKI_CFG.台帳,TORIOKI_CFG.台帳HDR); }
-function 取り置き台帳_保存_(rows){ 取り置き_表を保存_(TORIOKI_CFG.台帳,TORIOKI_CFG.台帳HDR,rows); }
+function 取り置き台帳_保存_(rows){
+  取り置き_表を保存_(TORIOKI_CFG.台帳,TORIOKI_CFG.台帳HDR,rows);
+  // 台帳が変わった時刻を残す。②を回すまでは引当状況一覧・日本在庫などが古い、を判定するため(2026-07-24)
+  try{ PropertiesService.getDocumentProperties().setProperty('取り置き台帳_最終更新',String(Date.now())); }catch(e){}
+}
 function EMS在庫移動台帳_読む_(){ return 取り置き_表を読む_(TORIOKI_CFG.移動,TORIOKI_CFG.移動HDR); }
 function EMS在庫移動台帳_保存_(rows){ 取り置き_表を保存_(TORIOKI_CFG.移動,TORIOKI_CFG.移動HDR,rows); }
 
@@ -1152,6 +1156,16 @@ function 取り置き初期登録を作成本体_(options){
   const 別ルート要対応=candidates.filter(c=>c.判定==='別ルート' && String(c.要対応||'').trim()!=='').length;
   const 全数確保=candidates.filter(c=>c.判定!=='棚戻し待ち' && (c.台帳確保数||0)>0 && c.判定!=='要棚確認').length;
   const summary={候補:candidates.length,要棚確認:要確認数,棚戻し待ち:戻し待ち数,即納表示:即納行数,別ルート表示:別ルート行数,入力済};
+  // 台帳を触ってから②を回していなければ、他シートが古いことを明示する(黙って古い数字を見せない)
+  let 要引当メモ='';
+  try{
+    const props=PropertiesService.getDocumentProperties();
+    const 台帳=Number(props.getProperty('取り置き台帳_最終更新')||0);
+    const 整合=JSON.parse(props.getProperty('引当_整合状態')||'null');
+    const 引当時刻=Number(整合&&整合.ts||0);
+    if(台帳 && 台帳>引当時刻) 要引当メモ='\n\n⚠️ 台帳を変更してから②を実行していません。'
+      +'引当状況一覧・日本在庫・受注明細のEMS番号や色・出荷可能などは前のままです（②で最新になります）。';
+  }catch(e){}
   if(!silent) ui.alert('取り置き登録を更新しました',
     '表示モード: '+表示モード+'（全'+全注文数+'注文中 '+表示注文数+'注文を表示。切替はメニュー👀）\n'
     +'候補'+candidates.length+'行 ／ 🔴棚戻し待ち '+戻し待ち数+'行 ／ ⚠️要棚確認 '+要確認数+'行\n\n'
