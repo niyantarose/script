@@ -167,8 +167,11 @@ function Yahoo在庫変更を出力本体_(preTargets, opts){
   }
   ss.setActiveSheet(out);
   // ⑤が「出力済みか」を自動判定するための記録(対象行の内容署名)。内容が変われば再出力になる
+  // 要確認コード(Yahoo側に無くCSVへ出せなかった分)も残す。⑤が「出力済み」で飛ばした時に、
+  // Yahooへ入っていない分を移動台帳へ記録しないための根拠として読む(2026-07-24)
   try{ PropertiesService.getDocumentProperties().setProperty('YAHOO出力記録',
-    JSON.stringify({sig:Yahoo変更_内容署名_(振り分け.対象),at:String(new Date())})); }catch(e){}
+    JSON.stringify({sig:Yahoo変更_内容署名_(振り分け.対象),at:String(new Date()),
+      要確認コード:変換.要確認.map(r=>String(r.商品コード||''))})); }catch(e){}
   ui.alert('Yahoo在庫変更出力を作成しました',
     '出力: '+変換.行.length+'行 / 要確認: '+変換.要確認.length+'件 / 除外: '+振り分け.除外.length+'件'
     +(未知.length?'\n⚠️ 日本在庫にこのEMS番号の行がありません: '+未知.join(', '):'')

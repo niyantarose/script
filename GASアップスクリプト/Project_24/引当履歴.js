@@ -366,28 +366,41 @@ function 到着済を在庫反映済みへ本体_(){
   if(jpCode<0 || jpQty<0 || jpEms<0){ ui.alert('日本在庫の見出しが不足しています。先に② 引き当て実行をやり直してください。'); return; }
   const targetSet=new Set(targets), jpLast=jp.getLastRow();
   const jpData=jpLast>2?jp.getRange(3,1,jpLast-2,jpLastCol).getDisplayValues():[];
-  const surplus=jpData.map(row=>{
+  const 箱余り=jpData.map(row=>{
     const ems=String(row[jpEms]||'').trim(), sourceCode=String(row[jpCode]||'').trim();
     return {ems,code:sourceCode,sourceCode,qty:Number(row[jpQty])||0};
   }).filter(row=>targetSet.has(row.ems)&&row.qty>0);
   // 📤 出力済みかは記録(内容署名)で自動判定する。同じ内容を出力済みなら黙って先へ、
   // 未出力・内容が変わっていれば聞かずにこの場で出力する(締め後は日本在庫から余りが消えるため)。
   // typeofガードは単体テストハーネス(出力モジュール未ロード)との互換用。実GASでは常に定義済み
-  if(surplus.length && typeof Yahoo変更_対象行_==='function' && typeof Yahoo在庫変更を出力本体_==='function'){
+  let 除外理由={}; // 商品コード→Yahooへ入らなかった理由(移動台帳へ記録しない根拠)
+  let surplus=箱余り;
+  if(箱余り.length && typeof Yahoo変更_対象行_==='function' && typeof Yahoo在庫変更を出力本体_==='function'){
     let 除外=null; try{ 除外=全件再計算_マスタ除外集合_(); }catch(e){ 除外=new Set(); }
-    const 出力対象=Yahoo変更_対象行_(
-      surplus.map(r=>({商品コード:r.sourceCode,余り数:r.qty,EMS番号:r.ems})),
-      targetSet,除外).対象;
+    const 振り分け=Yahoo変更_対象行_(
+      箱余り.map(r=>({商品コード:r.sourceCode,余り数:r.qty,EMS番号:r.ems})),
+      targetSet,除外);
+    振り分け.除外.forEach(r=>{ 除外理由[normCode_(r.商品コード)]=r.理由; });
+    const 出力対象=振り分け.対象;
+    let 要確認コード=[];
     if(出力対象.length){
       const sig=Yahoo変更_内容署名_(出力対象);
-      let 出力済み=false;
-      try{ const rec=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null');
-        出力済み=!!rec && rec.sig===sig && sig!==''; }catch(e){}
-      if(!出力済み) Yahoo在庫変更を出力本体_(targets);
+      let 出力済み=false, 記録=null;
+      try{ 記録=JSON.parse(PropertiesService.getDocumentProperties().getProperty('YAHOO出力記録')||'null');
+        出力済み=!!記録 && 記録.sig===sig && sig!==''; }catch(e){}
+      const 結果=出力済み? null : Yahoo在庫変更を出力本体_(targets);
+      要確認コード=(結果&&結果.要確認コード)||(出力済み&&記録&&記録.要確認コード)||[];
     }
+    要確認コード.forEach(c=>{ 除外理由[normCode_(c)]='Yahoo全在庫CSVに無くCSVへ出せていない'; });
+    // Yahooへ実際に入らなかった分(在庫対象外・要確認)は「Yahoo移動済み」にしない。
+    // 記録すると現物は日本にあるのに帳簿から消える(2026-07-24 ★コピペ5・PromotionalItem5で発生)
+    surplus=箱余り.filter(r=>!除外理由[normCode_(r.sourceCode)]);
   }
+  const 除外行=箱余り.filter(r=>除外理由[normCode_(r.sourceCode)]);
   const moveLines=['EMS番号 / 商品コード / Yahooへ移す数量'].concat(
-    surplus.length?surplus.map(row=>row.ems+' / '+row.sourceCode+' / '+row.qty):['(Yahoo移動対象なし)']);
+    surplus.length?surplus.map(row=>row.ems+' / '+row.sourceCode+' / '+row.qty):['(Yahoo移動対象なし)'])
+    .concat(除外行.length?['','■ Yahooへ入れないので移動記録しません(日本在庫に残ります)']
+      .concat(除外行.map(r=>r.sourceCode+' / '+r.qty+' / '+除外理由[normCode_(r.sourceCode)])):[]);
   const confirm=ui.alert('Yahoo移動の最終確認',moveLines.join('\n')+'\n\nYahoo在庫への反映が完了している場合だけOK',ui.ButtonSet.OK_CANCEL);
   if(confirm!==ui.Button.OK) return;
 
