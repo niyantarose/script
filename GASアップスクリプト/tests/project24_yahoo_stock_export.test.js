@@ -164,5 +164,30 @@ test('対象行: 戻りのみモードは箱の余りを出さず戻り行だけ
   assert.deepStrictEqual(json(r.対象.map(x=>x.商品コード)), ['RET01']);
 });
 
+// ===== 2026-07-24 日本在庫の「在庫対象外」表示とCSV出力の除外を同じ判定に統一 =====
+
+test('対象外理由: 足せないコードは理由付きで返し、通常コードは空を返す', () => {
+  const ex = new Set([context.normCode_('吉田富貴子')]);
+  assert.strictEqual(context.Yahoo変更_対象外理由_('★コピペ', ex), '付属ポスター印(★コピペ)');
+  assert.strictEqual(context.Yahoo変更_対象外理由_('PromotionalItem', ex), 'PromotionalItem(贈呈品)');
+  assert.strictEqual(context.Yahoo変更_対象外理由_('10117508', ex), '受注番号形式コード');
+  assert.strictEqual(context.Yahoo変更_対象外理由_('吉田富貴子', ex), 'マスタ除外コード');
+  assert.strictEqual(context.Yahoo変更_対象外理由_('MRBLUE41', ex), '', '通常コードは足せる');
+  assert.strictEqual(context.Yahoo変更_対象外理由_('', ex), '');
+});
+
+test('対象行: 日本在庫が「在庫対象外(理由)」と表示した行は、未着ではなく正しい理由で除外される', () => {
+  const r = context.Yahoo変更_対象行_([
+    {状態:'在庫対象外(付属ポスター印(★コピペ))',商品コード:'★コピペ',余り数:5,EMS番号:'EG1'},
+    {状態:'在庫対象外(PromotionalItem(贈呈品))',商品コード:'PromotionalItem',余り数:5,EMS番号:'EG1'},
+    {状態:'未着',商品コード:'FUT01',余り数:1,EMS番号:'EG1'},
+    {状態:'到着済',商品コード:'OK01',余り数:1,EMS番号:'EG1'}
+  ], new Set(['EG1']), new Set());
+  assert.deepStrictEqual(json(r.対象.map(x=>x.商品コード)), ['OK01']);
+  assert.deepStrictEqual(json(r.除外.map(x=>x.理由)),
+    ['付属ポスター印(★コピペ)','PromotionalItem(贈呈品)','未着(先行)の余りはYahooへ足せない'],
+    'コード起因の除外が未着理由に化けない');
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `${failures} FAILED` : 'ALL PASS');

@@ -1977,11 +1977,15 @@ function 引当実行_本体_(options){
   // 在庫対象外(★コピペ=コード後貼り待ち・贈呈品・マスタ除外)は状態を分けて在庫と誤読させない(2026-07-23)
   let 在庫外集合=new Set();
   try{ if(typeof 全件再計算_マスタ除外集合_==='function') 在庫外集合=全件再計算_マスタ除外集合_(); }catch(e){}
-  const 在庫外判定=c=>typeof 全件再計算_在庫対象外コード_==='function' && 全件再計算_在庫対象外コード_(c,在庫外集合);
+  // Yahoo出力CSVの除外と同じ関数で判定し、理由まで状態列に出す(日本在庫とCSVの中身を一致させる)
+  const 対象外理由=c=>{
+    if(typeof Yahoo変更_対象外理由_==='function') return Yahoo変更_対象外理由_(c,在庫外集合);
+    return (typeof 全件再計算_在庫対象外コード_==='function' && 全件再計算_在庫対象外コード_(c,在庫外集合))?'在庫対象外':'';
+  };
   const jp余り=[], jp対象外=[];
   outputPlan.surplus.forEach(r=>{
-    const 対象外=在庫外判定(r.sourceCode||r.code);
-    (対象外?jp対象外:jp余り).push([対象外?'在庫対象外':'到着済',r.arrival,r.code,r.qty,r.ems]);
+    const 理由=対象外理由(r.sourceCode||r.code);
+    (理由?jp対象外:jp余り).push([理由?'在庫対象外('+理由+')':'到着済',r.arrival,r.code,r.qty,r.ems]);
   });
   const jpRows=jp余り
     .concat(typeof 日本在庫_戻り待ち行_==='function'? 日本在庫_戻り待ち行_() : [])
