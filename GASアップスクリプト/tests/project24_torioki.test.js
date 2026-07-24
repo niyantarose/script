@@ -62,6 +62,50 @@ test('P列需要は発送済みの分割行を除外し未発送行だけ残す'
   assert.strictEqual(context.P列需要対象行_(['2026-07-14', ''], M), false);
 });
 
+// ===== 受注明細表示: 集計確保数を未発送の分割行だけへ配分する =====
+
+test('発送済み2個行は空欄で未発送1個行だけ確保1を表示する', () => {
+  const result = context.受注明細_現在確保を行配分_([
+    {qty:2, 発送済み:true, rowNumber:10},
+    {qty:1, 発送済み:false, rowNumber:11}
+  ], 1);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(result.rows)), [
+    {確保済み:'', 不足:'', 現在表示:false, 発送済み:true},
+    {確保済み:1, 不足:0, 現在表示:true, 発送済み:false}
+  ]);
+  assert.strictEqual(result.未配分, 0);
+});
+
+test('未発送分割行は上から注文数量を上限に確保数を配る', () => {
+  const one = context.受注明細_現在確保を行配分_([
+    {qty:2, 発送済み:false, rowNumber:20},
+    {qty:1, 発送済み:false, rowNumber:21}
+  ], 1);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(one.rows.map(r => [r.確保済み, r.不足]))), [[1,1],[0,1]]);
+
+  const full = context.受注明細_現在確保を行配分_([
+    {qty:2, 発送済み:false, rowNumber:20},
+    {qty:1, 発送済み:false, rowNumber:21}
+  ], 3);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(full.rows.map(r => [r.確保済み, r.不足]))), [[2,0],[1,0]]);
+});
+
+test('現在確保が未発送注文数を超えても表示は注文数まで', () => {
+  const result = context.受注明細_現在確保を行配分_([
+    {qty:2, 発送済み:false, rowNumber:30},
+    {qty:1, 発送済み:false, rowNumber:31}
+  ], 4);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(result.rows.map(r => r.確保済み))), [2,1]);
+  assert.strictEqual(result.未配分, 1);
+});
+
+test('注文数量が数値でなければ受注明細行番号を含めて停止する', () => {
+  assert.throws(
+    () => context.受注明細_現在確保を行配分_([{qty:'不明', 発送済み:false, rowNumber:44}], 1),
+    /44行目.*注文数量/
+  );
+});
+
 // ===== 取り置き出荷_: 台帳メモによる人為オーバーライド =====
 
 test('台帳メモに「取り置き」がある出荷済み行を判定できる', () => {

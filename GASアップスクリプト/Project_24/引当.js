@@ -784,15 +784,31 @@ function 受注明細_確保列を用意_(recv){
   return {確保済み:head.indexOf('確保済み')+1,不足:head.indexOf('不足')+1,確保内訳:head.indexOf('確保内訳')+1};
 }
 
+// 受注番号|SKU単位の現在確保数を、未発送の分割行へ受注明細の上から配る。
+// 発送済み行は過去履歴であり、現在確保の表示対象にはしない。
+function 受注明細_現在確保を行配分_(rows, totalSecured){
+  let rest=Math.max(0,Number(totalSecured)||0);
+  const out=(rows||[]).map(item=>{
+    const source=item||{}, rowNumber=Number(source.rowNumber)||0;
+    if(source.発送済み) return {確保済み:'',不足:'',現在表示:false,発送済み:true};
+    const qty=Number(source.qty);
+    if(!Number.isFinite(qty) || qty<0)
+      throw new Error((rowNumber?rowNumber+'行目 ':'')+'注文数量が数値ではありません: '+String(source.qty));
+    const secured=Math.min(qty,rest);
+    rest=Math.max(0,rest-secured);
+    return {確保済み:secured,不足:Math.max(0,qty-secured),現在表示:secured>0,発送済み:false};
+  });
+  return {rows:out,未配分:rest};
+}
+
 // 取り置き登録の候補(確保済み/不足/確保内訳を計算済み)を受注明細の同キー行へ書き戻す。
-// 取り置き登録の更新のたびに呼ばれ、受注明細でも同じ数字が見える。候補に無い行(出荷GO等)は空欄。
-// 同一キーの分割行には同じ集計値が入る(取り置き登録側で受注番号|SKU単位に束ねているため)。
+// 候補は受注番号|SKU単位の集計値なので、同じキーの未発送行へ上から数量配分して表示する。
 function 受注明細_確保列を書く_(candidates){
   const ss=SpreadsheetApp.getActive(), recv=ss.getSheetByName(HIKIATE_CFG.受注);
   if(!recv) return;
   const M=列マップ_(recv), last=recv.getLastRow();
   if(last<=M.hr) return;
-  const cols=受注明細_確保列を用意_(recv);
+  const cols=受注明細_確保列を用意_(recv), emsCol=EMS番号列を用意_(recv);
   const byKey={};
   (candidates||[]).forEach(c=>{
     if(String(c.判定||'')==='棚戻し待ち') return; // キャンセル戻し行は受注明細に無い
@@ -800,17 +816,45 @@ function 受注明細_確保列を書く_(candidates){
     if(!(k in byKey)) byKey[k]=c;
   });
   const R=recv.getRange(M.hr+1,1,last-M.hr,recv.getLastColumn()).getValues();
-  const 確保out=[],不足out=[],内訳out=[];
-  R.forEach(row=>{
+  const 確保out=R.map(()=>['']),不足out=R.map(()=>['']),内訳out=R.map(()=>['']);
+  const EMSout=recv.getRange(M.hr+1,emsCol,R.length,1).getValues();
+  const groups={};
+  R.forEach((row,index)=>{
     const ban=String(row[M.番号]||'').trim();
-    const c=ban? byKey[取り置き_行キー_({ban,sku:M.SKU>=0?row[M.SKU]:'',code:row[M.コード]})] : null;
-    確保out.push([c&&c.確保済み!=null&&c.確保済み!==''?c.確保済み:'']);
-    不足out.push([c&&c.不足!=null&&c.不足!==''?c.不足:'']);
-    内訳out.push([c?String(c.確保内訳||''):'']);
+    if(!ban) return;
+    const key=取り置き_行キー_({ban,sku:M.SKU>=0?row[M.SKU]:'',code:row[M.コード]});
+    if(!byKey[key]) return;
+    (groups[key]=groups[key]||[]).push({
+      index,
+      qty:M.個数>=0?row[M.個数]:'',
+      発送済み:引当_行出荷済み_(row,M),
+      rowNumber:M.hr+1+index
+    });
+  });
+  Object.keys(groups).forEach(key=>{
+    const c=byKey[key], sourceRows=groups[key];
+    const result=受注明細_現在確保を行配分_(sourceRows,c.確保済み);
+    const activeRows=sourceRows.filter(r=>!r.発送済み);
+    const activeCount=activeRows.length;
+    const skuTotal=Math.min(Number(c.確保済み)||0,activeRows.reduce((sum,r)=>sum+(Number(r.qty)||0),0));
+    result.rows.forEach((line,pos)=>{
+      const index=sourceRows[pos].index;
+      if(line.発送済み){ EMSout[index][0]=''; return; }
+      確保out[index][0]=line.確保済み;
+      不足out[index][0]=line.不足;
+      if(!line.現在表示){ EMSout[index][0]=''; return; }
+      const detail=String(c.確保内訳||'');
+      内訳out[index][0]=activeCount>1&&detail
+        ? detail+'［この行'+line.確保済み+'／SKU合計'+skuTotal+'］'
+        : detail;
+      EMSout[index][0]=String(c.現在EMS||'');
+    });
+    if(result.未配分>0) console.warn('受注明細の表示上限超過: '+key+' 未配分'+result.未配分);
   });
   recv.getRange(M.hr+1,cols.確保済み,確保out.length,1).setValues(確保out);
   recv.getRange(M.hr+1,cols.不足,不足out.length,1).setValues(不足out);
   recv.getRange(M.hr+1,cols.確保内訳,内訳out.length,1).setValues(内訳out);
+  recv.getRange(M.hr+1,emsCol,EMSout.length,1).setValues(EMSout);
 }
 
 // 注文ごと(受注番号が変わる境目)に太い下線を引く。全体には薄い格子。
