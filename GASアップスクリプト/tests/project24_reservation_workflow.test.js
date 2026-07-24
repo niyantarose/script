@@ -2175,5 +2175,32 @@ test('空き在庫列: 見出しは不足の隣にあり、確保内訳より前
   assert.strictEqual(hdr.length,18);
 });
 
+test('反映後の入力消去: 適用できた行だけIDとキーを返し、エラー行は残す(二重計上防止 2026-07-24)', () => {
+  const plan=context.取り置き_統合反映計画_([
+    {取置ID:'INIT|601|AAA|AAAB',受注番号:'601',商品コード:'AAA',SKU:'AAAb',注文数量:2,追加数量:1,マイナス数量:'',棚確認:'',メモ:''},
+    {取置ID:'INIT|602|BBB|BBBB',受注番号:'602',商品コード:'BBB',SKU:'BBBb',注文数量:1,追加数量:5,マイナス数量:'',棚確認:'',メモ:''}
+  ],[],'2026-07-24T16:00:00');
+  assert.ok(plan.errors.some(e=>/602/.test(e)),'602は注文超過でエラー');
+  assert.strictEqual(JSON.stringify(plan.counts.適用ID),JSON.stringify(['INIT|601|AAA|AAAB']),
+    '適用できた行だけ入力欄を消す対象にする');
+  assert.strictEqual(JSON.stringify(plan.counts.適用キー),JSON.stringify(['601|AAAB']),
+    '入力保存シートは入力キー(受注番号|SKU)で消す');
+});
+
+test('反映後の入力消去: ④確保だけを外すマイナスも消去対象に入る', () => {
+  const plan=context.取り置き_統合反映計画_(マイナス入力_(2),自動確保台帳_(3),'2026-07-24T16:00:00');
+  assert.strictEqual(JSON.stringify(plan.counts.適用ID),JSON.stringify(['INIT|501|AAA|AAAB']));
+  assert.ok((plan.counts.適用キー||[]).length===1);
+});
+
+test('反映本体は台帳保存の直後・再生成の前に入力欄を消す', () => {
+  const src=require('fs').readFileSync('Project_24/取り置き台帳.js','utf8');
+  const 保存=src.indexOf('取り置き台帳_保存_(plan.rows);');
+  const 消去=src.indexOf('取り置き_反映済み入力を消す_(c.適用ID,c.適用キー);');
+  const 再生成=src.indexOf('取り置き初期登録を作成本体_({silent:true});');
+  assert.ok(保存>=0 && 消去>保存,'台帳保存に成功してから消す(失敗時は入力を残す)');
+  assert.ok(再生成>消去,'再生成より前に消さないとシートから復元されてしまう');
+});
+
 process.exitCode = failures ? 1 : 0;
 console.log(failures ? `FAILURES: ${failures}` : 'ALL TESTS PASSED');

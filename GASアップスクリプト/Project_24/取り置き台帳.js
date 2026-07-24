@@ -658,7 +658,7 @@ function 取り置き_棚戻し候補_(ledgerRows, sheetRows){
 
 function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
   const 設定=opts||{};
-  const errors=[], targets={}, inputIds=new Set(), 自動解除要求=[], マイナス適用=[];
+  const errors=[], targets={}, inputIds=new Set(), 自動解除要求=[], マイナス適用=[], 適用行=[];
   // 発送済み・解除済みになった開始前在庫行は履歴。再確定で復活も消滅もさせない(誤操作ガード)
   const lockedIds=new Set((existingRows||[]).filter(r=>r.取置元種別==='開始前在庫' && r.状態!==TORIOKI_STATUS.ACTIVE).map(r=>String(r.取置ID||'')));
   // 棚登録優先(2026-07-23 ユーザー要望「取り置き登録だけですませたい」): 棚の現物を登録して注文が
@@ -710,6 +710,7 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
       if(add>0 && (check==='出荷済み'||check==='予約')) rowErrors.push('受注'+r.受注番号+': 棚確認が「'+check+'」なのに追加数量が入っています(どちらかを直してください)');
       if(rowErrors.length){ rowErrors.forEach(e=>errors.push(e)); return; }
       inputIds.add(id);
+      適用行.push({id,key:取り置き_入力キー_(r)}); // 反映後に入力欄を消すため(残すと二重計上)
       if(解除必要>0) 自動解除要求.push({key:取り置き_行キー_(r),数量:解除必要,受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||''),
         マイナス:自動マイナス>0});
       if(棚マイナス>0) マイナス適用.push({id,数量:棚マイナス,受注番号:String(r.受注番号||''),商品コード:String(r.商品コード||''),SKU:String(r.SKU||'')});
@@ -787,6 +788,7 @@ function 取り置き_初期確定計画_(inputRows, existingRows, now, opts){
     // 「現物ありますか？」を聞く対象=棚登録から外す分＋マイナス入力で外す④確保分
     マイナス数量:マイナス適用.reduce((n,m)=>n+m.数量,0)
       +自動解除要求.filter(q=>q.マイナス).reduce((n,q)=>n+q.数量,0),
+    適用ID:適用行.map(a=>a.id),適用キー:適用行.map(a=>a.key),
     在庫戻し数量:在庫戻し.reduce((n,m)=>n+m.数量,0)}};
 }
 
@@ -836,6 +838,7 @@ function 取り置き_統合反映計画_(inputs, ledger, now, opts){
     counts:{取り置き行:initial.適用.行,取り置き数量:initial.適用.数量,解除:initial.適用.解除,
       自動解除数量:initial.適用.自動解除数量||0,自動解除:initial.適用.自動解除||[],
       マイナス数量:initial.適用.マイナス数量||0,在庫戻し数量:initial.適用.在庫戻し数量||0,
+      適用ID:initial.適用.適用ID||[],適用キー:initial.適用.適用キー||[],
       棚へ戻した:returned.適用.棚へ戻した,現物なし:returned.適用.現物なし}};
 }
 
@@ -1202,6 +1205,8 @@ function 取り置き登録を反映本体_(){
     +'\n台帳へ一括反映しますか？',ui.ButtonSet.OK_CANCEL);
   if(answer!==ui.Button.OK) return;
   取り置き台帳_保存_(plan.rows);
+  // 反映できた入力欄を消す(残すと次の反映で同じ数量をもう一度適用してしまう 2026-07-24)
+  取り置き_反映済み入力を消す_(c.適用ID,c.適用キー);
   // 旧管理シートは裏側の監査用として同期するが、日常操作は取り置き登録だけで完結する。
   try{ Yahoo戻し候補を更新_(); }catch(e){}
   const refreshed=取り置き初期登録を作成本体_({silent:true});
@@ -1274,6 +1279,37 @@ function 取り置き_空き在庫マップ_(){
     });
   }catch(e){}
   return out;
+}
+
+// 反映が済んだ入力(追加数量/マイナス数量)を画面と入力保存シートの両方から消す。
+// 残すと同じ数量をもう一度反映してしまう(二重計上)。エラーでスキップした行の入力は残す(直して再実行するため)
+function 取り置き_反映済み入力を消す_(適用ID, 適用キー){
+  const ids=適用ID instanceof Set?適用ID:new Set(適用ID||[]);
+  const keys=適用キー instanceof Set?適用キー:new Set(適用キー||[]);
+  if(!ids.size && !keys.size) return;
+  // 画面の入力欄(適用できた行だけ)
+  try{
+    const sh=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
+    const hr=TORIOKI_CFG.初期HDR行, last=sh?sh.getLastRow():0;
+    if(sh && last>hr){
+      const 追加列=TORIOKI_CFG.初期HDR.indexOf('追加数量')+1, マ列=TORIOKI_CFG.初期HDR.indexOf('マイナス数量')+1;
+      const n=last-hr, id列=sh.getRange(hr+1,1,n,1).getDisplayValues();
+      const 追加=sh.getRange(hr+1,追加列,n,1).getValues(), マ=sh.getRange(hr+1,マ列,n,1).getValues();
+      let 変更=false;
+      for(let i=0;i<n;i++){
+        if(!ids.has(String(id列[i][0]||''))) continue;
+        if(String(追加[i][0]||'')!==''){ 追加[i][0]=''; 変更=true; }
+        if(String(マ[i][0]||'')!==''){ マ[i][0]=''; 変更=true; }
+      }
+      if(変更){ sh.getRange(hr+1,追加列,n,1).setValues(追加); sh.getRange(hr+1,マ列,n,1).setValues(マ); }
+    }
+  }catch(e){}
+  // 非表示の入力保存シート(洗い替えで復元されないように)
+  try{
+    const rows=取り置き_表を読む_(TORIOKI_INPUT_CFG.シート,TORIOKI_INPUT_CFG.HDR)
+      .map(r=>keys.has(String(r.入力キー||''))?Object.assign({},r,{未反映追加数量:'',未反映マイナス数量:''}):r);
+    if(rows.length) 取り置き_表を保存_(TORIOKI_INPUT_CFG.シート,TORIOKI_INPUT_CFG.HDR,rows);
+  }catch(e){}
 }
 
 // 日本在庫シートの「戻り」行だけを今の台帳へ合わせる(箱の余り行=状態'到着済'は触らない)。
