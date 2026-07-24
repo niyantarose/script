@@ -160,8 +160,11 @@ if (-not $SkipDeploy) {
   try {
     $deployOutput = & npx clasp deployments 2>&1 | Out-String
     # 「- <deploymentId> @<version> - <説明>」の形式。@HEAD（テストデプロイ）は対象外。
-    $versioned = [regex]::Matches($deployOutput, '(?m)^-\s+(?<id>AK\S+)\s+@(?<ver>\d+)') |
-      ForEach-Object { $_.Groups['id'].Value } | Select-Object -Unique
+    # @(...) で必ず配列にする。1件だと文字列になり $versioned[0] が先頭1文字になるため。
+    $versioned = @(
+      [regex]::Matches($deployOutput, '(?m)^-\s+(?<id>AK\S+)\s+@(?<ver>\d+)') |
+        ForEach-Object { $_.Groups['id'].Value } | Select-Object -Unique
+    )
 
     if ($versioned.Count -eq 0) {
       Write-Host "ℹ $Project に固定デプロイはありません（デプロイ不要）"
