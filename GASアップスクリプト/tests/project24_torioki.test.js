@@ -17,6 +17,7 @@ const context = {
 vm.createContext(context);
 [
   'Project_24/引当.js',
+  'Project_24/P列自動記入.js',
   'Project_24/消込台帳.js',
   'Project_24/ダニエル余り.js'
 ].forEach(f => vm.runInContext(fs.readFileSync(f, 'utf8'), context));
@@ -32,24 +33,33 @@ function test(name, fn) {
   }
 }
 
-// ===== 残必要計算_: 取り置き数を差し引く =====
+// ===== 残必要計算_: 現在の取り置き中数量だけを差し引く =====
 
-test('取り置き数が注文数を満たす行は今回便からの必要数0', () => {
-  assert.strictEqual(context.残必要計算_({qty:1, 取り置き数:1}), 0);
+test('取り置き中数量が注文数を満たす行は今回便からの必要数0', () => {
+  assert.strictEqual(context.残必要計算_({qty:1, 取り置き中数量:1}), 0);
 });
 
-test('取り置き数が一部だけなら残りだけ必要', () => {
-  assert.strictEqual(context.残必要計算_({qty:3, 取り置き数:1}), 2);
+test('取り置き中数量が一部だけなら残りだけ必要', () => {
+  assert.strictEqual(context.残必要計算_({qty:3, 取り置き中数量:1}), 2);
 });
 
-test('取り置き数なし（列未入力）は従来どおり', () => {
+test('現在台帳の取り置きなしでは旧履歴を必要数から差し引かない', () => {
   assert.strictEqual(context.残必要計算_({qty:2}), 2);
   assert.strictEqual(context.残必要計算_({qty:2, alloc:1}), 1);
-  assert.strictEqual(context.残必要計算_({qty:2, alloc:1, 履歴Alloc:1}), 0);
+  assert.strictEqual(context.残必要計算_({qty:2, alloc:1, 履歴Alloc:1}), 1);
 });
 
-test('引当・履歴・取り置きの合計が注文数を超えても負にならない', () => {
-  assert.strictEqual(context.残必要計算_({qty:1, alloc:1, 取り置き数:1}), 0);
+test('引当・取り置きの合計が注文数を超えても負にならない', () => {
+  assert.strictEqual(context.残必要計算_({qty:1, alloc:1, 取り置き中数量:1}), 0);
+});
+
+// ===== P列需要: 行単位で発送済みの分割を除外する =====
+
+test('P列需要は発送済みの分割行を除外し未発送行だけ残す', () => {
+  const M = { 出荷日: 0, 出荷日毎: 1 };
+  assert.strictEqual(context.P列需要対象行_(['', ''], M), true);
+  assert.strictEqual(context.P列需要対象行_(['', '2026/07/14'], M), false);
+  assert.strictEqual(context.P列需要対象行_(['2026-07-14', ''], M), false);
 });
 
 // ===== 取り置き出荷_: 台帳メモによる人為オーバーライド =====
