@@ -217,6 +217,8 @@ function 現物確認移行を反映本体_(){
     dsh.getRange(dsh.getLastRow()+1,1,plan.diff.length,3).setValues(plan.diff.map(d=>[stamp,d.入力キー,d.内容]));
   }
   PropertiesService.getDocumentProperties().deleteProperty('現物確認移行_署名');
+  const sync=引当_数値変更後全同期_({理由:'現物確認移行'});
+  if(!sync.success) return;
   現物確認移行を作成本体_(); // 残候補(保留・エラー・未選択)で作り直す
   ss.toast('適用'+plan.applied.length+'キー / 保留'+plan.保留.length+' / エラー'+plan.errors.length,'現物確認移行',8);
 }

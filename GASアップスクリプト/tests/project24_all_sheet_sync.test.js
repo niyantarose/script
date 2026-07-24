@@ -8,6 +8,18 @@ const vm = require('vm');
 const ROOT = path.join(__dirname, '..');
 const SYNC_FILE = path.join(ROOT, 'Project_24', '全シート同期.js');
 
+function readProject(file) {
+  return fs.readFileSync(path.join(ROOT, 'Project_24', file), 'utf8');
+}
+
+function functionBody(source, name) {
+  const marker = `function ${name}(`;
+  const start = source.indexOf(marker);
+  assert.notStrictEqual(start, -1, `${name} が見つかりません`);
+  const next = source.indexOf('\nfunction ', start + marker.length);
+  return source.slice(start, next < 0 ? source.length : next);
+}
+
 let failures = 0;
 function test(name, fn) {
   try {
@@ -123,6 +135,43 @@ test('②が完了結果を返さない時は同期失敗にする', () => {
   assert.strictEqual(result.success, false);
   assert.strictEqual(context.__props.has('引当_整合状態'), false);
   assert.strictEqual(JSON.parse(context.__props.get('引当_全シート同期状態')).status, 'failed');
+});
+
+const syncEntrypoints = [
+  ['取り置き台帳.js', '取り置き登録を反映本体_'],
+  ['取り置き台帳.js', 'キャンセル戻し確認を確定本体_'],
+  ['取り置き台帳.js', 'キャンセル戻しをYahoo反映済みにする本体_'],
+  ['取り置き台帳.js', '選択した取り置きを手動解除本体_'],
+  ['取り置き台帳.js', 'orphanBulkRelease'],
+  ['受注明細個別ボタン.js', '選択行を個別引当_本体_'],
+  ['受注明細個別ボタン.js', '選択行の引当キャンセル_本体_'],
+  ['現物確認移行.js', '現物確認移行を反映本体_'],
+  ['消込台帳.js', '注文をキャンセル扱い本体_'],
+  ['消込台帳.js', '消込台帳_発送済みCSV取込本体_'],
+  ['消込台帳.js', '消込台帳のCSV処理済をクリア本体_'],
+  ['消込台帳.js', '消込台帳を更新本体_'],
+  ['P列自動記入.js', 'P列を書き直す本体_'],
+  ['P列自動記入.js', '便の引当をやり直す本体_'],
+  ['引当.js', '更新してから引当_本体_'],
+  ['引当.js', '取込_実行_']
+];
+
+syncEntrypoints.forEach(([file, name]) => {
+  test(`${name}は数量変更後に全同期を1回呼ぶ`, () => {
+    const body = functionBody(readProject(file), name);
+    assert.strictEqual((body.match(/引当_数値変更後全同期_\s*\(/g) || []).length, 1);
+  });
+});
+
+test('低レベル台帳保存関数は全同期を呼ばない', () => {
+  const source = readProject('取り置き台帳.js');
+  assert.doesNotMatch(functionBody(source, '取り置き台帳_保存_'), /引当_数値変更後全同期_/);
+  assert.doesNotMatch(functionBody(source, 'EMS在庫移動台帳_保存_'), /引当_数値変更後全同期_/);
+});
+
+test('全件再計算は管理シート失敗も反映失敗として停止する', () => {
+  const body = functionBody(readProject('全件再計算.js'), '全件再計算を反映本体_');
+  assert.match(body, /引当実行_本体_\s*\(\s*\{[^}]*requireAllSheetSync\s*:\s*true/s);
 });
 
 if (failures) process.exit(1);
