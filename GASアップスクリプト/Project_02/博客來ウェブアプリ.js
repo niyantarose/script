@@ -1290,7 +1290,8 @@ function fetchMangaUpdatesSiteDetailCandidates_(entries, queryKeys, language, ca
       });
       if (!pageMatchesQuery) continue;
 
-      const japaneseTitle = pickBestCandidate_(pageCandidates);
+      // クエリを渡さないとエコー除外もかな優先も効かず、中文題が確定値になる
+      const japaneseTitle = pickBestCandidate_(pageCandidates, uniqNonEmptyTitles_([originalProductTitle]));
       if (japaneseTitle) {
         result.japaneseTitle = stripMangaUpdatesEditionSuffix_(japaneseTitle);
         break;
@@ -1399,6 +1400,7 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
         + ', type: ' + mediaTypes[t] + ') { '
         + 'title { romaji english native userPreferred } '
         + 'synonyms '
+        + 'countryOfOrigin '
         + '} } }';
       requests.push({
         url: ANILIST_API_URL,
@@ -1438,22 +1440,114 @@ function searchAniListCandidates_(query, language, category, originalProductTitl
 
       result.candidates = uniqNonEmptyTitles_(result.candidates.concat(allTitles));
 
-      const nativeTitle = String(title.native || '').trim();
-      if (nativeTitle && hasJapaneseTitleSignal_(nativeTitle)) {
-        result.japaneseTitle = nativeTitle;
+      const picked = pickAniListJapaneseFromMedia_([media], [query, originalProductTitle].filter(Boolean));
+      if (picked) {
+        result.japaneseTitle = picked;
         return result;
-      }
-
-      for (let i = 0; i < allTitles.length; i += 1) {
-        if (hasJapaneseTitleSignal_(allTitles[i])) {
-          result.japaneseTitle = allTitles[i];
-          return result;
-        }
       }
     }
   }
 
   return result;
+}
+
+/**
+ * AniList の media 配列から日本語題を選ぶ（HTTP を含まない純粋関数＝テスト対象）。
+ *
+ * native は「原語のタイトル」であって日本語とは限らない。中国・韓国原作では
+ * native が中文題・ハングル題になり、本物の日本語題は synonyms 側に入る
+ * （実データ: search=快把我哥带走 → media[0] は countryOfOrigin=CN で
+ *   native=快把我哥带走、synonyms に 兄に付ける薬はない！）。
+ * このため「かな入り」を先に探し、漢字のみの native は日本原作のときだけ
+ * 最後の手段として使う（拡張機能 core/mangaUpdatesClient.js と同一方針）。
+ */
+function pickAniListJapaneseFromMedia_(mediaList, validationQueries) {
+  const list = Array.isArray(mediaList) ? mediaList : [];
+  const valQueries = (Array.isArray(validationQueries) ? validationQueries : [validationQueries])
+    .map(v => String(v == null ? '' : v).trim())
+    .filter(Boolean);
+
+  const valKeySet = {};
+  valQueries.forEach(q => {
+    const k = normalizeMangaUpdatesTitleKey_(q);
+    if (k) valKeySet[k] = true;
+  });
+
+  // countryOfOrigin が明示的に日本以外なら、その native は日本語題ではない。
+  // フィールドが無い場合（古い応答など）は判定不能として許容する。
+  function isNotJapaneseOrigin(m) {
+    const origin = m && m.countryOfOrigin ? String(m.countryOfOrigin).toUpperCase() : '';
+    return !!origin && origin !== 'JP';
+  }
+  // クエリが作品のタイトル/別名に含まれる＝作品一致が確定している
+  function seriesMatchesQuery(m) {
+    if (!m) return false;
+    let titles = [];
+    if (m.title) titles = titles.concat([m.title.native, m.title.romaji, m.title.english, m.title.userPreferred]);
+    if (Array.isArray(m.synonyms)) titles = titles.concat(m.synonyms);
+    return titles.some(t => {
+      const k = normalizeMangaUpdatesTitleKey_(t);
+      return !!k && !!valKeySet[k];
+    });
+  }
+
+  // 元クエリ（中華題など）に漢字があれば、AniList が返す native が無関係な誤答
+  // （例: 別作品「バトルファッカーB子」）でないか漢字重なりで検証する。
+  const requireHan = valQueries.some(q => muCollectHanChars_(q).length > 0);
+  function hanOverlapCount(a, b) {
+    const aSet = {};
+    muCollectHanChars_(a).forEach(c => { aSet[c] = true; });
+    let shared = 0;
+    const seen = {};
+    muCollectHanChars_(b).forEach(c => {
+      if (aSet[c] && !seen[c]) { seen[c] = true; shared += 1; }
+    });
+    return shared;
+  }
+  function nativeIsValid(nat, m) {
+    if (!requireHan) return true; // 検証クエリに漢字が無ければ検証不能 → 許容
+    // クエリが作品のタイトル/別名に一致＝作品確定なら、意訳・カナ題（漢字重なり0）でも採用
+    if (seriesMatchesQuery(m)) return true;
+    return valQueries.some(q => hanOverlapCount(nat, q) >= 2);
+  }
+
+  let fallbackNative = '';
+  for (let mi = 0; mi < list.length; mi += 1) {
+    const m = list[mi];
+    const nat = m && m.title ? String(m.title.native || '').trim() : '';
+    const natValid = !!nat
+      && hasJapaneseTitleSignal_(nat)
+      && nativeIsValid(nat, m)
+      // native がクエリそのもの（＝中文原題のエコー）なら日本語題ではない
+      && !muIsChineseEchoOfQueries_(nat, valQueries);
+
+    // (a) かな入りの native は日本語題として即採用
+    if (natValid && hasKanaJapaneseSignal_(nat)) return nat;
+
+    // (b) 日本語ライセンス題は synonyms 側に入っていることが多い。
+    //     漢字のみの synonym は中文題と区別できないため採用しない（かな縛り）。
+    const synonyms = Array.isArray(m && m.synonyms) ? m.synonyms : [];
+    if (synonyms.length && (seriesMatchesQuery(m) || natValid)) {
+      for (let si = 0; si < synonyms.length; si += 1) {
+        const syn = String(synonyms[si] || '').trim();
+        if (!syn) continue;
+        const synKey = normalizeMangaUpdatesTitleKey_(syn);
+        if (synKey && valKeySet[synKey]) continue; // クエリのエコーは除外
+        if (!hasKanaJapaneseSignal_(syn)) continue;
+        // K-9 のように native の正式題に対するカナ読み別名は乗り換えない
+        if (nat && muIsSameTitleInDifferentScript_(nat, syn)) continue;
+        return syn;
+      }
+    }
+
+    // (c) 漢字のみの native は日本原作のときだけ最後の手段として保留
+    //     （K-9 警視庁公安部公安第9課異能対策係 のようなかな無し日本語題の救済）
+    if (natValid && !fallbackNative && !isNotJapaneseOrigin(m)) {
+      fallbackNative = nat;
+    }
+  }
+
+  return fallbackNative;
 }
 
 function isWesternLatinTitleQuery_(value) {
@@ -1721,14 +1815,32 @@ function searchBLSites_(originalTitle, existingCandidates, author) {
 function pickBestCandidate_(candidates, validationQueries) {
   if (!candidates || !candidates.length) return '';
   const queries = uniqNonEmptyTitles_(Array.isArray(validationQueries) ? validationQueries : []);
-  // 日本語シグナルがあり、かつ原題クエリと整合する候補を優先
+
+  // 日本語シグナルがあり、かつ原題クエリと整合する候補だけを残す
+  const pool = [];
   for (let i = 0; i < candidates.length; i += 1) {
     const title = String(candidates[i]).trim();
     if (!title || !hasJapaneseTitleSignal_(title)) continue;
+    // クエリのエコー（中文原題そのもの）は「訳」ではないので日本語題にしない
+    if (queries.length && muIsChineseEchoOfQueries_(title, queries)) continue;
     if (queries.length && !validateLookupCandidateAgainstQueries_(title, queries)) continue;
-    return title;
+    pool.push(title);
   }
-  return '';
+  if (!pool.length) return '';
+
+  // 候補列は MU の Associated Names 掲載順そのままなので、先頭が漢字のみの場合は
+  // エコーではない「別の中国語題」でありうる（例: クエリ 日昇之屋 に対する 日出之家）。
+  // その場合だけ「別題」のかな入り候補へ乗り換える。K-9 のように同一題の表記違い
+  // （カナ読み別名）は漢字集合がほぼ一致するので乗り換えない。
+  const head = pool[0];
+  if (!hasKanaJapaneseSignal_(head)) {
+    for (let k = 1; k < pool.length; k += 1) {
+      if (hasKanaJapaneseSignal_(pool[k]) && !muIsSameTitleInDifferentScript_(head, pool[k])) {
+        return pool[k];
+      }
+    }
+  }
+  return head;
 }
 
 function buildLookupValidationQueriesFromContext_(context) {
@@ -1779,7 +1891,8 @@ function testConvertJapaneseTitle_() {
 const ANILIST_API_URL = 'https://graphql.anilist.co';
 const MANGA_UPDATES_API_BASE = 'https://api.mangaupdates.com/v1';
 const MANGA_UPDATES_SITE_SEARCH_BASE = 'https://www.mangaupdates.com/site/search/result?search=';
-const MANGA_UPDATES_CACHE_KEY_PREFIX = 'mu_title_v2_';
+// 候補選定ロジックを変えたら世代を上げること（古い誤答をキャッシュから返さないため）
+const MANGA_UPDATES_CACHE_KEY_PREFIX = 'mu_title_v3_';
 const MANGA_UPDATES_CACHE_TTL_SECONDS = 21600;
 const MANGA_UPDATES_EMPTY_CACHE_VALUE = '__EMPTY__';
 const MANGA_UPDATES_SESSION_CACHE_KEY = 'mu_session_token_v1';
@@ -2403,10 +2516,51 @@ function pickJapaneseMangaUpdatesTitle_(searchResult, detail, echoQueries) {
     jpCandidates.push(title);
   }
 
-  for (let k = 0; k < jpCandidates.length; k += 1) {
-    if (hasKanaJapaneseSignal_(jpCandidates[k])) return jpCandidates[k];
+  if (!jpCandidates.length) return '';
+
+  // 先頭が漢字のみの場合、それはクエリのエコーではない「別の中国語題」でありうる
+  // （例: クエリ 日昇之屋 に対する 日出之家。包含関係が無いのでエコー除外を通り抜ける）。
+  // その場合だけ「別題」のかな入り候補へ乗り換える。
+  // K-9 のように同一題の表記違い（カナ読み別名）は漢字集合がほぼ一致するので乗り換えず、
+  // 表示順どおり漢字の正式題を採る（拡張機能 core/mangaUpdatesClient.js と同一方針）。
+  const head = jpCandidates[0];
+  if (!hasKanaJapaneseSignal_(head)) {
+    for (let k = 1; k < jpCandidates.length; k += 1) {
+      if (hasKanaJapaneseSignal_(jpCandidates[k])
+        && !muIsSameTitleInDifferentScript_(head, jpCandidates[k])) {
+        return jpCandidates[k];
+      }
+    }
   }
-  return jpCandidates.length ? jpCandidates[0] : '';
+  return head;
+}
+
+function muCollectHanChars_(text) {
+  const matched = String(text || '').match(/[㐀-䶿一-鿿]/g);
+  return matched || [];
+}
+
+// 2つの題が「同じ作品名の表記違い」か（漢字集合がほぼ一致するか）を判定する。
+// 「K-9 警視庁公安部公安第9課異能対策係」と
+// 「ケーナイン　警視庁公安部公安第９課異能対策係」は先頭語の表記が違うだけなので true。
+function muIsSameTitleInDifferentScript_(a, b) {
+  const aChars = muCollectHanChars_(a);
+  const bChars = muCollectHanChars_(b);
+  if (!aChars.length || !bChars.length) return false;
+
+  const aSet = {};
+  for (let i = 0; i < aChars.length; i += 1) aSet[aChars[i]] = true;
+  const bSet = {};
+  for (let i = 0; i < bChars.length; i += 1) bSet[bChars[i]] = true;
+
+  const aKeys = Object.keys(aSet);
+  const bKeys = Object.keys(bSet);
+  let shared = 0;
+  for (let i = 0; i < aKeys.length; i += 1) {
+    if (bSet[aKeys[i]]) shared += 1;
+  }
+  const smaller = Math.min(aKeys.length, bKeys.length);
+  return smaller > 0 && shared / smaller >= 0.8;
 }
 
 function hasKanaJapaneseSignal_(value) {

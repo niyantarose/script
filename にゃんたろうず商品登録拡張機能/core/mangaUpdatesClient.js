@@ -31,9 +31,11 @@
    *   不発の記憶が特に重要: 未登録作品は再スクレイプのたびに数十リクエスト浪費していた。
    */
   var _resultMemo = new Map();
-  // V2: 候補選定ロジック変更（部分一致中国語エコー除外）に伴い、V1時代の
-  // 誤採用キャッシュ（中国語タイトルをresolved扱い）を無効化するためバージョンを上げた
-  var RESULT_CACHE_PREFIX = 'jpTitleLookupV2:';
+  // 候補選定ロジックを変えたら世代を上げること。上げないと resolved(30日TTL)の
+  // 古い誤答がキャッシュから返り続け、修正が反映されない。
+  //   V2: 部分一致の中国語エコー除外を追加
+  //   V3: 非エコーの中国語題より、かな入り日本語題を優先（日昇之屋 → 日出之家 の誤採用）
+  var RESULT_CACHE_PREFIX = 'jpTitleLookupV3:';
   var RESULT_TTL_RESOLVED_MS = 30 * 24 * 60 * 60 * 1000;
   var RESULT_TTL_MISS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -153,14 +155,37 @@
     return false;
   }
 
+  // 2つの題が「同じ作品名の表記違い」か（漢字集合がほぼ一致するか）を判定する。
+  // K-9 の「K-9 警視庁公安部公安第9課異能対策係」と
+  // 「ケーナイン　警視庁公安部公安第９課異能対策係」は先頭語の表記が違うだけで
+  // 漢字集合は同一なので true。まったく別の題なら false。
+  function isSameTitleInDifferentScript(a, b) {
+    var aChars = collectHanChars(a);
+    var bChars = collectHanChars(b);
+    if (!aChars.length || !bChars.length) return false;
+
+    var aSet = {};
+    var i;
+    for (i = 0; i < aChars.length; i += 1) aSet[aChars[i]] = true;
+    var bSet = {};
+    for (i = 0; i < bChars.length; i += 1) bSet[bChars[i]] = true;
+
+    var aKeys = Object.keys(aSet);
+    var bKeys = Object.keys(bSet);
+    var shared = 0;
+    for (i = 0; i < aKeys.length; i += 1) {
+      if (bSet[aKeys[i]]) shared += 1;
+    }
+    var smaller = Math.min(aKeys.length, bKeys.length);
+    return smaller > 0 && shared / smaller >= 0.8;
+  }
+
   function pickPreferredJapaneseCandidate(candidates, echoQueries) {
     // 原語題（中文原題など）のクエリエコーを除外して日本語題を採用する。
     // 完全一致だけでなく部分一致（披著狼皮的羊公主 ⊃ 披著狼皮的羊）も除外する。
     // かな入り候補はエコー除外の対象外（日本語原題を誤って落とさない）。
     // 全部エコーなら空文字（中国語を無理に「解決」として採用しない）。
-    // 採用順は MangaUpdates の Associated Names 表示順（先頭）を維持する。
-    // ※かな入りを常に最優先すると、K-9 のように「漢字正式題の後にカナ読み別名」が
-    //   並ぶ作品で正式題を差し置いてカナ別名を拾ってしまうため、順序は変えない。
+    // 採用順は原則 MangaUpdates の Associated Names 表示順（先頭）を維持する。
     var list = candidates || [];
     if (!list.length) return '';
 
@@ -172,7 +197,21 @@
     }
     if (!pool.length) return '';
 
-    return String(pool[0] || '').trim();
+    // 先頭が漢字のみの場合、それはクエリのエコーではない「別の中国語題」でありうる
+    // （例: クエリ 日昇之屋 に対する 日出之家。包含関係が無いのでエコー除外を通り抜ける）。
+    // pool 内に「別題」のかな入り候補があるならそちらを日本語題として優先する。
+    // ただし K-9 のように同一題の表記違い（カナ読み別名）は漢字集合がほぼ一致するので、
+    // その場合は表示順を維持して漢字の正式題を採る。
+    var head = pool[0];
+    if (!hasKanaJapaneseSignal(head)) {
+      for (i = 1; i < pool.length; i += 1) {
+        if (hasKanaJapaneseSignal(pool[i]) && !isSameTitleInDifferentScript(head, pool[i])) {
+          return String(pool[i]).trim();
+        }
+      }
+    }
+
+    return String(head || '').trim();
   }
 
   function uniqAniListQueries(values) {
@@ -192,14 +231,24 @@
     return out;
   }
 
-  async function aniListFetchNativeJapanese(searchStrings, validationQueries) {
-    var queries = uniqAniListQueries(searchStrings).slice(0, 5);
-    // 元クエリ（中華題など）に漢字があれば、AniList が返す native タイトルが
-    // その作品と無関係な誤答（例: 別作品「バトルファッカーB子」）でないか漢字重なりで検証する。
-    // 検索は広めのクエリ群で行うが、採用判定は必ず元クエリと突き合わせる。
+  /**
+   * AniList の media 配列から日本語題を選ぶ（fetch を含まない純粋関数＝テスト対象）。
+   *
+   * native は「原語のタイトル」であって日本語とは限らない。中国・韓国原作では
+   * native が中文題・ハングル題になり、本物の日本語題は synonyms 側に入る
+   * （実データ: search=快把我哥带走 → media[0] は countryOfOrigin=CN で
+   *   native=快把我哥带走、synonyms に 兄に付ける薬はない！）。
+   * このため「かな入り」を先に探し、漢字のみの native は日本原作のときだけ
+   * 最後の手段として使う。
+   */
+  function pickAniListJapaneseFromMedia(mediaList, validationQueries) {
+    var list = Array.isArray(mediaList) ? mediaList : [];
     var valQueries = Array.isArray(validationQueries)
       ? validationQueries
       : (validationQueries ? [validationQueries] : []);
+
+    // 元クエリ（中華題など）に漢字があれば、AniList が返す native タイトルが
+    // その作品と無関係な誤答（例: 別作品「バトルファッカーB子」）でないか漢字重なりで検証する。
     var requireHan = false;
     var vci;
     for (vci = 0; vci < valQueries.length; vci += 1) {
@@ -211,6 +260,7 @@
       var vk = normalizeTitleKey(valQueries[vci]);
       if (vk) valKeySet[vk] = true;
     }
+
     // AniList が返す作品のタイトル/別名(synonyms)にクエリが含まれる＝作品一致が確定している。
     // 例: 青春之箱 は AniList の「アオのハコ」の synonyms に入っている。
     function seriesMatchesQuery(m) {
@@ -235,6 +285,59 @@
       }
       return best >= 2; // 最低2文字の漢字重なりを要求（誤マッチ防止）
     }
+    // countryOfOrigin が明示的に日本以外なら、その native は日本語題ではない。
+    // フィールドが無い場合（古い応答など）は判定不能として許容する。
+    function isNotJapaneseOrigin(m) {
+      var origin = m && m.countryOfOrigin ? String(m.countryOfOrigin).toUpperCase() : '';
+      return !!origin && origin !== 'JP';
+    }
+
+    var fallbackNative = '';
+    var mi;
+    for (mi = 0; mi < list.length; mi += 1) {
+      var m = list[mi];
+      var nat = m && m.title ? String(m.title.native || '').trim() : '';
+      var natValid = !!nat
+        && hasJapaneseTitleSignal(nat)
+        && nativeIsValid(nat, m)
+        // native がクエリそのもの（＝中文原題のエコー）なら日本語題ではない
+        && !isChineseEchoOfQueries(nat, valQueries);
+
+      // (a) かな入りの native は日本語題として即採用
+      if (natValid && hasKanaJapaneseSignal(nat)) return nat;
+
+      // (b) 日本語ライセンス題は synonyms 側に入っていることが多い
+      //     （例: 今生我來當家主 → native=이번 생은 가주가 되겠습니다,
+      //       synonyms に 今世は当主になります）。
+      //     ※漢字のみの synonym は中文題と区別できないため採用しない（かな縛り）。
+      if (Array.isArray(m && m.synonyms) && m.synonyms.length
+        && (seriesMatchesQuery(m) || natValid)) {
+        var si;
+        for (si = 0; si < m.synonyms.length; si += 1) {
+          var syn = String(m.synonyms[si] || '').trim();
+          if (!syn) continue;
+          var synKey = normalizeTitleKey(syn);
+          if (synKey && valKeySet[synKey]) continue; // クエリのエコーは除外
+          if (!hasKanaJapaneseSignal(syn)) continue;
+          // K-9 のように native の正式題に対するカナ読み別名は乗り換えない
+          if (nat && isSameTitleInDifferentScript(nat, syn)) continue;
+          return syn;
+        }
+      }
+
+      // (c) 漢字のみの native は日本原作のときだけ最後の手段として保留
+      //     （K-9 警視庁公安部公安第9課異能対策係 のようなかな無し日本語題の救済）
+      if (natValid && !fallbackNative && !isNotJapaneseOrigin(m)) {
+        fallbackNative = nat;
+      }
+    }
+
+    return fallbackNative;
+  }
+
+  async function aniListFetchNativeJapanese(searchStrings, validationQueries) {
+    var queries = uniqAniListQueries(searchStrings).slice(0, 5);
+    // 検索は広めのクエリ群で行うが、採用判定は必ず元クエリと突き合わせる。
     var qi;
     for (qi = 0; qi < queries.length; qi += 1) {
       var q = queries[qi];
@@ -246,7 +349,7 @@
         },
         body: JSON.stringify({
           query:
-            'query ($q: String) { Page(page: 1, perPage: 6) { media(search: $q) { title { native romaji english } synonyms } } }',
+            'query ($q: String) { Page(page: 1, perPage: 6) { media(search: $q) { title { native romaji english } synonyms countryOfOrigin } } }',
           variables: { q: q },
         }),
       });
@@ -258,28 +361,8 @@
         body && body.data && body.data.Page && Array.isArray(body.data.Page.media)
           ? body.data.Page.media
           : [];
-      var mi;
-      for (mi = 0; mi < media.length; mi += 1) {
-        var m = media[mi];
-        var nat = m && m.title ? String(m.title.native || '').trim() : '';
-        if (nat && hasJapaneseTitleSignal(nat) && nativeIsValid(nat, m)) return nat;
-        // 韓国・中国原作は native が原語（ハングル/簡体字）のため上の判定を通らないが、
-        // 日本語ライセンス題は synonyms 側に入っていることが多い
-        // （例: 今生我來當家主 → native=이번 생은 가주가 되겠습니다, synonyms に 今世は当主になります）。
-        // クエリが登録名一致で作品確定している場合のみ、synonyms から
-        // 「かな入り」かつ「クエリのエコー（中文題そのもの）でない」名前を日本語題として採用する。
-        // ※漢字のみの synonym は中文題と区別できないため採用しない（かな縛り）。
-        if (Array.isArray(m.synonyms) && m.synonyms.length && seriesMatchesQuery(m)) {
-          var si;
-          for (si = 0; si < m.synonyms.length; si += 1) {
-            var syn = String(m.synonyms[si] || '').trim();
-            if (!syn) continue;
-            var synKey = normalizeTitleKey(syn);
-            if (synKey && valKeySet[synKey]) continue; // クエリのエコーは除外
-            if (hasKanaJapaneseSignal(syn)) return syn;
-          }
-        }
-      }
+      var picked = pickAniListJapaneseFromMedia(media, validationQueries);
+      if (picked) return picked;
     }
     return '';
   }
@@ -1005,6 +1088,8 @@
     __test: {
       detailMatchesQueries: detailMatchesQueries,
       pickJapaneseFromDetail: pickJapaneseFromDetail,
+      pickAniListJapaneseFromMedia: pickAniListJapaneseFromMedia,
+      pickPreferredJapaneseCandidate: pickPreferredJapaneseCandidate,
       collectTitlesForMatch: collectTitlesForMatch,
       normalizeTitleKey: normalizeTitleKey,
       base36SlugToDecimalString: base36SlugToDecimalString,

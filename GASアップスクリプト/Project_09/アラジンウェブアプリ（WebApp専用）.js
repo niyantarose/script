@@ -690,37 +690,53 @@ function 韓国音楽映像カテゴリを補正_(source) {
   return categoryName || '';
 }
 
+const KOREA_書籍系カテゴリ有効値 = ['まんが', '小説', 'エッセイ', 'グッズ', '設定集', 'アートブック', '雑誌', 'OST', 'CD', 'DVD', 'Blu-ray', 'LP', '絵本', 'シナリオ集', '台本', 'ステッカー', 'シール', '手芸', '切り絵', '教材', '参考書'];
+
+const KOREA_カテゴリ有効値マップ = {
+  '韓国書籍': KOREA_書籍系カテゴリ有効値,
+  '韓国マンガ': KOREA_書籍系カテゴリ有効値,
+  '韓国音楽映像': ['OST', 'CD', 'DVD', 'Blu-ray', 'LP'],
+  '韓国雑誌': ['雑誌'],
+  '韓国グッズ': ['グッズ']
+};
+
+// シートのカテゴリ列はプルダウン（入力規則）なので、有効値以外を書き込むとエラーになる。
+// 分類できなかった値（アラジンの "국내도서>만화>BL만화" のような生パス）は空欄に落とす。
+// 台湾側（拡張機能 popup.shared.js の getCategoryValue）と同じ方針。
+function カテゴリ入力値を検証_(sheetName, value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return '';
+
+  const validValues = KOREA_カテゴリ有効値マップ[sheetName];
+  if (validValues) return validValues.indexOf(text) === -1 ? '' : text;
+
+  // ホワイトリスト未定義のシートは、台湾側と同じ形の安全網だけ掛ける
+  if (/[>＞]/.test(text) || text.length > 12) return '';
+  return text;
+}
+
 function 判定済みカテゴリを取得_(sheetName, source) {
   const value = String(source && (source.sheetCategory || source.normalizedCategory || source.登録カテゴリ) || '').trim();
   if (!value) return '';
-
-  const validMap = {
-    '韓国書籍': ['まんが', '小説', 'エッセイ', 'グッズ', '設定集', 'アートブック', '雑誌', 'OST', 'CD', 'DVD', 'Blu-ray', 'LP', '絵本', 'シナリオ集', '台本', 'ステッカー', 'シール', '手芸', '切り絵', '教材', '参考書'],
-    '韓国マンガ': ['まんが', '小説', 'エッセイ', 'グッズ', '設定集', 'アートブック', '雑誌', 'OST', 'CD', 'DVD', 'Blu-ray', 'LP', '絵本', 'シナリオ集', '台本', 'ステッカー', 'シール', '手芸', '切り絵', '教材', '参考書'],
-    '韓国音楽映像': ['OST', 'CD', 'DVD', 'Blu-ray', 'LP'],
-    '韓国雑誌': ['雑誌'],
-    '韓国グッズ': ['グッズ']
-  };
-
-  const validValues = validMap[sheetName];
-  if (validValues && validValues.indexOf(value) === -1) return '';
-  return value;
+  return カテゴリ入力値を検証_(sheetName, value);
 }
 
 function カテゴリ入力値を補正_(sheetName, source) {
   const normalizedCategory = 判定済みカテゴリを取得_(sheetName, source);
   if (normalizedCategory) return normalizedCategory;
 
+  let detected = '';
   if (sheetName === '韓国書籍') {
-    return 韓国書籍カテゴリを補正_(source);
+    detected = 韓国書籍カテゴリを補正_(source);
+  } else if (sheetName === '韓国マンガ') {
+    detected = 韓国マンガカテゴリを補正_(source);
+  } else if (sheetName === '韓国音楽映像') {
+    detected = 韓国音楽映像カテゴリを補正_(source);
+  } else {
+    detected = String(source && source.categoryName || '').trim();
   }
-  if (sheetName === '韓国マンガ') {
-    return 韓国マンガカテゴリを補正_(source);
-  }
-  if (sheetName === '韓国音楽映像') {
-    return 韓国音楽映像カテゴリを補正_(source);
-  }
-  return String(source && source.categoryName || '').trim();
+
+  return カテゴリ入力値を検証_(sheetName, detected);
 }
 function 保存先シート候補を取得_(genre) {
   const preferredSheets = ALADIN_GENRE_SHEET_MAP[String(genre || '').trim()] || [];

@@ -221,4 +221,127 @@ if (sheepSimplifiedResolved.japaneseTitle !== sheepJp) {
   );
 }
 
+// === エコーではない「別の中国語題」が Associated の先頭にあっても、
+//     かな入りの日本語題を採用する（MangaUpdates 実データ: Our Sunny Days / series 53806507474）===
+// 日出之家 は クエリ 日昇之屋 の部分エコーではない（包含関係が無い）ため
+// isChineseEchoOfQueries を通り抜け、表示順の先頭として誤採用されていた。
+const sunnyJp = '陽が昇る家〜田舎で出会った俺たち〜';
+const sunnyDetail = {
+  title: 'Our Sunny Days',
+  associated: [
+    { title: 'Cuando el sol se asoma' },
+    { title: 'Das Haus der aufgehenden Sonne' },
+    { title: 'Là où le soleil brille' },
+    { title: 'When the Sun Rises' },
+    { title: '日出之家' },
+    { title: '日昇之屋' },
+    { title: sunnyJp },
+    { title: '해 뜨는 집' },
+  ],
+};
+const sunnyRow = {
+  hit_title: '日昇之屋',
+  record: { title: 'Our Sunny Days', associated: [{ title: '日昇之屋' }] },
+};
+const sunnyQueries = ['日昇之屋'];
+const sunnyKeys = sunnyQueries.map(t.normalizeTitleKey);
+const sunnyResolved = t.tryResolveMatchedDetail_(
+  sunnyDetail,
+  sunnyRow,
+  sunnyKeys,
+  sunnyQueries,
+  []
+);
+if (sunnyResolved.japaneseTitle !== sunnyJp) {
+  throw new Error(
+    `non-echo Chinese alt title should not win over kana JP title. expected ${sunnyJp}, got: ${sunnyResolved.japaneseTitle}`
+  );
+}
+
+// ============================================================
+// AniList 経路（MU が日本語題を出せないときのフォールバック）
+// native は「原語のタイトル」であって日本語とは限らない。中国・韓国原作では
+// native が中文題・ハングル題になり、本物の日本語題は synonyms 側に入る。
+// ============================================================
+const pickAni = t.pickAniListJapaneseFromMedia;
+if (typeof pickAni !== 'function') {
+  throw new Error('pickAniListJapaneseFromMedia が __test に公開されていない');
+}
+
+// 実データ（AniList search=快把我哥带走）: media[0] は countryOfOrigin=CN で
+// native がクエリそのもの。正解の日本語題は同じ media の synonyms にある。
+const cnMedia = [
+  {
+    countryOfOrigin: 'CN',
+    title: { native: '快把我哥带走', romaji: 'Kuai Ba Wo Ge Dai Zou', english: 'Please Take My Brother Away' },
+    synonyms: ['Ani ni Tsukeru Kusuri wa Nai!', '兄に付ける薬はない！', 'Please Take My Brother Away'],
+  },
+];
+const cnPicked = pickAni(cnMedia, ['快把我哥带走']);
+if (cnPicked !== '兄に付ける薬はない！') {
+  throw new Error(`AniList: CN native should not be used as JP title, expected 兄に付ける薬はない！, got: ${cnPicked}`);
+}
+
+// 韓国原作（Our Sunny Days 型）: native が中文題でも synonyms のかな入り題を採る
+const krMedia = [
+  {
+    countryOfOrigin: 'KR',
+    title: { native: '日出之家', romaji: 'Our Sunny Days', english: 'Our Sunny Days' },
+    synonyms: ['日昇之屋', '陽が昇る家〜田舎で出会った俺たち〜', '해 뜨는 집'],
+  },
+];
+const krPicked = pickAni(krMedia, ['日昇之屋']);
+if (krPicked !== '陽が昇る家〜田舎で出会った俺たち〜') {
+  throw new Error(`AniList: KR media should yield kana JP title, got: ${krPicked}`);
+}
+
+// 日本原作でかな入り native はそのまま採用
+const jpMedia = [
+  {
+    countryOfOrigin: 'JP',
+    title: { native: 'アオのハコ', romaji: 'Ao no Hako', english: 'Blue Box' },
+    synonyms: ['青春之箱'],
+  },
+];
+if (pickAni(jpMedia, ['青春之箱']) !== 'アオのハコ') {
+  throw new Error(`AniList: kana native should be used as-is, got: ${pickAni(jpMedia, ['青春之箱'])}`);
+}
+
+// K-9 型: 日本原作のかな無し漢字正式題。synonyms のカナ読み別名に乗り換えない
+const k9Media = [
+  {
+    countryOfOrigin: 'JP',
+    title: { native: 'K-9 警視庁公安部公安第9課異能対策係', romaji: 'K-9', english: 'K-9' },
+    synonyms: ['ケーナイン　警視庁公安部公安第９課異能対策係', 'K-9 警視廳公安部公安第9課異能對策組'],
+  },
+];
+const k9Picked = pickAni(k9Media, ['K-9 警視廳公安部公安第9課異能對策組']);
+if (k9Picked !== 'K-9 警視庁公安部公安第9課異能対策係') {
+  throw new Error(`AniList: kanji-only JP native should win over kana reading alias, got: ${k9Picked}`);
+}
+
+// 中文題しか無い（日本語題が存在しない）作品では何も返さない
+const noJpMedia = [
+  {
+    countryOfOrigin: 'CN',
+    title: { native: '某中文漫画', romaji: 'Mou Chinese Manhua', english: '' },
+    synonyms: ['某中文漫画別名'],
+  },
+];
+if (pickAni(noJpMedia, ['某中文漫画']) !== '') {
+  throw new Error(`AniList: CN-only work should yield empty, got: ${pickAni(noJpMedia, ['某中文漫画'])}`);
+}
+
+// 無関係な作品（漢字重なり無し）は採用しない
+const unrelatedMedia = [
+  {
+    countryOfOrigin: 'JP',
+    title: { native: 'バトルファッカーB子', romaji: 'Battle Fucker B-ko', english: '' },
+    synonyms: [],
+  },
+];
+if (pickAni(unrelatedMedia, ['全球高考']) !== '') {
+  throw new Error(`AniList: unrelated work should be rejected, got: ${pickAni(unrelatedMedia, ['全球高考'])}`);
+}
+
 console.log('manga-updates-client.test.js: ok');

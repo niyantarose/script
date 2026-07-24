@@ -167,6 +167,14 @@ function detectSheetCategory(genre, item, scrapeResult = {}) {
   return '';
 }
 
+// 分類できなかった生のカテゴリ値をシートのプルダウン列へ流さないための安全網。
+// 台湾側（popup/taiwan/popup.shared.js の getCategoryValue）と同じ条件。
+function sanitizeCategoryFallback(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (/[>＞]/.test(text) || text.length > 12) return '';
+  return text;
+}
+
 function getProductSheetCategory(product) {
   return product?.sheetCategory
     || product?.登録カテゴリ
@@ -514,7 +522,9 @@ function buildAladinCsvContent(product) {
   const genre = product.ジャンル;
   const additional = product.追加画像URL || '';
   const description = product.description || '';
-  const sheetCategory = getProductSheetCategory(product) || product.categoryName || '';
+  // 生の categoryName（"국내도서>만화>BL만화" のようなパス）はシートのカテゴリ列
+  // （プルダウン）に貼ると入力規則エラーになるため、台湾側と同じ条件で落とす。
+  const sheetCategory = getProductSheetCategory(product) || sanitizeCategoryFallback(product.categoryName);
 
   if (genre === '音楽映像') {
     const worksTitle = product.worksTitle || product.productTitle || '';

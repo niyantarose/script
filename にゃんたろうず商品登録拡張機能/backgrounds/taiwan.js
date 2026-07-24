@@ -450,7 +450,16 @@ async function mergeEnrichedItemsToStorageProducts(enrichedItems) {
         
         if (lookup?.status === 'resolved' && String(lookup.japaneseTitle || '').trim()) {
           const jp = String(lookup.japaneseTitle).trim();
-          products[idx]['日本語タイトル'] = jp;
+          // 商品ページのタイトル直下から取った値(page_trusted)は外部照会で上書きしない。
+          // core/titleAnalysis.js と popup/taiwan/popup.js が宣言している不変条件。
+          // 空欄のときだけ補充する。
+          const currentJp = String(products[idx]['日本語タイトル'] || '').trim();
+          const isPageTrusted = String(products[idx]['日本語タイトル取得元'] || '') === 'page_trusted';
+          if (!isPageTrusted || !currentJp) {
+            products[idx]['日本語タイトル'] = jp;
+            // 外部照会値に page_trusted のラベルを残さない（取得元のロンダリング防止）
+            products[idx]['日本語タイトル取得元'] = 'mangaupdates';
+          }
           products[idx]['作品名日本語'] = products[idx]['作品名日本語'] || jp;
           products[idx]['作品名（日本語）'] = products[idx]['作品名（日本語）'] || jp;
         }
