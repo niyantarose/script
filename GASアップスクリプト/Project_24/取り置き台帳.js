@@ -916,7 +916,15 @@ function 取り置き_表を保存_(sheetName, headers, rows, headerRow){
   const ss=SpreadsheetApp.getActive(); let sh=ss.getSheetByName(sheetName); if(!sh) sh=ss.insertSheet(sheetName);
   if(sh.getMaxColumns()<headers.length) sh.insertColumnsAfter(sh.getMaxColumns(),headers.length-sh.getMaxColumns());
   if(sh.getMaxRows()<rows.length+hr) sh.insertRowsAfter(sh.getMaxRows(),rows.length+hr-sh.getMaxRows());
-  sh.getRange(hr,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
+  // 見出しの中身が変わった時だけ書式を当てる。毎回当てると見出しの手動書式調整が戻るため(2026-07-24)
+  const 見出し範囲=sh.getRange(hr,1,1,headers.length);
+  let 見出し変更=true;
+  try{
+    const 現=見出し範囲.getDisplayValues()[0].map(v=>String(v||'').trim());
+    見出し変更=現.length!==headers.length || headers.some((h,i)=>現[i]!==String(h));
+  }catch(e){}
+  見出し範囲.setValues([headers]);
+  if(見出し変更) 見出し範囲.setFontWeight('bold').setBackground('#4472c4').setFontColor('#ffffff');
   sh.setFrozenRows(hr);
   const dataRows=Math.max(rows.length,Math.max(0,sh.getLastRow()-hr)), dataCols=headers.length;
   if(dataRows>0){
@@ -1130,17 +1138,9 @@ function 取り置き初期登録を作成本体_(options){
       }
     });
   }
-  // 列幅は手動調整を尊重し、列構成が変わった時だけ既定幅を当てる(2026-07-23「列幅が自動で戻るのやめて」)
-  try{
-    const 幅props=PropertiesService.getDocumentProperties(), 幅key='取り置き登録_列幅適用済み';
-    if(幅props.getProperty(幅key)!==String(TORIOKI_CFG.初期HDR.length)){
-      sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('要対応')+1,220);
-      sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('処理')+1,130);
-      sh2.setColumnWidth(TORIOKI_CFG.初期HDR.indexOf('確保内訳')+1,170); // 自動N(EMS番号)が切れない幅
-      幅props.setProperty(幅key,String(TORIOKI_CFG.初期HDR.length));
-    }
-  }catch(e){}
-  sh2.hideColumns(1); // 取置IDは反映処理用の内部キー。表示はしない(列としては保持)
+  // 列幅・行の高さ・文字サイズは一切触らない(手動調整を常に尊重 2026-07-24)。
+  // 既定幅に戻したいときはメニュー「📐 取り置き登録の列幅を既定に戻す」を押す
+  try{ if(!sh2.isColumnHiddenByUser(1)) sh2.hideColumns(1); }catch(e){ try{ sh2.hideColumns(1); }catch(e2){} }
   取り置き_登録行書式を更新_(sh2,candidates);
   const 入力済=candidates.filter(c=>String(c.追加数量||'')!==''||String(c.マイナス数量||'')!=='').length;
   const 要確認数=candidates.filter(c=>c.判定==='要棚確認').length;
@@ -1282,6 +1282,20 @@ function 取り置き_空き在庫マップ_(){
     });
   }catch(e){}
   return out;
+}
+
+// 列幅を既定へ戻す(手動メニュー)。更新では絶対に走らせない=普段は自分の調整が残る
+function 取り置き登録の列幅を既定に戻す(){
+  const sh=SpreadsheetApp.getActive().getSheetByName(TORIOKI_CFG.初期);
+  if(!sh){ SpreadsheetApp.getUi().alert('取り置き登録シートがありません'); return; }
+  const 幅={'受注番号':100,'氏名':110,'商品コード':140,'SKU':150,'注文数量':70,'確保済み':70,'不足':60,
+    '空き在庫':80,'確保内訳':170,'受注ステータス':160,'追加数量':80,'マイナス数量':90,'棚確認':110,
+    'メモ':160,'判定':90,'要対応':220,'処理':130};
+  Object.keys(幅).forEach(name=>{
+    const i=TORIOKI_CFG.初期HDR.indexOf(name);
+    if(i>=0) sh.setColumnWidth(i+1,幅[name]);
+  });
+  SpreadsheetApp.getActive().toast('列幅を既定に戻しました','📐取り置き登録',5);
 }
 
 // 反映が済んだ入力(追加数量/マイナス数量)を画面と入力保存シートの両方から消す。
