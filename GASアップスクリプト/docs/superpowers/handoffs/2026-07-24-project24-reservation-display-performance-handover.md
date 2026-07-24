@@ -70,7 +70,7 @@ powershell -ExecutionPolicy Bypass -File tools\gas_pull_sync.ps1 Project_24
 
 ## 3. 自動テスト結果
 
-本番反映前に以下を実行し、合計38件PASS。
+本番反映前に以下を実行し、合計39件PASS。
 
 ```powershell
 node tests/project24_torioki.test.js
@@ -80,7 +80,7 @@ node --check Project_24\引当.js
 node --check Project_24\取り置き台帳.js
 ```
 
-- `project24_torioki.test.js`: 14 PASS
+- `project24_torioki.test.js`: 15 PASS
 - `project24_zenken_kensan.test.js`: 16 PASS
 - `project24_daniel_amari.test.js`: 8 PASS
 - 構文チェック2本: exit 0
@@ -89,7 +89,7 @@ node --check Project_24\取り置き台帳.js
 
 - `project24_arrived_box_color.test.js` に「在庫反映済み履歴だけの行はラベンダーを維持する: null !== lavender」という既存失敗が1件ある。本仕様の対象外で、今回の変更によるものではない。
 
-## 4. 本番検証で判明した残り1件
+## 4. 本番検証で判明した問題と解決結果
 
 スプレッドシートのメニュー `📥 受注・共通` → `📋 取り置き登録を更新` を、コード反映後に実行した。
 
@@ -103,27 +103,31 @@ Apps Script実行履歴（2026/07/24 18:26:16開始）の結果:
 
 したがって、計算・書き込み・入力規則・書式は **24.1秒で完了**している。タイムアウトの根本原因は、`Project_24/取り置き台帳.js` の `取り置き初期登録を作成本体_` 末尾にある完了用 `ui.alert(...)`（現在1198行付近）。このダイアログはユーザーがOKを押すまでGAS実行を停止し、停止時間も6分制限に算入される。
 
-### 次に行う修正
+### 解決済み（2026/07/24 18:42）
 
-1. `tests/project24_torioki.test.js` に「非silentの完了通知が `ui.alert` ではなく非停止型通知を使う」回帰テストを追加し、現コードでREDを確認する。
-2. 末尾の完了通知を `ss.toast(message, '取り置き登録を更新しました', 10)` 等へ変更する。入力確認やエラーの `ui.alert` は対象外で、完了通知だけを変える。
-3. 対象テスト→関連38件→構文チェックを実行する。
-4. `tools\gas_safe_push.ps1 Project_24` で再反映する。
-5. シートを再読み込みし、同メニューを実行。Apps Script履歴が「完了」、実行時間が概ね30秒以内であることを確認する。
-6. 受注明細で `10117477` / `MRBLUE41` の現在確保表示が1個だけであることを確認する。
+1. `tests/project24_torioki.test.js` に「完了通知は実行を止めないtoastを使う」回帰テストを追加し、修正前に対象関数が無くREDになることを確認した。
+2. 完了用 `ui.alert` を `ss.toast(message, '取り置き登録を更新しました', 10)` へ変更した。確認・取消・エラー用ダイアログは変更していない。
+3. 対象15件、全件検算16件、ダニエル余り8件の合計39件と構文チェック2本がすべてPASS。
+4. `tools\gas_safe_push.ps1 Project_24` で18:40:59に本番反映済み（オンライン取込0、ローカル反映1ファイル）。
+5. 本番シートを再読み込みして同じメニューを実行。Apps Script実行履歴は **2026/07/24 18:41:33開始、22.446秒、完了**。
+6. 受注明細の実データを確認。受注 `10117477` では次の表示になった。
+   - 420行: `MRBLUE41b`、注文数2、現在の確保済み・不足・確保内訳・EMSは空欄（発送済み側）。
+   - 421行: `MRBLUE41b`、注文数1、**確保済み1・不足0**、現在EMSは `EG050152967KR`（未発送側）。
+
+タイムアウトと `10117477` / `MRBLUE41` の表示不整合は、どちらも本番で解決確認済み。
 
 ## 5. 作業ブランチ・worktree
 
-- `main` は `e96ccab`。
-- 既存の作業ブランチ: `codex/project24-reservation-display-performance`（`900335c`）。
+- `main` は安全push直後の `d2d63b3` まで進んでいる（この引き継ぎ更新コミットはその後に追加される）。
+- 実装コミット: `4cef106`（取り置き更新の完了通知を非停止化）。
+- 既存の作業ブランチ: `codex/project24-reservation-display-performance`。
 - worktree: `C:\Users\Owner\Desktop\script\GASアップスクリプト\.worktrees\project24-reservation-display-performance`
-- mainへは既にfast-forward済み。残修正をこのブランチで行うなら、先にmainの `e96ccab` と本引き継ぎコミットを取り込む。
-- 最終検証後にworktreeを削除し、ブランチを削除してよい。他の既存worktreeは触らない。
+- mainへは既にfast-forward済み。コードの残修正はない。
+- この引き継ぎ更新のコミット・push後、当該worktreeを削除し、ブランチを削除してよい。他の既存worktreeは触らない。
 
 ## 6. 重要な判断
 
 - 受注 `10117477` / `MRBLUE41` の元データを削除・手修正する仕様ではない。発送済み行を現在確保表示から除外し、有効な未発送分1個へ配分する。
 - 今回の6分超過は性能不足ではなく、完了ダイアログによる実行停止。データ収集21秒をさらに最適化する必要は現時点ではない。
 - 完了通知をtoastへ変えても、入力確認・取消確認・エラー停止用のダイアログは残す。
-- オンライン本番には現時点で「計算整合＋入力規則高速化」まで入っている。残るのは完了通知の非停止化と再検証。
-
+- オンライン本番には「計算整合＋入力規則高速化＋完了通知の非停止化」まで入り、本番再検証も完了している。
